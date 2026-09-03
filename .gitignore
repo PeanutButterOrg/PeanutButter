@@ -1,0 +1,51 @@
+# Environment
+.env
+*.pem
+
+# Rust
+backend/target/
+backend/**/*.rs.bk
+backend/.sqlx/
+
+# Flutter / Dart
+frontend/.dart_tool/
+frontend/.packages
+frontend/.flutter-plugins
+frontend/.flutter-plugins-dependencies
+frontend/.pub-cache/
+frontend/.pub/
+frontend/build/
+frontend/coverage/
+frontend/**/*.iml
+frontend/.idea/
+.idea/
+
+# Flutter platform build caches (keep project folders)
+frontend/android/.gradle/
+frontend/android/local.properties
+frontend/android/app/build/
+frontend/ios/Pods/
+frontend/ios/.symlinks/
+frontend/macos/Flutter/ephemeral/
+frontend/windows/flutter/ephemeral/
+frontend/linux/flutter/ephemeral/
+
+# Media library (user files)
+media/
+!media/.gitkeep
+
+# Dist binaries (too large for git; build or download separately)
+dist/*.apk
+dist/*.zip
+dist/*.tar.gz
+dist/*.tar
+
+# OS / editor
+.DS_Store
+*.swp
+*.swo
+.vscode/
+.cursor/
+
+# Docker / logs
+*.log

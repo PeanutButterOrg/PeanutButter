@@ -1,0 +1,313 @@
+# GraphQL schema for the PeanutButter catalog API.
+# Matches backend/src/graphql. Used by the Flutter client and codegen.
+
+schema {
+  query: Query
+  mutation: Mutation
+}
+
+enum TitleKind {
+  MOVIE
+  SERIES
+  ANIME
+}
+
+enum SortField {
+  RATING
+  POPULARITY
+  YEAR
+  TITLE
+  DATE_ADDED
+  TRENDING
+  ROTTEN_TOMATOES
+  AVAILABILITY
+  CONTINUE_WATCHING
+}
+
+enum SortDir {
+  ASC
+  DESC
+}
+
+input TitleFilter {
+  kind: TitleKind
+  genre: String
+  yearMin: Int
+  yearMax: Int
+  ratingMin: Float
+}
+
+type Query {
+  catalog(
+    filter: TitleFilter
+    sort: SortField
+    dir: SortDir
+    page: Int
+    perPage: Int
+  ): TitleConnection!
+  title(id: UUID, imdbId: String, tmdbId: Int): Title
+  search(query: String!, kind: TitleKind, page: Int, perPage: Int): SearchResult!
+  genres: [String!]!
+  serverInfo: ServerInfo!
+  homeFeed(kind: TitleKind!): HomeFeed!
+  nextPlayback(fileId: UUID!): FileReference
+  streamingSearch(query: String!, kind: TitleKind!, season: Int, episode: Int, language: String, titleId: UUID, live: Boolean): [StreamSource!]!
+  streamStatus(sessionId: String!): StreamSession
+  jackettCatalog: JackettCatalogStatus!
+}
+
+type Mutation {
+  triggerSync: MutationResult!
+  createTitle(input: TitleInput!): Title!
+  updateTitle(id: UUID!, input: TitleInput!): Title!
+  deleteTitle(id: UUID!): MutationResult!
+  updateSettings(input: SettingsInput!): MutationResult!
+  ensureSubtitles(fileId: UUID!, language: String): [Subtitle!]!
+  fetchSubtitles(titleId: UUID!, language: String, season: Int, episode: Int, fileId: UUID): [Subtitle!]!
+  setFavorite(titleId: UUID!, favorite: Boolean!): MutationResult!
+  setWatched(titleId: UUID!, watched: Boolean!): MutationResult!
+  updateProgress(
+    titleId: UUID!
+    fileId: UUID
+    episodeId: UUID
+    positionMs: Int!
+    durationMs: Int
+  ): MutationResult!
+  testJackett: MutationResult!
+  startJackettCatalog: MutationResult!
+  startStream(
+    magnet: String!
+    title: String!
+    titleId: UUID
+    resume: Boolean
+    seeders: Int
+    peers: Int
+  ): StreamSession!
+  streamResume(
+    sessionId: String!
+    position: Int!
+    titleId: UUID
+    title: String
+    magnet: String
+  ): Boolean!
+  stopStream(sessionId: String!): Boolean!
+}
+
+input SettingsInput {
+  tmdbApiKey: String
+  omdbApiKey: String
+  anilistClientId: String
+  mediaPath: String
+  jackettEnabled: Boolean
+  jackettUrl: String
+  jackettApiKey: String
+  streamingResolution: String
+  opensubtitlesEnabled: Boolean
+  opensubtitlesApiKey: String
+}
+
+input TitleInput {
+  kind: TitleKind
+  title: String
+  originalTitle: String
+  synopsis: String
+  description: String
+  year: Int
+  runtimeMinutes: Int
+  posterUrl: String
+  backdropUrl: String
+}
+
+scalar UUID
+scalar NaiveDate
+scalar DateTime
+
+type Title {
+  id: UUID!
+  kind: TitleKind!
+  title: String!
+  originalTitle: String
+  synopsis: String
+  description: String
+  year: Int
+  runtimeMinutes: Int
+  posterUrl: String
+  backdropUrl: String
+  logoUrl: String
+  thumbUrl: String
+  ratings: Ratings
+  genres: [String!]!
+  trailers: [Trailer!]!
+  fileReferences: [FileReference!]!
+  seasons: [Season!]!
+  trailerYoutubeKey: String
+  availablePeers: Int!
+  bestQuality: String
+  people: [Person!]!
+  userState: UserState
+  contentRating: String
+  videoCodec: String
+  audioCodec: String
+  container: String
+}
+
+type Ratings {
+  tmdbVoteAverage: Float
+  tmdbVoteCount: Int
+  imdbRating: Float
+  imdbVotes: Int
+  anilistScore: Float
+  anilistPopularity: Int
+  rtScore: Int
+}
+
+type Trailer {
+  id: UUID!
+  name: String!
+  youtubeKey: String!
+  site: String!
+  size: Int
+}
+
+type FileReference {
+  id: UUID!
+  kind: String!
+  quality: String
+  container: String
+  codec: String
+  audioCodec: String
+  sizeBytes: Int
+  availablePeers: Int!
+  playbackUrl: String!
+  episodeId: UUID
+  source: String!
+}
+
+type Person {
+  id: UUID!
+  name: String!
+  character: String
+  job: String
+  department: String!
+  profileUrl: String
+}
+
+type UserState {
+  favorite: Boolean!
+  watched: Boolean!
+  positionMs: Int!
+  durationMs: Int
+  episodeId: UUID
+  fileId: UUID
+}
+
+type Season {
+  id: UUID!
+  seasonNumber: Int!
+  name: String
+  overview: String
+  posterPath: String
+  airDate: NaiveDate
+  episodeCount: Int
+  episodes: [Episode!]!
+}
+
+type Episode {
+  id: UUID!
+  episodeNumber: Int!
+  name: String
+  overview: String
+  stillPath: String
+  airDate: NaiveDate
+  runtime: Int
+}
+
+type TitleConnection {
+  items: [Title!]!
+  totalCount: Int!
+  hasNextPage: Boolean!
+  page: Int!
+  perPage: Int!
+}
+
+type HomeFeed {
+  trending: [Title!]!
+  popular: [Title!]!
+  recent: [Title!]!
+  continueWatching: [Title!]!
+}
+
+type SearchResult {
+  items: [Title!]!
+  totalCount: Int!
+  hasNextPage: Boolean!
+  page: Int!
+}
+
+type SyncStatus {
+  lastSyncAt: DateTime
+  totalTitles: Int!
+  syncing: Boolean!
+}
+
+type ServerInfo {
+  version: String!
+  libraryPath: String!
+  syncStatus: SyncStatus!
+  tmdbConfigured: Boolean!
+  omdbConfigured: Boolean!
+  anilistConfigured: Boolean!
+  jackettEnabled: Boolean!
+  jackettConfigured: Boolean!
+  jackettUrl: String
+  streamingResolution: String!
+  jackettCatalog: JackettCatalogStatus!
+  opensubtitlesEnabled: Boolean!
+  opensubtitlesConfigured: Boolean!
+}
+
+type JackettCatalogStatus {
+  ready: Boolean!
+  syncing: Boolean!
+  done: Int!
+  total: Int!
+  lastError: String
+}
+
+type StreamSource {
+  id: String!
+  title: String!
+  magnet: String!
+  seeders: Int!
+  peers: Int!
+  rating: Int!
+  health: String!
+  size: String!
+  tracker: String!
+  indexer: String!
+  language: String!
+}
+
+type StreamSession {
+  id: String!
+  title: String!
+  progress: Float!
+  seeders: Int!
+  peers: Int!
+  resumePosition: Int!
+  status: String!
+  streamUrl: String!
+}
+
+type MutationResult {
+  success: Boolean!
+  message: String!
+}
+
+type Subtitle {
+  id: UUID!
+  language: String!
+  label: String!
+  format: String!
+  content: String!
+}

@@ -1,0 +1,11 @@
+.git
+.dart_tool
+build
+.idea
+**/*.md
+.env
+android
+ios
+linux
+macos
+windows

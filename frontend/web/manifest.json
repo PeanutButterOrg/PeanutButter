@@ -1,0 +1,10 @@
+{
+  "name": "PeanutButter",
+  "short_name": "PeanutButter",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#0e0e12",
+  "theme_color": "#e8a838",
+  "description": "Self-hosted media catalog",
+  "orientation": "any"
+}

@@ -1,0 +1,178 @@
+# PeanutButter for CasaOS / ZimaOS — self-contained (no .env file)
+#
+# Before first install, on the Zima host:
+#   docker build -t peanutbutter-api:0.2.0 ./backend
+#
+# Then: CasaOS → App Store → Custom Install → paste this file → Install.
+# Edit PUBLIC_URL to your server LAN IP or hostname before install.
+#
+# Console: http://YOUR_SERVER:3001/  ·  Health: /health
+
+name: peanutbutter
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: peanutbutter-postgres
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          memory: 256M
+        limits:
+          memory: 1024M
+    environment:
+      POSTGRES_USER: peanutbutter
+      POSTGRES_PASSWORD: peanutbutter
+      POSTGRES_DB: peanutbutter
+    volumes:
+      - type: bind
+        source: /DATA/AppData/peanutbutter/postgres
+        target: /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U peanutbutter -d peanutbutter"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    x-casaos:
+      volumes:
+        - container: /var/lib/postgresql/data
+          description:
+            en_US: Postgres database files
+            custom: Postgres data
+
+  meilisearch:
+    image: getmeili/meilisearch:v1.11
+    container_name: peanutbutter-meilisearch
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          memory: 256M
+        limits:
+          memory: 768M
+    environment:
+      MEILI_MASTER_KEY: peanutbutter_meili_master_key_change_me
+      MEILI_ENV: production
+      MEILI_NO_ANALYTICS: "true"
+      MEILI_MAX_INDEXING_MEMORY: 512Mb
+    volumes:
+      - type: bind
+        source: /DATA/AppData/peanutbutter/meili
+        target: /meili_data
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:7700/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    x-casaos:
+      volumes:
+        - container: /meili_data
+          description:
+            en_US: Meilisearch index data
+            custom: Search index
+
+  app:
+    image: peanutbutter-api:0.2.0
+    container_name: peanutbutter-api
+    restart: unless-stopped
+    init: true
+    deploy:
+      resources:
+        reservations:
+          memory: 256M
+          cpus: "0.25"
+        limits:
+          memory: 2048M
+          cpus: "2.00"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      DATABASE_URL: postgres://peanutbutter:peanutbutter@postgres:5432/peanutbutter
+      MEILI_URL: http://meilisearch:7700
+      MEILI_MASTER_KEY: peanutbutter_meili_master_key_change_me
+      BIND_ADDR: 0.0.0.0:8080
+      MEDIA_PATH: /media
+      PUBLIC_URL: http://localhost:3001
+      TMDB_API_KEY: ""
+      OMDB_API_KEY: ""
+      ANILIST_CLIENT_ID: ""
+      ADMIN_PASSWORD: ""
+      API_KEY: ""
+      JACKETT_URL: ""
+      JACKETT_API_KEY: ""
+      SYNC_CRON_POPULAR: "0 0 */6 * * *"
+      SYNC_CRON_STALE: "0 30 3 * * *"
+      RUST_LOG: peanutbutter=info,tower_http=info
+    volumes:
+      - type: bind
+        source: /DATA/AppData/peanutbutter/media
+        target: /media
+      - type: bind
+        source: /DATA/AppData/peanutbutter/streams
+        target: /data/streams
+    depends_on:
+      - postgres
+      - meilisearch
+    ports:
+      - target: 8080
+        published: "3001"
+        protocol: tcp
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 25s
+    x-casaos:
+      ports:
+        - container: "8080"
+          description:
+            en_US: Web console and GraphQL API
+            custom: API / console
+      volumes:
+        - container: /media
+          description:
+            en_US: Optional local media library
+            custom: Media
+        - container: /data/streams
+          description:
+            en_US: Temporary torrent stream cache
+            custom: Streams
+
+x-casaos:
+  architectures:
+    - amd64
+    - arm64
+  main: app
+  author: PeanutButter
+  category: Media
+  description:
+    en_US: |
+      PeanutButter catalog server for TVs and desktops. Pair devices with a 6-digit
+      code from the console. Jackett and streaming settings live on this server.
+    custom: Catalog API for PeanutButter TV and desktop apps.
+  developer: PeanutButter
+  icon: ""
+  tagline:
+    en_US: Media catalog API for your home
+    custom: Media catalog API
+  title:
+    en_US: PeanutButter
+    custom: PeanutButter
+  tips:
+    before_install:
+      en_US: |
+        1. On the Zima host build once: `docker build -t peanutbutter-api:0.2.0 ./backend`
+        2. Paste this compose and install — no .env file needed.
+        3. If the Zima IP is not 10.0.0.28, edit PUBLIC_URL in the compose before install.
+        4. Open the console, create a device code, pair the TV. Set Jackett in the console.
+        5. TMDB/OMDb keys are empty in the current local config — paste them into the
+           `app` service environment (TMDB_API_KEY / OMDB_API_KEY) if you need fresh metadata.
+      custom: |
+        Build peanutbutter-api:0.2.0 first. No .env. Edit PUBLIC_URL if IP differs.
+  index: /
+  port_map: "3001"
+  scheme: http
+  hostname: ""
+  version: "0.2.0"

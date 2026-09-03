@@ -1,0 +1,21 @@
+name: linux_embedded_webview
+description: Embeds a WebKitGTK view inside the Flutter Linux window.
+version: 0.1.0
+publish_to: "none"
+
+environment:
+  sdk: ">=3.4.0 <4.0.0"
+  flutter: ">=3.22.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+flutter:
+  plugin:
+    platforms:
+      linux:
+        pluginClass: LinuxEmbeddedWebviewPlugin
+      android:
+        package: app.peanutbutter.linux_embedded_webview
+        pluginClass: LinuxEmbeddedWebviewPlugin

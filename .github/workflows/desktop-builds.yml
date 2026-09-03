@@ -1,0 +1,123 @@
+# Build PeanutButter desktop clients (Windows / macOS / Linux)
+#
+# Native Windows and macOS binaries must be compiled on those OSes
+# (Flutter cannot cross-compile desktop from Linux).
+# This workflow produces downloadable artifacts on every push/tag.
+
+name: Desktop builds
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+    paths:
+      - "frontend/**"
+      - ".github/workflows/desktop-builds.yml"
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Linux deps
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libstdc++-12-dev
+      - run: flutter pub get
+      - run: flutter build linux --release
+      - name: Package
+        run: |
+          mkdir -p dist/PeanutButter
+          cp -a build/linux/x64/release/bundle/. dist/PeanutButter/
+          printf '%s\n' '#!/usr/bin/env bash' 'cd "$(dirname "$0")"' \
+            'export LD_LIBRARY_PATH="$PWD/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"' \
+            'exec ./peanutbutter "$@"' > dist/PeanutButter/run.sh
+          chmod +x dist/PeanutButter/run.sh dist/PeanutButter/peanutbutter
+          (cd dist && zip -qr PeanutButter-linux-x64.zip PeanutButter)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PeanutButter-linux-x64
+          path: frontend/dist/PeanutButter-linux-x64.zip
+
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: flutter config --enable-windows-desktop
+      - run: flutter pub get
+      - run: flutter build windows --release
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $src = "build\windows\x64\runner\Release"
+          Compress-Archive -Path "$src\*" -DestinationPath "dist\PeanutButter-windows-x64.zip" -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PeanutButter-windows-x64
+          path: frontend/dist/PeanutButter-windows-x64.zip
+
+  macos:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: flutter config --enable-macos-desktop
+      - run: flutter pub get
+      - run: flutter build macos --release
+      - name: Package
+        run: |
+          mkdir -p dist
+          APP="build/macos/Build/Products/Release/peanutbutter.app"
+          # Flutter may use the pubspec name for the .app bundle
+          if [ ! -d "$APP" ]; then
+            APP=$(find build/macos/Build/Products/Release -maxdepth 1 -name '*.app' | head -1)
+          fi
+          ditto -c -k --sequesterRsrc --keepParent "$APP" dist/PeanutButter-macos.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PeanutButter-macos
+          path: frontend/dist/PeanutButter-macos.zip
+
+  android-tv:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: flutter build apk --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PeanutButter-tv-apk
+          path: frontend/build/app/outputs/flutter-apk/app-release.apk

@@ -1,0 +1,11 @@
+prefix=/usr
+includedir=${prefix}/include
+libdir=${prefix}/lib/x86_64-linux-gnu
+
+Name: mpv
+Description: mpv media player client library
+Version: 2.2.0
+Requires.private: wayland-client >=  1.20.0, libass >=  0.12.2, libavcodec >=  58.134.100, libavfilter >=  7.110.100, libavformat >=  58.76.100, libavutil >=  56.70.100, libplacebo >= 6.338.0, libswresample >=  3.9.100, libswscale >=  5.9.100, libcdio_paranoia, libcdio >=  0.90, dvdnav >=  4.2.0, dvdread >=  4.1.0, mujs >=  1.0.0, lcms2 >=  2.6, libarchive >=  3.4.0, libavdevice >=  58.13.100, libbluray >=  0.3.0, lua52 >=  5.2.0, rubberband >=  1.8.0, sdl2, uchardet, zimg >=  2.9, zlib, alsa >=  1.0.18, jack, libpipewire-0.3 >=  0.3.48, libpulse >=  1.0, caca >=  0.99.beta18, libdrm >=  2.4.105, gbm >= 17.1.0, libjpeg, libsixel >=  1.5, spirv-cross-c-shared, wayland-cursor >=  1.20.0, wayland-protocols >=  1.25, xkbcommon >=  0.3.0, x11 >=  1.0.0, xscrnsaver >=  1.0.0, xext >=  1.0.0, xpresent >=  1.0.0, xrandr >=  1.4.0, xv, egl >  1.4.0, wayland-egl >=  9.0.0, vulkan >=  1.1.70, ffnvcodec >=  11.1.5.1, libva-drm >=  1.1.0, libva-wayland >=  1.1.0, libva-x11 >=  1.1.0, libva >=  1.1.0, vdpau >=  0.2
+Libs: -L${libdir} -lmpv
+Libs.private: -latomic -pthread -lm -lrt
+Cflags: -I${includedir}
