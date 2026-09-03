@@ -30,9 +30,9 @@ frontend/macos/Flutter/ephemeral/
 frontend/windows/flutter/ephemeral/
 frontend/linux/flutter/ephemeral/
 
-# Media library (user files)
-media/
-!media/.gitkeep
+# Media library (user files at repo root only — not backend/src/media)
+/media/
+!/media/.gitkeep
 
 # Dist binaries (too large for git; build or download separately)
 dist/*.apk

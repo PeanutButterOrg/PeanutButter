@@ -327,6 +327,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     if (widget.isStream) {
       native.setProperty('demuxer-max-bytes', '150MiB');
       native.setProperty('demuxer-readahead-secs', '20');
+      // Progressive HTTP from the torrent engine — force streaming-friendly demux.
+      native.setProperty('force-seekable', 'yes');
+      native.setProperty('stream-lavf-o', 'reconnect_streamed=1,reconnect_delay_max=5');
     }
   }
 
