@@ -7,6 +7,7 @@ mod db;
 mod error;
 mod graphql;
 mod ingest;
+mod introdb;
 mod jackett;
 mod media;
 mod pin;
@@ -50,6 +51,7 @@ pub struct AppState {
     pub gql_cache: GqlCache,
     pub streams: Arc<crate::stream::StreamService>,
     pub jackett_syncing: Arc<AtomicBool>,
+    pub introdb: crate::introdb::IntroDb,
 }
 
 impl From<&AppState> for IngestContext {
@@ -114,6 +116,7 @@ async fn main() -> Result<()> {
             config.public_url.clone(),
         )),
         jackett_syncing: jackett_syncing.clone(),
+        introdb: crate::introdb::IntroDb::new(http.clone()),
     };
     // Wipe any leftover stream download folders from a previous run.
     app_state.streams.cleanup_stale().await;

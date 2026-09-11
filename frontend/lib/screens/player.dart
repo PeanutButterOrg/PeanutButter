@@ -23,9 +23,31 @@ import '../theme.dart';
 import '../tv.dart';
 import '../friendly_error.dart';
 import '../player_cache.dart';
+import '../widgets/cached_art.dart';
+import '../widgets/streaming_picker.dart';
 import '../widgets/subtitle_import.dart';
 import '../widgets/tv_chrome.dart';
 import '../youtube_stream.dart';
+
+class _NextEpisodeTarget {
+  const _NextEpisodeTarget({
+    required this.season,
+    required this.episode,
+    required this.episodeId,
+    required this.label,
+    required this.catalogTitle,
+    required this.kind,
+    this.isNextSeason = false,
+  });
+
+  final int season;
+  final int episode;
+  final String episodeId;
+  final String label;
+  final String catalogTitle;
+  final String kind;
+  final bool isNextSeason;
+}
 
 class PlayerScreen extends ConsumerStatefulWidget {
   const PlayerScreen({
@@ -35,6 +57,7 @@ class PlayerScreen extends ConsumerStatefulWidget {
     required this.title,
     this.youtubeKey,
     this.trailerPreferredQuality,
+    this.trailerInitialHeight,
     this.titleId,
     this.episodeId,
     this.season,
@@ -45,14 +68,20 @@ class PlayerScreen extends ConsumerStatefulWidget {
     this.sessionId,
     this.magnet,
     this.localTorrent = false,
+    this.streamFileIndex,
     this.listedSeeders = 0,
     this.listedPeers = 0,
+    this.catalogTitle,
+    this.kind,
+    this.posterUrl,
+    this.backdropUrl,
   });
 
   final String fileId;
   final String playbackUrl;
   final String? youtubeKey;
   final String? trailerPreferredQuality;
+  final int? trailerInitialHeight;
   final String? titleId;
   final String? episodeId;
   final int? season;
@@ -64,8 +93,15 @@ class PlayerScreen extends ConsumerStatefulWidget {
   final String? sessionId;
   final String? magnet;
   final bool localTorrent;
+  /// Explicit file inside a multi-file torrent / season pack.
+  final int? streamFileIndex;
   final int listedSeeders;
   final int listedPeers;
+  /// Clean series/movie name for Jackett / play-next (not the SxxExx label).
+  final String? catalogTitle;
+  final String? kind;
+  final String? posterUrl;
+  final String? backdropUrl;
 
   @override
   ConsumerState<PlayerScreen> createState() => _PlayerScreenState();
@@ -104,6 +140,21 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   Timer? _streamPoll;
   Timer? _pauseBufferTimer;
   bool _pauseBufferBoosted = false;
+  bool _seeking = false;
+  int _seekToken = 0;
+  Duration _lastGoodPos = Duration.zero;
+  Duration _lastSeekTarget = Duration.zero;
+  DateTime? _seekIgnoreUntil;
+  DateTime? _lastFalseEofAt;
+  int _falseEofCount = 0;
+  _NextEpisodeTarget? _nextEpisode;
+  bool _playNextVisible = false;
+  bool _playNextDismissed = false;
+  bool _playNextBusy = false;
+  int _playNextSecondsLeft = 10;
+  DateTime? _playNextArmedAt;
+  Timer? _playNextTick;
+  bool _episodeMarkedComplete = false;
   DateTime _lastProgress = DateTime.fromMillisecondsSinceEpoch(0);
   bool _progressFlushed = false;
   bool _savedOnce = false;
@@ -113,16 +164,30 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   DateTime? _confirmOpenedAt;
   DateTime? _lastBackHandledAt;
   bool _inFullscreen = false;
+  /// Bumps fullscreen Skip / Play Next overlays (native fullscreen route).
+  final ValueNotifier<int> _overlayEpoch = ValueNotifier(0);
   bool _buffering = false;
+  bool _playing = false;
   bool _streamOpening = false;
   bool _streamOpened = false;
   String? _streamError;
   Duration _buffered = Duration.zero;
   StreamSession? _streamInfo;
+  Duration? _lastTrackedPos;
+  DateTime _lastStreamRetarget = DateTime.fromMillisecondsSinceEpoch(0);
   List<YoutubeQualityOption> _trailerQualities = const [];
   int? _trailerHeight;
   final GlobalKey _videoKey = GlobalKey();
   late final GraphQLClient _client;
+
+  /// TheIntroDB skip segments (intro / recap / credits / preview).
+  List<MediaSegment> _segments = const [];
+  MediaSegment? _activeSegment;
+  int _durationMs = 0;
+  int _lastSegmentFetchDuration = -1;
+  bool _segmentsLoading = false;
+  bool _segmentsFetched = false;
+  int? _pendingSegmentDurationMs;
 
   bool get _isTrailer => widget.fileId == 'trailer' || (widget.youtubeKey != null && widget.youtubeKey!.isNotEmpty && widget.fileId == 'trailer');
   /// ExoPlayer / video_player fails on progressive torrent HTTP streams (black
@@ -155,7 +220,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       _controller = VideoController(_player!);
       _posSub = _player!.stream.position.listen(_onPosition);
       _bufferingSub = _player!.stream.buffering.listen((value) {
-        if (mounted) setState(() => _buffering = value);
+        if (!mounted) return;
+        setState(() => _buffering = value);
       });
       _bufferSub = _player!.stream.buffer.listen((value) {
         if (mounted) setState(() => _buffered = value);
@@ -172,18 +238,28 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
         });
       });
       _completedSub = _player!.stream.completed.listen((done) {
-        if (!done) return;
-        unawaited(_saveProgress());
-        _playNext();
+        if (!done || _seeking) return;
+        unawaited(_onPlaybackCompleted());
       });
       // While paused, keep demux/torrent prefetch warm for a smooth resume.
       _player!.stream.playing.listen((playing) {
-        if (playing || !mounted) return;
-        _onPausedKeepBuffering();
+        if (!mounted) return;
+        setState(() => _playing = playing);
+        if (!playing) {
+          _onPausedKeepBuffering();
+        }
       });
       // Rebuild when video dimensions appear (torrent streams often start with no duration).
       _player!.stream.width.listen((_) {
         if (mounted) setState(() {});
+      });
+      _player!.stream.duration.listen((d) {
+        if (d.inMilliseconds <= 0) return;
+        if (!_segmentsFetched ||
+            (_lastSegmentFetchDuration >= 0 &&
+                (d.inMilliseconds - _lastSegmentFetchDuration).abs() > 5000)) {
+          unawaited(_loadMediaSegments(durationMs: d.inMilliseconds));
+        }
       });
     }
     if (widget.isStream) {
@@ -196,6 +272,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       unawaited(_prepareStream());
     } else {
       _open(_url, fileId: _fileId);
+    }
+    if (!_isTrailer) {
+      unawaited(_loadMediaSegments());
+      if (widget.titleId != null) {
+        unawaited(_resolveNextEpisode());
+      }
     }
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     // Register hardware key handler AFTER everything is set up.
@@ -238,13 +320,13 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     if (key == LogicalKeyboardKey.arrowRight ||
         key == LogicalKeyboardKey.mediaFastForward ||
         key == LogicalKeyboardKey.mediaSkipForward) {
-      _seekRelative(10);
+      if (_canSeek) _seekRelative(10);
       return true;
     }
     if (key == LogicalKeyboardKey.arrowLeft ||
         key == LogicalKeyboardKey.mediaRewind ||
         key == LogicalKeyboardKey.mediaSkipBackward) {
-      _seekRelative(-10);
+      if (_canSeek) _seekRelative(-10);
       return true;
     }
     if (key == LogicalKeyboardKey.arrowUp || key == LogicalKeyboardKey.arrowDown) {
@@ -392,14 +474,74 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     // Large readahead: while paused the demuxer fills toward this window.
     native.setProperty('demuxer-readahead-secs', widget.isStream ? '300' : '120');
     native.setProperty('cache-secs', widget.isStream ? '300' : '120');
-      native.setProperty('cache-pause', 'yes');
-    native.setProperty('cache-pause-wait', '3');
+    // Don't auto-pause on underrun for torrents — that looked like random
+    // pause/resume and fought with our old stall-recovery loop.
+    native.setProperty('cache-pause', widget.isStream ? 'no' : 'yes');
+    if (!widget.isStream) {
+      native.setProperty('cache-pause-wait', '3');
+    }
     // Make scrubbing / ±10s seeks work while paused.
     native.setProperty('hr-seek', 'yes');
     native.setProperty('force-seekable', 'yes');
+    // Progressive HTTP/torrent streams hit EOF when the next piece isn't ready.
+    // Keep the file open so we can resume instead of restarting at 0.
     if (widget.isStream) {
+      native.setProperty('keep-open', 'yes');
+      native.setProperty('keep-open-pause', 'yes');
       native.setProperty('stream-lavf-o', 'reconnect_streamed=1,reconnect_delay_max=5');
     }
+  }
+
+  /// False EOF on progressive torrents used to call bare [play], which restarts
+  /// at t=0 in a loop and also prevents Skip Intro from ever appearing.
+  Future<void> _onPlaybackCompleted() async {
+    final player = _player;
+    if (player == null || _seeking) return;
+    final pos = player.state.position;
+    final dur = player.state.duration;
+    final last = _lastGoodPos;
+    // Don't trust "end of file" until we have a real runtime — progressive
+    // torrents often report a tiny duration while still downloading.
+    final reliableDuration = dur >= const Duration(minutes: 2);
+    final nearEnd = reliableDuration &&
+        pos >= dur * 0.92 &&
+        last >= dur * 0.85;
+    final progressed = last.inMilliseconds > 2000 || pos.inMilliseconds > 2000;
+
+    if (widget.isStream && !nearEnd) {
+      final now = DateTime.now();
+      if (_lastFalseEofAt != null &&
+          now.difference(_lastFalseEofAt!) < const Duration(seconds: 3)) {
+        return;
+      }
+      _lastFalseEofAt = now;
+      _falseEofCount += 1;
+      // Give up after repeated false EOFs near the start — don't thrash.
+      if (_falseEofCount > 8 && !progressed) {
+        return;
+      }
+      final recoverMs = last.inMilliseconds > pos.inMilliseconds
+          ? last.inMilliseconds
+          : pos.inMilliseconds;
+      try {
+        if (recoverMs > 500) {
+          final target = Duration(milliseconds: recoverMs);
+          _seekIgnoreUntil = DateTime.now().add(const Duration(milliseconds: 2500));
+          _lastGoodPos = target;
+          await player.seek(target);
+        }
+        await player.play();
+      } catch (_) {}
+      return;
+    }
+
+    unawaited(_saveProgress());
+    // Streams: surface Play Next instead of the local-file nextPlayback path.
+    if (widget.isStream && _nextEpisode != null && !_playNextDismissed) {
+      _armPlayNextPrompt(force: true);
+      return;
+    }
+    _playNext();
   }
 
   void _playOrPause() {
@@ -416,11 +558,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     }
     final player = _player;
     if (player == null) return;
-    final wasPlaying = player.state.playing;
-    unawaited(player.playOrPause().then((_) {
-      if (!wasPlaying) return;
-      _onPausedKeepBuffering();
-    }));
+    if (player.state.playing) {
+      unawaited(player.playOrPause().then((_) => _onPausedKeepBuffering()));
+      return;
+    }
+    unawaited(player.play());
   }
 
   /// Keep filling the demuxer / torrent cache while the UI is paused.
@@ -450,47 +592,106 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     });
   }
 
+  /// Seek for movies/series once media is ready — allowed while paused or buffering.
+  bool get _canSeek {
+    if (_isTrailer) return false;
+    if (!_hasVideo && _player == null && _exo == null) return false;
+    if (_useExo) {
+      final exo = _exo;
+      return exo != null && exo.value.isInitialized;
+    }
+    return _player != null;
+  }
+
+  bool get _showSeekControls => !_isTrailer && (_hasVideo || _player != null || _exo != null);
+
   void _seekRelative(int seconds) {
     unawaited(_seekRelativeAsync(seconds));
   }
 
   Future<void> _seekRelativeAsync(int seconds) async {
+    if (!_canSeek) return;
+    Duration pos;
+    Duration dur;
     if (_useExo) {
       final exo = _exo;
       if (exo == null || !exo.value.isInitialized) return;
-      final pos = exo.value.position;
-      final dur = exo.value.duration;
-      var target = pos + Duration(seconds: seconds);
-      if (target < Duration.zero) target = Duration.zero;
-      if (dur > Duration.zero && target > dur) target = dur;
-      await exo.seekTo(target);
-      if (widget.isStream) unawaited(_pollStream());
-      return;
-    }
-    final player = _player;
-    if (player == null) return;
-    final wasPlaying = player.state.playing;
-    final pos = player.state.position;
-    var dur = player.state.duration;
-    // While paused, duration/position can be stale — prefer demuxer cache end as soft max.
-    if (dur <= Duration.zero) {
-      dur = player.state.buffer;
+      pos = exo.value.position;
+      dur = exo.value.duration;
+    } else {
+      final player = _player;
+      if (player == null) return;
+      pos = player.state.position.inMilliseconds > 0 ? player.state.position : _lastGoodPos;
+      dur = player.state.duration;
     }
     var target = pos + Duration(seconds: seconds);
     if (target < Duration.zero) target = Duration.zero;
     if (dur > Duration.zero && target > dur) target = dur;
-    try {
-      await player.seek(target);
-      // Paused seeks often don't refresh the frame unless we briefly unpause.
-      if (!wasPlaying) {
+    await _seekPlayback(target);
+  }
+
+  /// Seek once: retarget local torrent window, seek player, play.
+  /// Remote streams retarget via HTTP Range from the player itself.
+  Future<void> _seekPlayback(Duration target) async {
+    if (target < Duration.zero) target = Duration.zero;
+    final token = ++_seekToken;
+    _lastSeekTarget = target;
+    _lastGoodPos = target;
+    _seekIgnoreUntil = DateTime.now().add(const Duration(milliseconds: 2000));
+    if (mounted) {
+      setState(() {
+        _buffering = true;
+        _seeking = true;
+      });
+    }
+
+    // Local torrents need an explicit piece-window move. Remote HTTP Range
+    // seeks are handled by the backend when the player issues a new Range.
+    await _retargetStreamBuffer(target);
+    if (token != _seekToken) return;
+
+    if (_useExo) {
+      final exo = _exo;
+      if (exo == null || !exo.value.isInitialized) return;
+      try {
+        await exo.seekTo(target);
+        if (token != _seekToken) return;
+        await exo.play();
+      } catch (_) {}
+    } else {
+      final player = _player;
+      if (player == null) return;
+      try {
+        await player.seek(target);
+        if (token != _seekToken) return;
         await player.play();
-        await Future<void>.delayed(const Duration(milliseconds: 80));
-        await player.pause();
-        _onPausedKeepBuffering();
-      }
-    } catch (_) {}
+      } catch (_) {}
+    }
+
+    // Don't leave the spinner stuck if position callbacks are noisy.
+    Future<void>.delayed(const Duration(milliseconds: 2000), () {
+      if (!mounted || token != _seekToken) return;
+      if (_seeking) setState(() => _seeking = false);
+    });
     if (widget.isStream) unawaited(_pollStream());
     if (mounted) setState(() {});
+  }
+
+  /// Move local torrent download window to [target]. Remote sessions rely on
+  /// HTTP Range (serve_stream) — do not poke streamResume on every seek.
+  Future<void> _retargetStreamBuffer(Duration target) async {
+    if (!widget.isStream) return;
+    final now = DateTime.now();
+    if (now.difference(_lastStreamRetarget) < const Duration(milliseconds: 200)) {
+      return;
+    }
+    _lastStreamRetarget = now;
+
+    if (widget.localTorrent ||
+        (widget.sessionId?.startsWith('local-') ?? false) ||
+        LocalTorrentEngine.instance.isActive) {
+      LocalTorrentEngine.instance.seekTo(positionMs: target.inMilliseconds);
+    }
   }
 
   @override
@@ -510,7 +711,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     _bufferingSub?.cancel();
     _bufferSub?.cancel();
     _streamPoll?.cancel();
+    _playNextTick?.cancel();
     _pauseBufferTimer?.cancel();
+    _overlayEpoch.dispose();
     final position = _useExo ? _exo?.value.position : _player?.state.position;
     final duration = _useExo ? _exo?.value.duration : _player?.state.duration;
     unawaited(_saveProgress(position: position, duration: duration, closing: true));
@@ -560,6 +763,48 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   }
 
   void _onPosition(Duration position) {
+    final prev = _lastTrackedPos;
+    _lastTrackedPos = position;
+    final ignoring = _seekIgnoreUntil != null &&
+        DateTime.now().isBefore(_seekIgnoreUntil!);
+
+    // Ignore transient resets to ~0 after a seek (common with progressive HTTP).
+    final bogusReset = position.inMilliseconds < 1500 &&
+        _lastGoodPos.inMilliseconds > 5000 &&
+        (ignoring || _seeking);
+
+    if (!bogusReset && position.inMilliseconds > 0) {
+      if (!ignoring) {
+        _lastGoodPos = position;
+      }
+      if (position.inMilliseconds > 5000) {
+        _falseEofCount = 0;
+      }
+      if (_seeking &&
+          (_lastSeekTarget - position).abs() < const Duration(seconds: 2)) {
+        _seeking = false;
+      }
+    }
+
+    // Scrubber / native seeks: retarget local download window only.
+    // Never auto-play or force another seek — that caused restart loops.
+    if (!ignoring &&
+        !bogusReset &&
+        widget.isStream &&
+        prev != null &&
+        !_seeking &&
+        (position - prev).abs() > const Duration(seconds: 4) &&
+        position.inMilliseconds >= 1500) {
+      unawaited(_retargetStreamBuffer(position));
+      _lastGoodPos = position;
+    }
+
+    // Don't clear Skip Intro when the demuxer briefly reports t=0.
+    final segmentPos =
+        bogusReset ? _lastGoodPos.inMilliseconds : position.inMilliseconds;
+    _updateActiveSegment(segmentPos);
+    _updatePlayNextPrompt(bogusReset ? _lastGoodPos : position);
+    if (ignoring || bogusReset) return;
     if (widget.titleId == null || _isTrailer || _progressFlushed) return;
     final now = DateTime.now();
     final due = !_savedOnce
@@ -571,11 +816,445 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     unawaited(_saveProgress(position: position));
   }
 
+  void _updateActiveSegment(int positionMs) {
+    if (_isTrailer || _segments.isEmpty) {
+      if (_activeSegment != null && mounted) {
+        setState(() => _activeSegment = null);
+        _notifyOverlays();
+      }
+      return;
+    }
+    final duration = _playbackDurationMs();
+    if (duration > 0 && duration != _durationMs) {
+      _durationMs = duration;
+      // Re-query once we know a real runtime so TheIntroDB can match the cut.
+      if (!_segmentsLoading &&
+          (_lastSegmentFetchDuration < 0 ||
+              (duration - _lastSegmentFetchDuration).abs() > 5000)) {
+        unawaited(_loadMediaSegments(durationMs: duration));
+      }
+    }
+    MediaSegment? hit;
+    // Prefer intro → recap → preview → credits when ranges overlap.
+    const order = ['INTRO', 'RECAP', 'PREVIEW', 'CREDITS'];
+    for (final kind in order) {
+      for (final s in _segments) {
+        if (s.kind != kind) continue;
+        if (s.contains(positionMs, durationMs: duration > 0 ? duration : _durationMs)) {
+          hit = s;
+          break;
+        }
+      }
+      if (hit != null) break;
+    }
+    if (hit?.kind != _activeSegment?.kind ||
+        hit?.startMs != _activeSegment?.startMs ||
+        hit?.endMs != _activeSegment?.endMs) {
+      if (mounted) {
+        setState(() => _activeSegment = hit);
+        _notifyOverlays();
+      }
+    }
+  }
+
+  int _playbackDurationMs() {
+    if (_useExo) {
+      return _exo?.value.duration.inMilliseconds ?? 0;
+    }
+    return _player?.state.duration.inMilliseconds ?? 0;
+  }
+
+  Future<void> _resolveNextEpisode() async {
+    final titleId = widget.titleId;
+    if (titleId == null) return;
+    try {
+      var season = widget.season;
+      var episode = widget.episode;
+      if (season == null || episode == null || season < 1 || episode < 1) {
+        final resolved = await _resolveSeasonEpisode();
+        season = resolved?.$1 ?? season;
+        episode = resolved?.$2 ?? episode;
+      }
+      if (season == null || episode == null || season < 1 || episode < 1) return;
+
+      final result = await _client.query(
+        QueryOptions(
+          document: gql(EPISODE_MAP),
+          variables: {'id': titleId},
+          fetchPolicy: FetchPolicy.networkOnly,
+        ),
+      );
+      final json = result.data?['title'] as Map<String, dynamic>?;
+      if (json == null) return;
+      final catalogTitle = (json['title'] as String?)?.trim().isNotEmpty == true
+          ? json['title'] as String
+          : (widget.catalogTitle ?? widget.title);
+      final kind = (json['kind'] as String?) ?? widget.kind ?? 'SERIES';
+      final seasons = ((json['seasons'] as List?) ?? const [])
+          .whereType<Map<String, dynamic>>()
+          .map(Season.fromJson)
+          .where((s) => s.seasonNumber > 0)
+          .toList()
+        ..sort((a, b) => a.seasonNumber.compareTo(b.seasonNumber));
+      Season? curSeason;
+      for (final s in seasons) {
+        if (s.seasonNumber == season) {
+          curSeason = s;
+          break;
+        }
+      }
+      Episode? nextEp;
+      var nextSeasonNum = season;
+      var isNextSeason = false;
+      if (curSeason != null) {
+        final eps = List<Episode>.from(curSeason.episodes)
+          ..sort((a, b) => a.episodeNumber.compareTo(b.episodeNumber));
+        for (final e in eps) {
+          if (e.episodeNumber > episode) {
+            nextEp = e;
+            break;
+          }
+        }
+        // Season metadata may only have episodeCount — synthesize the next ep.
+        if (nextEp == null) {
+          final count = curSeason.episodeCount ?? eps.length;
+          if (episode < count) {
+            nextEp = Episode(
+              id: '',
+              episodeNumber: episode + 1,
+              name: 'Episode ${episode + 1}',
+            );
+          }
+        }
+      }
+      if (nextEp == null) {
+        for (final s in seasons) {
+          if (s.seasonNumber <= season) continue;
+          final eps = List<Episode>.from(s.episodes)
+            ..sort((a, b) => a.episodeNumber.compareTo(b.episodeNumber));
+          if (eps.isNotEmpty) {
+            nextEp = eps.first;
+            nextSeasonNum = s.seasonNumber;
+            isNextSeason = true;
+            break;
+          }
+          if ((s.episodeCount ?? 0) > 0) {
+            nextEp = const Episode(id: '', episodeNumber: 1, name: 'Episode 1');
+            nextSeasonNum = s.seasonNumber;
+            isNextSeason = true;
+            break;
+          }
+        }
+      }
+      if (nextEp == null || !mounted) return;
+      final label =
+          '$catalogTitle · S${nextSeasonNum.toString().padLeft(2, '0')}E${nextEp.episodeNumber.toString().padLeft(2, '0')}';
+      setState(() {
+        _nextEpisode = _NextEpisodeTarget(
+          season: nextSeasonNum,
+          episode: nextEp!.episodeNumber,
+          episodeId: nextEp.id,
+          label: label,
+          catalogTitle: catalogTitle,
+          kind: kind,
+          isNextSeason: isNextSeason,
+        );
+      });
+    } catch (_) {}
+  }
+
+  void _notifyOverlays() {
+    _overlayEpoch.value++;
+  }
+
+  void _armPlayNextPrompt({bool force = false}) {
+    if (_nextEpisode == null || _playNextDismissed || _isTrailer) return;
+    if (!force && _playNextVisible) return;
+    _playNextArmedAt ??= DateTime.now();
+    _playNextTick?.cancel();
+    _playNextTick = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted || _playNextDismissed) {
+        _playNextTick?.cancel();
+        return;
+      }
+      final armed = _playNextArmedAt;
+      if (armed == null) return;
+      final left = 10 - DateTime.now().difference(armed).inSeconds;
+      if (left <= 0) {
+        _playNextTick?.cancel();
+        setState(() {
+          _playNextVisible = false;
+          _playNextDismissed = true;
+          _playNextSecondsLeft = 0;
+        });
+        _notifyOverlays();
+        return;
+      }
+      setState(() {
+        _playNextVisible = true;
+        _playNextSecondsLeft = left.clamp(1, 10);
+      });
+      _notifyOverlays();
+    });
+    if (!mounted) return;
+    setState(() {
+      _playNextVisible = true;
+      _playNextSecondsLeft = 10;
+    });
+    _notifyOverlays();
+  }
+
+  void _updatePlayNextPrompt(Duration position) {
+    final next = _nextEpisode;
+    if (next == null || _playNextDismissed || _isTrailer) {
+      if (_playNextVisible && mounted) {
+        setState(() => _playNextVisible = false);
+        _notifyOverlays();
+      }
+      return;
+    }
+    final durMs = _playbackDurationMs();
+    final posMs = position.inMilliseconds;
+    final inCredits = _activeSegment?.kind == 'CREDITS';
+    // Don't make people sit through credits — arm as soon as credits start,
+    // or once ~85% of a real episode runtime is done.
+    final mostlyDone = durMs >= 5 * 60 * 1000 &&
+        posMs > 0 &&
+        posMs >= (durMs * 0.85).round();
+    final shouldShow = inCredits || mostlyDone;
+    if (!shouldShow) {
+      if (_playNextVisible && _playNextArmedAt == null && mounted) {
+        setState(() => _playNextVisible = false);
+        _notifyOverlays();
+      }
+      return;
+    }
+    if (shouldShow && !_episodeMarkedComplete) {
+      _episodeMarkedComplete = true;
+      unawaited(_saveProgress(
+        position: position,
+        duration: Duration(milliseconds: durMs > 0 ? durMs : posMs),
+        complete: true,
+      ));
+    }
+    _armPlayNextPrompt();
+  }
+
+  Future<void> _onPlayNextPressed() async {
+    final next = _nextEpisode;
+    if (next == null || _playNextBusy || !mounted) return;
+    setState(() {
+      _playNextBusy = true;
+      _playNextVisible = false;
+    });
+    _notifyOverlays();
+    try {
+      await _saveProgress(complete: true, closing: true);
+      if (!mounted) return;
+      try {
+        await _player?.pause();
+      } catch (_) {}
+
+      final previousSession = widget.sessionId;
+      final started = await showStreamingPicker(
+        context: context,
+        client: ref.read(graphQLClientProvider),
+        title: next.catalogTitle,
+        kind: next.kind,
+        titleId: widget.titleId,
+        season: next.season,
+        episode: next.episode,
+        preferredLanguages: ref.read(serverInfoProvider).valueOrNull?.preferredLanguages ??
+            ref.read(settingsProvider).preferredLanguages,
+        resumePlayback: false,
+        stopPreviousSessionId: previousSession,
+      );
+      if (started == null || !mounted) {
+        if (mounted) {
+          setState(() {
+            _playNextBusy = false;
+            // Keep the prompt available if the user cancelled the picker.
+            if (!_playNextDismissed) _playNextVisible = true;
+          });
+          _notifyOverlays();
+        }
+        return;
+      }
+
+      setState(() => _playNextDismissed = true);
+      if (widget.localTorrent || LocalTorrentEngine.instance.isActive) {
+        unawaited(LocalTorrentEngine.instance.stop());
+      }
+
+      if (!mounted) return;
+      context.pushReplacement(
+        '/player/${started.session.id}',
+        extra: {
+          'url': started.session.streamUrl,
+          'title': next.label,
+          'catalogTitle': next.catalogTitle,
+          'kind': next.kind,
+          'titleId': widget.titleId,
+          'episodeId': next.episodeId,
+          'season': next.season,
+          'episode': next.episode,
+          'startMs': 0,
+          'isStream': true,
+          'sessionId': started.session.id,
+          'magnet': started.magnet,
+          'localTorrent': started.localTorrent,
+          'listedSeeders': started.session.seeders,
+          'listedPeers': started.session.peers,
+          'streamFileIndex': started.fileIndex,
+          'posterUrl': widget.posterUrl,
+          'backdropUrl': widget.backdropUrl,
+        },
+      );
+    } finally {
+      if (mounted) setState(() => _playNextBusy = false);
+    }
+  }
+
+  Future<void> _loadMediaSegments({int? durationMs}) async {
+    final titleId = widget.titleId;
+    if (_isTrailer || titleId == null || !_isUuid(titleId)) return;
+    if (_segmentsLoading) {
+      if (durationMs != null && durationMs > 30000) {
+        _pendingSegmentDurationMs = durationMs;
+      }
+      return;
+    }
+    _segmentsLoading = true;
+    try {
+      var season = widget.season;
+      var episode = widget.episode;
+      final isSeries = (widget.kind ?? '').toUpperCase() == 'SERIES' ||
+          (widget.kind ?? '').toUpperCase() == 'ANIME' ||
+          season != null ||
+          episode != null ||
+          widget.episodeId != null;
+      // Series need S/E for TheIntroDB. Resolve from episode map when missing.
+      if (isSeries && (season == null || episode == null || season < 1 || episode < 1)) {
+        final resolved = await _resolveSeasonEpisode();
+        season = resolved?.$1 ?? season;
+        episode = resolved?.$2 ?? episode;
+        if (season == null || episode == null || season < 1 || episode < 1) {
+          return;
+        }
+      }
+      final dur = durationMs ?? _playbackDurationMs();
+      final result = await _client.query(
+        QueryOptions(
+          document: gql(MEDIA_SEGMENTS),
+          fetchPolicy: FetchPolicy.networkOnly,
+          variables: {
+            'titleId': titleId,
+            'season': season,
+            'episode': episode,
+            if (dur > 30000) 'durationMs': dur,
+          },
+        ),
+      );
+      if (result.hasException) return;
+      final raw = result.data?['mediaSegments'] as Map<String, dynamic>?;
+      final list = (raw?['segments'] as List?) ?? const [];
+      final segments = list
+          .whereType<Map<String, dynamic>>()
+          .map(MediaSegment.fromJson)
+          .where((s) => s.startMs >= 0)
+          .toList();
+      if (!mounted) return;
+      setState(() {
+        _segments = segments;
+        _segmentsFetched = true;
+        _lastSegmentFetchDuration = dur > 0 ? dur : _lastSegmentFetchDuration;
+      });
+      final pos = _useExo
+          ? (_exo?.value.position.inMilliseconds ?? 0)
+          : (_player?.state.position.inMilliseconds ?? 0);
+      final stablePos =
+          pos < 1500 && _lastGoodPos.inMilliseconds > 5000 ? _lastGoodPos.inMilliseconds : pos;
+      _updateActiveSegment(stablePos);
+    } catch (_) {
+      // Skip markers are best-effort — never block playback.
+    } finally {
+      _segmentsLoading = false;
+      final pending = _pendingSegmentDurationMs;
+      _pendingSegmentDurationMs = null;
+      if (pending != null &&
+          pending > 30000 &&
+          (pending - _lastSegmentFetchDuration).abs() > 5000) {
+        unawaited(_loadMediaSegments(durationMs: pending));
+      }
+    }
+  }
+
+  /// Look up S/E from the catalog when the player was opened without them.
+  Future<(int, int)?> _resolveSeasonEpisode() async {
+    final titleId = widget.titleId;
+    final episodeId = widget.episodeId;
+    if (titleId == null || episodeId == null || !_isUuid(episodeId)) {
+      // Default to S01E01 so Skip Intro still has a chance.
+      if ((widget.kind ?? '').toUpperCase() == 'SERIES' ||
+          (widget.kind ?? '').toUpperCase() == 'ANIME') {
+        return (1, 1);
+      }
+      return null;
+    }
+    try {
+      final result = await _client.query(
+        QueryOptions(
+          document: gql(EPISODE_MAP),
+          variables: {'id': titleId},
+          fetchPolicy: FetchPolicy.cacheFirst,
+        ),
+      );
+      final json = result.data?['title'] as Map<String, dynamic>?;
+      final seasons = (json?['seasons'] as List?) ?? const [];
+      for (final s in seasons.whereType<Map<String, dynamic>>()) {
+        final seasonNum = (s['seasonNumber'] as num?)?.toInt() ?? 0;
+        final episodes = (s['episodes'] as List?) ?? const [];
+        for (final e in episodes.whereType<Map<String, dynamic>>()) {
+          if (e['id'] == episodeId) {
+            final epNum = (e['episodeNumber'] as num?)?.toInt() ?? 0;
+            if (seasonNum > 0 && epNum > 0) return (seasonNum, epNum);
+          }
+        }
+      }
+    } catch (_) {}
+    return (1, 1);
+  }
+
+  Future<void> _skipActiveSegment() async {
+    final seg = _activeSegment;
+    if (seg == null) return;
+    final duration = _playbackDurationMs();
+    final targetMs = seg.skipTargetMs(durationMs: duration);
+    final maxMs = duration > 0 ? duration : targetMs;
+    final target = Duration(milliseconds: targetMs.clamp(0, maxMs));
+    if (mounted) {
+      setState(() => _activeSegment = null);
+      _notifyOverlays();
+    }
+    // Skipping credits = episode is done — mark complete and offer Play Next.
+    if (seg.kind == 'CREDITS' && _nextEpisode != null && !_playNextDismissed) {
+      _episodeMarkedComplete = true;
+      unawaited(_saveProgress(
+        position: Duration(milliseconds: duration > 0 ? duration : targetMs),
+        duration: Duration(milliseconds: duration > 0 ? duration : targetMs),
+        complete: true,
+      ));
+      _armPlayNextPrompt(force: true);
+    }
+    await _seekPlayback(target);
+  }
+
   Future<void> _saveProgress({
     Duration? position,
     Duration? duration,
     bool closing = false,
     bool invalidateHome = false,
+    bool complete = false,
   }) async {
     final titleId = widget.titleId;
     if (titleId == null || _isTrailer) return;
@@ -585,7 +1264,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
         (_useExo ? _exo?.value.position : player?.state.position) ??
         Duration.zero;
     final dur = duration ?? (_useExo ? _exo?.value.duration : player?.state.duration);
-    if (pos.inMilliseconds < 2000) {
+    if (!complete && pos.inMilliseconds < 2000) {
       if (closing) _progressFlushed = true;
       return;
     }
@@ -602,8 +1281,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
             'titleId': titleId,
             'fileId': fileId,
             'episodeId': episodeId,
-            'positionMs': pos.inMilliseconds,
+            'positionMs': complete && durationMs != null
+                ? durationMs
+                : pos.inMilliseconds,
             'durationMs': durationMs,
+            if (complete) 'complete': true,
           },
         ),
       );
@@ -614,7 +1296,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
             document: gql(STREAM_RESUME),
             variables: {
               'sessionId': sessionId,
-              'position': pos.inMilliseconds,
+              'position': complete ? 0 : pos.inMilliseconds,
               'titleId': titleId,
               'title': widget.title,
               'magnet': widget.magnet,
@@ -655,21 +1337,30 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     setState(() => _buffering = true);
     try {
       final quality = widget.trailerPreferredQuality ?? '720p';
-      final height = preferHeight ?? youtubeHeightForQuality(quality);
-      final options = await youtubeQualityOptions(key);
-      if (!mounted) return;
-      if (options.isEmpty) {
-        throw StateError('No playable trailer streams found');
-      }
-      // Best muxed at/under target — YouTube muxed is usually ≤720p and includes audio.
-      final pick = youtubePickQuality(options, preferHeight: height) ?? options.last;
-      setState(() {
-        _trailerQualities = options;
+      final height = preferHeight ??
+          widget.trailerInitialHeight ??
+          youtubeHeightForQuality(quality);
+
+      // Prefer a URL already resolved on the detail screen for instant start.
+      var url = widget.playbackUrl.trim();
+      if (url.isEmpty) {
+        final pick = await youtubeFastMuxed(key, preferHeight: height);
+        if (!mounted) return;
+        if (pick == null) {
+          throw StateError('No playable trailer streams found');
+        }
+        url = pick.url;
         _trailerHeight = pick.height;
-      });
-      await _open(pick.url, youtube: true);
+      } else {
+        _trailerHeight = height;
+      }
+
+      await _open(url, youtube: true);
       await _player?.play();
       if (mounted) setState(() => _buffering = false);
+
+      // Quality menu can populate after playback has already started.
+      unawaited(_loadTrailerQualities(key, preferHeight: height));
     } catch (e) {
       if (!mounted) return;
       setState(() => _buffering = false);
@@ -677,6 +1368,17 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
         SnackBar(content: Text('Couldn’t load that trailer in the player. $e')),
       );
     }
+  }
+
+  Future<void> _loadTrailerQualities(String key, {required int preferHeight}) async {
+    try {
+      final options = await youtubeQualityOptions(key);
+      if (!mounted || options.isEmpty) return;
+      setState(() {
+        _trailerQualities = options;
+        _trailerHeight ??= youtubePickQuality(options, preferHeight: preferHeight)?.height;
+      });
+    } catch (_) {}
   }
 
   Future<void> _switchTrailerQuality(YoutubeQualityOption option) async {
@@ -734,6 +1436,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
           magnet: magnet,
           season: widget.season,
           episode: widget.episode,
+          fileIndex: widget.streamFileIndex,
           onStats: (local) {
             if (!mounted) return;
             setState(() {
@@ -809,7 +1512,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       if (!mounted) return;
       session = _streamInfo ?? session;
       if (session.isReady && session.streamUrl.isNotEmpty) break;
-      await Future<void>.delayed(const Duration(milliseconds: 800));
+      await Future<void>.delayed(const Duration(milliseconds: 350));
     }
 
     if (!mounted) return;
@@ -890,8 +1593,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   bool get _showStreamHud {
     if (!widget.isStream || _streamError != null) return false;
     if (!_hasVideo) return true;
-    return _buffering;
+    return _buffering || _seeking;
   }
+
+  /// Compact seed/speed chip — always visible while streaming (matches skip height).
+  bool get _showStreamChip =>
+      widget.isStream && _streamError == null && (_hasVideo || _streamOpened);
 
   Future<void> _open(String url, {String? fileId, bool youtube = false}) async {
     if (fileId != null) _fileId = fileId;
@@ -918,7 +1625,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       try {
         await _player!.stream.duration.firstWhere((d) => d.inMilliseconds > 0).timeout(const Duration(seconds: 20));
       } catch (_) {}
-      await _player?.seek(Duration(milliseconds: widget.startMs));
+      await _seekPlayback(Duration(milliseconds: widget.startMs));
     }
     _loadSubtitles();
   }
@@ -955,6 +1662,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     final buffered = v.buffered.isEmpty ? Duration.zero : v.buffered.last.end;
     setState(() {
       _buffering = v.isBuffering || !v.isInitialized;
+      _playing = v.isPlaying;
       _buffered = buffered;
     });
     _onPosition(v.position);
@@ -1122,8 +1830,29 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     if (seeders <= 0) seeders = widget.listedSeeders;
     if (peers <= 0) peers = widget.listedPeers;
     final line = _streamStatsLine(pct: pct, speed: speed, seeders: seeders, peers: peers);
+    final art = widget.backdropUrl ?? widget.posterUrl;
 
-    return Stack(children: [
+    return Stack(fit: StackFit.expand, children: [
+      if (art != null && art.isNotEmpty) ...[
+        CachedArt(
+          url: art,
+          fallbackUrl: widget.posterUrl,
+          fit: BoxFit.cover,
+        ),
+        DecoratedBox(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [
+                Colors.black.withValues(alpha: 0.35),
+                Colors.black.withValues(alpha: 0.72),
+                Colors.black.withValues(alpha: 0.88),
+              ],
+            ),
+          ),
+        ),
+      ],
       Positioned(
         right: 16,
         bottom: 72,
@@ -1214,12 +1943,21 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
               icon: const Icon(Icons.arrow_back, color: Colors.white),
             ),
           ),
-          if (!_isTrailer)
+          if (_showSeekControls)
             Positioned(
               left: 0,
               right: 0,
               bottom: widget.isStream ? 96 : 28,
               child: _seekSkipBar(),
+            ),
+          // Windowed: align with the seeding chip on the scaffold. Fullscreen
+          // copies live inside media_kit controls (native fullscreen route).
+          if (!_inFullscreen) ..._skipAndPlayNextOverlays(),
+          if (_showStreamChip && !_showStreamHud)
+            Positioned(
+              right: _actionChipInset,
+              bottom: _actionChipBottom,
+              child: _streamStatsChip(),
             ),
           Positioned(
             top: 12,
@@ -1335,8 +2073,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                         if (osReady) ...[
                           const PopupMenuDivider(),
                           for (final lang in kContentLanguages)
-                            PopupMenuItem(
+                            CheckedPopupMenuItem(
                               value: 'download:${lang.code}',
+                              checked: preferredLanguageCodes(
+                                ref.read(settingsProvider).preferredLanguages,
+                              ).contains(lang.code),
                               child: Text('Download ${lang.label}'),
                             ),
                         ] else
@@ -1371,34 +2112,207 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     );
   }
 
-  Widget _seekSkipBar() {
-    Widget skipButton({
-      required IconData icon,
-      required String label,
-      required int seconds,
-    }) {
-      return Material(
-        color: Colors.black.withValues(alpha: 0.62),
-        shape: const StadiumBorder(),
+  // Match the seeding chip: 16px from the side, 72px from the bottom.
+  static const double _actionChipInset = 16;
+  static const double _actionChipBottom = 72;
+  // When the seed chip is visible, lift Skip / Play Next one chip row above it.
+  static const double _actionChipStackLift = 52;
+
+  double get _skipPlayNextBottom {
+    final seedVisible = _showStreamChip && !_showStreamHud && widget.isStream;
+    return seedVisible ? _actionChipBottom + _actionChipStackLift : _actionChipBottom;
+  }
+
+  List<Widget> _skipAndPlayNextOverlays() {
+    final bottom = _skipPlayNextBottom;
+    return [
+      if (_activeSegment != null && !_isTrailer)
+        Positioned(
+          right: _actionChipInset,
+          bottom: bottom,
+          child: _skipSegmentButton(_activeSegment!),
+        ),
+      if (_playNextVisible && _nextEpisode != null)
+        Positioned(
+          left: _actionChipInset,
+          bottom: bottom,
+          child: _playNextButton(_nextEpisode!),
+        ),
+    ];
+  }
+
+  Widget _mediaKitControls(VideoState state) {
+    final fullscreen = isFullscreen(state.context);
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        IgnorePointer(
+          ignoring: isAndroidTv,
+          child: AdaptiveVideoControls(state),
+        ),
+        // Native fullscreen uses a separate route; scaffold chips won't show.
+        // ValueListenableBuilder keeps countdown / skip state fresh there.
+        if (fullscreen)
+          Positioned.fill(
+            child: ValueListenableBuilder<int>(
+              valueListenable: _overlayEpoch,
+              builder: (context, _, __) {
+                return Stack(
+                  fit: StackFit.expand,
+                  children: _skipAndPlayNextOverlays(),
+                );
+              },
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _streamStatsChip() {
+    final info = _streamInfo;
+    final local = LocalTorrentEngine.instance.currentStats();
+    final pct = ((info?.bufferProgress ?? 0) * 100).clamp(0, 100);
+    final speed = info?.downloadMbps ?? local?.downloadMbps ?? 0;
+    var seeders = info?.seeders ?? local?.seeders ?? widget.listedSeeders;
+    var peers = info?.peers ?? local?.peers ?? widget.listedPeers;
+    if (seeders <= 0) seeders = widget.listedSeeders;
+    if (peers <= 0) peers = widget.listedPeers;
+    final line = _streamStatsLine(pct: pct, speed: speed, seeders: seeders, peers: peers);
+    return SafeArea(
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.68),
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          child: Text(
+            line,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _playNextButton(_NextEpisodeTarget next) {
+    final title = _playNextBusy
+        ? 'Starting next…'
+        : next.isNextSeason
+            ? 'Next Season  ·  ${_playNextSecondsLeft}s'
+            : 'Play Next  ·  ${_playNextSecondsLeft}s';
+    return SafeArea(
+      child: Material(
+        color: Colors.black.withValues(alpha: 0.72),
+        borderRadius: BorderRadius.circular(20),
         child: InkWell(
-          customBorder: const StadiumBorder(),
-          onTap: () => _seekRelative(seconds),
+          borderRadius: BorderRadius.circular(20),
+          onTap: _playNextBusy ? null : _onPlayNextPressed,
           child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
             child: Row(
               mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.center,
               children: [
-                Icon(icon, color: Colors.white, size: 22),
+                if (_playNextBusy)
+                  const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                  )
+                else
+                  const Icon(Icons.skip_next_rounded, color: Colors.white, size: 22),
                 const SizedBox(width: 8),
-                Text(
-                  label,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.w700,
-                    fontSize: 14,
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 260),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        title,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w700,
+                          fontSize: 13,
+                        ),
+                      ),
+                      if (!_playNextBusy) ...[
+                        const SizedBox(height: 2),
+                        Text(
+                          next.label,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: Colors.white.withValues(alpha: 0.75),
+                            fontSize: 12,
+                          ),
+                        ),
+                      ],
+                    ],
                   ),
                 ),
               ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _skipSegmentButton(MediaSegment segment) {
+    // Match seed/speed chip chrome and insets (16 / 72).
+    return SafeArea(
+      child: Material(
+        color: Colors.black.withValues(alpha: 0.68),
+        borderRadius: BorderRadius.circular(20),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(20),
+          onTap: _skipActiveSegment,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  segment.label,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w600,
+                    fontSize: 13,
+                  ),
+                ),
+                const SizedBox(width: 6),
+                const Icon(Icons.skip_next_rounded, color: Colors.white, size: 20),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _seekSkipBar() {
+    Widget skipButton({
+      required IconData icon,
+      required int seconds,
+    }) {
+      final enabled = _canSeek;
+      return Opacity(
+        opacity: enabled ? 1 : 0.45,
+        child: Material(
+          color: Colors.black.withValues(alpha: 0.62),
+          shape: const CircleBorder(),
+          child: InkWell(
+            customBorder: const CircleBorder(),
+            onTap: enabled ? () => _seekRelative(seconds) : null,
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Icon(icon, color: Colors.white, size: 26),
             ),
           ),
         ),
@@ -1409,17 +2323,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          skipButton(
-            icon: Icons.replay_10,
-            label: '-10s',
-            seconds: -10,
-          ),
+          skipButton(icon: Icons.replay_10, seconds: -10),
           const SizedBox(width: 18),
-          skipButton(
-            icon: Icons.forward_10,
-            label: '+10s',
-            seconds: 10,
-          ),
+          skipButton(icon: Icons.forward_10, seconds: 10),
         ],
       ),
     );
@@ -1441,20 +2347,52 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     }
     final controller = _controller;
     if (controller == null) return const SizedBox.shrink();
-    final video = Video(
-      key: _videoKey,
-      controller: controller,
-      controls: AdaptiveVideoControls,
-      wakelock: true,
-      onEnterFullscreen: () async {
-        _inFullscreen = true;
-        await defaultEnterNativeFullscreen();
-      },
-      onExitFullscreen: () async {
-        _inFullscreen = false;
-        await defaultExitNativeFullscreen();
-      },
+    // Scrubber / ±10s stay available whenever seek is allowed (including paused).
+    final seekOk = _canSeek || _showSeekControls;
+    final video = MaterialVideoControlsTheme(
+      normal: MaterialVideoControlsThemeData(
+        seekGesture: seekOk,
+        seekOnDoubleTap: seekOk,
+        seekBarContainerHeight: 36.0,
+        seekBarHeight: 2.4,
+        seekBarThumbSize: 12.8,
+      ),
+      fullscreen: MaterialVideoControlsThemeData(
+        seekGesture: seekOk,
+        seekOnDoubleTap: seekOk,
+        seekBarContainerHeight: 36.0,
+        seekBarHeight: 2.4,
+        seekBarThumbSize: 12.8,
+      ),
+      child: MaterialDesktopVideoControlsTheme(
+        normal: MaterialDesktopVideoControlsThemeData(
+          seekBarContainerHeight: 36.0,
+          seekBarHeight: 3.2,
+          seekBarHoverHeight: 5.6,
+          seekBarThumbSize: 12.0,
+        ),
+        fullscreen: MaterialDesktopVideoControlsThemeData(
+          seekBarContainerHeight: 36.0,
+          seekBarHeight: 3.2,
+          seekBarHoverHeight: 5.6,
+          seekBarThumbSize: 12.0,
+        ),
+        child: Video(
+          key: _videoKey,
+          controller: controller,
+          controls: _mediaKitControls,
+          wakelock: true,
+          onEnterFullscreen: () async {
+            if (mounted) setState(() => _inFullscreen = true);
+            await defaultEnterNativeFullscreen();
+          },
+          onExitFullscreen: () async {
+            if (mounted) setState(() => _inFullscreen = false);
+            await defaultExitNativeFullscreen();
+          },
+        ),
+      ),
     );
-    return isAndroidTv ? IgnorePointer(child: video) : video;
+    return video;
   }
 }

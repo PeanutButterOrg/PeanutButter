@@ -80,6 +80,7 @@ pub enum SortField {
     Availability,
     ContinueWatching,
     Favorites,
+    Watched,
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq, Debug)]
@@ -196,6 +197,7 @@ impl FileReference {
 }
 
 #[derive(SimpleObject, Clone, Debug)]
+#[graphql(complex)]
 pub struct Episode {
     pub id: Uuid,
     pub episode_number: i32,
@@ -204,6 +206,9 @@ pub struct Episode {
     pub still_path: Option<String>,
     pub air_date: Option<NaiveDate>,
     pub runtime: Option<i32>,
+    /// Filled when listing episodes for a season (avoids N+1).
+    #[graphql(skip)]
+    pub progress: Option<EpisodeUserState>,
 }
 
 impl From<EpisodeRow> for Episode {
@@ -216,7 +221,24 @@ impl From<EpisodeRow> for Episode {
             still_path: still_url(&row.still_path),
             air_date: row.air_date,
             runtime: row.runtime,
+            progress: None,
         }
+    }
+}
+
+#[derive(SimpleObject, Clone, Debug)]
+pub struct EpisodeUserState {
+    pub watched: bool,
+    pub position_ms: i64,
+    pub duration_ms: Option<i64>,
+    /// 0–1 within this episode (1 when completed).
+    pub progress_percent: f64,
+}
+
+#[ComplexObject]
+impl Episode {
+    async fn user_state(&self) -> Option<EpisodeUserState> {
+        self.progress.clone()
     }
 }
 
@@ -250,6 +272,7 @@ impl From<SeasonRow> for Season {
 impl Season {
     async fn episodes(&self, ctx: &Context<'_>) -> async_graphql::Result<Vec<Episode>> {
         let state = ctx.data::<AppState>()?;
+        let auth = ctx.data::<crate::auth::AuthSession>().ok();
         let rows: Vec<EpisodeRow> = sqlx::query_as(
             r#"
             SELECT id, season_id, episode_number, name, overview, still_path,
@@ -263,10 +286,10 @@ impl Season {
         .fetch_all(&state.pool)
         .await
         .map_err(|e| AppError::Database(e))?;
-        if rows.is_empty() {
+        let rows = if rows.is_empty() {
             if let Some(count) = self.episode_count.filter(|c| *c > 0) {
                 let _ = crate::db::fill_season_episodes(&state.pool, self.id, count).await;
-                let rows: Vec<EpisodeRow> = sqlx::query_as(
+                sqlx::query_as(
                     r#"
                     SELECT id, season_id, episode_number, name, overview, still_path,
                            air_date, runtime, tmdb_episode_id
@@ -278,11 +301,50 @@ impl Season {
                 .bind(self.id)
                 .fetch_all(&state.pool)
                 .await
-                .map_err(|e| AppError::Database(e))?;
-                return Ok(rows.into_iter().map(Episode::from).collect());
+                .map_err(|e| AppError::Database(e))?
+            } else {
+                rows
+            }
+        } else {
+            rows
+        };
+
+        let mut progress_map = std::collections::HashMap::<uuid::Uuid, EpisodeUserState>::new();
+        if let Some(auth) = auth {
+            if let Ok(prog) =
+                crate::db::episode_progress_for_season(&state.pool, auth.token_id, self.id).await
+            {
+                for row in prog {
+                    let pct = if row.watched {
+                        1.0
+                    } else if let Some(d) = row.duration_ms.filter(|d| *d > 0) {
+                        (row.position_ms as f64 / d as f64).clamp(0.0, 0.99)
+                    } else if row.position_ms > 2000 {
+                        0.05
+                    } else {
+                        0.0
+                    };
+                    progress_map.insert(
+                        row.episode_id,
+                        EpisodeUserState {
+                            watched: row.watched,
+                            position_ms: row.position_ms,
+                            duration_ms: row.duration_ms,
+                            progress_percent: pct,
+                        },
+                    );
+                }
             }
         }
-        Ok(rows.into_iter().map(Episode::from).collect())
+
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                let mut ep = Episode::from(row);
+                ep.progress = progress_map.remove(&ep.id);
+                ep
+            })
+            .collect())
     }
 }
 
@@ -317,6 +379,8 @@ pub struct UserState {
     pub duration_ms: Option<i64>,
     pub episode_id: Option<Uuid>,
     pub file_id: Option<Uuid>,
+    /// 0–1 resume bar. Movies use position/duration; series use episode index / total.
+    pub progress_percent: f64,
 }
 
 impl From<UserProgressRow> for UserState {
@@ -328,6 +392,7 @@ impl From<UserProgressRow> for UserState {
             duration_ms: row.duration_ms,
             episode_id: row.episode_id,
             file_id: row.file_id,
+            progress_percent: 0.0,
         }
     }
 }
@@ -348,6 +413,8 @@ pub struct Title {
     pub logo_url: Option<String>,
     pub thumb_url: Option<String>,
     pub content_rating: Option<String>,
+    pub tmdb_id: Option<i32>,
+    pub imdb_id: Option<String>,
 }
 
 impl Title {
@@ -366,6 +433,8 @@ impl Title {
             logo_url: logo_url(&row.logo_path),
             thumb_url: backdrop_url(&row.thumb_path),
             content_rating: row.content_rating,
+            tmdb_id: row.tmdb_id,
+            imdb_id: row.imdb_id,
         }
     }
 }
@@ -565,7 +634,21 @@ impl Title {
         .fetch_optional(&state.pool)
         .await
         .map_err(AppError::Database)?;
-        Ok(row.map(UserState::from))
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let mut us = UserState::from(row);
+        us.progress_percent = crate::db::title_progress_percent(
+            &state.pool,
+            self.id,
+            us.episode_id,
+            us.position_ms,
+            us.duration_ms,
+            us.watched,
+        )
+        .await
+        .unwrap_or(0.0);
+        Ok(Some(us))
     }
 }
 
@@ -653,6 +736,17 @@ pub struct StreamSession {
     pub stream_url: String,
 }
 
+/// One playable file inside a multi-file torrent / season pack.
+#[derive(SimpleObject, Clone, Debug)]
+pub struct TorrentFile {
+    pub index: i32,
+    pub name: String,
+    pub size: String,
+    pub size_bytes: i64,
+    /// True when name matches the requested season/episode.
+    pub recommended: bool,
+}
+
 #[derive(SimpleObject, Clone, Debug)]
 pub struct SearchResult {
     pub items: Vec<Title>,
@@ -674,4 +768,22 @@ pub struct Subtitle {
     pub label: String,
     pub format: String,
     pub content: String,
+}
+
+/// Skip segment from TheIntroDB (intro / recap / credits / preview).
+#[derive(SimpleObject, Clone, Debug)]
+pub struct MediaSegment {
+    /// INTRO | RECAP | CREDITS | PREVIEW
+    pub kind: String,
+    pub label: String,
+    /// Inclusive start in milliseconds (0 when API sent null).
+    pub start_ms: i64,
+    /// Exclusive-ish end in milliseconds; null means “to end of media”.
+    pub end_ms: Option<i64>,
+}
+
+#[derive(SimpleObject, Clone, Debug)]
+pub struct MediaSegments {
+    pub tmdb_id: Option<i32>,
+    pub segments: Vec<MediaSegment>,
 }

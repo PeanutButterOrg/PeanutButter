@@ -64,6 +64,59 @@ exec "${OPT_DIR}/peanutbutter" "\$@"
 EOF
   chmod +x "${BIN_DIR}/peanutbutter" "${OPT_DIR}/peanutbutter"
 
+  # Desktop entry + icon theme so docks/launchers show the jar icon.
+  local icon_src="${FRONT}/linux/data/icon.png"
+  if [[ ! -f "$icon_src" ]]; then
+    icon_src="${OPT_DIR}/data/icon.png"
+  fi
+  local share="${HOME}/.local/share"
+  local icon_name="$PKG"
+  mkdir -p \
+    "${share}/applications" \
+    "${share}/icons/hicolor/128x128/apps" \
+    "${share}/icons/hicolor/256x256/apps" \
+    "${share}/icons/hicolor/512x512/apps"
+  if [[ -f "$icon_src" ]]; then
+    cp -f "$icon_src" "${OPT_DIR}/data/icon.png"
+    if command -v convert >/dev/null 2>&1; then
+      convert "$icon_src" -resize 128x128 "${share}/icons/hicolor/128x128/apps/${icon_name}.png"
+      convert "$icon_src" -resize 256x256 "${share}/icons/hicolor/256x256/apps/${icon_name}.png"
+      convert "$icon_src" -resize 512x512 "${share}/icons/hicolor/512x512/apps/${icon_name}.png"
+    elif command -v python3 >/dev/null 2>&1; then
+      python3 - "$icon_src" "$share" "$icon_name" <<'PY'
+import sys
+from pathlib import Path
+from PIL import Image
+src, share, name = sys.argv[1], Path(sys.argv[2]), sys.argv[3]
+img = Image.open(src).convert('RGBA')
+for size in (128, 256, 512):
+    out = share / 'icons' / 'hicolor' / f'{size}x{size}' / 'apps' / f'{name}.png'
+    out.parent.mkdir(parents=True, exist_ok=True)
+    img.resize((size, size), Image.Resampling.LANCZOS).save(out)
+PY
+    else
+      cp -f "$icon_src" "${share}/icons/hicolor/256x256/apps/${icon_name}.png"
+    fi
+  fi
+  cat > "${share}/applications/${icon_name}.desktop" <<EOF
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=PeanutButter
+Comment=Self-hosted media catalog
+Exec=${BIN_DIR}/peanutbutter
+Icon=${icon_name}
+Terminal=false
+Categories=AudioVideo;Player;TV;
+StartupWMClass=${icon_name}
+EOF
+  if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database "${share}/applications" >/dev/null 2>&1 || true
+  fi
+  if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+    gtk-update-icon-cache -f "${share}/icons/hicolor" >/dev/null 2>&1 || true
+  fi
+
   # Also keep a zip under dist/ for sharing.
   local stage
   stage="$(mktemp -d)"

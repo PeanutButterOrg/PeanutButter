@@ -175,7 +175,11 @@ class _PosterCardState extends ConsumerState<PosterCard> {
 
   double _progressOf(TitleItem item) {
     final state = item.userState;
-    if (state == null || state.watched || state.positionMs < 2000) return 0;
+    if (state == null || state.watched) return 0;
+    if (state.progressPercent > 0.02) {
+      return state.progressPercent.clamp(0.0, 1.0);
+    }
+    if (state.positionMs < 2000) return 0;
     final duration = state.durationMs ?? 0;
     if (duration <= 0) return 0.08;
     return (state.positionMs / duration).clamp(0.0, 1.0);

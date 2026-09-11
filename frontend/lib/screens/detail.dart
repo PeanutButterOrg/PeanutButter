@@ -8,7 +8,6 @@ import '../graphql/queries.dart';
 import '../models.dart';
 import '../providers/catalog.dart';
 import '../providers/settings.dart';
-import '../content_languages.dart';
 import '../theme.dart';
 import '../widgets/cached_art.dart';
 import '../widgets/hero_banner.dart';
@@ -120,8 +119,52 @@ class _DetailBodyState extends ConsumerState<_DetailBody> {
         break;
       }
     }
+
+    ({Season season, Episode episode})? seriesPlayTarget() {
+      if (item.kind == 'MOVIE') return null;
+      bool completed(Episode e) =>
+          e.userState?.watched == true || (e.userState?.progressPercent ?? 0) >= 0.85;
+
+      final resumeId = item.userState?.episodeId;
+      final flat = <({Season season, Episode episode})>[];
+      for (final s in item.seasons) {
+        for (final e in s.episodes) {
+          flat.add((season: s, episode: e));
+        }
+      }
+      if (flat.isEmpty) return null;
+
+      var idx = 0;
+      if (resumeId != null) {
+        final found = flat.indexWhere((x) => x.episode.id == resumeId);
+        if (found >= 0) idx = found;
+      }
+      // Finished episode → continue from the next one, not the end of this torrent.
+      if (completed(flat[idx].episode)) {
+        for (var i = idx + 1; i < flat.length; i++) {
+          if (!completed(flat[i].episode)) return flat[i];
+        }
+        return flat[idx];
+      }
+      return flat[idx];
+    }
+
     final resumeMs = item.userState?.positionMs ?? 0;
-    final resume = resumeMs > 2000 && item.userState?.watched != true;
+    final resumeTarget = seriesPlayTarget();
+    final resumeEpisodeDone = resumeTarget != null &&
+        (resumeTarget.episode.userState?.watched == true ||
+            (resumeTarget.episode.userState?.progressPercent ?? 0) >= 0.85);
+    final resumeEpPos = resumeTarget?.episode.userState?.positionMs ?? 0;
+    final resume = item.kind == 'MOVIE'
+        ? (resumeMs > 2000 && item.userState?.watched != true)
+        : (!resumeEpisodeDone &&
+            ((resumeEpPos > 2000) ||
+                (resumeMs > 2000 &&
+                    item.userState?.watched != true &&
+                    resumeTarget?.episode.id == item.userState?.episodeId)));
+    final effectiveResumeMs = item.kind == 'MOVIE'
+        ? resumeMs
+        : (resumeEpPos > 2000 ? resumeEpPos : resumeMs);
     FileReference? resumeFile;
     final resumeFileId = item.userState?.fileId;
     if (resumeFileId != null) {
@@ -157,12 +200,16 @@ class _DetailBodyState extends ConsumerState<_DetailBody> {
         extra: {
           'url': file.playbackUrl,
           'title': item.title,
+          'catalogTitle': item.title,
+          'kind': item.kind,
           'titleId': item.id,
           'episodeId': file.episodeId ?? item.userState?.episodeId,
           'season': seasonNum,
           'episode': episodeNum,
           'files': files,
           'startMs': startMs ?? 0,
+          'posterUrl': item.posterUrl,
+          'backdropUrl': item.backdropUrl,
         },
       );
     }
@@ -174,25 +221,23 @@ class _DetailBodyState extends ConsumerState<_DetailBody> {
       String? episodeLabel,
       int? startMs,
     }) async {
-      final language = preferredLanguageCode(ref.read(settingsProvider).preferredLanguages);
-      final episodeSearch = season != null && episode != null;
-      final queryTitle = episodeSearch
-          ? '${item.title} S${season.toString().padLeft(2, '0')}E${episode.toString().padLeft(2, '0')}'
-          : item.title;
       final started = await showStreamingPicker(
         context: context,
         client: ref.read(graphQLClientProvider),
-        title: episodeSearch ? queryTitle : item.title,
+        title: item.title,
         kind: item.kind,
         titleId: item.id,
-        year: episodeSearch ? null : item.year,
         season: season,
         episode: episode,
-        language: language,
+        preferredLanguages: ref.read(serverInfoProvider).valueOrNull?.preferredLanguages ??
+            ref.read(settingsProvider).preferredLanguages,
         resumePlayback: startMs == null || startMs > 0,
       );
       if (started == null) return;
       if (!context.mounted) return;
+      final queryTitle = (season != null && episode != null)
+          ? '${item.title} S${season.toString().padLeft(2, '0')}E${episode.toString().padLeft(2, '0')}'
+          : item.title;
       final sameEpisode = episodeId == null || episodeId == item.userState?.episodeId;
       final userResume = sameEpisode ? (item.userState?.positionMs ?? 0) : 0;
       final streamResume = sameEpisode ? started.session.resumePosition : 0;
@@ -213,6 +258,11 @@ class _DetailBodyState extends ConsumerState<_DetailBody> {
           'localTorrent': started.localTorrent,
           'listedSeeders': started.session.seeders,
           'listedPeers': started.session.peers,
+          'streamFileIndex': started.fileIndex,
+          'catalogTitle': item.title,
+          'kind': item.kind,
+          'posterUrl': item.posterUrl,
+          'backdropUrl': item.backdropUrl,
         },
       );
     }
@@ -229,11 +279,18 @@ class _DetailBodyState extends ConsumerState<_DetailBody> {
         }
       }
       final state = item.userState;
-      final resumeHere = state != null &&
+      final epDone = episode.userState?.watched == true ||
+          (episode.userState?.progressPercent ?? 0) >= 0.85;
+      final epPos = episode.userState?.positionMs ?? 0;
+      final titleResumeHere = state != null &&
           state.episodeId == episode.id &&
           state.positionMs > 2000 &&
           !state.watched;
-      final startMs = resumeHere ? state.positionMs : 0;
+      final resumeHere = !epDone &&
+          ((epPos > 2000) || titleResumeHere);
+      final startMs = resumeHere
+          ? (epPos > 2000 ? epPos : state!.positionMs)
+          : 0;
       final label =
           '${item.title} · S${season.seasonNumber.toString().padLeft(2, '0')}E${episode.episodeNumber.toString().padLeft(2, '0')}';
       if (match != null) {
@@ -296,13 +353,23 @@ class _DetailBodyState extends ConsumerState<_DetailBody> {
                       playTarget: playTarget,
                       canStream: canStream,
                       resume: resume,
-                      resumeMs: resumeMs,
+                      resumeMs: effectiveResumeMs,
                       onPlay: playFile,
                       onPlayFromStart: () {
                         if (playTarget != null) {
-                          playFile(playTarget!, startMs: 0);
+                          playFile(playTarget, startMs: 0);
                         } else if (canStream) {
-                          playStream(startMs: 0);
+                          final target = seriesPlayTarget();
+                          if (target != null) {
+                            playStream(
+                              season: target.season.seasonNumber,
+                              episode: target.episode.episodeNumber,
+                              episodeId: target.episode.id,
+                              startMs: 0,
+                            );
+                          } else {
+                            playStream(startMs: 0);
+                          }
                         }
                       },
                       onStream: () {
@@ -310,27 +377,12 @@ class _DetailBodyState extends ConsumerState<_DetailBody> {
                           playStream();
                           return;
                         }
-                        Season? season;
-                        Episode? episode;
-                        final resumeId = item.userState?.episodeId;
-                        for (final s in item.seasons) {
-                          for (final e in s.episodes) {
-                            if (resumeId != null && e.id == resumeId) {
-                              season = s;
-                              episode = e;
-                            }
-                          }
-                        }
-                        if (season == null &&
-                            item.seasons.isNotEmpty &&
-                            item.seasons.first.episodes.isNotEmpty) {
-                          season = item.seasons.first;
-                          episode = item.seasons.first.episodes.first;
-                        }
-                        if (season != null && episode != null) {
-                          playEpisode(season, episode);
+                        final target = seriesPlayTarget();
+                        if (target != null) {
+                          playEpisode(target.season, target.episode);
                           return;
                         }
+                        // Last resort — still pass S01E01 so Skip Intro can resolve.
                         playStream(season: 1, episode: 1);
                       },
                       onHeroFocus: _pinTop,
@@ -385,7 +437,7 @@ class _DetailBodyState extends ConsumerState<_DetailBody> {
                       _SeasonList(
                         item: item,
                         files: files,
-                        progressEpisodeId: item.userState?.episodeId,
+                        progressEpisodeId: resumeTarget?.episode.id ?? item.userState?.episodeId,
                         onPlayEpisode: playEpisode,
                       ),
                   ],
@@ -790,6 +842,22 @@ class _TrailerCard extends StatefulWidget {
 
 class _TrailerCardState extends State<_TrailerCard> {
   bool _highlighted = false;
+  bool _loading = false;
+
+  Future<void> _play() async {
+    if (_loading) return;
+    setState(() => _loading = true);
+    try {
+      await playTrailer(
+        context,
+        videoId: widget.trailer.youtubeKey,
+        title: widget.trailer.name,
+        preferredQuality: '720p',
+      );
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -798,14 +866,7 @@ class _TrailerCardState extends State<_TrailerCard> {
       onEnter: (_) => setState(() => _highlighted = true),
       onExit: (_) => setState(() => _highlighted = false),
       child: GestureDetector(
-        onTap: () {
-          playTrailer(
-            context,
-            videoId: t.youtubeKey,
-            title: t.name,
-            preferredQuality: '720p',
-          );
-        },
+        onTap: _play,
         child: AnimatedScale(
           scale: _highlighted ? 1.08 : 1,
           alignment: Alignment.center,
@@ -829,12 +890,18 @@ class _TrailerCardState extends State<_TrailerCard> {
                       children: [
                         CachedArt(url: t.thumbnailUrl, memCacheWidth: 440),
                         const ColoredBox(color: Color(0x59000000)),
-                        const Center(
-                          child: Icon(
-                            Icons.play_circle_fill_rounded,
-                            size: 52,
-                            color: Colors.white,
-                          ),
+                        Center(
+                          child: _loading
+                              ? const SizedBox(
+                                  width: 36,
+                                  height: 36,
+                                  child: CircularProgressIndicator(strokeWidth: 3, color: Colors.white),
+                                )
+                              : const Icon(
+                                  Icons.play_circle_fill_rounded,
+                                  size: 52,
+                                  color: Colors.white,
+                                ),
                         ),
                       ],
                     ),
@@ -904,7 +971,7 @@ class _SeasonList extends StatefulWidget {
 
 class _SeasonListState extends State<_SeasonList> {
   String? _busyEpisodeId;
-  late final List<bool> _expanded;
+  late List<bool> _expanded;
 
   List<Season> get _seasons {
     final seasons = widget.item.seasons.where((s) {
@@ -917,12 +984,44 @@ class _SeasonListState extends State<_SeasonList> {
     return seasons;
   }
 
+  int _seasonIndexForProgress(List<Season> seasons) {
+    final progressId = widget.progressEpisodeId;
+    if (progressId == null || progressId.isEmpty) return 0;
+    for (var i = 0; i < seasons.length; i++) {
+      if (_episodesOf(seasons[i]).any((e) => e.id == progressId)) return i;
+    }
+    return 0;
+  }
+
+  void _syncExpanded(List<Season> seasons, {bool preferProgress = false}) {
+    final active = _seasonIndexForProgress(seasons);
+    if (_expanded.length != seasons.length || preferProgress) {
+      _expanded = List.generate(seasons.length, (i) => i == active);
+      return;
+    }
+    while (_expanded.length < seasons.length) {
+      _expanded.add(false);
+    }
+    if (_expanded.length > seasons.length) {
+      _expanded = _expanded.sublist(0, seasons.length);
+    }
+  }
+
   @override
   void initState() {
     super.initState();
-    final count = _seasons.length;
-    // First season expanded, rest collapsed
-    _expanded = List.generate(count, (i) => i == 0);
+    final seasons = _seasons;
+    final active = _seasonIndexForProgress(seasons);
+    // Only the in-progress / last-played season starts open; everything else collapsed.
+    _expanded = List.generate(seasons.length, (i) => i == active);
+  }
+
+  @override
+  void didUpdateWidget(covariant _SeasonList oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.progressEpisodeId != widget.progressEpisodeId) {
+      _syncExpanded(_seasons, preferProgress: true);
+    }
   }
 
   List<Episode> _episodesOf(Season season) {
@@ -932,6 +1031,18 @@ class _SeasonListState extends State<_SeasonList> {
       for (var n = 1; n <= count; n++)
         Episode(id: '${season.id}-$n', episodeNumber: n, name: 'Episode $n'),
     ];
+  }
+
+  void _setExpanded(int index, bool open) {
+    setState(() {
+      if (open) {
+        for (var i = 0; i < _expanded.length; i++) {
+          _expanded[i] = i == index;
+        }
+      } else {
+        _expanded[index] = false;
+      }
+    });
   }
 
   Future<void> _playEpisode(Season season, Episode episode) async {
@@ -950,6 +1061,20 @@ class _SeasonListState extends State<_SeasonList> {
     final inProgress = widget.progressEpisodeId == e.id;
     final busy = _busyEpisodeId == e.id;
     final tv = isAndroidTv;
+    final epState = e.userState;
+    final completed = epState?.watched == true || (epState?.progressPercent ?? 0) >= 0.85;
+    final pct = ((epState?.progressPercent ?? 0) * 100).clamp(0, 100).round();
+    final started = (epState?.positionMs ?? 0) > 2000 || pct > 0;
+    String statusLine;
+    if (completed) {
+      statusLine = 'Completed';
+    } else if (started) {
+      statusLine = 'In progress · $pct%';
+    } else if (hasLocal) {
+      statusLine = 'Play from library';
+    } else {
+      statusLine = 'Play episode';
+    }
     return _LabeledFocus(
       label: 'episode',
       allowHorizontal: false,
@@ -966,16 +1091,49 @@ class _SeasonListState extends State<_SeasonList> {
                 child: SizedBox(
                   width: tv ? 80 : 96,
                   height: tv ? 45 : 54,
-                  child: e.stillPath != null
-                      ? CachedNetworkImage(imageUrl: e.stillPath!, fit: BoxFit.cover)
-                      : ColoredBox(
-                          color: const Color(0xFF1C1C24),
-                          child: Icon(
-                            hasLocal ? Icons.play_circle_outline : Icons.play_circle,
-                            color: inProgress ? AppTheme.seed : Colors.white70,
-                            size: 22,
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      e.stillPath != null
+                          ? CachedNetworkImage(imageUrl: e.stillPath!, fit: BoxFit.cover)
+                          : ColoredBox(
+                              color: const Color(0xFF1C1C24),
+                              child: Icon(
+                                hasLocal ? Icons.play_circle_outline : Icons.play_circle,
+                                color: inProgress || started ? AppTheme.seed : Colors.white70,
+                                size: 22,
+                              ),
+                            ),
+                      if (started && !completed)
+                        Align(
+                          alignment: Alignment.bottomCenter,
+                          child: LinearProgressIndicator(
+                            value: (epState?.progressPercent ?? 0).clamp(0.02, 1),
+                            minHeight: 3,
+                            backgroundColor: Colors.black45,
+                            color: AppTheme.seed,
                           ),
                         ),
+                      if (completed)
+                        const Align(
+                          alignment: Alignment.bottomCenter,
+                          child: LinearProgressIndicator(
+                            value: 1,
+                            minHeight: 3,
+                            backgroundColor: Colors.black45,
+                            color: PtTheme.completed,
+                          ),
+                        ),
+                      if (completed)
+                        const Align(
+                          alignment: Alignment.topRight,
+                          child: Padding(
+                            padding: EdgeInsets.all(4),
+                            child: Icon(Icons.check_circle, color: PtTheme.completed, size: 16),
+                          ),
+                        ),
+                    ],
+                  ),
                 ),
               ),
               const SizedBox(width: 10),
@@ -990,20 +1148,41 @@ class _SeasonListState extends State<_SeasonList> {
                       style: TextStyle(
                         fontWeight: FontWeight.w600,
                         fontSize: tv ? 13 : 15,
-                        color: inProgress ? AppTheme.seed : null,
+                        color: inProgress || started ? AppTheme.seed : null,
                       ),
                     ),
+                    Text(
+                      statusLine,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: completed
+                            ? PtTheme.completed
+                            : (started ? AppTheme.seed.withValues(alpha: 0.9) : Colors.white54),
+                        fontSize: tv ? 11 : 12,
+                        fontWeight: started || completed ? FontWeight.w600 : FontWeight.w400,
+                      ),
+                    ),
+                    if (started || completed) ...[
+                      const SizedBox(height: 5),
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(2),
+                        child: LinearProgressIndicator(
+                          value: completed
+                              ? 1
+                              : (epState?.progressPercent ?? 0).clamp(0.02, 1),
+                          minHeight: 3,
+                          backgroundColor: Colors.white12,
+                          color: completed ? PtTheme.completed : AppTheme.seed,
+                        ),
+                      ),
+                    ],
                     if (e.overview != null && e.overview!.isNotEmpty)
                       Text(
                         e.overview!,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: TextStyle(color: Colors.white54, fontSize: tv ? 11 : 13),
-                      )
-                    else
-                      Text(
-                        hasLocal ? 'Play from library' : 'Play episode',
-                        style: TextStyle(color: Colors.white38, fontSize: tv ? 11 : 12),
+                        style: TextStyle(color: Colors.white38, fontSize: tv ? 10 : 12),
                       ),
                   ],
                 ),
@@ -1016,8 +1195,10 @@ class _SeasonListState extends State<_SeasonList> {
                 )
               else
                 Icon(
-                  Icons.play_arrow_rounded,
-                  color: inProgress ? AppTheme.seed : Colors.white54,
+                  completed ? Icons.check_rounded : Icons.play_arrow_rounded,
+                  color: completed
+                      ? PtTheme.completed
+                      : (inProgress || started ? AppTheme.seed : Colors.white54),
                 ),
             ],
           ),
@@ -1030,10 +1211,7 @@ class _SeasonListState extends State<_SeasonList> {
   Widget build(BuildContext context) {
     final seasons = _seasons;
     if (seasons.isEmpty) return const SizedBox.shrink();
-    // Keep _expanded in sync if seasons list length changes
-    while (_expanded.length < seasons.length) {
-      _expanded.add(false);
-    }
+    _syncExpanded(seasons);
     final scheme = Theme.of(context).colorScheme;
 
     return Padding(
@@ -1052,16 +1230,52 @@ class _SeasonListState extends State<_SeasonList> {
               borderRadius: BorderRadius.circular(12),
               clipBehavior: Clip.antiAlias,
               child: ExpansionTile(
-                key: PageStorageKey(seasons[i].id),
-                initiallyExpanded: i == 0,
-                onExpansionChanged: (v) => setState(() => _expanded[i] = v),
+                // Remount when expansion target changes so initiallyExpanded applies.
+                key: ValueKey('season-${seasons[i].id}-${_expanded[i]}'),
+                initiallyExpanded: _expanded[i],
+                onExpansionChanged: (v) => _setExpanded(i, v),
                 tilePadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
                 childrenPadding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
                 shape: const Border(),
                 collapsedShape: const Border(),
-                title: Text(
-                  seasons[i].name ?? 'Season ${seasons[i].seasonNumber}',
-                  style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15),
+                title: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      seasons[i].name ?? 'Season ${seasons[i].seasonNumber}',
+                      style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15),
+                    ),
+                    Builder(
+                      builder: (_) {
+                        final eps = _episodesOf(seasons[i]);
+                        final done = eps.where((e) =>
+                            e.userState?.watched == true ||
+                            (e.userState?.progressPercent ?? 0) >= 0.85).length;
+                        final started = eps.where((e) {
+                          final s = e.userState;
+                          if (s == null) return false;
+                          if (s.watched || s.progressPercent >= 0.85) return false;
+                          return s.positionMs > 2000 || s.progressPercent > 0;
+                        }).length;
+                        if (done == 0 && started == 0) {
+                          return Text(
+                            '${eps.length} episodes',
+                            style: const TextStyle(color: Colors.white54, fontSize: 12),
+                          );
+                        }
+                        return Text(
+                          '$done of ${eps.length} completed'
+                          '${started > 0 ? ' · $started in progress' : ''}',
+                          style: TextStyle(
+                            color: done == eps.length
+                                ? PtTheme.completed
+                                : Colors.white54,
+                            fontSize: 12,
+                          ),
+                        );
+                      },
+                    ),
+                  ],
                 ),
                 subtitle: Text(
                   '${_episodesOf(seasons[i]).length} episodes',

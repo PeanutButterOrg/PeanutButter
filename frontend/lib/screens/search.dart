@@ -270,14 +270,15 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
   }
 
   Widget _body(SearchState search, String kind) {
-    if (search.query.trim().isEmpty) {
+    final q = search.query.trim();
+    if (q.isEmpty) {
       return _IdleSearch(
         kind: kind,
         recent: search.recent,
-        onPick: (q) {
-          _controller.text = q;
-          _controller.selection = TextSelection.collapsed(offset: q.length);
-          ref.read(searchProvider.notifier).onQueryChanged(q);
+        onPick: (picked) {
+          _controller.text = picked;
+          _controller.selection = TextSelection.collapsed(offset: picked.length);
+          ref.read(searchProvider.notifier).onQueryChanged(picked);
           if (isAndroidTv) _openField();
         },
       );

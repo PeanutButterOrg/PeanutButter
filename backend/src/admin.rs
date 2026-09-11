@@ -55,12 +55,40 @@ impl AdminForm {
         codes.dedup();
         codes
     }
+
+    /// Catalog multi-select: checkboxes named `sel_<uuid>`.
+    fn selected_title_ids(&self) -> Vec<Uuid> {
+        let mut ids: Vec<Uuid> = self
+            .extras
+            .iter()
+            .filter_map(|(key, value)| {
+                let raw = key.strip_prefix("sel_")?;
+                let value = value.trim();
+                if value.is_empty() {
+                    return None;
+                }
+                Uuid::parse_str(raw).ok()
+            })
+            .collect();
+        if let Some(id) = self.id.as_deref().and_then(|s| Uuid::parse_str(s.trim()).ok()) {
+            ids.push(id);
+        }
+        ids.sort();
+        ids.dedup();
+        ids
+    }
 }
 
 #[derive(Deserialize, Default)]
 pub struct TabQuery {
     #[serde(default)]
     pub tab: String,
+    #[serde(default)]
+    pub q: String,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub page: Option<i64>,
 }
 
 fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
@@ -156,6 +184,7 @@ fn redirect_console_tab(notice: Option<&str>, highlight: Option<&str>, tab: Opti
         Some("sync") => "/?tab=sync",
         Some("devices") => "/?tab=devices",
         Some("settings") => "/?tab=settings",
+        Some("catalog") => "/?tab=catalog",
         _ => "/",
     };
     let mut response = Redirect::to(path).into_response();
@@ -183,6 +212,16 @@ fn html_escape(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
+fn urlencoding_minimal(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' => (b as char).to_string(),
+            b' ' => "+".into(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
 pub async fn page(
     ConnectInfo(_addr): ConnectInfo<SocketAddr>,
     State(state): State<HttpState>,
@@ -193,7 +232,7 @@ pub async fn page(
     let notice = cookie_value(&headers, "pb_flash").map(|s| decode_flash(&s));
     let highlight = cookie_value(&headers, "pb_pin");
     let tab = match q.tab.as_str() {
-        "sync" | "devices" | "settings" => q.tab.as_str(),
+        "sync" | "devices" | "settings" | "catalog" => q.tab.as_str(),
         _ => "streaming",
     };
     let html = render(
@@ -202,6 +241,7 @@ pub async fn page(
         notice.as_deref().filter(|s| !s.is_empty()),
         highlight.as_deref().filter(|s| !s.is_empty()),
         tab,
+        &q,
     )
     .await?;
     let mut response = Html(html).into_response();
@@ -484,7 +524,15 @@ pub async fn action(
     }
 
     if !session_ok(&state, &headers).await {
-        let html = render(&state, false, Some("Sign in to continue."), None, "streaming").await?;
+        let html = render(
+            &state,
+            false,
+            Some("Sign in to continue."),
+            None,
+            "streaming",
+            &TabQuery::default(),
+        )
+        .await?;
         return Ok((StatusCode::UNAUTHORIZED, Html(html)).into_response());
     }
 
@@ -514,6 +562,42 @@ pub async fn action(
                 crate::db::revoke_device_token(&state.app.pool, id).await?;
                 state.app.gql_cache.invalidate();
                 notice = Some("Device removed. That pairing code no longer works.".into());
+            }
+        }
+        "delete_title" => {
+            tab = Some("catalog");
+            if let Some(id) = form.id.as_deref().and_then(|s| Uuid::parse_str(s).ok()) {
+                let removed = crate::db::delete_title_by_id(&state.app.pool, id).await?;
+                if removed {
+                    let _ = state.app.search.delete_title(id).await;
+                    state.app.gql_cache.invalidate();
+                    notice = Some("Title removed from the catalog.".into());
+                } else {
+                    notice = Some("That title was already gone.".into());
+                }
+            }
+        }
+        "delete_titles" => {
+            tab = Some("catalog");
+            let ids = form.selected_title_ids();
+            if ids.is_empty() {
+                notice = Some("Select at least one title to remove.".into());
+            } else {
+                let mut removed = 0usize;
+                for id in &ids {
+                    if crate::db::delete_title_by_id(&state.app.pool, *id).await? {
+                        let _ = state.app.search.delete_title(*id).await;
+                        removed += 1;
+                    }
+                }
+                if removed > 0 {
+                    state.app.gql_cache.invalidate();
+                }
+                notice = Some(if removed == 1 {
+                    "1 title removed from the catalog.".into()
+                } else {
+                    format!("{removed} titles removed from the catalog.")
+                });
             }
         }
         "save_jackett" => {
@@ -649,6 +733,7 @@ async fn login(state: &HttpState, form: &AdminForm) -> Result<Response, AppError
             Some("That password is not correct."),
             None,
             "streaming",
+            &TabQuery::default(),
         )
         .await?;
         return Ok((StatusCode::UNAUTHORIZED, Html(html)).into_response());
@@ -759,6 +844,7 @@ async fn render(
     notice: Option<&str>,
     highlight: Option<&str>,
     tab: &str,
+    query: &TabQuery,
 ) -> Result<String, AppError> {
     let notice_html = notice
         .map(|n| format!(r#"<p class="banner">{}</p>"#, html_escape(n)))
@@ -783,10 +869,15 @@ async fn render(
             "#
         )
     } else {
-        dashboard(state, &notice_html, highlight, tab).await?
+        dashboard(state, &notice_html, highlight, tab, query).await?
     };
 
-    Ok(shell(if authed { "Console" } else { "Sign in" }, &body, authed))
+    Ok(shell(
+        if authed { "Console" } else { "Sign in" },
+        &body,
+        authed,
+        tab == "catalog",
+    ))
 }
 
 async fn dashboard(
@@ -794,6 +885,7 @@ async fn dashboard(
     notice_html: &str,
     highlight: Option<&str>,
     tab: &str,
+    query: &TabQuery,
 ) -> Result<String, AppError> {
     let tokens = crate::db::list_device_tokens(&state.app.pool).await?;
     let live = &state.app.config.live;
@@ -869,14 +961,40 @@ async fn dashboard(
             ""
         };
         format!(
-            r#"<label class="check"><input type="checkbox" name="lang_{code}" value="{code}"{checked} /> {label}</label>"#
+            r#"<label class="check{on}"><input type="checkbox" name="lang_{code}" value="{code}"{checked} /> {label}</label>"#,
+            on = if selected_langs.iter().any(|c| c == code) {
+                " on"
+            } else {
+                ""
+            },
         )
     })
     .collect::<String>();
     let langs_hint = if selected_langs.is_empty() {
         "All languages (none selected)".to_string()
     } else {
-        selected_langs.join(", ")
+        selected_langs
+            .iter()
+            .map(|code| match code.as_str() {
+                "en" => "English",
+                "ja" => "Japanese",
+                "ko" => "Korean",
+                "zh" => "Chinese",
+                "hi" => "Hindi",
+                "es" => "Spanish",
+                "fr" => "French",
+                "de" => "German",
+                "it" => "Italian",
+                "pt" => "Portuguese",
+                "ar" => "Arabic",
+                "tr" => "Turkish",
+                "ru" => "Russian",
+                "th" => "Thai",
+                "id" => "Indonesian",
+                other => other,
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
     };
 
     fn tab_class(active: &str, name: &str) -> &'static str {
@@ -889,8 +1007,131 @@ async fn dashboard(
     let sync_on = tab == "sync";
     let panel_streaming = if tab == "streaming" { "" } else { " hidden" };
     let panel_devices = if tab == "devices" { "" } else { " hidden" };
+    let panel_catalog = if tab == "catalog" { "" } else { " hidden" };
     let panel_sync = if sync_on { "" } else { " hidden" };
     let panel_settings = if tab == "settings" { "" } else { " hidden" };
+
+    let catalog_q = query.q.trim();
+    let catalog_kind = query.kind.trim().to_ascii_uppercase();
+    let catalog_kind = match catalog_kind.as_str() {
+        "MOVIE" | "SERIES" | "ANIME" => catalog_kind,
+        _ => String::new(),
+    };
+    let per_page: i64 = 50;
+    let catalog_page = query.page.unwrap_or(1).max(1);
+    let catalog_offset = (catalog_page - 1) * per_page;
+    let (catalog_rows, catalog_total) = if tab == "catalog" {
+        crate::db::list_catalog_titles(
+            &state.app.pool,
+            catalog_q,
+            &catalog_kind,
+            per_page,
+            catalog_offset,
+        )
+        .await?
+    } else {
+        (Vec::new(), 0)
+    };
+    let catalog_pages = ((catalog_total + per_page - 1) / per_page).max(1);
+    let mut catalog_table = String::new();
+    if catalog_rows.is_empty() {
+        catalog_table.push_str(
+            r#"<p class="muted" style="margin:1rem 0 0">No titles match this filter.</p>"#,
+        );
+    } else {
+        catalog_table.push_str(
+            r#"<form method="post" action="/" id="catalog-bulk" onsubmit="var n=document.querySelectorAll('#catalog-bulk input[name^=sel_]:checked').length; if(!n){alert('Select at least one title.');return false;} return confirm('Remove '+n+' selected title(s) from the catalog?\n\nThis deletes them from the database. Pairing and Jackett stay.');">
+            <input type="hidden" name="action" value="delete_titles" />
+            <div class="catalog-bulk-bar">
+              <label class="check"><input type="checkbox" id="catalog-select-all" /> Select page</label>
+              <button type="submit" class="ghost danger" onclick="this.form.querySelector('input[name=action]').value='delete_titles';">Remove selected</button>
+            </div>
+            <table class="catalog"><thead><tr><th class="check-cell"></th><th>Title</th><th>Kind</th><th>Year</th><th></th></tr></thead><tbody>"#,
+        );
+        for row in &catalog_rows {
+            let year = row
+                .year
+                .map(|y| y.to_string())
+                .unwrap_or_else(|| "—".into());
+            let kind_label = match row.kind.as_str() {
+                "MOVIE" => "Movie",
+                "SERIES" => "Series",
+                "ANIME" => "Anime",
+                other => other,
+            };
+            catalog_table.push_str(&format!(
+                r#"<tr>
+                  <td class="check-cell"><input type="checkbox" class="catalog-sel" name="sel_{}" value="on" /></td>
+                  <td><strong>{}</strong></td>
+                  <td><span class="pill">{}</span></td>
+                  <td class="muted">{}</td>
+                  <td class="actions-cell">
+                    <button type="submit" class="ghost danger" name="id" value="{}" onclick="this.form.querySelector('input[name=action]').value='delete_title'; return confirm('Remove this title from the catalog?\n\nThis deletes it from the database. Pairing and Jackett stay.');">Remove</button>
+                  </td>
+                </tr>"#,
+                row.id,
+                html_escape(&row.title),
+                html_escape(kind_label),
+                html_escape(&year),
+                row.id,
+            ));
+        }
+        catalog_table.push_str(
+            r#"</tbody></table></form>
+            <script>
+            (function(){
+              var all=document.getElementById('catalog-select-all');
+              if(!all) return;
+              all.addEventListener('change', function(){
+                document.querySelectorAll('#catalog-bulk .catalog-sel').forEach(function(cb){ cb.checked=all.checked; });
+              });
+            })();
+            </script>"#,
+        );
+    }
+    let kind_all = if catalog_kind.is_empty() {
+        " selected"
+    } else {
+        ""
+    };
+    let kind_movie = if catalog_kind == "MOVIE" {
+        " selected"
+    } else {
+        ""
+    };
+    let kind_series = if catalog_kind == "SERIES" {
+        " selected"
+    } else {
+        ""
+    };
+    let kind_anime = if catalog_kind == "ANIME" {
+        " selected"
+    } else {
+        ""
+    };
+    let prev_page = if catalog_page > 1 {
+        format!(
+            r#"<a class="tab" href="/?tab=catalog&q={}&kind={}&page={}">← Prev</a>"#,
+            urlencoding_minimal(catalog_q),
+            urlencoding_minimal(&catalog_kind),
+            catalog_page - 1
+        )
+    } else {
+        String::new()
+    };
+    let next_page = if catalog_page < catalog_pages {
+        format!(
+            r#"<a class="tab" href="/?tab=catalog&q={}&kind={}&page={}">Next →</a>"#,
+            urlencoding_minimal(catalog_q),
+            urlencoding_minimal(&catalog_kind),
+            catalog_page + 1
+        )
+    } else {
+        String::new()
+    };
+    let catalog_pager = format!(
+        r#"<div class="catalog-pager"><span class="muted">Page {catalog_page} of {catalog_pages} · {catalog_total} titles</span><div class="actions">{prev_page}{next_page}</div></div>"#
+    );
 
     Ok(format!(
         r#"
@@ -916,6 +1157,7 @@ async fn dashboard(
         <nav class="tabs">
           <a class="{tab_streaming}" href="/?tab=streaming">Streaming</a>
           <a class="{tab_devices}" href="/?tab=devices">Devices</a>
+          <a class="{tab_catalog}" href="/?tab=catalog">Catalog</a>
           <a class="{tab_sync}" href="/?tab=sync">Sync</a>
           <a class="{tab_settings}" href="/?tab=settings">Settings</a>
         </nav>
@@ -942,7 +1184,8 @@ async fn dashboard(
             </label>
             <fieldset class="langs">
               <legend>Content languages</legend>
-              <p class="muted">Applies to <strong>TMDB catalog</strong> (movies/series + trailers) and <strong>Jackett Play</strong>. Leave all unchecked for every language. Active: {langs_hint}</p>
+              <p class="muted">Applies to <strong>TMDB catalog</strong> (movies/series + trailers) and <strong>Jackett Play</strong>. Leave all unchecked for every language.</p>
+              <p class="langs-active"><strong>Currently selected:</strong> {langs_hint}</p>
               <div class="lang-grid">{lang_opts}</div>
             </fieldset>
             <div class="actions">
@@ -963,6 +1206,31 @@ async fn dashboard(
             <button type="submit">New code</button>
           </form>
           <div class="grid">{cards}</div>
+        </section>
+
+        <section class="panel{panel_catalog}" id="panel-catalog">
+          <div class="row-head">
+            <h2>Catalog</h2>
+            <span class="pill">{catalog_total} titles</span>
+          </div>
+          <p class="lead">Browse every movie and series in the database. Remove bad or unwanted titles on demand — Sync can re-add popular ones later.</p>
+          <form method="get" action="/" class="inline catalog-filter">
+            <input type="hidden" name="tab" value="catalog" />
+            <label>Search
+              <input name="q" type="search" value="{catalog_q}" placeholder="Title…" />
+            </label>
+            <label>Kind
+              <select name="kind">
+                <option value=""{kind_all}>All</option>
+                <option value="MOVIE"{kind_movie}>Movies</option>
+                <option value="SERIES"{kind_series}>Series</option>
+                <option value="ANIME"{kind_anime}>Anime</option>
+              </select>
+            </label>
+            <button type="submit">Filter</button>
+          </form>
+          {catalog_table}
+          {catalog_pager}
         </section>
 
         <section class="panel{panel_sync}" id="panel-sync">
@@ -1163,14 +1431,24 @@ async fn dashboard(
         notice_html = notice_html,
         tab_streaming = tab_class(tab, "streaming"),
         tab_devices = tab_class(tab, "devices"),
+        tab_catalog = tab_class(tab, "catalog"),
         tab_sync = tab_class(tab, "sync"),
         tab_settings = tab_class(tab, "settings"),
         panel_streaming = panel_streaming,
         panel_devices = panel_devices,
+        panel_catalog = panel_catalog,
         panel_sync = panel_sync,
         panel_settings = panel_settings,
         status = status,
         checked = if jackett_on { "checked" } else { "" },
+        catalog_q = html_escape(catalog_q),
+        catalog_total = catalog_total,
+        catalog_table = catalog_table,
+        catalog_pager = catalog_pager,
+        kind_all = kind_all,
+        kind_movie = kind_movie,
+        kind_series = kind_series,
+        kind_anime = kind_anime,
         url = html_escape(&jackett_url),
         key_ph = if jackett_ok {
             "Configured — paste to replace"
@@ -1195,8 +1473,14 @@ async fn dashboard(
 }
 
 
-fn shell(title: &str, body: &str, authed: bool) -> String {
-    let width = if authed { "980px" } else { "440px" };
+fn shell(title: &str, body: &str, authed: bool, wide: bool) -> String {
+    let width = if !authed {
+        "440px"
+    } else if wide {
+        "1100px"
+    } else {
+        "980px"
+    };
     format!(
         r#"<!doctype html>
 <html lang="en">
@@ -1293,14 +1577,23 @@ fn shell(title: &str, body: &str, authed: bool) -> String {
   form.grid-form {{ margin-top: 0.4rem; }}
   label {{ display: flex; flex-direction: column; gap: 0.35rem; font-size: 0.8rem; color: var(--muted); }}
   label.check {{ flex-direction: row; align-items: center; gap: 0.55rem; color: var(--ink); font-size: 0.95rem; }}
+  label.check.on {{
+    background: color-mix(in srgb, var(--accent) 16%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line));
+    border-radius: 10px; padding: 0.35rem 0.55rem;
+  }}
   fieldset.langs {{
     border: 1px solid var(--line); border-radius: 12px; padding: 0.85rem 1rem 1rem; margin: 0;
   }}
   fieldset.langs legend {{ padding: 0 0.35rem; color: var(--ink); font-size: 0.85rem; }}
   .lang-grid {{
-    display: grid; gap: 0.35rem 0.75rem;
+    display: grid; gap: 0.45rem 0.75rem;
     grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
     margin-top: 0.55rem;
+  }}
+  .langs-active {{
+    margin: 0.35rem 0 0; padding: 0.45rem 0.65rem; border-radius: 10px;
+    background: #14141a; border: 1px solid var(--line); color: var(--ink); font-size: 0.9rem;
   }}
   input, select {{
     width: 100%; padding: 0.78rem 0.9rem; border: 1px solid var(--line);
@@ -1321,8 +1614,31 @@ fn shell(title: &str, body: &str, authed: bool) -> String {
   .card {{ display: grid; gap: 0.7rem; padding: 1rem 1.05rem; border-radius: 14px; border: 1px solid var(--line); background: #0e0e12; }}
   .card.hot {{ border-color: var(--accent); }}
   .pin {{ font: 700 1.7rem/1 "Fraunces", Georgia, serif; letter-spacing: 0.16em; }}
+  form.catalog-filter {{ margin-top: 0.2rem; grid-template-columns: 1.4fr 0.7fr auto; }}
+  .catalog-bulk-bar {{
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 0.75rem; margin: 0.85rem 0 0.35rem; flex-wrap: wrap;
+  }}
+  table.catalog {{
+    width: 100%; border-collapse: collapse; margin-top: 0.5rem;
+    font-size: 0.92rem;
+  }}
+  table.catalog th, table.catalog td {{
+    text-align: left; padding: 0.65rem 0.55rem; border-bottom: 1px solid var(--line);
+    vertical-align: middle;
+  }}
+  table.catalog th {{ color: var(--muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; }}
+  table.catalog .actions-cell {{ width: 1%; white-space: nowrap; }}
+  table.catalog .actions-cell form {{ margin: 0; }}
+  table.catalog .check-cell {{ width: 2.1rem; text-align: center; }}
+  table.catalog .check-cell input {{ width: 1rem; height: 1rem; accent-color: var(--accent); }}
+  .catalog-pager {{
+    display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center;
+    gap: 0.75rem; margin-top: 1rem;
+  }}
   @media (max-width: 640px) {{
     form.inline {{ grid-template-columns: 1fr; }}
+    form.catalog-filter {{ grid-template-columns: 1fr; }}
   }}
 </style>
 <link rel="preconnect" href="https://fonts.googleapis.com" />

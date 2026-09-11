@@ -1,8 +1,8 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../friendly_error.dart';
-import '../graphql/client.dart';
 import '../providers/settings.dart';
 import '../theme.dart';
 import '../tv.dart';
@@ -47,23 +47,19 @@ class _UnreachableScreenState extends ConsumerState<UnreachableScreen> {
     if (_locked) return;
     setState(() => _retrying = true);
     final notifier = ref.read(settingsProvider.notifier);
+    notifier.beginBoot();
     try {
-      final reachable = await notifier.probeCurrent();
-      if (!reachable) return;
-      ref.invalidate(serverInfoProvider);
-      try {
-        await ref.read(serverInfoProvider.future);
-        await notifier.markConnected();
-      } catch (e) {
-        if (isUnauthorizedError(e)) {
-          await notifier.forgetPairing(
-            message: 'This pairing code is no longer valid. Create a new code in the server console.',
-          );
-        } else {
-          await notifier.markDisconnected(friendlyRequestError(e));
-        }
+      var reachable = await notifier.probeCurrentWithRetry();
+      if (!reachable) {
+        await notifier.discoverLocalhost();
+        reachable = await notifier.probeCurrentWithRetry(attempts: 3);
       }
+      if (!reachable) return;
+      await notifier.markConnected();
+      ref.invalidate(serverInfoProvider);
+      unawaited(ref.read(serverInfoProvider.future));
     } finally {
+      notifier.finishBoot();
       if (mounted) setState(() => _retrying = false);
     }
   }
@@ -72,25 +68,17 @@ class _UnreachableScreenState extends ConsumerState<UnreachableScreen> {
     if (_locked) return;
     setState(() => _finding = true);
     final notifier = ref.read(settingsProvider.notifier);
+    notifier.beginBoot();
     try {
       final found = await notifier.discoverLocalhost();
       if (!mounted || found == null) return;
-      final reachable = await notifier.probeCurrent();
+      final reachable = await notifier.probeCurrentWithRetry(attempts: 3);
       if (!reachable) return;
+      await notifier.markConnected();
       ref.invalidate(serverInfoProvider);
-      try {
-        await ref.read(serverInfoProvider.future);
-        await notifier.markConnected();
-      } catch (e) {
-        if (isUnauthorizedError(e)) {
-          await notifier.forgetPairing(
-            message: 'This pairing code is no longer valid. Create a new code in the server console.',
-          );
-        } else {
-          await notifier.markDisconnected(friendlyRequestError(e));
-        }
-      }
+      unawaited(ref.read(serverInfoProvider.future));
     } finally {
+      notifier.finishBoot();
       if (mounted) setState(() => _finding = false);
     }
   }

@@ -27,6 +27,7 @@ class _CatalogScreenState extends ConsumerState<CatalogScreen> {
   final _rating = FocusNode(debugLabel: 'header-rating');
   final _genre = FocusNode(debugLabel: 'header-genre');
   final _favourites = FocusNode(debugLabel: 'header-favourites');
+  final _watched = FocusNode(debugLabel: 'header-watched');
   final _search = FocusNode(debugLabel: 'header-search-btn');
   final _settings = FocusNode(debugLabel: 'header-settings');
 
@@ -37,6 +38,7 @@ class _CatalogScreenState extends ConsumerState<CatalogScreen> {
     _rating.dispose();
     _genre.dispose();
     _favourites.dispose();
+    _watched.dispose();
     _search.dispose();
     _settings.dispose();
     super.dispose();
@@ -111,14 +113,22 @@ class _CatalogScreenState extends ConsumerState<CatalogScreen> {
               focusNode: _favourites,
               onPressed: () => context.push('/favourites'),
               onMoveLeft: () => _genre.requestFocus(),
-              onMoveRight: () => _search.requestFocus(),
+              onMoveRight: () => _watched.requestFocus(),
               icon: const Icon(Icons.favorite_rounded),
+            ),
+            TvHeaderButton(
+              tooltip: 'Watched',
+              focusNode: _watched,
+              onPressed: () => context.push('/watched'),
+              onMoveLeft: () => _favourites.requestFocus(),
+              onMoveRight: () => _search.requestFocus(),
+              icon: const Icon(Icons.video_library_rounded),
             ),
             TvHeaderButton(
               tooltip: 'Search',
               focusNode: _search,
               onPressed: () => context.push('/search'),
-              onMoveLeft: () => _favourites.requestFocus(),
+              onMoveLeft: () => _watched.requestFocus(),
               onMoveRight: () => _settings.requestFocus(),
               icon: const Icon(Icons.search_rounded),
             ),
@@ -129,12 +139,18 @@ class _CatalogScreenState extends ConsumerState<CatalogScreen> {
               onMoveLeft: () => _search.requestFocus(),
               icon: const Icon(Icons.settings_outlined),
             ),
-          ] else
+          ] else ...[
             IconButton(
               tooltip: 'Favourites',
               onPressed: () => context.push('/favourites'),
               icon: const Icon(Icons.favorite_rounded),
             ),
+            IconButton(
+              tooltip: 'Watched',
+              onPressed: () => context.push('/watched'),
+              icon: const Icon(Icons.video_library_rounded),
+            ),
+          ],
         ],
       );
     }

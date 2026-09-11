@@ -4,8 +4,9 @@ use uuid::Uuid;
 use crate::db::models::{SyncStateRow, TitleRow};
 use crate::error::AppError;
 use crate::graphql::types::{
-    HomeFeed, JackettCatalogStatus, SearchResult, ServerInfo, SortDir, SortField, StreamSession,
-    StreamSource, SyncStatus, Title, TitleConnection, TitleFilter, TitleKind,
+    HomeFeed, JackettCatalogStatus, MediaSegment, MediaSegments, SearchResult, ServerInfo, SortDir,
+    SortField, StreamSession, StreamSource, SyncStatus, Title, TitleConnection, TitleFilter,
+    TitleKind, TorrentFile,
 };
 use crate::AppState;
 
@@ -38,8 +39,8 @@ impl Query {
         let per_page = per_page.unwrap_or(24).clamp(1, 100);
         let offset = (page - 1) * per_page;
 
-        // Lazy TMDB pagination: if the user scrolls past the initially synced
-        // pages (5), fetch the next TMDB list page(s), cache them, then query.
+        // Lazy TMDB pagination: kick off shelf fill in the background so catalog
+        // scrolls stay fast. Pages already in Postgres return immediately.
         let mut remote_has_more = false;
         if let Some(shelf) = match sort {
             SortField::Trending => Some("trending"),
@@ -53,29 +54,30 @@ impl Query {
                 TitleKind::Anime => "anime",
             });
             let ingest = crate::ingest::IngestContext::from(state);
-            match crate::ingest::tmdb::ensure_shelf_pages_for_catalog(
-                &ingest,
-                shelf,
-                kind,
-                page,
-                per_page,
-            )
-            .await
-            {
-                Ok(more) => remote_has_more = more,
-                Err(e) => {
-                    tracing::warn!(error = %e, shelf, page, "lazy TMDB shelf fetch failed");
+            remote_has_more = crate::ingest::tmdb::shelf_has_more_for_catalog(&ingest, shelf, kind)
+                .await
+                .unwrap_or(false);
+            let page_bg = page;
+            let per_bg = per_page;
+            tokio::spawn(async move {
+                if let Err(e) = crate::ingest::tmdb::ensure_shelf_pages_for_catalog(
+                    &ingest, shelf, kind, page_bg, per_bg,
+                )
+                .await
+                {
+                    tracing::warn!(error = %e, shelf, page = page_bg, "background TMDB shelf fetch failed");
                 }
-            }
+            });
         }
 
         let continue_watching = sort == SortField::ContinueWatching;
         let favorites = sort == SortField::Favorites;
+        let watched = sort == SortField::Watched;
         let auth = ctx.data::<crate::auth::AuthSession>()?;
         let mut qb = sqlx::QueryBuilder::new("SELECT ");
         qb.push(TITLE_COLUMNS);
         qb.push(" FROM titles t LEFT JOIN ratings r ON r.title_id = t.id");
-        if continue_watching || favorites {
+        if continue_watching || favorites || watched {
             qb.push(" INNER JOIN user_progress p ON p.title_id = t.id AND p.token_id = ");
             qb.push_bind(auth.token_id);
         }
@@ -87,6 +89,9 @@ impl Query {
         }
         if favorites {
             qb.push(" AND p.favorite = TRUE");
+        }
+        if watched {
+            qb.push(" AND p.watched = TRUE");
         }
 
         qb.push(" ORDER BY ");
@@ -101,7 +106,7 @@ impl Query {
         let mut count_qb = sqlx::QueryBuilder::new(
             "SELECT COUNT(*) FROM titles t LEFT JOIN ratings r ON r.title_id = t.id",
         );
-        if continue_watching || favorites {
+        if continue_watching || favorites || watched {
             count_qb.push(" INNER JOIN user_progress p ON p.title_id = t.id AND p.token_id = ");
             count_qb.push_bind(auth.token_id);
         }
@@ -113,6 +118,9 @@ impl Query {
         }
         if favorites {
             count_qb.push(" AND p.favorite = TRUE");
+        }
+        if watched {
+            count_qb.push(" AND p.watched = TRUE");
         }
         let (total_count,): (i64,) = count_qb.build_query_as().fetch_one(&state.pool).await?;
 
@@ -215,9 +223,11 @@ impl Query {
         }
 
         let kind_db = kind.map(|k| k.as_db().to_string());
+        // Ask Meili for a few extras so release-date filtering can still fill a page.
+        let fetch_n = per_page.saturating_mul(2).max(per_page);
         let results = state
             .search
-            .search(q, kind_db.as_deref(), page, per_page)
+            .search(q, kind_db.as_deref(), page, fetch_n)
             .await?;
 
         let mut ids: Vec<Uuid> = results.hits.iter().map(|h| h.id).collect();
@@ -232,7 +242,7 @@ impl Query {
                 q,
                 kind_db.as_deref(),
                 page,
-                per_page.min(20),
+                fetch_n.min(20),
             )
             .await
             {
@@ -266,11 +276,15 @@ impl Query {
             });
         }
 
-        // Keep result order; trim to page size for the response.
-        ids.truncate(per_page);
-
+        // Drop unreleased titles (future released_at / year) — same rule as catalog/home.
         let rows: Vec<TitleRow> = sqlx::query_as(&format!(
-            "SELECT {TITLE_COLUMNS} FROM titles t WHERE t.id = ANY($1)"
+            r#"
+            SELECT {TITLE_COLUMNS}
+            FROM titles t
+            WHERE t.id = ANY($1)
+              AND (t.released_at IS NULL OR t.released_at <= CURRENT_DATE)
+              AND (t.year IS NULL OR t.year <= EXTRACT(YEAR FROM CURRENT_DATE)::int)
+            "#
         ))
         .bind(&ids)
         .fetch_all(&state.pool)
@@ -281,13 +295,14 @@ impl Query {
         let items: Vec<Title> = ids
             .into_iter()
             .filter_map(|id| by_id.remove(&id).map(Title::from_row))
+            .take(per_page)
             .collect();
 
         let loaded = items.len();
         Ok(SearchResult {
             items,
             total_count: estimated_total as i64,
-            has_next_page: ((page - 1) * per_page + loaded) < estimated_total,
+            has_next_page: loaded >= per_page || (page * per_page) < estimated_total,
             page: page as i32,
         })
     }
@@ -353,6 +368,77 @@ impl Query {
         Ok(jackett_catalog_status(state).await?)
     }
 
+    /// Intro / recap / credits / preview skip markers from TheIntroDB (by TMDB ID).
+    /// Pass `durationMs` from the player for the closest matching cut.
+    async fn media_segments(
+        &self,
+        ctx: &Context<'_>,
+        title_id: Uuid,
+        season: Option<i32>,
+        episode: Option<i32>,
+        duration_ms: Option<i64>,
+    ) -> async_graphql::Result<MediaSegments> {
+        let state = ctx.data::<AppState>()?;
+        let row: Option<(Option<i32>, Option<String>, String)> = sqlx::query_as(
+            r#"SELECT tmdb_id, imdb_id, kind FROM titles WHERE id = $1"#,
+        )
+        .bind(title_id)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(AppError::Database)?;
+        let Some((tmdb_id, imdb_id, kind)) = row else {
+            return Ok(MediaSegments {
+                tmdb_id: None,
+                segments: vec![],
+            });
+        };
+
+        let is_movie = kind.eq_ignore_ascii_case("movie");
+        let (season, episode) = if is_movie {
+            (None, None)
+        } else {
+            (season.filter(|s| *s > 0), episode.filter(|e| *e > 0))
+        };
+        // Series/anime without S/E can't be looked up precisely — avoid wrong movie hits.
+        if !is_movie && (season.is_none() || episode.is_none()) {
+            return Ok(MediaSegments {
+                tmdb_id,
+                segments: vec![],
+            });
+        }
+
+        let found = state
+            .introdb
+            .media(
+                tmdb_id,
+                imdb_id.as_deref(),
+                season,
+                episode,
+                duration_ms.filter(|d| *d > 30_000),
+            )
+            .await?;
+        let Some(found) = found else {
+            return Ok(MediaSegments {
+                tmdb_id,
+                segments: vec![],
+            });
+        };
+        let segments = found
+            .normalized()
+            .into_iter()
+            .map(|s| MediaSegment {
+                kind: s.kind.as_str().to_string(),
+                label: s.kind.skip_label().to_string(),
+                start_ms: s.start_ms,
+                end_ms: s.end_ms,
+            })
+            .collect();
+        Ok(MediaSegments {
+            tmdb_id: found.tmdb_id.or(tmdb_id),
+            segments,
+        })
+    }
+
     async fn streaming_search(
         &self,
         ctx: &Context<'_>,
@@ -362,6 +448,7 @@ impl Query {
         episode: Option<i32>,
         language: Option<String>,
         title_id: Option<Uuid>,
+        year: Option<i32>,
         live: Option<bool>,
     ) -> async_graphql::Result<Vec<StreamSource>> {
         let state = ctx.data::<AppState>()?;
@@ -372,28 +459,41 @@ impl Query {
             .into());
         }
         let _ = live;
-        // Server console languages are the source of truth for Jackett Play.
+        if !state.config.live.jackett_configured() {
+            return Ok(vec![]);
+        }
+        let client = crate::jackett::JackettClient::from_live(&state.http, &state.config.live)?;
+
+        // Prefer catalog metadata over the client string so searches stay exact
+        // (clean title + imdb + S/E), even if the app sends a messy query.
+        let mut search_title = query;
+        let mut imdb_id: Option<String> = None;
+        if let Some(id) = title_id {
+            if let Ok(Some(meta)) = crate::db::title_stream_meta(&state.pool, id).await {
+                // Catalog title is the canonical English/UI name torrents usually use.
+                if !meta.title.trim().is_empty() {
+                    search_title = meta.title;
+                }
+                imdb_id = meta.imdb_id.filter(|s| !s.trim().is_empty());
+            }
+        }
+
+        // Never bake year/language into the Jackett *query* (too few hits), but
+        // always filter results by preferred languages so ASL/sign/etc. stay out.
+        let _ = year;
         let server_langs = state.config.live.preferred_languages();
         let preferred = if !server_langs.trim().is_empty() {
             server_langs
         } else {
             language.unwrap_or_default()
         };
-        if !state.config.live.jackett_configured() {
-            return Ok(vec![]);
-        }
-        let client = crate::jackett::JackettClient::from_live(&state.http, &state.config.live)?;
-        let imdb_id = if let Some(id) = title_id {
-            crate::db::title_imdb_id(&state.pool, id).await.unwrap_or(None)
-        } else {
-            None
-        };
         let found = client
             .search(
-                &query,
+                &search_title,
                 kind.as_db(),
                 season,
                 episode,
+                None,
                 &state.config.live.streaming_resolution(),
                 &preferred,
                 imdb_id.as_deref(),
@@ -408,6 +508,44 @@ impl Query {
             found
         };
         Ok(found)
+    }
+
+    /// List video files inside a magnet before starting playback (season packs / folders).
+    async fn torrent_files(
+        &self,
+        ctx: &Context<'_>,
+        magnet: String,
+        season: Option<i32>,
+        episode: Option<i32>,
+    ) -> async_graphql::Result<Vec<TorrentFile>> {
+        let state = ctx.data::<AppState>()?;
+        if !state.config.live.jackett_enabled() {
+            return Err(crate::error::AppError::BadRequest(
+                "Jackett streaming is turned off. Enable it in Settings.".into(),
+            )
+            .into());
+        }
+        let files = state.streams.list_files(&magnet).await?;
+        let mut out: Vec<TorrentFile> = files
+            .into_iter()
+            .map(|f| {
+                let recommended = matches_episode_name(&f.name, season, episode);
+                TorrentFile {
+                    index: f.index as i32,
+                    name: f.name,
+                    size: format_bytes(f.size_bytes),
+                    size_bytes: f.size_bytes as i64,
+                    recommended,
+                }
+            })
+            .collect();
+        // Recommended episode first, then largest — matches the client picker.
+        out.sort_by(|a, b| {
+            b.recommended
+                .cmp(&a.recommended)
+                .then(b.size_bytes.cmp(&a.size_bytes))
+        });
+        Ok(out)
     }
 
     async fn stream_status(
@@ -677,80 +815,113 @@ fn order_sql(kind: Option<TitleKind>, sort: SortField, dir: SortDir) -> String {
     match sort {
         SortField::Rating => {
             if asc {
-                format!("{percentage} ASC NULLS LAST, {votes} ASC NULLS LAST, t.title ASC")
+                format!("{percentage} ASC NULLS LAST, {votes} ASC NULLS LAST, t.title ASC, t.id ASC")
             } else {
-                format!("{percentage} DESC NULLS LAST, {votes} DESC NULLS LAST, t.title ASC")
+                format!("{percentage} DESC NULLS LAST, {votes} DESC NULLS LAST, t.title ASC, t.id ASC")
             }
         }
         // Popular = PT `sort=rating` (score %, then votes).
         SortField::Popularity => {
             if asc {
-                format!("{percentage} ASC NULLS LAST, {votes} ASC NULLS LAST, t.title ASC")
+                format!("{percentage} ASC NULLS LAST, {votes} ASC NULLS LAST, t.title ASC, t.id ASC")
             } else {
-                format!("{percentage} DESC NULLS LAST, {votes} DESC NULLS LAST, t.title ASC")
+                format!("{percentage} DESC NULLS LAST, {votes} DESC NULLS LAST, t.title ASC, t.id ASC")
             }
         }
         SortField::Year => {
             if asc {
-                "t.year ASC NULLS LAST, t.title ASC".into()
+                "t.year ASC NULLS LAST, t.title ASC, t.id ASC".into()
             } else {
-                "t.year DESC NULLS LAST, t.title ASC".into()
+                "t.year DESC NULLS LAST, t.title ASC, t.id ASC".into()
             }
         }
         SortField::Title => {
             if asc {
-                "lower(t.title) ASC".into()
+                "lower(t.title) ASC, t.id ASC".into()
             } else {
-                "lower(t.title) DESC".into()
+                "lower(t.title) DESC, t.id ASC".into()
             }
         }
         // Last added = PT `sort=last added` → released date (not ingest time).
         SortField::DateAdded => {
             if asc {
-                format!("{released} ASC NULLS LAST, t.title ASC")
+                format!("{released} ASC NULLS LAST, t.title ASC, t.id ASC")
             } else {
-                format!("{released} DESC NULLS LAST, t.title ASC")
+                format!("{released} DESC NULLS LAST, t.title ASC, t.id ASC")
             }
         }
         // Trending = PT `sort=trending` → watching / buzz.
         SortField::Trending => {
             if asc {
                 format!(
-                    "{watching} ASC NULLS LAST, {votes} ASC NULLS LAST, ({score}) * ({year_boost}) ASC NULLS LAST, t.title ASC"
+                    "{watching} ASC NULLS LAST, {votes} ASC NULLS LAST, ({score}) * ({year_boost}) ASC NULLS LAST, t.title ASC, t.id ASC"
                 )
             } else {
                 format!(
-                    "{watching} DESC NULLS LAST, {votes} DESC NULLS LAST, ({score}) * ({year_boost}) DESC NULLS LAST, t.title ASC"
+                    "{watching} DESC NULLS LAST, {votes} DESC NULLS LAST, ({score}) * ({year_boost}) DESC NULLS LAST, t.title ASC, t.id ASC"
                 )
             }
         }
         SortField::RottenTomatoes => {
             if asc {
-                "r.rt_score ASC NULLS LAST, t.title ASC".into()
+                "r.rt_score ASC NULLS LAST, t.title ASC, t.id ASC".into()
             } else {
-                "r.rt_score DESC NULLS LAST, t.title ASC".into()
+                "r.rt_score DESC NULLS LAST, t.title ASC, t.id ASC".into()
             }
         }
         SortField::Availability => {
             if asc {
-                "(SELECT COALESCE(MAX(fr.available_peers), 0) FROM file_references fr WHERE fr.title_id = t.id) ASC, t.title ASC".into()
+                "(SELECT COALESCE(MAX(fr.available_peers), 0) FROM file_references fr WHERE fr.title_id = t.id) ASC, t.title ASC, t.id ASC".into()
             } else {
-                "(SELECT COALESCE(MAX(fr.available_peers), 0) FROM file_references fr WHERE fr.title_id = t.id) DESC, t.title ASC".into()
+                "(SELECT COALESCE(MAX(fr.available_peers), 0) FROM file_references fr WHERE fr.title_id = t.id) DESC, t.title ASC, t.id ASC".into()
             }
         }
         SortField::ContinueWatching => {
             if asc {
-                "p.updated_at ASC, t.title ASC".into()
+                "p.updated_at ASC, t.title ASC, t.id ASC".into()
             } else {
-                "p.updated_at DESC, t.title ASC".into()
+                "p.updated_at DESC, t.title ASC, t.id ASC".into()
             }
         }
         SortField::Favorites => {
             if asc {
-                "p.updated_at ASC, t.title ASC".into()
+                "p.updated_at ASC, t.title ASC, t.id ASC".into()
             } else {
-                "p.updated_at DESC, t.title ASC".into()
+                "p.updated_at DESC, t.title ASC, t.id ASC".into()
+            }
+        }
+        SortField::Watched => {
+            if asc {
+                "p.updated_at ASC, t.title ASC, t.id ASC".into()
+            } else {
+                "p.updated_at DESC, t.title ASC, t.id ASC".into()
             }
         }
     }
+}
+
+fn format_bytes(n: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    const GB: f64 = MB * 1024.0;
+    let n = n as f64;
+    if n >= GB {
+        format!("{:.2} GB", n / GB)
+    } else if n >= MB {
+        format!("{:.0} MB", n / MB)
+    } else if n >= KB {
+        format!("{:.0} KB", n / KB)
+    } else {
+        format!("{n:.0} B")
+    }
+}
+
+fn matches_episode_name(name: &str, season: Option<i32>, episode: Option<i32>) -> bool {
+    let (Some(season), Some(episode)) = (season, episode) else {
+        return false;
+    };
+    let n = name.to_ascii_lowercase().replace(|c: char| !c.is_ascii_alphanumeric(), "");
+    let tag = format!("s{:02}e{:02}", season, episode);
+    let alt = format!("{}x{:02}", season, episode);
+    n.contains(&tag) || n.contains(&alt)
 }

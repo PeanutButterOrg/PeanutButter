@@ -1,2 +1,6 @@
 #include "../../Flutter/Flutter-Release.xcconfig"
 #include "Warnings.xcconfig"
+
+// Universal binary: Apple Silicon + Intel in one .app
+ONLY_ACTIVE_ARCH = NO
+ARCHS = arm64 x86_64

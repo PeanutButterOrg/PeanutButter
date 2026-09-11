@@ -101,10 +101,12 @@ impl JackettClient {
             .jackett_api_key()
             .filter(|s| !s.is_empty())
             .ok_or_else(|| jackett_err("Add your Jackett API key in the server console first."))?;
-        // Keep streaming searches under the app GraphQL timeout (~45s).
+        // Streaming searches: Jackett /all can take 20–50s on a cold query.
+        // Old 18s client timeout returned "took too long" while Jackett still
+        // finished and cached (visible in Jackett logs).
         let http = reqwest::Client::builder()
             .user_agent("PeanutButter")
-            .timeout(Duration::from_secs(18))
+            .timeout(Duration::from_secs(90))
             .redirect(reqwest::redirect::Policy::limited(4))
             .build()
             .map_err(|e| AppError::Internal(e.to_string()))?;
@@ -147,55 +149,84 @@ impl JackettClient {
         kind: &str,
         season: Option<i32>,
         episode: Option<i32>,
+        year: Option<i32>,
         preferred_resolution: &str,
         preferred_language: &str,
         imdb_id: Option<&str>,
     ) -> Result<Vec<StreamSource>> {
-        let q = build_query(query, kind, season, episode, preferred_language);
+        let q = build_query(query, kind, season, episode, year, preferred_language);
         if q.trim().is_empty() {
             return Ok(vec![]);
         }
-        // Prefer kind-scoped per-indexer searches (movie/TV categories) and return as
-        // soon as we have healthy hits. Never wait on Jackett's `/all/results`, which
-        // fans out to every indexer (including anime trackers for Western TV) and can
-        // take minutes.
-        let found = self
-            .search_torznab_all(
-                &q,
-                kind,
-                season,
-                episode,
-                imdb_id,
-                preferred_resolution,
-                preferred_language,
-            )
-            .await
-            .unwrap_or_default();
-        let found = Self::filter_episode(found, season, episode);
-        if !found.is_empty() {
-            return Ok(found);
-        }
 
-        // Second pass: plain Query + standard Category on a wider indexer set.
-        let fallback = self
-            .search_indexers_individually(&q, preferred_resolution, preferred_language, kind)
-            .await
-            .unwrap_or_default();
-        let fallback = Self::filter_episode(fallback, season, episode);
-        if !fallback.is_empty() {
-            return Ok(fallback);
-        }
+        // Start Jackett's aggregate search immediately (same path as the UI logs).
+        // Cold queries often take 20–50s — our old 12s timeout false-failed while
+        // Jackett still finished and cached.
+        let all_fut =
+            self.search_all_results(&q, kind, preferred_resolution, preferred_language);
 
-        // Last resort: /all/results WITH standard Newznab categories and a hard timeout.
-        // Category keeps Jackett off anime/misc trackers for movie/TV queries.
+        // Parallel fast path: per-indexer Torznab may return sooner.
+        let fast_fut = async {
+            let found = self
+                .search_torznab_all(
+                    &q,
+                    kind,
+                    season,
+                    episode,
+                    year,
+                    imdb_id,
+                    preferred_resolution,
+                    preferred_language,
+                )
+                .await
+                .unwrap_or_default();
+            let found = Self::filter_episode(found, season, episode);
+            if !found.is_empty() {
+                return found;
+            }
+            let fallback = self
+                .search_indexers_individually(&q, preferred_resolution, preferred_language, kind)
+                .await
+                .unwrap_or_default();
+            Self::filter_episode(fallback, season, episode)
+        };
+
+        tokio::pin!(all_fut);
+        tokio::pin!(fast_fut);
+
+        tokio::select! {
+            fast = &mut fast_fut => {
+                if !fast.is_empty() {
+                    return Ok(fast);
+                }
+                let all = all_fut.await?;
+                Ok(Self::filter_episode(all, season, episode))
+            }
+            all = &mut all_fut => {
+                let filtered = Self::filter_episode(all?, season, episode);
+                if !filtered.is_empty() {
+                    return Ok(filtered);
+                }
+                Ok(fast_fut.await)
+            }
+        }
+    }
+
+    async fn search_all_results(
+        &self,
+        query: &str,
+        kind: &str,
+        preferred_resolution: &str,
+        preferred_language: &str,
+    ) -> Result<Vec<StreamSource>> {
         let cats = kind_categories(kind);
         let url = format!("{}/api/v2.0/indexers/all/results", self.base_url);
         let req = self.http.get(&url).query(&[
             ("apikey", self.api_key.as_str()),
-            ("Query", q.as_str()),
+            ("Query", query),
             ("Category", cats),
         ]);
-        let res = match tokio::time::timeout(Duration::from_secs(12), req.send()).await {
+        let res = match tokio::time::timeout(Duration::from_secs(75), req.send()).await {
             Ok(Ok(res)) => res,
             Ok(Err(e)) => return Err(self.redact_err(e)),
             Err(_) => {
@@ -220,7 +251,6 @@ impl JackettClient {
                 preferred_language,
                 kind,
             );
-            let results = Self::filter_episode(results, season, episode);
             if !results.is_empty() {
                 return Ok(results);
             }
@@ -256,7 +286,7 @@ impl JackettClient {
         kind: &str,
         preferred_resolution: &str,
     ) -> Result<Vec<StreamSource>> {
-        let q = build_query(query, kind, None, None, "");
+        let q = build_query(query, kind, None, None, None, "");
         if q.trim().is_empty() {
             return Ok(vec![]);
         }
@@ -312,6 +342,7 @@ impl JackettClient {
         kind: &str,
         season: Option<i32>,
         episode: Option<i32>,
+        year: Option<i32>,
         imdb_id: Option<&str>,
         preferred_resolution: &str,
         preferred_language: &str,
@@ -328,11 +359,20 @@ impl JackettClient {
             let kind = kind.to_string();
             let season = season;
             let episode = episode;
+            let year = year;
             let imdb = imdb_id.map(str::to_string);
             set.spawn(async move {
                 let result = tokio::time::timeout(
                     Duration::from_secs(10),
-                    this.search_torznab_one(&id, &query, &kind, season, episode, imdb.as_deref()),
+                    this.search_torznab_one(
+                        &id,
+                        &query,
+                        &kind,
+                        season,
+                        episode,
+                        year,
+                        imdb.as_deref(),
+                    ),
                 )
                 .await;
                 (id, result)
@@ -367,6 +407,7 @@ impl JackettClient {
         kind: &str,
         season: Option<i32>,
         episode: Option<i32>,
+        year: Option<i32>,
         imdb_id: Option<&str>,
     ) -> std::result::Result<Vec<JackettHit>, String> {
         let url = format!("{}/api/v2.0/indexers/{id}/results", self.base_url);
@@ -396,6 +437,7 @@ impl JackettClient {
                 }
             }
         }
+        let _ = year;
 
         // Add season/ep for TV — much better than baking it into the query string
         if let (Some(s), Some(e)) = (season, episode) {
@@ -721,6 +763,9 @@ impl JackettClient {
                 if looks_like_sample(&hit.title) || looks_like_cam(&padded(&hit.title)) {
                     return None;
                 }
+                if looks_like_sign_language(&hit.title) {
+                    return None;
+                }
                 if looks_like_junk_release(&hit.title, kind) {
                     return None;
                 }
@@ -729,12 +774,12 @@ impl JackettClient {
                     return None;
                 }
                 let seeders = hit.seeders.unwrap_or(0).max(0) as i32;
-                // Dead / near-dead swarms almost always fail to start.
-                if seeders < 5 {
+                let peers = hit.peers.unwrap_or(0).max(0) as i32;
+                // Drop dead swarms only. 2–3 seeders can still start; 0 never will.
+                if seeders < 2 {
                     return None;
                 }
                 let langs = language_codes(&hit.title);
-                let peers = hit.peers.unwrap_or(0).max(0) as i32;
                 let id = hit
                     .guid
                     .filter(|s| !s.trim().is_empty())
@@ -762,7 +807,7 @@ impl JackettClient {
             })
             .collect();
         if !preferred_lang.is_empty() && preferred_lang != "all" {
-            // Strict: never fall back to other languages when the user set preferences.
+            // Strict: only preferred languages + multi. Untagged ≠ English.
             out = out
                 .into_iter()
                 .filter(|src| {
@@ -770,7 +815,7 @@ impl JackettClient {
                         .language
                         .split([',', '/', '|', '+'])
                         .map(str::trim)
-                        .filter(|part| !part.is_empty())
+                        .filter(|part| !part.is_empty() && *part != "unknown")
                         .collect();
                     language_matches(&found, &preferred_lang, kind)
                 })
@@ -900,7 +945,7 @@ fn indexer_priority(id: &str, name: &str, kind: &str) -> i32 {
 
 fn healthy_hit_count(hits: &[JackettHit]) -> usize {
     hits.iter()
-        .filter(|hit| hit.seeders.unwrap_or(0) >= 5 && torrent_locator(hit).is_some())
+        .filter(|hit| hit.seeders.unwrap_or(0) >= 3 && torrent_locator(hit).is_some())
         .count()
 }
 
@@ -1111,10 +1156,11 @@ fn size_plausible(bytes: u64, kind: &str, title: &str) -> bool {
     const MB: u64 = 1024 * 1024;
     const GB: u64 = 1024 * MB;
     match kind {
-        "movie" => bytes >= 350 * MB && bytes <= 40 * GB,
-        "series" | "anime" if season_pack => bytes >= 200 * MB && bytes <= 100 * GB,
-        "series" | "anime" => bytes >= 80 * MB && bytes <= 8 * GB,
-        _ => bytes >= 80 * MB && bytes <= 40 * GB,
+        // Keep small 720p encodes; still drop tiny fakes / enormous dumps.
+        "movie" => bytes >= 250 * MB && bytes <= 50 * GB,
+        "series" | "anime" if season_pack => bytes >= 150 * MB && bytes <= 120 * GB,
+        "series" | "anime" => bytes >= 60 * MB && bytes <= 10 * GB,
+        _ => bytes >= 60 * MB && bytes <= 50 * GB,
     }
 }
 
@@ -1136,27 +1182,55 @@ fn build_query(
     kind: &str,
     season: Option<i32>,
     episode: Option<i32>,
+    year: Option<i32>,
     language: &str,
 ) -> String {
-    let mut q = query.trim().to_string();
+    // Strip client-baked SxxExx / year so we don't double them up.
+    let mut q = strip_episode_tag(query.trim());
+    q = strip_trailing_year(&q);
+    if q.is_empty() {
+        return String::new();
+    }
+
     if let (Some(s), Some(e)) = (season, episode) {
         let tag = format!("S{s:02}E{e:02}");
         if !q.to_ascii_uppercase().contains(&tag) {
             q.push(' ');
             q.push_str(&tag);
         }
-    } else if kind == "series" || kind == "anime" {
-        // keep title-only; season chips can pass S/E later
     }
-    if !language.contains(',') {
-        if let Some(term) = language_query_term(language) {
-            if !(kind == "anime" && language.eq_ignore_ascii_case("ja")) {
-                q.push(' ');
-                q.push_str(term);
-            }
+
+    // Never bake year or language into the query — both wipe healthy Jackett hits.
+    let _ = (kind, year, language);
+    q
+}
+
+fn strip_episode_tag(raw: &str) -> String {
+    let re = regex::Regex::new(
+        r"(?i)(?:^|\s)(?:s\d{1,2}e\d{1,3}|\d{1,2}x\d{1,3})(?:\s|$)",
+    )
+    .ok();
+    let Some(re) = re else {
+        return raw.to_string();
+    };
+    re.replace_all(raw, " ").to_string().split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn strip_trailing_year(raw: &str) -> String {
+    let re = regex::Regex::new(r"(?i)(?:^|\s)((?:19|20)\d{2})\s*$").ok();
+    let Some(re) = re else {
+        return raw.to_string();
+    };
+    re.replace(raw, "").to_string().trim().to_string()
+}
+
+fn primary_language_term(language: &str) -> Option<&'static str> {
+    for part in language.split([',', '/', '|', '+']) {
+        if let Some(term) = language_query_term(part.trim()) {
+            return Some(term);
         }
     }
-    q
+    None
 }
 
 fn torrent_locator(hit: &JackettHit) -> Option<String> {
@@ -1203,6 +1277,24 @@ fn has_token(haystack: &str, token: &str) -> bool {
     haystack.contains(&format!(" {token} "))
 }
 
+/// Drop ASL / BSL / "sign language" releases — they look untagged English to
+/// language filters and are useless for spoken-language playback.
+fn looks_like_sign_language(title: &str) -> bool {
+    let t = title.to_ascii_lowercase();
+    if t.contains("sign language")
+        || t.contains("signlanguage")
+        || t.contains("signed english")
+        || t.contains("deaf")
+    {
+        return true;
+    }
+    let h = padded(title);
+    has_token(&h, "asl")
+        || has_token(&h, "bsl")
+        || has_token(&h, "signed")
+        || (has_token(&h, "sign") && (has_token(&h, "lang") || has_token(&h, "language")))
+}
+
 fn language_codes(title: &str) -> Vec<&'static str> {
     let h = padded(title);
     let mut out = Vec::new();
@@ -1214,22 +1306,51 @@ fn language_codes(title: &str) -> Vec<&'static str> {
             out.push(code);
         }
     };
-    push("hi", &["hindi", "hin"]);
+    push("hi", &["hindi", "hin", "hind"]);
     push("ja", &["japanese", "nihongo", "jpn", "jap"]);
     push("ko", &["korean", "korea", "kor"]);
-    push("zh", &["chinese", "mandarin", "cantonese", "chs", "cht"]);
-    push("es", &["spanish", "espanol", "latino", "castellano", "latam"]);
-    push("fr", &["french", "francais", "vff", "vfi", "truefrench"]);
-    push("de", &["german", "deutsch"]);
+    push("zh", &["chinese", "mandarin", "cantonese", "chs", "cht", "cn"]);
+    push("es", &["spanish", "espanol", "español", "latino", "castellano", "latam", "spa"]);
+    push("fr", &["french", "francais", "français", "vff", "vfi", "truefrench", "vfq", "fra"]);
+    push("de", &["german", "deutsch", "ger", "deu"]);
     push("it", &["italian", "italiano", "ita"]);
-    push("pt", &["portuguese", "brazilian", "ptbr", "brasil"]);
-    push("ar", &["arabic"]);
-    push("tr", &["turkish", "turkce"]);
+    push("pt", &["portuguese", "brazilian", "ptbr", "brasil", "brazil", "por"]);
+    push("ar", &["arabic", "arab"]);
+    push("tr", &["turkish", "turkce", "turk"]);
     push("ru", &["russian", "rus"]);
     push("th", &["thai"]);
-    push("id", &["indonesian", "bahasa"]);
+    push("id", &["indonesian", "bahasa", "indo"]);
+    push("nl", &["dutch", "nederlands", "holland"]);
+    push("pl", &["polish", "polski", "pol"]);
+    push("sv", &["swedish", "svenska"]);
+    push("no", &["norwegian", "norsk"]);
+    push("da", &["danish", "dansk"]);
+    push("fi", &["finnish", "suomi"]);
+    push("cs", &["czech", "cesky"]);
+    push("hu", &["hungarian", "magyar"]);
+    push("ro", &["romanian", "romana"]);
+    push("el", &["greek"]);
+    push("he", &["hebrew"]);
+    push("vi", &["vietnamese"]);
+    push("uk", &["ukrainian", "ukr"]);
+    push("bn", &["bengali", "bangla"]);
+    push("ta", &["tamil"]);
+    push("te", &["telugu"]);
+    push("ml", &["malayalam"]);
+    push("mr", &["marathi"]);
+    push("gu", &["gujarati"]);
+    push("kn", &["kannada"]);
+    push("pa", &["punjabi"]);
     push("en", &["english", "eng"]);
-    if has_token(&h, "multi") || has_token(&h, "dual") {
+    // Nordic packs often omit a specific language tag.
+    if has_token(&h, "nordic") || has_token(&h, "scandinavian") {
+        for code in ["sv", "no", "da"] {
+            if !out.contains(&code) {
+                out.push(code);
+            }
+        }
+    }
+    if has_token(&h, "multi") || has_token(&h, "dual") || has_token(&h, "dualaudio") {
         if !out.contains(&"multi") {
             out.push("multi");
         }
@@ -1241,7 +1362,9 @@ pub fn languages_for_title(title: &str) -> String {
     language_codes(title).join(",")
 }
 
-fn language_matches(found: &[&str], preferred: &str, kind: &str) -> bool {
+/// Accept only releases that explicitly match preferred languages, or multi/dual.
+/// Untagged titles are NOT assumed English — that let Spanish/etc. leak through.
+fn language_matches(found: &[&str], preferred: &str, _kind: &str) -> bool {
     let wanted: Vec<String> = preferred
         .split([',', '/', '|', '+'])
         .map(|part| part.trim().to_ascii_lowercase())
@@ -1250,27 +1373,17 @@ fn language_matches(found: &[&str], preferred: &str, kind: &str) -> bool {
     if wanted.is_empty() {
         return true;
     }
-    // Strict mode: only accept releases that advertise a wanted language.
-    // "Multi" alone is not enough when the user picked specific languages.
-    if found.iter().any(|c| wanted.iter().any(|w| w == c)) {
+    // Multi / dual-audio packs are always allowed with any preference set.
+    if found.iter().any(|c| *c == "multi") {
         return true;
     }
-    // Untagged English / anime-Japanese releases are treated as that language.
-    if found.is_empty() {
-        return wanted
-            .iter()
-            .any(|w| w == "en" || (w == "ja" && kind == "anime"));
-    }
-    false
+    // Must advertise at least one preferred language in the release name.
+    found.iter().any(|c| wanted.iter().any(|w| w == c))
 }
 
-fn stored_language(found: &[&str], kind: &str) -> String {
+fn stored_language(found: &[&str], _kind: &str) -> String {
     if found.is_empty() {
-        return if kind == "anime" {
-            "ja".into()
-        } else {
-            "en".into()
-        };
+        return "unknown".into();
     }
     found.join(",")
 }
@@ -1316,7 +1429,7 @@ pub fn health_for(seeders: i32) -> &'static str {
     }
 }
 
-/// Rank playable torrents: magnets + quality + seeders, drop weak swarms.
+/// Rank playable torrents: alive swarms first, then quality — keep a wider list.
 pub fn rank_sources(mut out: Vec<StreamSource>, preferred_resolution: &str) -> Vec<StreamSource> {
     let preferred_res = preferred_resolution.trim().to_ascii_lowercase();
     // Prefer real magnets — raw .torrent HTTP links often fail to start.
@@ -1325,56 +1438,40 @@ pub fn rank_sources(mut out: Vec<StreamSource>, preferred_resolution: &str) -> V
         .filter(|s| s.magnet.to_ascii_lowercase().starts_with("magnet:"))
         .cloned()
         .collect();
-    if magnets.len() >= 2 {
+    if !magnets.is_empty() {
         out = magnets;
     }
-    out.retain(|s| s.seeders >= 5 && source_quality_score(&s.title) >= 2);
+
+    // Lenient but not dead: keep anything with a real swarm. Quality score >= 2
+    // still drops cam/unknown junk (score 0).
+    out.retain(|s| {
+        let alive = s.seeders >= 3 || (s.seeders >= 2 && s.peers >= 1);
+        alive && source_quality_score(&s.title) >= 2
+    });
+
     out.sort_by(|a, b| {
         let a_magnet = a.magnet.to_ascii_lowercase().starts_with("magnet:") as i32;
         let b_magnet = b.magnet.to_ascii_lowercase().starts_with("magnet:") as i32;
+        // Activity first so busy swarms float up; still show mid-seed options below.
+        let a_activity = a.seeders.saturating_mul(3).saturating_add(a.peers);
+        let b_activity = b.seeders.saturating_mul(3).saturating_add(b.peers);
         let a_exact = episode_specificity(&a.title);
         let b_exact = episode_specificity(&b.title);
         b_magnet
             .cmp(&a_magnet)
+            .then(b_activity.cmp(&a_activity))
+            .then(b.seeders.cmp(&a.seeders))
             .then(b_exact.cmp(&a_exact))
             .then(
                 resolution_rank(&b.title, &preferred_res)
                     .cmp(&resolution_rank(&a.title, &preferred_res)),
             )
             .then(source_quality_score(&b.title).cmp(&source_quality_score(&a.title)))
-            .then(b.seeders.cmp(&a.seeders))
             .then(b.peers.cmp(&a.peers))
     });
-    let strong: Vec<StreamSource> = out
-        .iter()
-        .filter(|s| {
-            s.seeders >= 10
-                && source_quality_score(&s.title) >= 3
-                && resolution_rank(&s.title, &preferred_res) >= 1
-        })
-        .cloned()
-        .collect();
-    if strong.len() >= 2 {
-        return strong.into_iter().take(8).collect();
-    }
-    let matching: Vec<StreamSource> = out
-        .iter()
-        .filter(|s| s.seeders >= 8 && resolution_rank(&s.title, &preferred_res) >= 2)
-        .cloned()
-        .collect();
-    if !matching.is_empty() {
-        return matching.into_iter().take(8).collect();
-    }
-    let proper: Vec<StreamSource> = out
-        .iter()
-        .filter(|s| s.seeders >= 8 && source_quality_score(&s.title) >= 3)
-        .cloned()
-        .collect();
-    if proper.len() >= 2 {
-        return proper.into_iter().take(8).collect();
-    }
-    let healthy: Vec<StreamSource> = out.iter().filter(|s| s.seeders >= 5).cloned().collect();
-    healthy.into_iter().take(8).collect()
+
+    // Wider picker: best first, but don't hide solid mid-seed magnets.
+    out.into_iter().take(18).collect()
 }
 
 /// Prefer single-episode releases over season packs when both are listed.
@@ -1398,9 +1495,9 @@ pub fn cache_is_strong(sources: &[StreamSource], preferred_resolution: &str) -> 
     let preferred_res = preferred_resolution.trim().to_ascii_lowercase();
     let proper: Vec<&StreamSource> = sources
         .iter()
-        .filter(|s| s.seeders >= 5 && source_quality_score(&s.title) >= 3)
+        .filter(|s| s.seeders >= 8 && source_quality_score(&s.title) >= 3)
         .collect();
-    if proper.len() >= 2 && proper.iter().any(|s| s.seeders >= 25) {
+    if proper.len() >= 2 && proper.iter().any(|s| s.seeders >= 20) {
         return true;
     }
     sources
@@ -1581,10 +1678,11 @@ mod tests {
     }
 
     #[test]
-    fn unlabeled_title_is_english() {
+    fn unlabeled_title_is_not_assumed_english() {
         let found = super::language_codes("Dune.2024.1080p.BluRay.x264");
         assert!(found.is_empty());
-        assert!(super::language_matches(&found, "en", "movie"));
+        // Preferred en,hi — untagged must NOT pass (was leaking foreign audio).
+        assert!(!super::language_matches(&found, "en,hi", "movie"));
         assert!(!super::language_matches(&found, "hi", "movie"));
     }
 
@@ -1593,30 +1691,79 @@ mod tests {
         let found = super::language_codes("Dune 2024 Hindi 1080p");
         assert!(found.contains(&"hi"));
         assert!(super::language_matches(&found, "hi", "movie"));
+        assert!(super::language_matches(&found, "en,hi", "movie"));
         assert!(!super::language_matches(&found, "en", "movie"));
     }
 
     #[test]
-    fn unlabeled_anime_matches_japanese() {
+    fn multi_always_matches_when_prefs_set() {
+        let found = super::language_codes("Movie 2024 MULTI 1080p");
+        assert!(found.contains(&"multi"));
+        assert!(super::language_matches(&found, "en", "movie"));
+        assert!(super::language_matches(&found, "hi", "movie"));
+        assert!(super::language_matches(&found, "en,hi", "movie"));
+    }
+
+    #[test]
+    fn spanish_does_not_match_english_hindi_prefs() {
+        let found = super::language_codes("Movie 2024 Spanish Latino 1080p");
+        assert!(found.contains(&"es"));
+        assert!(!super::language_matches(&found, "en,hi", "movie"));
+    }
+
+    #[test]
+    fn english_tag_matches_en_pref() {
+        let found = super::language_codes("Movie 2024 English 1080p BluRay");
+        assert!(found.contains(&"en"));
+        assert!(super::language_matches(&found, "en,hi", "movie"));
+    }
+
+    #[test]
+    fn unlabeled_anime_no_longer_assumed_japanese() {
         let found = super::language_codes("Shogun S01E01 1080p WEB-DL");
         assert!(found.is_empty());
-        assert!(super::language_matches(&found, "ja", "anime"));
-        assert!(!super::language_matches(&found, "ja", "movie"));
+        assert!(!super::language_matches(&found, "ja", "anime"));
+        assert!(!super::language_matches(&found, "en,hi", "anime"));
     }
 
     #[test]
-    fn multi_alone_does_not_match_specific_language() {
+    fn multi_alone_matches_any_preference() {
         let found = ["multi"];
-        assert!(!super::language_matches(&found, "en", "movie"));
-        assert!(!super::language_matches(&found, "hi", "movie"));
+        assert!(super::language_matches(&found, "en", "movie"));
+        assert!(super::language_matches(&found, "hi", "movie"));
         assert!(super::language_matches(&found, "en,multi", "movie"));
+    }
+
+    #[test]
+    fn rejects_sign_language_releases() {
+        assert!(super::looks_like_sign_language(
+            "Movie.2020.1080p.Sign.Language.WEB-DL"
+        ));
+        assert!(super::looks_like_sign_language("Show S01E01 ASL 720p"));
+        assert!(super::looks_like_sign_language("Film BSL BluRay"));
+        assert!(!super::looks_like_sign_language("Dune.2021.1080p.BluRay.x264"));
     }
 
     #[test]
     fn language_query_skips_english() {
         assert_eq!(super::language_query_term("en"), None);
         assert_eq!(super::language_query_term("hi"), Some("Hindi"));
-        assert!(super::build_query("Dune", "movie", None, None, "hi").contains("Hindi"));
-        assert!(!super::build_query("Dune", "movie", None, None, "en").contains("English"));
+        // Year and language names are never baked into the query.
+        let movie = super::build_query("Dune", "movie", None, None, Some(2021), "hi");
+        assert!(!movie.contains("2021"));
+        assert!(!movie.contains("Hindi"));
+        assert!(!super::build_query("Dune", "movie", None, None, None, "en").contains("English"));
+        let tv = super::build_query(
+            "House of the Dragon S03E07",
+            "series",
+            Some(3),
+            Some(7),
+            Some(2022),
+            "hi",
+        );
+        assert!(tv.contains("S03E07"));
+        assert!(!tv.contains("2022"));
+        assert!(!tv.contains("Hindi"));
+        assert_eq!(tv.matches("S03E07").count(), 1);
     }
 }

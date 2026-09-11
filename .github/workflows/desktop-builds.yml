@@ -1,8 +1,11 @@
 # Build PeanutButter desktop clients (Windows / macOS / Linux)
 #
-# Native Windows and macOS binaries must be compiled on those OSes
-# (Flutter cannot cross-compile desktop from Linux).
-# Artifacts are uploaded on every push to main (and on version tags).
+# Artifacts:
+#   Linux  — amd64 .deb, x86_64 AppImage, portable zip
+#   macOS  — universal .app zip (arm64 + x86_64)
+#   Windows — portable zip + setup .exe installer
+#
+# Native Windows/macOS binaries must be compiled on those OSes.
 
 name: Desktop builds
 
@@ -15,6 +18,8 @@ on:
       - "v*"
     paths:
       - "frontend/**"
+      - "packaging/**"
+      - "scripts/package-linux.sh"
       - ".github/workflows/desktop-builds.yml"
 
 concurrency:
@@ -23,7 +28,7 @@ concurrency:
 
 jobs:
   linux:
-    name: Linux
+    name: Linux (deb + AppImage + zip)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -43,7 +48,9 @@ jobs:
             clang cmake ninja-build pkg-config \
             libgtk-3-dev liblzma-dev libstdc++-12-dev \
             libmpv-dev mpv \
-            libwebkit2gtk-4.1-dev
+            libwebkit2gtk-4.1-dev \
+            dpkg-dev rsync curl file \
+            python3-pil
 
       - name: Enable Linux desktop
         run: flutter config --enable-linux-desktop
@@ -51,24 +58,30 @@ jobs:
       - run: flutter pub get
       - run: flutter build linux --release
 
-      - name: Package zip
+      - name: Package zip / deb / AppImage
+        working-directory: .
         run: |
-          mkdir -p dist/PeanutButter
-          cp -a build/linux/x64/release/bundle/. dist/PeanutButter/
+          chmod +x scripts/package-linux.sh
+          mkdir -p frontend/dist/PeanutButter
+          cp -a frontend/build/linux/x64/release/bundle/. frontend/dist/PeanutButter/
           printf '%s\n' '#!/usr/bin/env bash' 'cd "$(dirname "$0")"' \
             'export LD_LIBRARY_PATH="$PWD/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"' \
-            'exec ./peanutbutter "$@"' > dist/PeanutButter/run.sh
-          chmod +x dist/PeanutButter/run.sh dist/PeanutButter/peanutbutter
-          (cd dist && zip -qr PeanutButter-linux-x64.zip PeanutButter)
+            'exec ./peanutbutter "$@"' > frontend/dist/PeanutButter/run.sh
+          chmod +x frontend/dist/PeanutButter/run.sh frontend/dist/PeanutButter/peanutbutter
+          (cd frontend/dist && zip -qr PeanutButter-linux-x64-portable.zip PeanutButter)
+          ./scripts/package-linux.sh frontend/build/linux/x64/release/bundle
 
       - uses: actions/upload-artifact@v4
         with:
-          name: PeanutButter-linux-x64
-          path: frontend/dist/PeanutButter-linux-x64.zip
+          name: PeanutButter-linux
+          path: |
+            frontend/dist/PeanutButter-linux-x64-portable.zip
+            frontend/dist/PeanutButter-linux-amd64.deb
+            frontend/dist/PeanutButter-linux-x86_64.AppImage
           if-no-files-found: error
 
   windows:
-    name: Windows
+    name: Windows (portable + setup exe)
     runs-on: windows-latest
     defaults:
       run:
@@ -128,26 +141,65 @@ jobs:
 
       - run: flutter build windows --release
 
-      - name: Package zip
+      - name: Resolve release dir
+        id: winout
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path dist | Out-Null
           $src = "build\windows\x64\runner\Release"
-          if (-not (Test-Path $src)) {
+          if (-not (Test-Path (Join-Path $src "peanutbutter.exe"))) {
             $src = Get-ChildItem -Path "build\windows" -Recurse -Directory -Filter Release |
               Where-Object { Test-Path (Join-Path $_.FullName "peanutbutter.exe") } |
               Select-Object -First 1 -ExpandProperty FullName
           }
-          Compress-Archive -Path "$src\*" -DestinationPath "dist\PeanutButter-windows-x64.zip" -Force
+          if (-not $src -or -not (Test-Path (Join-Path $src "peanutbutter.exe"))) {
+            throw "peanutbutter.exe not found"
+          }
+          Write-Host "Release dir: $src"
+          "dir=$src" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Package portable zip
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $src = "${{ steps.winout.outputs.dir }}"
+          $stage = Join-Path $env:RUNNER_TEMP "PeanutButter-portable"
+          if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item -Recurse -Force "$src\*" $stage
+          Compress-Archive -Path "$stage\*" -DestinationPath "dist\PeanutButter-windows-x64-portable.zip" -Force
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /? | Select-Object -First 3
+
+      - name: Build setup exe
+        shell: pwsh
+        working-directory: .
+        run: |
+          $ver = (Select-String -Path frontend\pubspec.yaml -Pattern '^version:\s*([0-9]+\.[0-9]+\.[0-9]+)').Matches.Groups[1].Value
+          if (-not $ver) { $ver = "0.2.0" }
+          $src = Resolve-Path "frontend\${{ steps.winout.outputs.dir }}"
+          $out = Resolve-Path "frontend\dist"
+          $iss = Resolve-Path "packaging\windows\peanutbutter.iss"
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" `
+            "/DMyAppVersion=$ver" `
+            "/DMyAppSource=$src" `
+            "/DMyAppOutputDir=$out" `
+            $iss
+          Get-ChildItem frontend\dist
 
       - uses: actions/upload-artifact@v4
         with:
-          name: PeanutButter-windows-x64
-          path: frontend/dist/PeanutButter-windows-x64.zip
+          name: PeanutButter-windows
+          path: |
+            frontend/dist/PeanutButter-windows-x64-portable.zip
+            frontend/dist/PeanutButter-windows-x64-setup.exe
           if-no-files-found: error
 
   macos:
-    name: macOS
+    name: macOS (universal arm64 + x86_64)
     runs-on: macos-latest
     defaults:
       run:
@@ -162,11 +214,11 @@ jobs:
 
       - run: flutter config --enable-macos-desktop
       - run: flutter pub get
-      - run: flutter build macos --release
 
-      - name: Package zip
+      - name: Build universal macOS release
         run: |
-          mkdir -p dist
+          # Release.xcconfig: ARCHS=arm64 x86_64, ONLY_ACTIVE_ARCH=NO
+          flutter build macos --release
           APP="build/macos/Build/Products/Release/peanutbutter.app"
           if [ ! -d "$APP" ]; then
             APP=$(find build/macos/Build/Products/Release -maxdepth 1 -name '*.app' | head -1)
@@ -176,10 +228,36 @@ jobs:
             ls -la build/macos/Build/Products/Release || true
             exit 1
           fi
-          ditto -c -k --sequesterRsrc --keepParent "$APP" dist/PeanutButter-macos.zip
+          BIN=$(find "$APP/Contents/MacOS" -type f | head -1)
+          echo "Binary: $BIN"
+          file "$BIN" || true
+          lipo -info "$BIN" || true
+          ARCHS="$(lipo -archs "$BIN" 2>/dev/null || true)"
+          echo "Architectures: $ARCHS"
+          if ! echo " $ARCHS " | grep -q " arm64 " || ! echo " $ARCHS " | grep -q " x86_64 "; then
+            echo "Forcing universal xcodebuild (arm64 + x86_64)"
+            (
+              cd macos
+              xcodebuild -workspace Runner.xcworkspace -scheme Runner -configuration Release \
+                ARCHS="arm64 x86_64" ONLY_ACTIVE_ARCH=NO \
+                -destination 'generic/platform=macOS' build
+            )
+            APP="build/macos/Build/Products/Release/peanutbutter.app"
+            if [ ! -d "$APP" ]; then
+              APP=$(find build/macos/Build/Products/Release -maxdepth 1 -name '*.app' | head -1)
+            fi
+            BIN=$(find "$APP/Contents/MacOS" -type f | head -1)
+            file "$BIN" || true
+            lipo -info "$BIN" || true
+          fi
+          mkdir -p dist
+          ditto -c -k --sequesterRsrc --keepParent "$APP" dist/PeanutButter-macos-universal.zip
+          cp -f dist/PeanutButter-macos-universal.zip dist/PeanutButter-macos-arm64-x86_64.zip
 
       - uses: actions/upload-artifact@v4
         with:
           name: PeanutButter-macos
-          path: frontend/dist/PeanutButter-macos.zip
+          path: |
+            frontend/dist/PeanutButter-macos-universal.zip
+            frontend/dist/PeanutButter-macos-arm64-x86_64.zip
           if-no-files-found: error

@@ -62,6 +62,7 @@ class LocalTorrentEngine {
     required String magnet,
     int? season,
     int? episode,
+    int? fileIndex,
     void Function(LocalStreamStats stats)? onStats,
   }) async {
     await ensureInit();
@@ -105,16 +106,20 @@ class LocalTorrentEngine {
       if (meta.isPaused) engine.resumeTorrent(id);
 
       final files = engine.getFiles(id);
-      final fileIndex = _pickFile(files, season: season, episode: episode);
-      if (fileIndex == null) {
+      final chosen = fileIndex ?? _pickFile(files, season: season, episode: episode);
+      if (chosen == null) {
         await stop();
         throw 'This source doesn’t contain a playable video file. Try another result.';
+      }
+      if (fileIndex != null && !files.any((f) => f.index == fileIndex)) {
+        await stop();
+        throw 'That file isn’t in this torrent anymore. Pick another file.';
       }
 
       final priorities = List<int>.filled(files.length, 0);
       for (final f in files) {
         if (f.index >= 0 && f.index < priorities.length) {
-          priorities[f.index] = f.index == fileIndex ? 7 : 0;
+          priorities[f.index] = f.index == chosen ? 7 : 0;
         }
       }
       if (priorities.isNotEmpty) {
@@ -124,7 +129,7 @@ class LocalTorrentEngine {
 
       final stream = engine.startStream(
         id,
-        fileIndex: fileIndex,
+        fileIndex: chosen,
         maxCacheBytes: 256 * 1024 * 1024,
       );
       _streamId = stream.id;
@@ -224,6 +229,32 @@ class LocalTorrentEngine {
       final sid = _streamId;
       if (sid != null) {
         engine.preloadStream(sid, preloadBytes: 32 * 1024 * 1024);
+      }
+    } catch (_) {}
+  }
+
+  /// After a player seek, refresh sequential read-ahead from the new time.
+  /// Byte-range requests from the player retarget piece deadlines; we also
+  /// resume + preload so bandwidth follows the new window immediately.
+  void seekTo({required int positionMs}) {
+    final id = _torrentId;
+    if (id == null || !_ready) return;
+    try {
+      final engine = LibtorrentFlutter.instance;
+      final info = engine.torrents[id];
+      if (info != null && info.isPaused) {
+        engine.resumeTorrent(id);
+      }
+      final sid = _streamId;
+      if (sid != null) {
+        // Drop stale readahead and pull a fresh window at the seek target.
+        engine.setCacheSettings(
+          sid,
+          capacity: 256 * 1024 * 1024,
+          readAheadPct: 95,
+          connectionsLimit: 80,
+        );
+        engine.preloadStream(sid, preloadBytes: 24 * 1024 * 1024);
       }
     } catch (_) {}
   }

@@ -121,7 +121,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
     final server = info.asData?.value;
     final langs = server?.preferredLanguages ?? settings.preferredLanguages;
-    final langLabel = langs.isEmpty ? 'All languages' : langs.map(languageDisplayName).join(', ');
 
     return Scaffold(
       backgroundColor: AppTheme.canvas,
@@ -190,10 +189,31 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             children: [
               _SimpleRow(
                 label: 'Languages',
-                subtitle: 'Set in the server console · Streaming',
-                trailing: Text(
-                  langLabel,
-                  style: const TextStyle(color: Colors.white70, fontWeight: FontWeight.w600),
+                subtitle: 'Catalog + Jackett · synced to this device',
+                trailing: AppMultiMenuButton(
+                  hint: 'Languages',
+                  icon: Icons.translate_rounded,
+                  emptyLabel: 'All languages',
+                  values: langs,
+                  entries: [
+                    for (final lang in kContentLanguages)
+                      AppMenuEntry(value: lang.code, label: lang.label),
+                  ],
+                  onChanged: (next) async {
+                    await ref.read(settingsProvider.notifier).setPreferredLanguages(next);
+                    try {
+                      final client = ref.read(graphQLClientProvider);
+                      await client.mutate(
+                        MutationOptions(
+                          document: gql(UPDATE_SETTINGS),
+                          variables: {
+                            'input': {'preferredLanguages': next},
+                          },
+                        ),
+                      );
+                      ref.invalidate(serverInfoProvider);
+                    } catch (_) {}
+                  },
                 ),
               ),
               const _Divider(),

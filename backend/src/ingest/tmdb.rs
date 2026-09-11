@@ -1092,6 +1092,14 @@ pub fn shelf_for_sort(sort: &str) -> Option<&'static str> {
 
 /// Ensure TMDB list pages covering `catalog_page * per_page` items are cached.
 /// Called from GraphQL `catalog` when the user scrolls trending / popular / fresh.
+pub async fn shelf_has_more_for_catalog(
+    ctx: &IngestContext,
+    shelf: &str,
+    kind: Option<&str>,
+) -> Result<bool> {
+    shelf_has_more_remote(ctx, shelf, kind).await
+}
+
 pub async fn ensure_shelf_pages_for_catalog(
     ctx: &IngestContext,
     shelf: &str,

@@ -34,6 +34,7 @@ class SettingsState {
     this.connected = false,
     this.discovering = false,
     this.pairingInProgress = false,
+    this.booting = true,
     this.lastError,
     this.clearCacheOnExit = false,
     this.jackettCatalogPending = false,
@@ -52,6 +53,8 @@ class SettingsState {
   final bool discovering;
   /// True while Connect is verifying a code — keeps the pairing UI mounted.
   final bool pairingInProgress;
+  /// True until the first reachability check finishes — hides Unreachable flash.
+  final bool booting;
   final String? lastError;
   final bool clearCacheOnExit;
   final bool jackettCatalogPending;
@@ -69,6 +72,7 @@ class SettingsState {
     bool? connected,
     bool? discovering,
     bool? pairingInProgress,
+    bool? booting,
     String? lastError,
     bool? clearCacheOnExit,
     bool? jackettCatalogPending,
@@ -87,6 +91,7 @@ class SettingsState {
       connected: connected ?? this.connected,
       discovering: discovering ?? this.discovering,
       pairingInProgress: pairingInProgress ?? this.pairingInProgress,
+      booting: booting ?? this.booting,
       lastError: clearError ? null : (lastError ?? this.lastError),
       clearCacheOnExit: clearCacheOnExit ?? this.clearCacheOnExit,
       jackettCatalogPending: jackettCatalogPending ?? this.jackettCatalogPending,
@@ -126,9 +131,10 @@ class SettingsNotifier extends StateNotifier<SettingsState> {
       serverUrl = '';
       unawaited(_prefs.setString(_kUrl, ''));
     }
+    final apiToken = _prefs.getString(_kToken) ?? '';
     state = SettingsState(
       serverUrl: serverUrl,
-      apiToken: _prefs.getString(_kToken) ?? '',
+      apiToken: apiToken,
       themeMode: theme == 'light'
           ? ThemeMode.light
           : theme == 'system'
@@ -136,6 +142,8 @@ class SettingsNotifier extends StateNotifier<SettingsState> {
               : ThemeMode.dark,
       defaultQuality: _prefs.getString(_kQuality) ?? '1080p',
       preferredLanguages: _prefs.getStringList(_kLangs) ?? const ['en'],
+      // Always start on the loading gate; bootstrap decides home / pairing / unreachable.
+      booting: true,
       clearCacheOnExit: _prefs.getBool(_kClearCache) ?? false,
       jackettCatalogPending: _prefs.getBool(_kJackettPending) ?? false,
       jackettEnabled: _prefs.getBool(_kJackettEnabled) ?? false,
@@ -296,12 +304,35 @@ class SettingsNotifier extends StateNotifier<SettingsState> {
     return true;
   }
 
+  /// Boot probe with short retries — NAS/API often need a moment after wake.
+  Future<bool> probeCurrentWithRetry({int attempts = 4}) async {
+    for (var i = 0; i < attempts; i++) {
+      if (await probeCurrent()) return true;
+      if (i + 1 < attempts) {
+        await Future<void>.delayed(Duration(milliseconds: 350 * (i + 1)));
+      }
+    }
+    return false;
+  }
+
   Future<void> markConnected() async {
+    // Do not clear booting here — finishBoot() owns leaving the loading gate
+    // so Unreachable/Home never flash mid-check.
     state = state.copyWith(connected: true, clearError: true);
   }
 
   Future<void> markDisconnected(String message) async {
     state = state.copyWith(connected: false, lastError: message);
+  }
+
+  void beginBoot() {
+    if (state.booting) return;
+    state = state.copyWith(booting: true, clearError: true);
+  }
+
+  void finishBoot() {
+    if (!state.booting) return;
+    state = state.copyWith(booting: false);
   }
 
   Future<String?> discoverLocalhost() async {
@@ -332,12 +363,8 @@ class SettingsNotifier extends StateNotifier<SettingsState> {
           );
           return found;
         }
-        final ok = await probeCurrent();
-        if (state.connected || state.pairingInProgress) {
-          state = state.copyWith(discovering: false);
-          return found;
-        }
-        state = state.copyWith(discovering: false, connected: ok);
+        // URL only — session gate / bootstrap decides connected via /health.
+        state = state.copyWith(discovering: false);
         return found;
       }
       if (state.connected || state.pairingInProgress) {

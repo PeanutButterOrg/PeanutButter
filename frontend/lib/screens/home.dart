@@ -89,7 +89,7 @@ class HomeScreen extends ConsumerWidget {
                     focusNode: TvHeaderFocus.favourites,
                     onPressed: () => context.push('/favourites'),
                     onMoveLeft: () => TvHeaderFocus.series.requestFocus(),
-                    onMoveRight: () => TvHeaderFocus.search.requestFocus(),
+                    onMoveRight: () => TvHeaderFocus.watched.requestFocus(),
                     onMoveDown: () {
                       TvHomeScroll.exitHeader?.call();
                       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -99,10 +99,24 @@ class HomeScreen extends ConsumerWidget {
                     icon: const Icon(Icons.favorite_rounded),
                   ),
                   TvHeaderButton(
+                    tooltip: 'Watched',
+                    focusNode: TvHeaderFocus.watched,
+                    onPressed: () => context.push('/watched'),
+                    onMoveLeft: () => TvHeaderFocus.favourites.requestFocus(),
+                    onMoveRight: () => TvHeaderFocus.search.requestFocus(),
+                    onMoveDown: () {
+                      TvHomeScroll.exitHeader?.call();
+                      WidgetsBinding.instance.addPostFrameCallback((_) {
+                        TvHomeScroll.toBanner?.call();
+                      });
+                    },
+                    icon: const Icon(Icons.video_library_rounded),
+                  ),
+                  TvHeaderButton(
                     tooltip: 'Search',
                     focusNode: TvHeaderFocus.search,
                     onPressed: () => context.push('/search'),
-                    onMoveLeft: () => TvHeaderFocus.favourites.requestFocus(),
+                    onMoveLeft: () => TvHeaderFocus.watched.requestFocus(),
                     onMoveRight: () => TvHeaderFocus.settings.requestFocus(),
                     // Down on search button → open the search screen
                     onMoveDown: () => context.push('/search'),

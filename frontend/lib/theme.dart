@@ -102,4 +102,5 @@ class PtTheme {
   static const Color accent = AppTheme.seed;
   static const Color muted = Color(0xFF9A9AA8);
   static const Color rt = AppTheme.rt;
+  static const Color completed = Color(0xFF7CFFB2);
 }

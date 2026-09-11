@@ -81,6 +81,7 @@ query GetCatalog(
         durationMs
         fileId
         episodeId
+        progressPercent
       }
     }
   }
@@ -147,6 +148,12 @@ query GetTitle($id: UUID!) {
         stillPath
         airDate
         runtime
+        userState {
+          watched
+          positionMs
+          durationMs
+          progressPercent
+        }
       }
     }
     people {
@@ -164,6 +171,7 @@ query GetTitle($id: UUID!) {
       durationMs
       episodeId
       fileId
+      progressPercent
     }
     trailerYoutubeKey
     contentRating
@@ -279,6 +287,7 @@ fragment HomeTitle on Title {
     durationMs
     fileId
     episodeId
+    progressPercent
   }
 }
 ''';
@@ -366,8 +375,8 @@ mutation SetWatched($titleId: UUID!, $watched: Boolean!) {
 ''';
 
 const String UPDATE_PROGRESS = r'''
-mutation UpdateProgress($titleId: UUID!, $fileId: UUID, $episodeId: UUID, $positionMs: Int!, $durationMs: Int) {
-  updateProgress(titleId: $titleId, fileId: $fileId, episodeId: $episodeId, positionMs: $positionMs, durationMs: $durationMs) {
+mutation UpdateProgress($titleId: UUID!, $fileId: UUID, $episodeId: UUID, $positionMs: Int!, $durationMs: Int, $complete: Boolean) {
+  updateProgress(titleId: $titleId, fileId: $fileId, episodeId: $episodeId, positionMs: $positionMs, durationMs: $durationMs, complete: $complete) {
     success
   }
 }
@@ -385,8 +394,8 @@ query NextPlayback($fileId: UUID!) {
 ''';
 
 const String STREAMING_SEARCH = r'''
-query StreamingSearch($query: String!, $kind: TitleKind!, $season: Int, $episode: Int, $language: String, $titleId: UUID, $live: Boolean) {
-  streamingSearch(query: $query, kind: $kind, season: $season, episode: $episode, language: $language, titleId: $titleId, live: $live) {
+query StreamingSearch($query: String!, $kind: TitleKind!, $season: Int, $episode: Int, $language: String, $titleId: UUID, $year: Int, $live: Boolean) {
+  streamingSearch(query: $query, kind: $kind, season: $season, episode: $episode, language: $language, titleId: $titleId, year: $year, live: $live) {
     id
     title
     magnet
@@ -419,9 +428,35 @@ query StreamStatus($sessionId: String!) {
 }
 ''';
 
+const String MEDIA_SEGMENTS = r'''
+query MediaSegments($titleId: UUID!, $season: Int, $episode: Int, $durationMs: Int) {
+  mediaSegments(titleId: $titleId, season: $season, episode: $episode, durationMs: $durationMs) {
+    tmdbId
+    segments {
+      kind
+      label
+      startMs
+      endMs
+    }
+  }
+}
+''';
+
+const String TORRENT_FILES = r'''
+query TorrentFiles($magnet: String!, $season: Int, $episode: Int) {
+  torrentFiles(magnet: $magnet, season: $season, episode: $episode) {
+    index
+    name
+    size
+    sizeBytes
+    recommended
+  }
+}
+''';
+
 const String START_STREAM = r'''
-mutation StartStream($magnet: String!, $title: String!, $titleId: UUID, $resume: Boolean, $seeders: Int, $peers: Int, $season: Int, $episode: Int) {
-  startStream(magnet: $magnet, title: $title, titleId: $titleId, resume: $resume, seeders: $seeders, peers: $peers, season: $season, episode: $episode) {
+mutation StartStream($magnet: String!, $title: String!, $titleId: UUID, $resume: Boolean, $seeders: Int, $peers: Int, $season: Int, $episode: Int, $fileIndex: Int) {
+  startStream(magnet: $magnet, title: $title, titleId: $titleId, resume: $resume, seeders: $seeders, peers: $peers, season: $season, episode: $episode, fileIndex: $fileIndex) {
     id
     title
     progress
@@ -474,6 +509,26 @@ mutation FetchSubtitles($titleId: UUID!, $language: String, $season: Int, $episo
     label
     format
     content
+  }
+}
+''';
+
+const String EPISODE_MAP = r'''
+query EpisodeMap($id: UUID!) {
+  title(id: $id) {
+    id
+    kind
+    title
+    seasons {
+      id
+      seasonNumber
+      episodeCount
+      episodes {
+        id
+        episodeNumber
+        name
+      }
+    }
   }
 }
 ''';

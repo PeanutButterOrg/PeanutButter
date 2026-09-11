@@ -132,6 +132,9 @@ impl Mutation {
         input: SettingsInput,
     ) -> async_graphql::Result<MutationResult> {
         let state = ctx.data::<AppState>()?;
+        let langs = input.preferred_languages.as_ref().map(|codes| {
+            crate::config::normalize_language_list(&codes.join(","))
+        });
         // Jackett is owned by the server console. Ignore client-sent indexer settings.
         crate::db::save_settings(
             &state.pool,
@@ -151,7 +154,7 @@ impl Mutation {
             None,
             input.opensubtitles_enabled,
             input.opensubtitles_api_key.as_deref().filter(|s| !s.trim().is_empty()),
-            None,
+            langs.as_deref(),
         )
         .await?;
         state.config.live.apply(
@@ -179,6 +182,9 @@ impl Mutation {
                 }
             }),
         );
+        if let Some(langs) = langs {
+            state.config.live.apply_streaming(None, None, None, None, Some(langs));
+        }
         state.gql_cache.invalidate();
         Ok(MutationResult {
             success: true,
@@ -318,6 +324,7 @@ impl Mutation {
         episode_id: Option<Uuid>,
         position_ms: i64,
         duration_ms: Option<i64>,
+        complete: Option<bool>,
     ) -> async_graphql::Result<MutationResult> {
         let state = ctx.data::<AppState>()?;
         let auth = ctx.data::<crate::auth::AuthSession>()?;
@@ -325,11 +332,21 @@ impl Mutation {
             .bind(title_id)
             .fetch_optional(&state.pool)
             .await?;
-        let movie = kind.as_deref() == Some("movie") || kind.is_none();
+        let movie = kind.as_deref() == Some("movie");
+        let force_complete = complete.unwrap_or(false);
+        // Only finished movies enter Watched. Series stay in Continue watching
+        // until the user marks them watched explicitly.
         let watched = movie
             && duration_ms
                 .map(|d| d > 0 && position_ms as f64 >= d as f64 * 0.9)
                 .unwrap_or(false);
+        // Finished series episodes must not leave title resume parked at EOF —
+        // that restarts the same torrent near the end on the next Play.
+        let title_position = if force_complete && !movie {
+            0_i64
+        } else {
+            position_ms.max(0)
+        };
         sqlx::query(
             r#"
             INSERT INTO user_progress (token_id, title_id, episode_id, file_id, position_ms, duration_ms, watched, updated_at)
@@ -339,7 +356,10 @@ impl Mutation {
                 file_id = COALESCE(EXCLUDED.file_id, user_progress.file_id),
                 position_ms = EXCLUDED.position_ms,
                 duration_ms = COALESCE(EXCLUDED.duration_ms, user_progress.duration_ms),
-                watched = EXCLUDED.watched,
+                watched = CASE
+                    WHEN EXCLUDED.watched THEN TRUE
+                    ELSE user_progress.watched
+                END,
                 updated_at = now()
             "#,
         )
@@ -347,11 +367,23 @@ impl Mutation {
         .bind(title_id)
         .bind(episode_id)
         .bind(file_id)
-        .bind(position_ms.max(0))
+        .bind(title_position)
         .bind(duration_ms)
         .bind(watched)
         .execute(&state.pool)
         .await?;
+        if let Some(eid) = episode_id {
+            let _ = crate::db::upsert_episode_progress(
+                &state.pool,
+                auth.token_id,
+                title_id,
+                eid,
+                position_ms.max(0),
+                duration_ms,
+                force_complete,
+            )
+            .await;
+        }
         Ok(MutationResult {
             success: true,
             message: "progress saved".into(),
@@ -388,6 +420,7 @@ impl Mutation {
         peers: Option<i32>,
         season: Option<i32>,
         episode: Option<i32>,
+        file_index: Option<i32>,
     ) -> async_graphql::Result<StreamSession> {
         let state = ctx.data::<AppState>()?;
         if !state.config.live.jackett_enabled() {
@@ -410,6 +443,7 @@ impl Mutation {
         } else {
             0
         };
+        let preferred_file = file_index.filter(|i| *i >= 0).map(|i| i as usize);
         let session = state
             .streams
             .start(
@@ -421,6 +455,7 @@ impl Mutation {
                 peers.unwrap_or(0),
                 season,
                 episode,
+                preferred_file,
             )
             .await?;
         if let Some(title_id) = title_id {
@@ -489,6 +524,7 @@ struct SettingsInput {
     streaming_resolution: Option<String>,
     opensubtitles_enabled: Option<bool>,
     opensubtitles_api_key: Option<String>,
+    preferred_languages: Option<Vec<String>>,
 }
 
 async fn fetch_title(pool: &sqlx::PgPool, id: Uuid) -> sqlx::Result<crate::db::models::TitleRow> {

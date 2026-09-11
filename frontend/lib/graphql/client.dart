@@ -42,7 +42,7 @@ GraphQLClient createGraphQLClient(
       query: Policies(fetch: FetchPolicy.cacheAndNetwork),
       mutate: Policies(fetch: FetchPolicy.networkOnly),
     ),
-    queryRequestTimeout: const Duration(seconds: 45),
+    queryRequestTimeout: const Duration(seconds: 100),
   );
 }
 

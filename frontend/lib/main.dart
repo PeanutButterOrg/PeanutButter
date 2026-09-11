@@ -21,6 +21,7 @@ import 'screens/catalog.dart';
 import 'screens/detail.dart';
 import 'screens/edit_title.dart';
 import 'screens/favourites.dart';
+import 'screens/watched.dart';
 import 'screens/home.dart';
 import 'screens/pairing.dart';
 import 'screens/player.dart';
@@ -63,6 +64,7 @@ final _router = GoRouter(
     GoRoute(path: '/catalog', builder: (_, __) => const CatalogScreen()),
     GoRoute(path: '/search', builder: (_, __) => const SearchScreen()),
     GoRoute(path: '/favourites', builder: (_, __) => const FavouritesScreen()),
+    GoRoute(path: '/watched', builder: (_, __) => const WatchedScreen()),
     GoRoute(
       path: '/title/:id',
       builder: (_, state) => DetailScreen(titleId: state.pathParameters['id']!),
@@ -81,6 +83,7 @@ final _router = GoRouter(
           playbackUrl: extra['url'] as String? ?? '',
           youtubeKey: extra['youtubeKey'] as String?,
           trailerPreferredQuality: extra['preferredQuality'] as String?,
+          trailerInitialHeight: extra['trailerHeight'] as int?,
           titleId: extra['titleId'] as String?,
           episodeId: extra['episodeId'] as String?,
           season: extra['season'] as int?,
@@ -92,8 +95,13 @@ final _router = GoRouter(
           sessionId: extra['sessionId'] as String?,
           magnet: extra['magnet'] as String?,
           localTorrent: extra['localTorrent'] as bool? ?? false,
+          streamFileIndex: extra['streamFileIndex'] as int?,
           listedSeeders: extra['listedSeeders'] as int? ?? 0,
           listedPeers: extra['listedPeers'] as int? ?? 0,
+          catalogTitle: extra['catalogTitle'] as String?,
+          kind: extra['kind'] as String?,
+          posterUrl: extra['posterUrl'] as String?,
+          backdropUrl: extra['backdropUrl'] as String?,
         );
       },
     ),
@@ -115,14 +123,26 @@ class _PeanutButterAppState extends ConsumerState<PeanutButterApp> with WidgetsB
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    // Never block the first frame on discovery/probe — that caused an endless
-    // spinner on TV after pairing when boot work outlived Connect.
-    WidgetsBinding.instance.addPostFrameCallback((_) async {
-      final notifier = ref.read(settingsProvider.notifier);
+    // Start reachability immediately — do not wait for the first frame, and do
+    // not mount Home/Unreachable until this finishes.
+    unawaited(_bootstrapSession());
+    _sessionWatch = Timer.periodic(const Duration(seconds: 12), (_) => _checkSession());
+  }
+
+  Future<void> _bootstrapSession() async {
+    final notifier = ref.read(settingsProvider.notifier);
+    notifier.beginBoot();
+    try {
       const definedUrl = String.fromEnvironment('GRAPHQL_URI');
       const definedToken = String.fromEnvironment('API_KEY');
-      final envUrl = definedUrl.isNotEmpty ? definedUrl : (dotenv.env['GRAPHQL_URI'] ?? '');
-      final envToken = definedToken.isNotEmpty ? definedToken : (dotenv.env['API_KEY'] ?? '');
+      // Installed builds often have no .env — never touch dotenv.env unless loaded
+      // (NotInitializedError used to abort boot and flash Unreachable).
+      final envUrl = definedUrl.isNotEmpty
+          ? definedUrl
+          : (dotenv.isInitialized ? (dotenv.env['GRAPHQL_URI'] ?? '') : '');
+      final envToken = definedToken.isNotEmpty
+          ? definedToken
+          : (dotenv.isInitialized ? (dotenv.env['API_KEY'] ?? '') : '');
       if (envUrl.isNotEmpty) {
         final base = envUrl.replaceFirst(RegExp(r'/graphql$'), '');
         if (!isLocalServer(base)) {
@@ -138,33 +158,50 @@ class _PeanutButterAppState extends ConsumerState<PeanutButterApp> with WidgetsB
         await notifier.setServerUrl('');
         settings = ref.read(settingsProvider);
       }
-      final hadSavedPairing = settings.apiToken.isNotEmpty && settings.serverUrl.isNotEmpty;
-      if (hadSavedPairing) {
-        final ok = await notifier.probeCurrent();
-        if (ok) {
-          try {
-            await ref.read(serverInfoProvider.future).timeout(const Duration(seconds: 20));
-            await notifier.markConnected();
-          } catch (e) {
-            if (isUnauthorizedError(e)) {
-              await notifier.forgetPairing(
+      if (settings.apiToken.isEmpty) {
+        // Unpaired: scan LAN so PairingScreen can show the found host quickly.
+        await notifier.discoverLocalhost();
+        return;
+      }
+
+      // Paired: /health alone decides Home vs Unreachable (GraphQL warms after).
+      if (await _ensureHealthy(notifier)) {
+        await notifier.markConnected();
+        _warmServerInfo();
+      }
+    } catch (e, st) {
+      debugPrint('bootstrap failed: $e\n$st');
+    } finally {
+      ref.read(settingsProvider.notifier).finishBoot();
+    }
+  }
+
+  /// Saved host /health, then LAN discovery + /health. True only when reachable.
+  Future<bool> _ensureHealthy(SettingsNotifier notifier) async {
+    final settings = ref.read(settingsProvider);
+    if (settings.serverUrl.trim().isNotEmpty) {
+      if (await notifier.probeCurrentWithRetry()) return true;
+    }
+    final found = await notifier.discoverLocalhost();
+    if (found == null) return false;
+    if (ref.read(settingsProvider).apiToken.isEmpty) return false;
+    return notifier.probeCurrentWithRetry(attempts: 3);
+  }
+
+  void _warmServerInfo() {
+    unawaited(() async {
+      try {
+        ref.invalidate(serverInfoProvider);
+        await ref.read(serverInfoProvider.future).timeout(const Duration(seconds: 20));
+      } catch (e) {
+        if (isUnauthorizedError(e)) {
+          await ref.read(settingsProvider.notifier).forgetPairing(
                 message: 'This pairing code is no longer valid. Create a new code in the server console.',
               );
-            } else {
-              await notifier.markDisconnected(friendlyRequestError(e));
-              // Saved host unreachable — find the catalog on this network.
-              unawaited(notifier.discoverLocalhost());
-            }
-          }
-        } else {
-          unawaited(notifier.discoverLocalhost());
         }
-      } else {
-        // Unpaired or URL missing: scan LAN (never 127.0.0.1).
-        unawaited(notifier.discoverLocalhost());
+        // Reachability already passed via /health — don't bounce to Unreachable.
       }
-    });
-    _sessionWatch = Timer.periodic(const Duration(seconds: 12), (_) => _checkSession());
+    }());
   }
 
   Future<void> _checkSession() async {
@@ -226,6 +263,18 @@ class _PeanutButterAppState extends ConsumerState<PeanutButterApp> with WidgetsB
   @override
   Widget build(BuildContext context) {
     final settings = ref.watch(settingsProvider);
+    // While booting, mount ONLY the loading app — never MaterialApp.router /
+    // Unreachable / Home underneath the gate (avoids first-frame flashes).
+    if (settings.booting) {
+      return MaterialApp(
+        title: 'PeanutButter',
+        debugShowCheckedModeBanner: false,
+        themeMode: settings.themeMode,
+        theme: AppTheme.light(),
+        darkTheme: AppTheme.dark(),
+        home: const _BootConnectingScreen(),
+      );
+    }
     return MaterialApp.router(
       title: 'PeanutButter',
       debugShowCheckedModeBanner: false,
@@ -240,27 +289,107 @@ class _PeanutButterAppState extends ConsumerState<PeanutButterApp> with WidgetsB
         const SingleActivator(LogicalKeyboardKey.gameButtonA): const ActivateIntent(),
       },
       builder: (context, child) {
-        final paired = settings.apiToken.isNotEmpty;
-        final online = paired && settings.connected;
-        final playing = ref.watch(playbackActiveProvider) || playbackSessionActive;
-        Widget gate;
-        // Stay on the pairing form while Connect verifies — writing the token
-        // used to flip the gate to Unreachable/boot spinner mid-request.
-        if (settings.pairingInProgress || !paired) {
-          // Keep the player mounted if auth was cleared mid-stream.
-          gate = playing ? (child ?? const SizedBox.shrink()) : const PairingScreen();
-        } else if (!online && !playing) {
-          gate = const UnreachableScreen();
-        } else {
-          gate = child ?? const SizedBox.shrink();
-        }
         return MediaQuery(
           data: MediaQuery.of(context).copyWith(
             navigationMode: NavigationMode.directional,
           ),
-          child: gate,
+          child: _SessionGate(child: child),
         );
       },
+    );
+  }
+}
+
+/// After boot: Pairing / Unreachable / Home. Booting is handled above.
+class _SessionGate extends ConsumerWidget {
+  const _SessionGate({required this.child});
+
+  final Widget? child;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final settings = ref.watch(settingsProvider);
+    final paired = settings.apiToken.isNotEmpty;
+    final online = paired && settings.connected;
+    final playing = ref.watch(playbackActiveProvider) || playbackSessionActive;
+
+    if (settings.pairingInProgress || !paired) {
+      return playing ? (child ?? const SizedBox.shrink()) : const PairingScreen();
+    }
+    if (!online && !playing) {
+      return const UnreachableScreen();
+    }
+    return child ?? const SizedBox.shrink();
+  }
+}
+
+class _BootConnectingScreen extends ConsumerWidget {
+  const _BootConnectingScreen();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final settings = ref.watch(settingsProvider);
+    final url = settings.serverUrl.trim();
+    final searching = settings.discovering;
+    final title = searching
+        ? 'Searching this network'
+        : url.isEmpty
+            ? 'Looking for your server'
+            : 'Connecting to server';
+    final detail = searching
+        ? 'Checking /health on devices on your LAN'
+        : url.isEmpty
+            ? 'Finding PeanutButter on this network'
+            : 'Checking /health at $url';
+
+    return Scaffold(
+      backgroundColor: AppTheme.canvas,
+      body: SafeArea(
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 32),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text(
+                  'PEANUTBUTTER',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: AppTheme.seed,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 2.4,
+                    fontSize: 12,
+                  ),
+                ),
+                const SizedBox(height: 28),
+                const SizedBox(
+                  width: 56,
+                  height: 56,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 3.5,
+                    color: AppTheme.seed,
+                  ),
+                ),
+                const SizedBox(height: 28),
+                Text(
+                  title,
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.w700,
+                        color: Colors.white,
+                      ),
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  detail,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: Colors.white54, height: 1.45, fontSize: 14),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 }

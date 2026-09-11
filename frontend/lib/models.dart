@@ -431,6 +431,38 @@ class StreamSession {
   }
 }
 
+class TorrentFileOption {
+  const TorrentFileOption({
+    required this.index,
+    required this.name,
+    required this.size,
+    required this.sizeBytes,
+    required this.recommended,
+  });
+
+  final int index;
+  final String name;
+  final String size;
+  final int sizeBytes;
+  final bool recommended;
+
+  factory TorrentFileOption.fromJson(Map<String, dynamic> json) {
+    return TorrentFileOption(
+      index: (json['index'] as num?)?.toInt() ?? 0,
+      name: json['name'] as String? ?? '',
+      size: json['size'] as String? ?? '',
+      sizeBytes: (json['sizeBytes'] as num?)?.toInt() ?? 0,
+      recommended: json['recommended'] as bool? ?? false,
+    );
+  }
+
+  /// Basename for display (folder torrents have long paths).
+  String get shortName {
+    final parts = name.replaceAll('\\', '/').split('/');
+    return parts.isEmpty ? name : parts.last;
+  }
+}
+
 class Person {
   const Person({
     required this.id,
@@ -468,6 +500,7 @@ class UserState {
     this.durationMs,
     this.episodeId,
     this.fileId,
+    this.progressPercent = 0,
   });
 
   final bool favorite;
@@ -476,6 +509,8 @@ class UserState {
   final int? durationMs;
   final String? episodeId;
   final String? fileId;
+  /// 0–1 series/movie resume bar from the API.
+  final double progressPercent;
 
   factory UserState.fromJson(Map<String, dynamic> json) {
     return UserState(
@@ -485,6 +520,7 @@ class UserState {
       durationMs: json['durationMs'] as int?,
       episodeId: json['episodeId'] as String?,
       fileId: json['fileId'] as String?,
+      progressPercent: (json['progressPercent'] as num?)?.toDouble() ?? 0,
     );
   }
 }
@@ -512,7 +548,7 @@ class Season {
 
   factory Season.fromJson(Map<String, dynamic> json) {
     return Season(
-      id: json['id'] as String,
+      id: json['id'] as String? ?? '',
       seasonNumber: json['seasonNumber'] as int? ?? 0,
       name: json['name'] as String?,
       overview: json['overview'] as String?,
@@ -535,6 +571,7 @@ class Episode {
     this.stillPath,
     this.airDate,
     this.runtime,
+    this.userState,
   });
 
   final String id;
@@ -544,16 +581,43 @@ class Episode {
   final String? stillPath;
   final String? airDate;
   final int? runtime;
+  final EpisodeUserState? userState;
 
   factory Episode.fromJson(Map<String, dynamic> json) {
     return Episode(
-      id: json['id'] as String,
+      id: json['id'] as String? ?? '',
       episodeNumber: json['episodeNumber'] as int? ?? 0,
       name: json['name'] as String?,
       overview: json['overview'] as String?,
       stillPath: json['stillPath'] as String?,
       airDate: json['airDate'] as String?,
       runtime: json['runtime'] as int?,
+      userState: json['userState'] == null
+          ? null
+          : EpisodeUserState.fromJson(json['userState'] as Map<String, dynamic>),
+    );
+  }
+}
+
+class EpisodeUserState {
+  const EpisodeUserState({
+    this.watched = false,
+    this.positionMs = 0,
+    this.durationMs,
+    this.progressPercent = 0,
+  });
+
+  final bool watched;
+  final int positionMs;
+  final int? durationMs;
+  final double progressPercent;
+
+  factory EpisodeUserState.fromJson(Map<String, dynamic> json) {
+    return EpisodeUserState(
+      watched: json['watched'] as bool? ?? false,
+      positionMs: json['positionMs'] as int? ?? 0,
+      durationMs: json['durationMs'] as int?,
+      progressPercent: (json['progressPercent'] as num?)?.toDouble() ?? 0,
     );
   }
 }
@@ -796,4 +860,59 @@ String? _codecKey(String? raw) {
   if (raw == null) return null;
   final key = raw.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '');
   return key.isEmpty ? null : key;
+}
+
+/// TheIntroDB skip marker (intro / recap / credits / preview).
+class MediaSegment {
+  const MediaSegment({
+    required this.kind,
+    required this.label,
+    required this.startMs,
+    this.endMs,
+  });
+
+  final String kind;
+  final String label;
+  final int startMs;
+  final int? endMs;
+
+  factory MediaSegment.fromJson(Map<String, dynamic> json) {
+    return MediaSegment(
+      kind: (json['kind'] as String? ?? '').toUpperCase(),
+      label: json['label'] as String? ?? 'Skip',
+      startMs: (json['startMs'] as num?)?.toInt() ?? 0,
+      endMs: (json['endMs'] as num?)?.toInt(),
+    );
+  }
+
+  /// Whether [positionMs] is inside this segment (millisecond precision).
+  bool contains(int positionMs, {required int durationMs}) {
+    final start = startMs < 0 ? 0 : startMs;
+    final end = endMs ?? (durationMs > 0 ? durationMs : 1 << 62);
+    // Leave a tiny tail so Skip doesn't flicker at the last frame.
+    final activeEnd = end > start + 400 ? end - 250 : end;
+    return positionMs >= start && positionMs < activeEnd;
+  }
+
+  /// Target position after tapping Skip. Never jumps to EOF for intro/recap
+  /// when TheIntroDB omits `end_ms` (that used to slam the seek bar to the end).
+  int skipTargetMs({required int durationMs}) {
+    final end = endMs;
+    if (end != null && end > startMs) {
+      // Land just past the segment so the button clears immediately.
+      final target = end + 50;
+      if (durationMs > 0) return target.clamp(0, durationMs);
+      return target;
+    }
+    // Open-ended credits/preview: leave a couple seconds before true EOF so
+    // the player doesn't enter completed/stopped state.
+    if (kind == 'CREDITS' || kind == 'PREVIEW') {
+      if (durationMs > 2000) return durationMs - 2000;
+      return startMs;
+    }
+    // Intro/recap without an end: skip ~90s past start (typical intros).
+    final guess = startMs + 90000;
+    if (durationMs > 0) return guess.clamp(0, durationMs);
+    return guess;
+  }
 }

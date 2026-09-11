@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:graphql_flutter/graphql_flutter.dart';
 
@@ -60,11 +62,13 @@ class StreamStart {
     required this.session,
     required this.magnet,
     this.localTorrent = false,
+    this.fileIndex,
   });
 
   final StreamSession session;
   final String magnet;
   final bool localTorrent;
+  final int? fileIndex;
 }
 
 Future<List<StreamSource>> searchStreamingSources({
@@ -72,23 +76,19 @@ Future<List<StreamSource>> searchStreamingSources({
   required String title,
   required String kind,
   String? titleId,
-  int? year,
   int? season,
   int? episode,
-  String? language,
   bool? live,
 }) async {
-  final query = year == null ? title : '$title $year';
   final result = await client.query(
     QueryOptions(
       document: gql(STREAMING_SEARCH),
       fetchPolicy: FetchPolicy.networkOnly,
       variables: {
-        'query': query,
+        'query': title,
         'kind': kind,
         'season': season,
         'episode': episode,
-        'language': language,
         'titleId': titleId,
         if (live != null) 'live': live,
       },
@@ -107,70 +107,82 @@ Future<StreamStart?> showStreamingPicker({
   required String title,
   required String kind,
   String? titleId,
-  int? year,
   int? season,
   int? episode,
-  String? language,
+  List<String>? preferredLanguages,
   bool resumePlayback = true,
+  /// Stop this session before starting the new torrent (Play Next).
+  String? stopPreviousSessionId,
 }) async {
-  final langName = languageDisplayName(language);
   if (!context.mounted) return null;
-  showDialog<void>(
-    context: context,
-    barrierDismissible: false,
-    builder: (_) => const _BusyDialog(label: 'Looking up sources…'),
+  final languageLabel = _preferredLanguageLabel(preferredLanguages);
+
+  // Cancel must return immediately so episode/movie busy spinners clear;
+  // in-flight GraphQL work is ignored when it eventually finishes.
+  final searchCancel = Completer<void>();
+  var searchDone = false;
+  unawaited(
+    showDialog<void>(
+      context: context,
+      barrierDismissible: true,
+      builder: (ctx) => _BusyDialog(
+        label: 'Looking up sources…',
+        onCancel: () => Navigator.of(ctx).pop(),
+      ),
+    ).whenComplete(() {
+      if (!searchDone && !searchCancel.isCompleted) {
+        searchCancel.complete();
+      }
+    }),
   );
+
   late List<StreamSource> found;
   try {
+    final searchFuture = searchStreamingSources(
+      client: client,
+      title: title,
+      kind: kind,
+      titleId: titleId,
+      season: season,
+      episode: episode,
+      live: true,
+    );
+    // Ignore late success/failure after the user already cancelled.
+    unawaited(searchFuture.then((_) {}, onError: (_) {}));
+    final sources = await Future.any<List<StreamSource>?>([
+      searchFuture.then((v) => v),
+      searchCancel.future.then((_) => null),
+    ]);
+    if (sources == null || searchCancel.isCompleted) {
+      return null;
+    }
     found = sourcesMatchingEpisode(
-      await searchStreamingSources(
-        client: client,
-        title: title,
-        kind: kind,
-        titleId: titleId,
-        year: year,
-        season: season,
-        episode: episode,
-        language: language,
-        live: true,
-      ),
+      sources,
       season: season,
       episode: episode,
     );
-    // Client-side belt-and-suspenders: drop sources outside preferred languages.
-    if (language != null && language.trim().isNotEmpty) {
-      final wanted = language
-          .split(',')
-          .map((e) => e.trim().toLowerCase())
-          .where((e) => e.isNotEmpty && e != 'all')
-          .toSet();
-      if (wanted.isNotEmpty) {
-        found = found.where((s) {
-          final tags = s.language
-              .split(',')
-              .map((e) => e.trim().toLowerCase())
-              .where((e) => e.isNotEmpty)
-              .toSet();
-          if (tags.isEmpty) {
-            // Untagged ≈ English (and Japanese for anime).
-            return wanted.contains('en') || (kind.toLowerCase() == 'anime' && wanted.contains('ja'));
-          }
-          return tags.any(wanted.contains);
-        }).toList();
-      }
-    }
   } catch (e) {
-    if (context.mounted) Navigator.of(context, rootNavigator: true).pop();
-    if (context.mounted) await _alert(context, friendlyRequestError(e));
+    if (searchCancel.isCompleted) return null;
+    searchDone = true;
+    if (context.mounted) {
+      final nav = Navigator.of(context, rootNavigator: true);
+      if (nav.canPop()) nav.pop();
+      await _alert(context, friendlyRequestError(e));
+    }
     return null;
   }
-  if (context.mounted) Navigator.of(context, rootNavigator: true).pop();
+  if (searchCancel.isCompleted) return null;
+  searchDone = true;
+  if (context.mounted) {
+    final nav = Navigator.of(context, rootNavigator: true);
+    if (nav.canPop()) nav.pop();
+  }
   if (!context.mounted) return null;
   if (found.isEmpty) {
-    final scoped = language == null
-        ? 'No healthy sources with enough seeders were found. Try again later, or check Jackett on the server console.'
-        : 'No healthy sources were found for $langName. Add more languages in Settings, or choose All languages.';
-    await _alert(context, scoped);
+    await _alert(
+      context,
+      'No healthy sources with enough seeders were found. Try again later, or check Jackett on the server console.',
+    );
     return null;
   }
 
@@ -178,15 +190,113 @@ Future<StreamStart?> showStreamingPicker({
     context: context,
     builder: (ctx) => _ResultsDialog(
       sources: found,
-      languageLabel: language == null ? 'All languages' : langName,
+      languageLabel: languageLabel,
     ),
   );
   if (picked == null || !context.mounted) return null;
+  if (picked.magnet.trim().isEmpty) {
+    await _alert(context, 'That result has no torrent link. Try another result.');
+    return null;
+  }
+
+  // Multi-file torrents / season packs: let the user pick which video to play.
+  // Only that file is downloaded (server sets only_files).
+  // If metadata listing fails, fall back to server-side file pick so Play still works.
+  int? fileIndex;
+  final filesCancel = Completer<void>();
+  var filesDone = false;
+  unawaited(
+    showDialog<void>(
+      context: context,
+      barrierDismissible: true,
+      builder: (ctx) => _BusyDialog(
+        label: 'Reading torrent files…',
+        onCancel: () => Navigator.of(ctx).pop(),
+      ),
+    ).whenComplete(() {
+      if (!filesDone && !filesCancel.isCompleted) {
+        filesCancel.complete();
+      }
+    }),
+  );
+  try {
+    final listedFuture = client.query(
+      QueryOptions(
+        document: gql(TORRENT_FILES),
+        fetchPolicy: FetchPolicy.networkOnly,
+        queryRequestTimeout: const Duration(seconds: 120),
+        variables: {
+          'magnet': picked.magnet,
+          'season': season,
+          'episode': episode,
+        },
+      ),
+    );
+    unawaited(listedFuture.then((_) {}, onError: (_) {}));
+    final listed = await Future.any<QueryResult?>([
+      listedFuture.then((v) => v),
+      filesCancel.future.then((_) => null),
+    ]);
+    if (listed == null || filesCancel.isCompleted) return null;
+    filesDone = true;
+    if (context.mounted) {
+      final nav = Navigator.of(context, rootNavigator: true);
+      if (nav.canPop()) nav.pop();
+    }
+    if (listed.hasException) {
+      // Metadata fetch failed — continue without a fileIndex; server will pick.
+      fileIndex = null;
+    } else {
+      final files = ((listed.data?['torrentFiles'] as List?) ?? const [])
+          .whereType<Map<String, dynamic>>()
+          .map(TorrentFileOption.fromJson)
+          .toList();
+      if (files.isEmpty) {
+        fileIndex = null;
+      } else if (files.length == 1) {
+        fileIndex = files.first.index;
+      } else {
+        if (!context.mounted) return null;
+        // Prefer recommended (SxxExx match), then largest.
+        files.sort((a, b) {
+          if (a.recommended != b.recommended) return a.recommended ? -1 : 1;
+          return b.sizeBytes.compareTo(a.sizeBytes);
+        });
+        final chosen = await showDialog<TorrentFileOption>(
+          context: context,
+          builder: (ctx) => _FilePickerDialog(files: files),
+        );
+        if (chosen == null || !context.mounted) return null;
+        fileIndex = chosen.index;
+      }
+    }
+  } catch (_) {
+    if (filesCancel.isCompleted) return null;
+    filesDone = true;
+    if (context.mounted) {
+      final nav = Navigator.of(context, rootNavigator: true);
+      if (nav.canPop()) nav.pop();
+    }
+    fileIndex = null;
+  }
 
   try {
+    final previous = stopPreviousSessionId?.trim();
+    if (previous != null && previous.isNotEmpty && !previous.startsWith('local-')) {
+      try {
+        await client.mutate(
+          MutationOptions(
+            document: gql(STOP_STREAM),
+            fetchPolicy: FetchPolicy.networkOnly,
+            variables: {'sessionId': previous},
+          ),
+        );
+      } catch (_) {}
+    }
     final started = await client.mutate(
       MutationOptions(
         document: gql(START_STREAM),
+        fetchPolicy: FetchPolicy.networkOnly,
         variables: {
           'magnet': picked.magnet,
           'title': title,
@@ -196,6 +306,7 @@ Future<StreamStart?> showStreamingPicker({
           'peers': picked.peers,
           'season': season,
           'episode': episode,
+          'fileIndex': fileIndex,
         },
       ),
     );
@@ -208,7 +319,11 @@ Future<StreamStart?> showStreamingPicker({
     if (session.id.isEmpty) {
       throw 'Couldn’t start this stream. Try another result.';
     }
-    return StreamStart(session: session, magnet: picked.magnet);
+    return StreamStart(
+      session: session,
+      magnet: picked.magnet,
+      fileIndex: fileIndex,
+    );
   } catch (e) {
     if (context.mounted) await _alert(context, friendlyRequestError(e));
     return null;
@@ -234,19 +349,61 @@ Future<void> _alert(BuildContext context, String message) {
   );
 }
 
+String _preferredLanguageLabel(List<String>? codes) {
+  final cleaned = (codes ?? const [])
+      .map((e) => e.trim().toLowerCase())
+      .where((e) => e.isNotEmpty && e != 'all')
+      .toList();
+  if (cleaned.isEmpty) return 'All languages';
+  final names = cleaned.map(languageDisplayName).where((n) => n.isNotEmpty).join(', ');
+  if (names.isEmpty) return 'All languages';
+  return '$names + Multi';
+}
+
 class _BusyDialog extends StatelessWidget {
-  const _BusyDialog({required this.label});
+  const _BusyDialog({required this.label, this.onCancel});
   final String label;
+  final VoidCallback? onCancel;
 
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      content: Row(
-        children: [
-          const SizedBox(width: 28, height: 28, child: CircularProgressIndicator(strokeWidth: 2)),
-          const SizedBox(width: 16),
-          Expanded(child: Text(label, style: const TextStyle(fontSize: 16))),
-        ],
+      contentPadding: const EdgeInsets.fromLTRB(20, 8, 8, 20),
+      content: SizedBox(
+        width: 340,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (onCancel != null)
+              Align(
+                alignment: Alignment.topRight,
+                child: TvFocus(
+                  child: IconButton(
+                    tooltip: 'Close',
+                    visualDensity: VisualDensity.compact,
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                    onPressed: onCancel,
+                    icon: const Icon(Icons.close),
+                  ),
+                ),
+              ),
+            Padding(
+              padding: EdgeInsets.fromLTRB(4, onCancel != null ? 0 : 12, 12, 4),
+              child: Row(
+                children: [
+                  const SizedBox(
+                    width: 28,
+                    height: 28,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                  const SizedBox(width: 16),
+                  Expanded(child: Text(label, style: const TextStyle(fontSize: 16))),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -274,7 +431,7 @@ class _ResultsDialog extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                'Sources for $languageLabel — healthiest magnets first.',
+                'Showing $languageLabel — most seeded magnets first.',
                 style: TextStyle(color: scheme.onSurfaceVariant, height: 1.35, fontSize: 13),
               ),
               const SizedBox(height: 12),
@@ -308,7 +465,6 @@ class _ResultsDialog extends StatelessWidget {
           ),
         ),
       ),
-      // No Cancel button — back-press or tapping outside dismisses the dialog.
     );
   }
 }
@@ -430,5 +586,116 @@ String _healthLabel(String health) {
       return 'Weak';
     default:
       return 'Low seeds';
+  }
+}
+
+class _FilePickerDialog extends StatelessWidget {
+  const _FilePickerDialog({required this.files});
+  final List<TorrentFileOption> files;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final maxH = MediaQuery.sizeOf(context).height * 0.72;
+    return AlertDialog(
+      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
+      title: const Text('Choose a file'),
+      contentPadding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
+      content: SizedBox(
+        width: 560,
+        child: ConstrainedBox(
+          constraints: BoxConstraints(maxHeight: maxH),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'This torrent has multiple videos. Only the file you pick will download.',
+                style: TextStyle(color: scheme.onSurfaceVariant, height: 1.35, fontSize: 13),
+              ),
+              const SizedBox(height: 12),
+              Flexible(
+                child: ListView.separated(
+                  shrinkWrap: true,
+                  itemCount: files.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: 8),
+                  itemBuilder: (context, i) {
+                    final file = files[i];
+                    final radius = BorderRadius.circular(14);
+                    return TvFocus(
+                      child: Material(
+                        color: file.recommended
+                            ? AppTheme.seed.withValues(alpha: 0.12)
+                            : scheme.surfaceContainerHighest.withValues(alpha: 0.45),
+                        borderRadius: radius,
+                        child: InkWell(
+                          autofocus: i == 0,
+                          borderRadius: radius,
+                          onTap: () => Navigator.pop(context, file),
+                          child: Container(
+                            padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+                            decoration: BoxDecoration(
+                              borderRadius: radius,
+                              border: Border.all(
+                                color: file.recommended
+                                    ? AppTheme.seed.withValues(alpha: 0.65)
+                                    : scheme.outline.withValues(alpha: 0.22),
+                              ),
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  children: [
+                                    if (file.recommended)
+                                      const Padding(
+                                        padding: EdgeInsets.only(right: 8),
+                                        child: _Tag(label: 'Matches episode', emphasized: true),
+                                      ),
+                                    const Spacer(),
+                                    Text(
+                                      file.size,
+                                      style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 12),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 6),
+                                Text(
+                                  file.shortName,
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.w700,
+                                    height: 1.25,
+                                    fontSize: 15,
+                                  ),
+                                ),
+                                if (file.name != file.shortName) ...[
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    file.name,
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      color: scheme.onSurfaceVariant.withValues(alpha: 0.85),
+                                      fontSize: 11,
+                                      height: 1.3,
+                                    ),
+                                  ),
+                                ],
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }

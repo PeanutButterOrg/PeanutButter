@@ -257,6 +257,8 @@ String searchIdleTitle(String kind) {
   }
 }
 
+
+
 bool kindBlockedByMissingKeys(
   String kind, {
   required bool omdbConfigured,

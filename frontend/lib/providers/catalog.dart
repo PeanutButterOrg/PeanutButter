@@ -10,6 +10,16 @@ import '../tv.dart';
 import '../widgets/cached_art.dart';
 import 'settings.dart';
 
+List<TitleItem> _dedupeTitles(List<TitleItem> existing, List<TitleItem> incoming) {
+  if (existing.isEmpty) return List<TitleItem>.from(incoming);
+  final seen = <String>{for (final t in existing) t.id};
+  final out = List<TitleItem>.from(existing);
+  for (final t in incoming) {
+    if (seen.add(t.id)) out.add(t);
+  }
+  return out;
+}
+
 final selectedKindProvider = StateProvider<String>((ref) => 'MOVIE');
 
 final catalogEpochProvider = StateProvider<int>((ref) => 0);
@@ -108,7 +118,7 @@ class CatalogNotifier extends StateNotifier<CatalogState> {
         QueryOptions(
           document: gql(GET_CATALOG),
           variables: filter.toVariables(page: page, perPage: 50),
-          fetchPolicy: replace ? FetchPolicy.networkOnly : catalogFetchPolicy,
+          fetchPolicy: FetchPolicy.networkOnly,
         ),
       );
       if (result.hasException) {
@@ -129,7 +139,7 @@ class CatalogNotifier extends StateNotifier<CatalogState> {
           .toList();
       if (!isAndroidTv) unawaited(ArtCache.prefetch(items.take(12)));
       state = state.copyWith(
-        items: replace ? items : [...state.items, ...items],
+        items: replace ? items : _dedupeTitles(state.items, items),
         page: conn['page'] as int? ?? page,
         hasNextPage: conn['hasNextPage'] as bool? ?? false,
         totalCount: conn['totalCount'] as int? ?? items.length,
@@ -190,7 +200,7 @@ class LibraryNotifier extends StateNotifier<CatalogState> {
         QueryOptions(
           document: gql(GET_CATALOG),
           variables: filter.toVariables(page: page, perPage: 50),
-          fetchPolicy: replace ? FetchPolicy.networkOnly : catalogFetchPolicy,
+          fetchPolicy: FetchPolicy.networkOnly,
         ),
       );
       if (result.hasException) {
@@ -211,7 +221,7 @@ class LibraryNotifier extends StateNotifier<CatalogState> {
           .toList();
       if (!isAndroidTv) unawaited(ArtCache.prefetch(items.take(12)));
       state = state.copyWith(
-        items: replace ? items : [...state.items, ...items],
+        items: replace ? items : _dedupeTitles(state.items, items),
         page: conn['page'] as int? ?? page,
         hasNextPage: conn['hasNextPage'] as bool? ?? false,
         totalCount: conn['totalCount'] as int? ?? items.length,
@@ -320,6 +330,43 @@ final favoritesFeedProvider = FutureProvider<FavoritesFeed>((ref) async {
             variables: {
               'kind': kind,
               'sort': 'FAVORITES',
+              'dir': 'DESC',
+              'page': 1,
+              'perPage': 48,
+            },
+            fetchPolicy: FetchPolicy.networkOnly,
+          ),
+        )
+        .timeout(const Duration(seconds: 30));
+    if (result.hasException) throw result.exception!;
+    final items = (result.data?['catalog']?['items'] as List?) ?? const [];
+    return items.map((e) => TitleItem.fromJson(e as Map<String, dynamic>)).toList();
+  }
+
+  final movies = await load('MOVIE');
+  final series = await load('SERIES');
+  final anime = await load('ANIME');
+  final feed = FavoritesFeed(movies: movies, series: series, anime: anime);
+  if (!isAndroidTv) {
+    unawaited(ArtCache.prefetch([...movies.take(12), ...series.take(12), ...anime.take(12)]));
+  }
+  return feed;
+});
+
+/// Watched / completed titles (removed from Continue watching when finished).
+final watchedFeedProvider = FutureProvider<FavoritesFeed>((ref) async {
+  ref.watch(graphQLClientProvider);
+  ref.watch(catalogEpochProvider);
+  final client = ref.read(graphQLClientProvider);
+
+  Future<List<TitleItem>> load(String kind) async {
+    final result = await client
+        .query(
+          QueryOptions(
+            document: gql(GET_CATALOG),
+            variables: {
+              'kind': kind,
+              'sort': 'WATCHED',
               'dir': 'DESC',
               'page': 1,
               'perPage': 48,
@@ -464,7 +511,8 @@ class SearchNotifier extends StateNotifier<SearchState> {
   void onQueryChanged(String value) {
     _debounce?.cancel();
     state = state.copyWith(query: value);
-    if (value.trim().isEmpty) {
+    final trimmed = value.trim();
+    if (trimmed.isEmpty) {
       state = SearchState(
         query: value,
         kind: state.kind,
@@ -478,14 +526,15 @@ class SearchNotifier extends StateNotifier<SearchState> {
       return;
     }
     _debounce = Timer(const Duration(milliseconds: 320), () {
-      _run(value.trim(), page: 1, replace: true);
+      _run(trimmed, page: 1, replace: true);
     });
   }
 
   void setKind(String? kind) {
     state = state.copyWith(kind: kind, clearKind: kind == null);
-    if (state.query.trim().isNotEmpty) {
-      _run(state.query.trim(), page: 1, replace: true);
+    final q = state.query.trim();
+    if (q.isNotEmpty) {
+      _run(q, page: 1, replace: true);
     }
   }
 
@@ -498,8 +547,9 @@ class SearchNotifier extends StateNotifier<SearchState> {
       clearGenre: facets.genre == null,
       clearYearMax: facets.yearMax == null,
     );
-    if (state.query.trim().isNotEmpty) {
-      _run(state.query.trim(), page: 1, replace: true);
+    final q = state.query.trim();
+    if (q.isNotEmpty) {
+      _run(q, page: 1, replace: true);
     }
   }
 
@@ -512,10 +562,11 @@ class SearchNotifier extends StateNotifier<SearchState> {
   }
 
   Future<void> loadMore() async {
-    if (!state.hasNextPage || state.loadingMore || state.loading || state.query.trim().isEmpty) {
+    final q = state.query.trim();
+    if (!state.hasNextPage || state.loadingMore || state.loading || q.isEmpty) {
       return;
     }
-    await _run(state.query.trim(), page: state.page + 1, replace: false);
+    await _run(q, page: state.page + 1, replace: false);
   }
 
   Future<void> _run(String query, {required int page, required bool replace}) async {
@@ -552,7 +603,9 @@ class SearchNotifier extends StateNotifier<SearchState> {
       if (!isAndroidTv) unawaited(ArtCache.prefetch(items.take(12)));
       state = state.copyWith(
         query: query,
-        results: replace ? items : _sortItems([...state.results, ...items], state.sort),
+        results: replace
+            ? items
+            : _sortItems(_dedupeTitles(state.results, items), state.sort),
         recent: _pushRecent(query),
         loading: false,
         loadingMore: false,

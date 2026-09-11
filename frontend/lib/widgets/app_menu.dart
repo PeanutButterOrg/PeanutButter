@@ -59,6 +59,9 @@ class AppMenuButton<T> extends StatelessWidget {
                       autofocus: entry.value == value,
                       selected: entry.value == value,
                       title: Text(entry.label),
+                      trailing: entry.value == value
+                          ? Icon(Icons.check_rounded, color: Theme.of(ctx).colorScheme.primary)
+                          : null,
                       onTap: () => Navigator.pop(ctx, entry.value),
                     ),
                 ],
@@ -113,6 +116,159 @@ class AppMenuButton<T> extends StatelessWidget {
           ),
         ),
       ),
+      ),
+    );
+  }
+}
+
+/// Multi-select dropdown that keeps current selections checked when opened.
+class AppMultiMenuButton extends StatelessWidget {
+  const AppMultiMenuButton({
+    super.key,
+    required this.values,
+    required this.entries,
+    required this.onChanged,
+    this.hint = 'Select',
+    this.emptyLabel = 'All',
+    this.icon,
+    this.compact = false,
+  });
+
+  final List<String> values;
+  final List<AppMenuEntry<String>> entries;
+  final ValueChanged<List<String>> onChanged;
+  final String hint;
+  final String emptyLabel;
+  final IconData? icon;
+  final bool compact;
+
+  String get _label {
+    if (values.isEmpty) return emptyLabel;
+    final labels = <String>[];
+    for (final code in values) {
+      for (final entry in entries) {
+        if (entry.value == code) {
+          labels.add(entry.label);
+          break;
+        }
+      }
+    }
+    if (labels.isEmpty) return emptyLabel;
+    return labels.join(', ');
+  }
+
+  Future<void> _pick(BuildContext context) async {
+    var selected = {...values};
+    final confirmed = await showDialog<List<String>>(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setLocal) {
+            return AlertDialog(
+              title: Text(hint),
+              contentPadding: const EdgeInsets.fromLTRB(8, 12, 8, 8),
+              content: SizedBox(
+                width: 420,
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(
+                    maxHeight: MediaQuery.sizeOf(ctx).height * 0.6,
+                  ),
+                  child: ListView(
+                    shrinkWrap: true,
+                    children: [
+                      ListTile(
+                        selected: selected.isEmpty,
+                        leading: Icon(
+                          selected.isEmpty ? Icons.check_box_rounded : Icons.check_box_outline_blank_rounded,
+                          color: selected.isEmpty ? Theme.of(ctx).colorScheme.primary : null,
+                        ),
+                        title: Text(emptyLabel),
+                        onTap: () => setLocal(() => selected = {}),
+                      ),
+                      const Divider(height: 12),
+                      for (final entry in entries)
+                        ListTile(
+                          selected: selected.contains(entry.value),
+                          leading: Icon(
+                            selected.contains(entry.value)
+                                ? Icons.check_box_rounded
+                                : Icons.check_box_outline_blank_rounded,
+                            color: selected.contains(entry.value)
+                                ? Theme.of(ctx).colorScheme.primary
+                                : null,
+                          ),
+                          title: Text(entry.label),
+                          onTap: () => setLocal(() {
+                            if (selected.contains(entry.value)) {
+                              selected.remove(entry.value);
+                            } else {
+                              selected.add(entry.value);
+                            }
+                          }),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('Cancel'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.pop(ctx, selected.toList()..sort()),
+                  child: const Text('Done'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+    if (confirmed != null) onChanged(confirmed);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return TvFocus(
+      child: Material(
+        color: scheme.surfaceContainerHighest.withValues(alpha: 0.55),
+        borderRadius: BorderRadius.circular(compact ? 20 : 12),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(compact ? 20 : 12),
+          onTap: () => _pick(context),
+          child: Container(
+            height: compact ? 40 : 48,
+            padding: EdgeInsets.fromLTRB(compact ? 10 : 12, 0, compact ? 4 : 8, 0),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(compact ? 20 : 12),
+              border: Border.all(color: scheme.outline.withValues(alpha: 0.22)),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (icon != null) ...[
+                  Icon(icon, size: compact ? 15 : 16, color: scheme.onSurfaceVariant),
+                  SizedBox(width: compact ? 6 : 8),
+                ],
+                ConstrainedBox(
+                  constraints: BoxConstraints(maxWidth: compact ? 160 : 260),
+                  child: Text(
+                    _label,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      fontWeight: FontWeight.w600,
+                      fontSize: compact ? 13 : null,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 4),
+                Icon(Icons.expand_more_rounded, size: compact ? 16 : 18, color: scheme.onSurfaceVariant),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }

@@ -32,6 +32,7 @@ const EMBEDDED_MIGRATION_019: &str = include_str!("migrations/019_tmdb_shelf_pag
 const EMBEDDED_MIGRATION_020: &str = include_str!("migrations/020_block_adult_content.sql");
 const EMBEDDED_MIGRATION_021: &str = include_str!("migrations/021_popcorn_sort_fields.sql");
 const EMBEDDED_MIGRATION_022: &str = include_str!("migrations/022_hide_unreleased.sql");
+const EMBEDDED_MIGRATION_023: &str = include_str!("migrations/023_episode_progress.sql");
 
 pub async fn connect(database_url: &str) -> Result<PgPool> {
     let pool = PgPoolOptions::new()
@@ -80,6 +81,7 @@ pub async fn run_migrations(pool: &PgPool, extra_dir: Option<&Path>) -> Result<(
     apply_one(pool, "020_block_adult_content", EMBEDDED_MIGRATION_020).await?;
     apply_one(pool, "021_popcorn_sort_fields", EMBEDDED_MIGRATION_021).await?;
     apply_one(pool, "022_hide_unreleased", EMBEDDED_MIGRATION_022).await?;
+    apply_one(pool, "023_episode_progress", EMBEDDED_MIGRATION_023).await?;
 
     if let Some(dir) = extra_dir {
         if dir.is_dir() {
@@ -119,6 +121,7 @@ pub async fn run_migrations(pool: &PgPool, extra_dir: Option<&Path>) -> Result<(
                     || version == "020_block_adult_content"
                     || version == "021_popcorn_sort_fields"
                     || version == "022_hide_unreleased"
+                    || version == "023_episode_progress"
                 {
                     continue;
                 }
@@ -162,6 +165,34 @@ pub async fn title_imdb_id(pool: &PgPool, title_id: Uuid) -> Result<Option<Strin
             .fetch_optional(pool)
             .await?;
     Ok(row.and_then(|(s,)| s))
+}
+
+#[derive(Debug, Clone)]
+pub struct TitleStreamMeta {
+    pub title: String,
+    pub original_title: Option<String>,
+    pub year: Option<i32>,
+    pub imdb_id: Option<String>,
+}
+
+/// Metadata used to build precise Jackett torrent queries.
+pub async fn title_stream_meta(pool: &PgPool, title_id: Uuid) -> Result<Option<TitleStreamMeta>> {
+    let row: Option<(String, Option<String>, Option<i32>, Option<String>)> = sqlx::query_as(
+        r#"
+        SELECT title, original_title, year, imdb_id
+        FROM titles
+        WHERE id = $1
+        "#,
+    )
+    .bind(title_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|(title, original_title, year, imdb_id)| TitleStreamMeta {
+        title,
+        original_title,
+        year,
+        imdb_id,
+    }))
 }
 
 pub async fn title_count(pool: &PgPool) -> Result<i64> {
@@ -1363,4 +1394,292 @@ pub async fn clear_catalog(pool: &PgPool) -> Result<u64> {
     .await?;
     tx.commit().await?;
     Ok(deleted)
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct CatalogListRow {
+    pub id: Uuid,
+    pub title: String,
+    pub kind: String,
+    pub year: Option<i32>,
+}
+
+/// 0–1 progress for poster bars.
+/// Movies: position/duration.
+/// Series/anime: (episodes before current + in-episode fraction) / total episodes.
+pub async fn title_progress_percent(
+    pool: &PgPool,
+    title_id: Uuid,
+    episode_id: Option<Uuid>,
+    position_ms: i64,
+    duration_ms: Option<i64>,
+    watched: bool,
+) -> Result<f64> {
+    if watched {
+        return Ok(1.0);
+    }
+    let kind: Option<String> = sqlx::query_scalar("SELECT kind FROM titles WHERE id = $1")
+        .bind(title_id)
+        .fetch_optional(pool)
+        .await?;
+    let kind = kind.unwrap_or_default();
+    let ep_frac = match duration_ms.filter(|d| *d > 0) {
+        Some(d) => (position_ms as f64 / d as f64).clamp(0.0, 1.0),
+        None => {
+            if position_ms > 2000 {
+                0.05
+            } else {
+                0.0
+            }
+        }
+    };
+    if kind != "series" && kind != "anime" {
+        return Ok(ep_frac);
+    }
+    let total: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)::bigint
+        FROM episodes e
+        JOIN seasons s ON s.id = e.season_id
+        WHERE s.title_id = $1 AND s.season_number > 0
+        "#,
+    )
+    .bind(title_id)
+    .fetch_one(pool)
+    .await?;
+    if total <= 0 {
+        return Ok(ep_frac);
+    }
+    let Some(eid) = episode_id else {
+        return Ok((ep_frac / total as f64).clamp(0.0, 0.99));
+    };
+    let idx: Option<i64> = sqlx::query_scalar(
+        r#"
+        WITH ordered AS (
+            SELECT e.id,
+                   ROW_NUMBER() OVER (ORDER BY s.season_number ASC, e.episode_number ASC) AS rn
+            FROM episodes e
+            JOIN seasons s ON s.id = e.season_id
+            WHERE s.title_id = $1 AND s.season_number > 0
+        )
+        SELECT rn FROM ordered WHERE id = $2
+        "#,
+    )
+    .bind(title_id)
+    .bind(eid)
+    .fetch_optional(pool)
+    .await?;
+    let Some(rn) = idx else {
+        return Ok(ep_frac.clamp(0.0, 0.99));
+    };
+    let done_before = (rn - 1).max(0) as f64;
+    Ok(((done_before + ep_frac) / total as f64).clamp(0.0, 0.99))
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct EpisodeProgressRow {
+    pub episode_id: Uuid,
+    pub position_ms: i64,
+    pub duration_ms: Option<i64>,
+    pub watched: bool,
+}
+
+/// Upsert per-episode progress. Marks watched at ~85% (credits / near-end).
+pub async fn upsert_episode_progress(
+    pool: &PgPool,
+    token_id: Uuid,
+    title_id: Uuid,
+    episode_id: Uuid,
+    position_ms: i64,
+    duration_ms: Option<i64>,
+    force_watched: bool,
+) -> Result<()> {
+    let pos = position_ms.max(0);
+    let watched = force_watched
+        || duration_ms
+            .map(|d| d > 0 && pos as f64 >= d as f64 * 0.85)
+            .unwrap_or(false);
+    sqlx::query(
+        r#"
+        INSERT INTO episode_progress (token_id, episode_id, title_id, position_ms, duration_ms, watched, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6, now())
+        ON CONFLICT (token_id, episode_id) DO UPDATE SET
+            position_ms = CASE
+                WHEN episode_progress.watched THEN episode_progress.position_ms
+                ELSE EXCLUDED.position_ms
+            END,
+            duration_ms = COALESCE(EXCLUDED.duration_ms, episode_progress.duration_ms),
+            watched = episode_progress.watched OR EXCLUDED.watched,
+            title_id = EXCLUDED.title_id,
+            updated_at = now()
+        "#,
+    )
+    .bind(token_id)
+    .bind(episode_id)
+    .bind(title_id)
+    .bind(if watched { 0_i64 } else { pos })
+    .bind(duration_ms)
+    .bind(watched)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn episode_progress_for_season(
+    pool: &PgPool,
+    token_id: Uuid,
+    season_id: Uuid,
+) -> Result<Vec<EpisodeProgressRow>> {
+    let rows = sqlx::query_as::<_, EpisodeProgressRow>(
+        r#"
+        SELECT ep.episode_id, ep.position_ms, ep.duration_ms, ep.watched
+        FROM episode_progress ep
+        JOIN episodes e ON e.id = ep.episode_id
+        WHERE ep.token_id = $1 AND e.season_id = $2
+        "#,
+    )
+    .bind(token_id)
+    .bind(season_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+/// Whether this episode is the last in the series (season_number > 0).
+pub async fn is_last_episode(pool: &PgPool, title_id: Uuid, episode_id: Uuid) -> Result<bool> {
+    let row: Option<(bool,)> = sqlx::query_as(
+        r#"
+        WITH ordered AS (
+            SELECT e.id,
+                   ROW_NUMBER() OVER (ORDER BY s.season_number ASC, e.episode_number ASC) AS rn,
+                   COUNT(*) OVER () AS total
+            FROM episodes e
+            JOIN seasons s ON s.id = e.season_id
+            WHERE s.title_id = $1 AND s.season_number > 0
+        )
+        SELECT rn >= total FROM ordered WHERE id = $2
+        "#,
+    )
+    .bind(title_id)
+    .bind(episode_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| r.0).unwrap_or(false))
+}
+
+/// Paginated title list for the server console Catalog tab.
+pub async fn list_catalog_titles(
+    pool: &PgPool,
+    query: &str,
+    kind: &str,
+    limit: i64,
+    offset: i64,
+) -> Result<(Vec<CatalogListRow>, i64)> {
+    let q = query.trim();
+    let kind = kind.trim().to_ascii_uppercase();
+    let kind_filter = matches!(kind.as_str(), "MOVIE" | "SERIES" | "ANIME");
+    let like = if q.is_empty() {
+        None
+    } else {
+        Some(format!("%{}%", q.replace('%', "\\%").replace('_', "\\_")))
+    };
+
+    let total: i64 = if let Some(ref like) = like {
+        if kind_filter {
+            sqlx::query_scalar(
+                "SELECT COUNT(*)::bigint FROM titles WHERE kind = $1 AND title ILIKE $2 ESCAPE '\\'",
+            )
+            .bind(&kind)
+            .bind(like)
+            .fetch_one(pool)
+            .await?
+        } else {
+            sqlx::query_scalar("SELECT COUNT(*)::bigint FROM titles WHERE title ILIKE $1 ESCAPE '\\'")
+                .bind(like)
+                .fetch_one(pool)
+                .await?
+        }
+    } else if kind_filter {
+        sqlx::query_scalar("SELECT COUNT(*)::bigint FROM titles WHERE kind = $1")
+            .bind(&kind)
+            .fetch_one(pool)
+            .await?
+    } else {
+        sqlx::query_scalar("SELECT COUNT(*)::bigint FROM titles")
+            .fetch_one(pool)
+            .await?
+    };
+
+    let rows: Vec<CatalogListRow> = if let Some(ref like) = like {
+        if kind_filter {
+            sqlx::query_as(
+                r#"
+                SELECT id, title, kind, year
+                FROM titles
+                WHERE kind = $1 AND title ILIKE $2 ESCAPE '\'
+                ORDER BY title ASC
+                LIMIT $3 OFFSET $4
+                "#,
+            )
+            .bind(&kind)
+            .bind(like)
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(pool)
+            .await?
+        } else {
+            sqlx::query_as(
+                r#"
+                SELECT id, title, kind, year
+                FROM titles
+                WHERE title ILIKE $1 ESCAPE '\'
+                ORDER BY title ASC
+                LIMIT $2 OFFSET $3
+                "#,
+            )
+            .bind(like)
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(pool)
+            .await?
+        }
+    } else if kind_filter {
+        sqlx::query_as(
+            r#"
+            SELECT id, title, kind, year
+            FROM titles
+            WHERE kind = $1
+            ORDER BY title ASC
+            LIMIT $2 OFFSET $3
+            "#,
+        )
+        .bind(&kind)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(pool)
+        .await?
+    } else {
+        sqlx::query_as(
+            r#"
+            SELECT id, title, kind, year
+            FROM titles
+            ORDER BY title ASC
+            LIMIT $1 OFFSET $2
+            "#,
+        )
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(pool)
+        .await?
+    };
+
+    Ok((rows, total))
+}
+
+pub async fn delete_title_by_id(pool: &PgPool, id: Uuid) -> Result<bool> {
+    let result = sqlx::query("DELETE FROM titles WHERE id = $1")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected() > 0)
 }
