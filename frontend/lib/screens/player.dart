@@ -102,6 +102,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   StreamSubscription<bool>? _bufferingSub;
   StreamSubscription<Duration>? _bufferSub;
   Timer? _streamPoll;
+  Timer? _pauseBufferTimer;
+  bool _pauseBufferBoosted = false;
   DateTime _lastProgress = DateTime.fromMillisecondsSinceEpoch(0);
   bool _progressFlushed = false;
   bool _savedOnce = false;
@@ -145,7 +147,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       MediaKit.ensureInitialized();
       _player = Player(
         configuration: PlayerConfiguration(
-          bufferSize: widget.isStream ? 24 * 1024 * 1024 : 32 * 1024 * 1024,
+          // Larger demuxer RAM so pause→resume stays smooth.
+          bufferSize: widget.isStream ? 64 * 1024 * 1024 : 48 * 1024 * 1024,
           ready: _onPlayerReady,
         ),
       );
@@ -172,6 +175,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
         if (!done) return;
         unawaited(_saveProgress());
         _playNext();
+      });
+      // While paused, keep demux/torrent prefetch warm for a smooth resume.
+      _player!.stream.playing.listen((playing) {
+        if (playing || !mounted) return;
+        _onPausedKeepBuffering();
       });
       // Rebuild when video dimensions appear (torrent streams often start with no duration).
       _player!.stream.width.listen((_) {
@@ -376,12 +384,20 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       native.setProperty('tscale', 'oversample');
       native.setProperty('audio-pitch-correction', 'no');
     }
-    // For streams: don't demux too far ahead so seek is responsive.
+    // Keep prefetching while paused so resume is smooth (mpv still demuxes into cache).
+    native.setProperty('cache', 'yes');
+    native.setProperty('demuxer-thread', 'yes');
+    native.setProperty('demuxer-max-bytes', widget.isStream ? '512MiB' : '256MiB');
+    native.setProperty('demuxer-max-back-bytes', '64MiB');
+    // Large readahead: while paused the demuxer fills toward this window.
+    native.setProperty('demuxer-readahead-secs', widget.isStream ? '300' : '120');
+    native.setProperty('cache-secs', widget.isStream ? '300' : '120');
+      native.setProperty('cache-pause', 'yes');
+    native.setProperty('cache-pause-wait', '3');
+    // Make scrubbing / ±10s seeks work while paused.
+    native.setProperty('hr-seek', 'yes');
+    native.setProperty('force-seekable', 'yes');
     if (widget.isStream) {
-      native.setProperty('demuxer-max-bytes', '150MiB');
-      native.setProperty('demuxer-readahead-secs', '20');
-      // Progressive HTTP from the torrent engine — force streaming-friendly demux.
-      native.setProperty('force-seekable', 'yes');
       native.setProperty('stream-lavf-o', 'reconnect_streamed=1,reconnect_delay_max=5');
     }
   }
@@ -390,13 +406,55 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     if (_useExo) {
       final exo = _exo;
       if (exo == null || !exo.value.isInitialized) return;
-      exo.value.isPlaying ? exo.pause() : exo.play();
+      if (exo.value.isPlaying) {
+        exo.pause();
+        _onPausedKeepBuffering();
+      } else {
+        exo.play();
+      }
       return;
     }
-    _player?.playOrPause();
+    final player = _player;
+    if (player == null) return;
+    final wasPlaying = player.state.playing;
+    unawaited(player.playOrPause().then((_) {
+      if (!wasPlaying) return;
+      _onPausedKeepBuffering();
+    }));
+  }
+
+  /// Keep filling the demuxer / torrent cache while the UI is paused.
+  void _onPausedKeepBuffering() {
+    final native = _player?.platform;
+    if (!_pauseBufferBoosted && native is NativePlayer) {
+      _pauseBufferBoosted = true;
+      // Expand forward window once; mpv continues demuxing while paused.
+      unawaited(native.setProperty('demuxer-readahead-secs', widget.isStream ? '600' : '180'));
+      unawaited(native.setProperty('cache-secs', widget.isStream ? '600' : '180'));
+    }
+    if (widget.localTorrent || (widget.isStream && (widget.sessionId?.startsWith('local-') ?? false))) {
+      LocalTorrentEngine.instance.keepDownloading();
+    }
+    _pauseBufferTimer?.cancel();
+    _pauseBufferTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+      if (!mounted) return;
+      if (_player?.state.playing == true) {
+        _pauseBufferTimer?.cancel();
+        _pauseBufferTimer = null;
+        _pauseBufferBoosted = false;
+        return;
+      }
+      if (widget.localTorrent || LocalTorrentEngine.instance.isActive) {
+        LocalTorrentEngine.instance.keepDownloading();
+      }
+    });
   }
 
   void _seekRelative(int seconds) {
+    unawaited(_seekRelativeAsync(seconds));
+  }
+
+  Future<void> _seekRelativeAsync(int seconds) async {
     if (_useExo) {
       final exo = _exo;
       if (exo == null || !exo.value.isInitialized) return;
@@ -405,19 +463,34 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       var target = pos + Duration(seconds: seconds);
       if (target < Duration.zero) target = Duration.zero;
       if (dur > Duration.zero && target > dur) target = dur;
-      exo.seekTo(target);
+      await exo.seekTo(target);
       if (widget.isStream) unawaited(_pollStream());
       return;
     }
     final player = _player;
     if (player == null) return;
+    final wasPlaying = player.state.playing;
     final pos = player.state.position;
-    final dur = player.state.duration;
+    var dur = player.state.duration;
+    // While paused, duration/position can be stale — prefer demuxer cache end as soft max.
+    if (dur <= Duration.zero) {
+      dur = player.state.buffer;
+    }
     var target = pos + Duration(seconds: seconds);
     if (target < Duration.zero) target = Duration.zero;
     if (dur > Duration.zero && target > dur) target = dur;
-    player.seek(target);
+    try {
+      await player.seek(target);
+      // Paused seeks often don't refresh the frame unless we briefly unpause.
+      if (!wasPlaying) {
+        await player.play();
+        await Future<void>.delayed(const Duration(milliseconds: 80));
+        await player.pause();
+        _onPausedKeepBuffering();
+      }
+    } catch (_) {}
     if (widget.isStream) unawaited(_pollStream());
+    if (mounted) setState(() {});
   }
 
   @override
@@ -437,6 +510,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     _bufferingSub?.cancel();
     _bufferSub?.cancel();
     _streamPoll?.cancel();
+    _pauseBufferTimer?.cancel();
     final position = _useExo ? _exo?.value.position : _player?.state.position;
     final duration = _useExo ? _exo?.value.duration : _player?.state.duration;
     unawaited(_saveProgress(position: position, duration: duration, closing: true));
@@ -1140,6 +1214,13 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
               icon: const Icon(Icons.arrow_back, color: Colors.white),
             ),
           ),
+          if (!_isTrailer)
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: widget.isStream ? 96 : 28,
+              child: _seekSkipBar(),
+            ),
           Positioned(
             top: 12,
             right: 12,
@@ -1286,6 +1367,60 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
         ],
       ),
         ),
+      ),
+    );
+  }
+
+  Widget _seekSkipBar() {
+    Widget skipButton({
+      required IconData icon,
+      required String label,
+      required int seconds,
+    }) {
+      return Material(
+        color: Colors.black.withValues(alpha: 0.62),
+        shape: const StadiumBorder(),
+        child: InkWell(
+          customBorder: const StadiumBorder(),
+          onTap: () => _seekRelative(seconds),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(icon, color: Colors.white, size: 22),
+                const SizedBox(width: 8),
+                Text(
+                  label,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w700,
+                    fontSize: 14,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    return SafeArea(
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          skipButton(
+            icon: Icons.replay_10,
+            label: '-10s',
+            seconds: -10,
+          ),
+          const SizedBox(width: 18),
+          skipButton(
+            icon: Icons.forward_10,
+            label: '+10s',
+            seconds: 10,
+          ),
+        ],
       ),
     );
   }

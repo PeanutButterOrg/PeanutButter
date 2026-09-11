@@ -101,9 +101,10 @@ impl JackettClient {
             .jackett_api_key()
             .filter(|s| !s.is_empty())
             .ok_or_else(|| jackett_err("Add your Jackett API key in the server console first."))?;
+        // Keep streaming searches under the app GraphQL timeout (~45s).
         let http = reqwest::Client::builder()
             .user_agent("PeanutButter")
-            .timeout(Duration::from_secs(45))
+            .timeout(Duration::from_secs(18))
             .redirect(reqwest::redirect::Policy::limited(4))
             .build()
             .map_err(|e| AppError::Internal(e.to_string()))?;
@@ -154,9 +155,11 @@ impl JackettClient {
         if q.trim().is_empty() {
             return Ok(vec![]);
         }
-        // First try Torznab per-indexer search which uses t=movie/tvsearch + imdbid/season/ep.
-        // This gives much better results than the /all aggregator for targeted lookups.
-        let torznab = self
+        // Prefer kind-scoped per-indexer searches (movie/TV categories) and return as
+        // soon as we have healthy hits. Never wait on Jackett's `/all/results`, which
+        // fans out to every indexer (including anime trackers for Western TV) and can
+        // take minutes.
+        let found = self
             .search_torznab_all(
                 &q,
                 kind,
@@ -168,21 +171,39 @@ impl JackettClient {
             )
             .await
             .unwrap_or_default();
-        let torznab = Self::filter_episode(torznab, season, episode);
-        if torznab.len() >= 2 {
-            return Ok(torznab);
+        let found = Self::filter_episode(found, season, episode);
+        if !found.is_empty() {
+            return Ok(found);
         }
-        // Fallback: /all/results with plain text query.
-        // Sending Newznab Category IDs makes Jackett fail many indexers with
-        // "build error" when those cats are not mapped, so we skip cat= here.
-        let url = format!("{}/api/v2.0/indexers/all/results", self.base_url);
-        let res = self
-            .http
-            .get(&url)
-            .query(&[("apikey", self.api_key.as_str()), ("Query", q.as_str())])
-            .send()
+
+        // Second pass: plain Query + standard Category on a wider indexer set.
+        let fallback = self
+            .search_indexers_individually(&q, preferred_resolution, preferred_language, kind)
             .await
-            .map_err(|e| self.redact_err(e))?;
+            .unwrap_or_default();
+        let fallback = Self::filter_episode(fallback, season, episode);
+        if !fallback.is_empty() {
+            return Ok(fallback);
+        }
+
+        // Last resort: /all/results WITH standard Newznab categories and a hard timeout.
+        // Category keeps Jackett off anime/misc trackers for movie/TV queries.
+        let cats = kind_categories(kind);
+        let url = format!("{}/api/v2.0/indexers/all/results", self.base_url);
+        let req = self.http.get(&url).query(&[
+            ("apikey", self.api_key.as_str()),
+            ("Query", q.as_str()),
+            ("Category", cats),
+        ]);
+        let res = match tokio::time::timeout(Duration::from_secs(12), req.send()).await {
+            Ok(Ok(res)) => res,
+            Ok(Err(e)) => return Err(self.redact_err(e)),
+            Err(_) => {
+                return Err(jackett_err(
+                    "Jackett took too long to respond. Try again in a moment.",
+                ));
+            }
+        };
         if res.status().is_success() {
             let body: JackettResponse = res.json().await.map_err(|e| {
                 if e.is_decode() {
@@ -193,28 +214,15 @@ impl JackettClient {
                     self.redact_err(e)
                 }
             })?;
-            let mut results = self.transform_results(
+            let results = self.transform_results(
                 body.results,
                 preferred_resolution,
                 preferred_language,
                 kind,
             );
-            // Merge in Torznab hits we already collected
-            if !torznab.is_empty() {
-                let existing: std::collections::HashSet<String> = results
-                    .iter()
-                    .filter(|r| r.magnet.starts_with("magnet:"))
-                    .map(|r| r.magnet.clone())
-                    .collect();
-                for s in torznab {
-                    if !existing.contains(&s.magnet) {
-                        results.push(s);
-                    }
-                }
-                results = crate::jackett::rank_sources(results, preferred_resolution);
-            }
+            let results = Self::filter_episode(results, season, episode);
             if !results.is_empty() {
-                return Ok(Self::filter_episode(results, season, episode));
+                return Ok(results);
             }
             let cookie_blocked = body
                 .indexers
@@ -222,13 +230,6 @@ impl JackettClient {
                 .filter_map(|i| i.error.as_deref())
                 .any(needs_login);
             if cookie_blocked {
-                let fallback = self
-                    .search_indexers_individually(&q, preferred_resolution, preferred_language, kind)
-                    .await
-                    .unwrap_or_default();
-                if !fallback.is_empty() {
-                    return Ok(Self::filter_episode(fallback, season, episode));
-                }
                 return Err(jackett_err(INDEXER_LOGIN_MSG));
             }
             if let Some(err) = body
@@ -239,19 +240,10 @@ impl JackettClient {
             {
                 return Err(jackett_err(indexer_error_message(err)));
             }
-            return Ok(Self::filter_episode(results, season, episode));
+            return Ok(results);
         }
         let status = res.status().as_u16();
         let body = res.text().await.unwrap_or_default();
-        if status == 400 || needs_login(&body) {
-            let fallback = self
-                .search_indexers_individually(&q, preferred_resolution, preferred_language, kind)
-                .await
-                .unwrap_or_default();
-            if !fallback.is_empty() {
-                return Ok(Self::filter_episode(fallback, season, episode));
-            }
-        }
         Err(jackett_err(http_status_message(status, &body)))
     }
 
@@ -312,8 +304,8 @@ impl JackettClient {
         crate::jackett::rank_sources(v, preferred_resolution)
     }
 
-    /// Torznab search: hit each configured indexer with proper t= type and structured params.
-    /// Returns merged, ranked results. Falls back gracefully if an indexer doesn't support it.
+    /// Torznab search: hit kind-matching indexers in parallel and stop once we have
+    /// enough healthy releases. Falls back gracefully if an indexer doesn't support it.
     async fn search_torznab_all(
         &self,
         query: &str,
@@ -324,7 +316,7 @@ impl JackettClient {
         preferred_resolution: &str,
         preferred_language: &str,
     ) -> Result<Vec<StreamSource>> {
-        let ids = self.catalog_indexer_ids(kind).await;
+        let ids = self.stream_indexer_ids(kind).await;
         if ids.is_empty() {
             return Ok(vec![]);
         }
@@ -338,27 +330,36 @@ impl JackettClient {
             let episode = episode;
             let imdb = imdb_id.map(str::to_string);
             set.spawn(async move {
-                tokio::time::timeout(
-                    Duration::from_secs(12),
+                let result = tokio::time::timeout(
+                    Duration::from_secs(10),
                     this.search_torznab_one(&id, &query, &kind, season, episode, imdb.as_deref()),
                 )
-                .await
+                .await;
+                (id, result)
             });
         }
         let mut hits: Vec<JackettHit> = Vec::new();
         while let Some(joined) = set.join_next().await {
-            match joined {
-                Ok(Ok(Ok(batch))) => hits.extend(batch),
-                Ok(Ok(Err(ref e))) if e == "rate_limited" => {}
-                Ok(Ok(Err(e))) if is_broken_indexer_error(&e) => {}
-                _ => {}
+            let Ok((id, timed)) = joined else { continue };
+            match timed {
+                Ok(Ok(batch)) => {
+                    hits.extend(batch);
+                    if healthy_hit_count(&hits) >= 4 {
+                        set.abort_all();
+                        break;
+                    }
+                }
+                Ok(Err(ref e)) if e == "rate_limited" => self.skip_indexer(&id),
+                Ok(Err(e)) if is_broken_indexer_error(&e) => self.skip_indexer(&id),
+                Err(_) => {}
+                Ok(Err(_)) => {}
             }
         }
         Ok(self.transform_results(hits, preferred_resolution, preferred_language, kind))
     }
 
     /// Single-indexer Torznab search with t=movie/tvsearch/search + structured params.
-    /// Falls back to plain t=search if the indexer returns nothing with structured params.
+    /// Falls back to plain Query + Category if structured params return nothing.
     async fn search_torznab_one(
         &self,
         id: &str,
@@ -381,7 +382,7 @@ impl JackettClient {
         let mut params: Vec<(&str, String)> = vec![
             ("apikey", self.api_key.clone()),
             ("t", t_type.to_string()),
-            // Use categories — all indexers we target are Torznab-compliant
+            // Standard Newznab parent categories keep searches fast and on-topic.
             ("cat", cats.to_string()),
         ];
 
@@ -407,10 +408,25 @@ impl JackettClient {
         // Always include the text query so indexers that ignore structured params still work
         params.push(("q", query.to_string()));
 
+        let hits = self.fetch_indexer_results(&url, &params).await?;
+        if !hits.is_empty() {
+            return Ok(hits);
+        }
+
+        // Fallback: some indexers ignore Torznab `t=` but honor Query + Category.
+        self.search_one_indexer_with(&self.http, id, query, Some(cats))
+            .await
+    }
+
+    async fn fetch_indexer_results(
+        &self,
+        url: &str,
+        params: &[(&str, String)],
+    ) -> std::result::Result<Vec<JackettHit>, String> {
         let res = self
             .http
-            .get(&url)
-            .query(&params)
+            .get(url)
+            .query(params)
             .send()
             .await
             .map_err(|e| self.redact_text(&e.to_string()))?;
@@ -445,11 +461,16 @@ impl JackettClient {
         kind: &str,
     ) -> Result<Vec<StreamSource>> {
         let url = format!("{}/api/v2.0/indexers/all/results", self.base_url);
+        let cats = kind_categories(kind);
         let res = match tokio::time::timeout(
             Duration::from_secs(10),
             self.catalog_http
                 .get(&url)
-                .query(&[("apikey", self.api_key.as_str()), ("Query", query)])
+                .query(&[
+                    ("apikey", self.api_key.as_str()),
+                    ("Query", query),
+                    ("Category", cats),
+                ])
                 .send(),
         )
         .await
@@ -474,31 +495,35 @@ impl JackettClient {
         Ok(self.transform_results(body.results, preferred_resolution, "", kind))
     }
 
-    async fn configured_indexer_ids(&self) -> Result<Vec<String>> {
-        Ok(self
-            .load_indexers()
-            .await
-            .into_iter()
-            .map(|ix| ix.id)
-            .take(12)
-            .collect())
+    async fn catalog_indexer_ids(&self, kind: &str) -> Vec<String> {
+        self.ranked_indexer_ids(kind, 4).await
     }
 
-    async fn catalog_indexer_ids(&self, kind: &str) -> Vec<String> {
+    /// Live Play searches: more indexers than catalog, still kind-filtered and ranked.
+    async fn stream_indexer_ids(&self, kind: &str) -> Vec<String> {
+        self.ranked_indexer_ids(kind, 12).await
+    }
+
+    async fn ranked_indexer_ids(&self, kind: &str, limit: usize) -> Vec<String> {
         let skip = self
             .skip_indexers
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone();
-        self.load_indexers()
+        let mut rows: Vec<(i32, String)> = self
+            .load_indexers()
             .await
             .into_iter()
             .filter(|ix| !skip.contains(&ix.id))
             .filter(|ix| !is_broken_indexer_error(&ix.last_error))
             .filter(|ix| indexer_fits_kind(&ix.id, &ix.name, kind))
-            .map(|ix| ix.id)
-            .take(4)
-            .collect()
+            .map(|ix| {
+                let rank = indexer_priority(&ix.id, &ix.name, kind);
+                (rank, ix.id)
+            })
+            .collect();
+        rows.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+        rows.into_iter().map(|(_, id)| id).take(limit).collect()
     }
 
     async fn load_indexers(&self) -> Vec<IndexerInfo> {
@@ -620,7 +645,7 @@ impl JackettClient {
         preferred_language: &str,
         kind: &str,
     ) -> Result<Vec<StreamSource>> {
-        let ids = self.configured_indexer_ids().await?;
+        let ids = self.stream_indexer_ids(kind).await;
         if ids.is_empty() {
             return Ok(vec![]);
         }
@@ -629,14 +654,30 @@ impl JackettClient {
             let this = self.clone();
             let q = query.to_string();
             let kind2 = kind.to_string();
-            set.spawn(async move { this.search_one_indexer(&id, &q, &kind2).await });
+            set.spawn(async move {
+                let result = tokio::time::timeout(
+                    Duration::from_secs(10),
+                    this.search_one_indexer(&id, &q, &kind2),
+                )
+                .await;
+                (id, result)
+            });
         }
         let mut hits = Vec::new();
         while let Some(joined) = set.join_next().await {
-            match joined {
-                Ok(Ok(batch)) => hits.extend(batch),
-                Ok(Err(ref e)) if e == "rate_limited" => {}
-                _ => {}
+            let Ok((id, timed)) = joined else { continue };
+            match timed {
+                Ok(Ok(batch)) => {
+                    hits.extend(batch);
+                    if healthy_hit_count(&hits) >= 4 {
+                        set.abort_all();
+                        break;
+                    }
+                }
+                Ok(Err(ref e)) if e == "rate_limited" => self.skip_indexer(&id),
+                Ok(Err(e)) if is_broken_indexer_error(&e) => self.skip_indexer(&id),
+                Err(_) => {}
+                Ok(Err(_)) => {}
             }
         }
         Ok(self.transform_results(hits, preferred_resolution, preferred_language, kind))
@@ -804,9 +845,6 @@ fn is_broken_indexer_error(err: &str) -> bool {
 }
 
 fn indexer_fits_kind(id: &str, name: &str, kind: &str) -> bool {
-    if kind == "anime" {
-        return true;
-    }
     let blob = format!("{id} {name}").to_ascii_lowercase();
     const ANIME_ONLY: &[&str] = &[
         "anirena",
@@ -816,12 +854,48 @@ fn indexer_fits_kind(id: &str, name: &str, kind: &str) -> bool {
         "horriblesubs",
         "anidex",
         "tokyotosho",
+        "tokyo toshokan",
         "shittyanime",
         "animebytes",
         "bakabt",
         "anidub",
+        "bangumi",
+        "nekobt",
+        "shanaproject",
+        "shana project",
     ];
-    !ANIME_ONLY.iter().any(|key| blob.contains(key))
+    const MOVIE_ONLY: &[&str] = &["yts", "yify"];
+    const TV_ONLY: &[&str] = &["eztv", "showrss"];
+
+    match kind {
+        "anime" => true,
+        "movie" => {
+            !ANIME_ONLY.iter().any(|key| blob.contains(key))
+                && !TV_ONLY.iter().any(|key| blob.contains(key))
+        }
+        "series" => {
+            !ANIME_ONLY.iter().any(|key| blob.contains(key))
+                && !MOVIE_ONLY.iter().any(|key| blob.contains(key))
+        }
+        _ => !ANIME_ONLY.iter().any(|key| blob.contains(key)),
+    }
+}
+
+/// Lower is better. Prefer kind-specialized public trackers first.
+fn indexer_priority(id: &str, name: &str, kind: &str) -> i32 {
+    let blob = format!("{id} {name}").to_ascii_lowercase();
+    let prefers = match kind {
+        "movie" => &["yts", "1337x", "piratebay", "torrentgalaxy", "rarbg", "limetorrents"][..],
+        "series" => &["eztv", "showrss", "1337x", "piratebay", "torrentgalaxy", "rarbg", "limetorrents"][..],
+        "anime" => &["nyaa", "subsplease", "animetosho", "anirena", "tokyotosho", "bangumi"][..],
+        _ => &[][..],
+    };
+    for (i, key) in prefers.iter().enumerate() {
+        if blob.contains(key) {
+            return i as i32;
+        }
+    }
+    100
 }
 
 fn healthy_hit_count(hits: &[JackettHit]) -> usize {
@@ -1044,36 +1118,15 @@ fn size_plausible(bytes: u64, kind: &str, title: &str) -> bool {
     }
 }
 
-/// Newznab/Torznab category IDs derived from the user's actual Jackett indexer list.
-/// Using every relevant ID maximises hits across heterogeneous indexers.
+/// Newznab/Torznab categories extracted from this Jackett install.
 fn kind_categories(kind: &str) -> &'static str {
     match kind {
-        "movie" => {
-            // Standard Newznab 2000-range + all known custom movie IDs from configured indexers
-            "2000,2010,2020,2030,2040,2045,2050,2060,2070,2080,\
-             112696,100467,138189,128776,126854,106958,136609,133730,154011,122149,\
-             110477,126839,162856,157842,131676,110210,114292,101316,117016,151624,\
-             139470,153196,3100000,3107000,3106000,3104000,3105000,3101000,3108000,\
-             3102000,3103000,125870,102000,100201,100501,100202,100502,100211,100507,\
-             131538,101535,131001,135672,112170,108211,104516,124884,107093,158611,\
-             145382,100044,100045,100046,100047"
-        }
-        "series" => {
-            // Standard Newznab 5000-range + all known custom TV/series IDs
-            "5000,5010,5020,5030,5040,5045,5050,5060,5080,\
-             143862,112972,100208,100212,111963,158099,113405,149728,131655,144345,\
-             100795,144174,105852"
-        }
-        "anime" => {
-            // Anime-specific IDs from all known indexers — broadest coverage
-            "5070,\
-             100028,100078,100079,100080,100081,100001,146065,151474,117370,135022,\
-             124996,125940,143839,131371,120491,101078,6100000,6103000,6102000,\
-             6108000,6104000,6101000,105070,140679,125996,127720,131088,134634,\
-             164586,139278,125620,\
-             100001,100002,100004,100007,100008,100009,100010,100011,100012,100013,\
-             100014,100015"
-        }
+        // Movies: 2000 + HD/SD/UHD/3D/DVD children (no 2050/2080 — not present here)
+        "movie" => "2000,2010,2020,2030,2040,2045,2060,2070",
+        // TV: 5000 + common children including anime-TV 5070 (no 5010 — not present here)
+        "series" => "5000,5020,5030,5040,5045,5050,5060,5070,5080",
+        // Anime: Torznab anime + overlapping TV cats from the same Jackett set
+        "anime" => "5070,5000,5040,5045,5080",
         _ => "",
     }
 }
@@ -1461,6 +1514,32 @@ mod tests {
     #[test]
     fn maps_build_error() {
         assert!(super::indexer_error_message("build error").contains("indexers"));
+    }
+
+    #[test]
+    fn kind_categories_are_standard_newznab() {
+        assert_eq!(
+            super::kind_categories("movie"),
+            "2000,2010,2020,2030,2040,2045,2060,2070"
+        );
+        assert_eq!(
+            super::kind_categories("series"),
+            "5000,5020,5030,5040,5045,5050,5060,5070,5080"
+        );
+        assert!(super::kind_categories("anime").contains("5070"));
+        assert!(!super::kind_categories("movie").contains("2050"));
+        assert!(!super::kind_categories("series").contains("5010"));
+    }
+
+    #[test]
+    fn indexer_kind_filters_anime_and_movie_only() {
+        assert!(!super::indexer_fits_kind("nyaasi", "Nyaa.si", "series"));
+        assert!(!super::indexer_fits_kind("bangumimoe", "Bangumi Moe", "movie"));
+        assert!(!super::indexer_fits_kind("yts", "YTS", "series"));
+        assert!(!super::indexer_fits_kind("eztv", "EZTV", "movie"));
+        assert!(super::indexer_fits_kind("eztv", "EZTV", "series"));
+        assert!(super::indexer_fits_kind("thepiratebay", "The Pirate Bay", "movie"));
+        assert!(super::indexer_fits_kind("nyaasi", "Nyaa.si", "anime"));
     }
 
     #[test]

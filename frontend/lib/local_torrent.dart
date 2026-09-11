@@ -211,6 +211,23 @@ class LocalTorrentEngine {
     }
   }
 
+  /// Keep piece download going while the player is paused (HTTP reader may idle).
+  void keepDownloading() {
+    final id = _torrentId;
+    if (id == null || !_ready) return;
+    try {
+      final engine = LibtorrentFlutter.instance;
+      final info = engine.torrents[id];
+      if (info != null && info.isPaused) {
+        engine.resumeTorrent(id);
+      }
+      final sid = _streamId;
+      if (sid != null) {
+        engine.preloadStream(sid, preloadBytes: 32 * 1024 * 1024);
+      }
+    } catch (_) {}
+  }
+
   int? _pickFile(List<FileInfo> files, {int? season, int? episode}) {
     const videoExt = {'mkv', 'mp4', 'avi', 'webm', 'mov', 'm4v'};
     bool isVideo(FileInfo f) {
