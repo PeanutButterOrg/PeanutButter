@@ -138,4 +138,8 @@ pub struct SyncStateRow {
     pub syncing: bool,
     pub total_titles: i32,
     pub last_error: Option<String>,
+    pub phase: Option<String>,
+    pub progress_done: i32,
+    pub progress_total: i32,
+    pub workers_active: i32,
 }

@@ -721,8 +721,9 @@ impl JackettClient {
             })
             .collect();
         if !preferred_lang.is_empty() && preferred_lang != "all" {
-            let matched: Vec<StreamSource> = out
-                .iter()
+            // Strict: never fall back to other languages when the user set preferences.
+            out = out
+                .into_iter()
                 .filter(|src| {
                     let found: Vec<&str> = src
                         .language
@@ -732,11 +733,7 @@ impl JackettClient {
                         .collect();
                     language_matches(&found, &preferred_lang, kind)
                 })
-                .cloned()
                 .collect();
-            if !matched.is_empty() {
-                out = matched;
-            }
         }
         rank_sources(out, &preferred_res)
     }
@@ -1200,12 +1197,12 @@ fn language_matches(found: &[&str], preferred: &str, kind: &str) -> bool {
     if wanted.is_empty() {
         return true;
     }
-    if found.iter().any(|c| *c == "multi") {
-        return true;
-    }
+    // Strict mode: only accept releases that advertise a wanted language.
+    // "Multi" alone is not enough when the user picked specific languages.
     if found.iter().any(|c| wanted.iter().any(|w| w == c)) {
         return true;
     }
+    // Untagged English / anime-Japanese releases are treated as that language.
     if found.is_empty() {
         return wanted
             .iter()
@@ -1526,6 +1523,14 @@ mod tests {
         assert!(found.is_empty());
         assert!(super::language_matches(&found, "ja", "anime"));
         assert!(!super::language_matches(&found, "ja", "movie"));
+    }
+
+    #[test]
+    fn multi_alone_does_not_match_specific_language() {
+        let found = ["multi"];
+        assert!(!super::language_matches(&found, "en", "movie"));
+        assert!(!super::language_matches(&found, "hi", "movie"));
+        assert!(super::language_matches(&found, "en,multi", "movie"));
     }
 
     #[test]

@@ -5,29 +5,70 @@ import '../theme.dart';
 
 /// Shows the best available rating (RT, IMDb, TMDB/TVMaze, or AniList).
 class RatingBadge extends StatelessWidget {
-  const RatingBadge({super.key, required this.item, this.compact = true});
+  const RatingBadge({
+    super.key,
+    required this.item,
+    this.compact = true,
+    this.inline = false,
+  });
 
   final TitleItem item;
   final bool compact;
+  /// Flat score for hero meta rows (no filled chip background).
+  final bool inline;
 
   @override
   Widget build(BuildContext context) {
     final score = item.displayScore;
     if (score == null) return const SizedBox.shrink();
-    return ScoreChip(score: score, compact: compact);
+    return ScoreChip(score: score, compact: compact, inline: inline);
   }
 }
 
 class ScoreChip extends StatelessWidget {
-  const ScoreChip({super.key, required this.score, this.compact = true});
+  const ScoreChip({
+    super.key,
+    required this.score,
+    this.compact = true,
+    this.inline = false,
+  });
 
   final DisplayScore score;
   final bool compact;
+  final bool inline;
 
   @override
   Widget build(BuildContext context) {
     if (score.rtScore != null) {
-      return RtBadge(score: score.rtScore!, compact: compact);
+      return RtBadge(score: score.rtScore!, compact: compact, inline: inline);
+    }
+    if (inline) {
+      return Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.star_rounded, size: 15, color: Color(0xFFFFC107)),
+          const SizedBox(width: 3),
+          Text(
+            score.label,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 13,
+              fontWeight: FontWeight.w800,
+              height: 1.1,
+            ),
+          ),
+          const SizedBox(width: 4),
+          Text(
+            score.source,
+            style: TextStyle(
+              color: Colors.white.withValues(alpha: 0.55),
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+              height: 1.1,
+            ),
+          ),
+        ],
+      );
     }
     return Container(
       padding: EdgeInsets.fromLTRB(compact ? 5 : 8, compact ? 2 : 4, compact ? 6 : 8, compact ? 2 : 4),
@@ -67,41 +108,49 @@ class ScoreChip extends StatelessWidget {
 
 /// Compact Rotten Tomatoes score: tomato (fresh) or splat (rotten) plus percent.
 class RtBadge extends StatelessWidget {
-  const RtBadge({super.key, required this.score, this.compact = true});
+  const RtBadge({
+    super.key,
+    required this.score,
+    this.compact = true,
+    this.inline = false,
+  });
 
   final int score;
   final bool compact;
+  final bool inline;
 
   bool get fresh => score >= 60;
 
   @override
   Widget build(BuildContext context) {
-    final size = compact ? 14.0 : 18.0;
+    final size = inline || !compact ? (inline ? 14.0 : 18.0) : 14.0;
+    final row = Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        CustomPaint(
+          size: Size.square(size),
+          painter: fresh ? const _FreshTomatoPainter() : const _RottenSplatPainter(),
+        ),
+        SizedBox(width: compact && !inline ? 4 : 6),
+        Text(
+          '$score%',
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: inline ? 13 : (compact ? 11 : 13),
+            fontWeight: FontWeight.w800,
+            height: inline ? 1.1 : 1,
+          ),
+        ),
+      ],
+    );
+    if (inline) return row;
     return Container(
       padding: EdgeInsets.fromLTRB(compact ? 5 : 8, compact ? 2 : 4, compact ? 6 : 8, compact ? 2 : 4),
       decoration: BoxDecoration(
         color: Colors.black.withValues(alpha: 0.72),
         borderRadius: BorderRadius.circular(compact ? 6 : 8),
       ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          CustomPaint(
-            size: Size.square(size),
-            painter: fresh ? const _FreshTomatoPainter() : const _RottenSplatPainter(),
-          ),
-          SizedBox(width: compact ? 4 : 6),
-          Text(
-            '$score%',
-            style: TextStyle(
-              color: Colors.white,
-              fontSize: compact ? 11 : 13,
-              fontWeight: FontWeight.w800,
-              height: 1,
-            ),
-          ),
-        ],
-      ),
+      child: row,
     );
   }
 }

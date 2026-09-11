@@ -26,7 +26,7 @@ class _CatalogScreenState extends ConsumerState<CatalogScreen> {
   final _year = FocusNode(debugLabel: 'header-year');
   final _rating = FocusNode(debugLabel: 'header-rating');
   final _genre = FocusNode(debugLabel: 'header-genre');
-  final _refresh = FocusNode(debugLabel: 'header-refresh');
+  final _favourites = FocusNode(debugLabel: 'header-favourites');
   final _search = FocusNode(debugLabel: 'header-search-btn');
   final _settings = FocusNode(debugLabel: 'header-settings');
 
@@ -36,7 +36,7 @@ class _CatalogScreenState extends ConsumerState<CatalogScreen> {
     _year.dispose();
     _rating.dispose();
     _genre.dispose();
-    _refresh.dispose();
+    _favourites.dispose();
     _search.dispose();
     _settings.dispose();
     super.dispose();
@@ -54,9 +54,9 @@ class _CatalogScreenState extends ConsumerState<CatalogScreen> {
     final kind = filter.kind ?? selectedKind;
     final info = ref.watch(serverInfoProvider).maybeWhen(data: (v) => v, orElse: () => null);
     final omdb = info?.omdbConfigured ?? false;
-    final blocked = kindBlockedByMissingKeys(kind, omdbConfigured: omdb);
+    final tmdb = info?.tmdbConfigured ?? false;
+    final blocked = kindBlockedByMissingKeys(kind, omdbConfigured: omdb, tmdbConfigured: tmdb);
 
-    final refreshing = ref.watch(refreshBusyProvider);
     final heading = catalogHeading(filter);
     ref.listen(catalogFilterProvider, (prev, next) {
       if (_scroll.hasClients) {
@@ -65,11 +65,11 @@ class _CatalogScreenState extends ConsumerState<CatalogScreen> {
     });
     final grid = blocked
         ? EmptyState(
-            message: emptyKindMessage(kind: kind, omdbConfigured: omdb),
+            message: emptyKindMessage(kind: kind, omdbConfigured: omdb, tmdbConfigured: tmdb),
             onRefresh: () => refreshCatalogData(ref),
             showSettings: true,
           )
-        : ClippedOverlay(child: _body(ref, catalog, omdb, kind, filter));
+        : ClippedOverlay(child: _body(ref, catalog, omdb, tmdb, kind, filter));
 
     Widget filters({required bool tv}) {
       return Row(
@@ -107,19 +107,18 @@ class _CatalogScreenState extends ConsumerState<CatalogScreen> {
           const SizedBox(width: 8),
           if (tv) ...[
             TvHeaderButton(
-              tooltip: 'Refresh',
-              focusNode: _refresh,
-              busy: refreshing,
-              onPressed: () => refreshCatalogData(ref),
+              tooltip: 'Favourites',
+              focusNode: _favourites,
+              onPressed: () => context.push('/favourites'),
               onMoveLeft: () => _genre.requestFocus(),
               onMoveRight: () => _search.requestFocus(),
-              icon: const Icon(Icons.refresh_rounded),
+              icon: const Icon(Icons.favorite_rounded),
             ),
             TvHeaderButton(
               tooltip: 'Search',
               focusNode: _search,
               onPressed: () => context.push('/search'),
-              onMoveLeft: () => _refresh.requestFocus(),
+              onMoveLeft: () => _favourites.requestFocus(),
               onMoveRight: () => _settings.requestFocus(),
               icon: const Icon(Icons.search_rounded),
             ),
@@ -132,15 +131,9 @@ class _CatalogScreenState extends ConsumerState<CatalogScreen> {
             ),
           ] else
             IconButton(
-              tooltip: 'Refresh',
-              onPressed: refreshing ? null : () => refreshCatalogData(ref),
-              icon: refreshing
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.refresh_rounded),
+              tooltip: 'Favourites',
+              onPressed: () => context.push('/favourites'),
+              icon: const Icon(Icons.favorite_rounded),
             ),
         ],
       );
@@ -196,7 +189,14 @@ class _CatalogScreenState extends ConsumerState<CatalogScreen> {
     );
   }
 
-  Widget _body(WidgetRef ref, CatalogState catalog, bool omdb, String kind, CatalogFilter filter) {
+  Widget _body(
+    WidgetRef ref,
+    CatalogState catalog,
+    bool omdb,
+    bool tmdb,
+    String kind,
+    CatalogFilter filter,
+  ) {
     if (catalog.loading && catalog.items.isEmpty) {
       return const Center(child: CircularProgressIndicator());
     }
@@ -211,7 +211,7 @@ class _CatalogScreenState extends ConsumerState<CatalogScreen> {
       return EmptyState(
         message: filter.sort == 'CONTINUE_WATCHING'
             ? 'Nothing in progress. Play a title, then it shows up here.'
-            : emptyKindMessage(kind: kind, omdbConfigured: omdb),
+            : emptyKindMessage(kind: kind, omdbConfigured: omdb, tmdbConfigured: tmdb),
         onRefresh: () => refreshCatalogData(ref),
         showSettings: true,
       );

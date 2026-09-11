@@ -7,7 +7,11 @@ GraphQLClient createGraphQLClient(
   String apiToken = '',
   void Function()? onUnauthorized,
 }) {
-  final uri = _normalizeGraphqlUri(serverUrl);
+  var uri = _normalizeGraphqlUri(serverUrl);
+  // Avoid inventing 127.0.0.1 — use a dead host until LAN discovery fills serverUrl.
+  if (uri.isEmpty) {
+    uri = 'http://peanutbutter.invalid/graphql';
+  }
   final headers = <String, String>{'Accept': 'application/json'};
   final token = _normalizePairingToken(apiToken);
   if (token.isNotEmpty) {
@@ -111,10 +115,11 @@ bool isLocalServer(String serverUrl) {
 String _normalizeGraphqlUri(String serverUrl) {
   var value = serverUrl.trim();
   if (value.isEmpty) {
-    if (Uri.base.hasScheme && Uri.base.host.isNotEmpty) {
+    if (Uri.base.hasScheme && Uri.base.host.isNotEmpty && !isLocalServer(Uri.base.origin)) {
       return Uri.base.resolve('graphql').toString();
     }
-    return 'http://127.0.0.1:3001/graphql';
+    // No invented loopback — callers must discover a LAN host first.
+    return '';
   }
   if (!value.startsWith('http://') && !value.startsWith('https://')) {
     value = 'http://$value';
@@ -130,7 +135,8 @@ String normalizeServerBase(String serverUrl) {
   var value = serverUrl.trim();
   if (value.isEmpty) {
     final origin = Uri.base.origin;
-    return origin.isEmpty ? 'http://127.0.0.1:3001' : origin;
+    if (origin.isNotEmpty && !isLocalServer(origin)) return origin;
+    return '';
   }
   if (!value.startsWith('http://') && !value.startsWith('https://')) {
     value = 'http://$value';

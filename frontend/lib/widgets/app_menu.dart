@@ -160,5 +160,4 @@ const kKindFilters = <(String, String?)>[
   ('All', null),
   ('Movies', 'MOVIE'),
   ('Series', 'SERIES'),
-  ('Anime', 'ANIME'),
 ];

@@ -20,6 +20,7 @@ import 'providers/settings.dart';
 import 'screens/catalog.dart';
 import 'screens/detail.dart';
 import 'screens/edit_title.dart';
+import 'screens/favourites.dart';
 import 'screens/home.dart';
 import 'screens/pairing.dart';
 import 'screens/player.dart';
@@ -61,6 +62,7 @@ final _router = GoRouter(
     GoRoute(path: '/', builder: (_, __) => const HomeScreen()),
     GoRoute(path: '/catalog', builder: (_, __) => const CatalogScreen()),
     GoRoute(path: '/search', builder: (_, __) => const SearchScreen()),
+    GoRoute(path: '/favourites', builder: (_, __) => const FavouritesScreen()),
     GoRoute(
       path: '/title/:id',
       builder: (_, state) => DetailScreen(titleId: state.pathParameters['id']!),
@@ -78,6 +80,7 @@ final _router = GoRouter(
           fileId: state.pathParameters['fileId']!,
           playbackUrl: extra['url'] as String? ?? '',
           youtubeKey: extra['youtubeKey'] as String?,
+          trailerPreferredQuality: extra['preferredQuality'] as String?,
           titleId: extra['titleId'] as String?,
           episodeId: extra['episodeId'] as String?,
           season: extra['season'] as int?,
@@ -122,14 +125,19 @@ class _PeanutButterAppState extends ConsumerState<PeanutButterApp> with WidgetsB
       final envToken = definedToken.isNotEmpty ? definedToken : (dotenv.env['API_KEY'] ?? '');
       if (envUrl.isNotEmpty) {
         final base = envUrl.replaceFirst(RegExp(r'/graphql$'), '');
-        if (!(Platform.isAndroid && isLocalServer(base))) {
+        if (!isLocalServer(base)) {
           await notifier.setServerUrl(base);
         }
       }
       if (envToken.isNotEmpty) {
         await notifier.setApiToken(envToken);
       }
-      final settings = ref.read(settingsProvider);
+      var settings = ref.read(settingsProvider);
+      // Never keep a loopback URL — always rediscover on the LAN.
+      if (isLocalServer(settings.serverUrl)) {
+        await notifier.setServerUrl('');
+        settings = ref.read(settingsProvider);
+      }
       final hadSavedPairing = settings.apiToken.isNotEmpty && settings.serverUrl.isNotEmpty;
       if (hadSavedPairing) {
         final ok = await notifier.probeCurrent();
@@ -144,13 +152,16 @@ class _PeanutButterAppState extends ConsumerState<PeanutButterApp> with WidgetsB
               );
             } else {
               await notifier.markDisconnected(friendlyRequestError(e));
+              // Saved host unreachable — find the catalog on this network.
+              unawaited(notifier.discoverLocalhost());
             }
           }
+        } else {
+          unawaited(notifier.discoverLocalhost());
         }
-      } else if (settings.serverUrl.isEmpty) {
+      } else {
+        // Unpaired or URL missing: scan LAN (never 127.0.0.1).
         unawaited(notifier.discoverLocalhost());
-      } else if (settings.apiToken.isEmpty) {
-        unawaited(notifier.probeCurrent());
       }
     });
     _sessionWatch = Timer.periodic(const Duration(seconds: 12), (_) => _checkSession());
@@ -159,6 +170,8 @@ class _PeanutButterAppState extends ConsumerState<PeanutButterApp> with WidgetsB
   Future<void> _checkSession() async {
     final settings = ref.read(settingsProvider);
     if (settings.apiToken.isEmpty || settings.serverUrl.isEmpty) return;
+    // While watching, ignore API blips — local/torrent streams keep playing.
+    if (ref.read(playbackActiveProvider) || playbackSessionActive) return;
     try {
       final result = await ref.read(graphQLClientProvider).query(
             QueryOptions(
@@ -168,6 +181,7 @@ class _PeanutButterAppState extends ConsumerState<PeanutButterApp> with WidgetsB
           );
       if (result.hasException) {
         final err = result.exception!;
+        if (ref.read(playbackActiveProvider) || playbackSessionActive) return;
         if (isUnauthorizedError(err)) {
           await ref.read(settingsProvider.notifier).forgetPairing(
                 message: 'This pairing code is no longer valid. Create a new code in the server console.',
@@ -181,6 +195,7 @@ class _PeanutButterAppState extends ConsumerState<PeanutButterApp> with WidgetsB
         await ref.read(settingsProvider.notifier).markConnected();
       }
     } catch (e) {
+      if (ref.read(playbackActiveProvider) || playbackSessionActive) return;
       if (isUnauthorizedError(e)) {
         await ref.read(settingsProvider.notifier).forgetPairing(
               message: 'This pairing code is no longer valid. Create a new code in the server console.',
@@ -227,12 +242,14 @@ class _PeanutButterAppState extends ConsumerState<PeanutButterApp> with WidgetsB
       builder: (context, child) {
         final paired = settings.apiToken.isNotEmpty;
         final online = paired && settings.connected;
+        final playing = ref.watch(playbackActiveProvider) || playbackSessionActive;
         Widget gate;
         // Stay on the pairing form while Connect verifies — writing the token
         // used to flip the gate to Unreachable/boot spinner mid-request.
         if (settings.pairingInProgress || !paired) {
-          gate = const PairingScreen();
-        } else if (!online) {
+          // Keep the player mounted if auth was cleared mid-stream.
+          gate = playing ? (child ?? const SizedBox.shrink()) : const PairingScreen();
+        } else if (!online && !playing) {
           gate = const UnreachableScreen();
         } else {
           gate = child ?? const SizedBox.shrink();

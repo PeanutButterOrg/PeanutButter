@@ -14,7 +14,6 @@ class ShellScreen extends ConsumerWidget {
     final kind = ref.watch(selectedKindProvider);
     ref.watch(browseProvider('MOVIE'));
     ref.watch(browseProvider('SERIES'));
-    ref.watch(browseProvider('ANIME'));
     return Scaffold(
       backgroundColor: PtTheme.bg,
       body: Row(
@@ -57,13 +56,6 @@ class _Sidebar extends StatelessWidget {
             label: 'Series',
             selected: kind == 'SERIES',
             onTap: () => onSelect('SERIES'),
-          ),
-          _NavItem(
-            icon: Icons.animation_outlined,
-            selectedIcon: Icons.animation,
-            label: 'Anime',
-            selected: kind == 'ANIME',
-            onTap: () => onSelect('ANIME'),
           ),
           const Spacer(),
           _NavItem(

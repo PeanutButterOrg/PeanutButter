@@ -218,6 +218,7 @@ query GetServerInfo {
     jackettConfigured
     jackettUrl
     streamingResolution
+    preferredLanguages
     jackettCatalog {
       ready
       syncing

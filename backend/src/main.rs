@@ -2,6 +2,7 @@ mod admin;
 mod auth;
 mod cache;
 mod config;
+mod content_filter;
 mod db;
 mod error;
 mod graphql;
@@ -129,6 +130,22 @@ async fn main() -> Result<()> {
     let ingest_boot = ingest.clone();
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_secs(2)).await;
+        // Clear orphaned sync flag from a previous crash/restart so the console
+        // does not look permanently stuck at an old percent.
+        let _ = sqlx::query(
+            r#"
+            UPDATE sync_state SET
+                syncing = FALSE,
+                workers_active = 0,
+                last_error = CASE
+                    WHEN syncing THEN 'Previous sync was interrupted (server restarted). Tap Force sync.'
+                    ELSE last_error
+                END
+            WHERE id = 1 AND syncing = TRUE
+            "#,
+        )
+        .execute(&ingest_boot.pool)
+        .await;
         if let Err(e) = media::scanner::scan_library(
             &ingest_boot.pool,
             &ingest_boot.config,
@@ -144,17 +161,18 @@ async fn main() -> Result<()> {
             db::title_count_for_kind(&ingest_boot.pool, "series").await,
         ) {
             (Ok(total), Ok(movies), Ok(series))
-                if total == 0 || movies < 400 || series < 200 =>
+                if !ingest_boot.config.tmdb_key().is_empty()
+                    && (total == 0 || movies < 200 || series < 100) =>
             {
-                info!(total, movies, series, "catalog still thin; starting metadata sync");
-                if let Err(e) = ingest::run_full_sync(&ingest_boot).await {
-                    warn!(error = %e, "first-run sync failed");
-                }
+                info!(total, movies, series, "catalog thin; starting TMDB sync");
+                ingest::spawn_full_sync(ingest_boot);
             }
             (Ok(n), _, _) => {
                 info!(titles = n, "catalog ready");
-                if let Err(e) = ingest::refresh_stale(&ingest_boot).await {
-                    warn!(error = %e, "content-rating refresh failed");
+                if ingest_boot.config.tmdb_key().is_empty() {
+                    info!("no TMDB key — catalog sync skipped until one is added in Settings");
+                } else if let Err(e) = ingest::refresh_stale(&ingest_boot).await {
+                    warn!(error = %e, "stale refresh failed");
                 }
             }
             (Err(e), _, _) => warn!(error = %e, "could not count titles"),
@@ -170,6 +188,10 @@ async fn main() -> Result<()> {
         .route("/health", get(health))
         .route("/", get(crate::admin::page).post(crate::admin::action))
         .route("/tokens", get(crate::admin::page).post(crate::admin::action))
+        .route("/sync/status", get(crate::admin::sync_status))
+        .route("/sync/logs", get(crate::admin::sync_logs))
+        .route("/sync/start", axum::routing::post(crate::admin::sync_start))
+        .route("/sync/flush", axum::routing::post(crate::admin::sync_flush))
         .route("/graphql", get(graphiql).post(graphql_handler))
         .route("/files/{id}", get(media::serve_file).head(media::serve_file))
         .route("/stream/{id}", get(stream::serve_stream).head(stream::serve_stream))

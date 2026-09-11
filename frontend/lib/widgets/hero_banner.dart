@@ -26,9 +26,11 @@ class HeroBannerFrame extends StatelessWidget {
     return (height * 0.48).clamp(380.0, 540.0);
   }
 
+  /// Clearance under Movies/Series chrome and the detail back button.
   static double headerGap(BuildContext context) {
-    if (!isAndroidTv) return 0;
-    return MediaQuery.paddingOf(context).top + 64;
+    final pad = MediaQuery.paddingOf(context).top;
+    if (isAndroidTv) return pad + 64;
+    return pad + 56;
   }
 
   @override
@@ -42,7 +44,8 @@ class HeroBannerFrame extends StatelessWidget {
           fit: StackFit.expand,
           children: [
             const ColoredBox(color: AppTheme.canvas),
-            art,
+            // Full-bleed art — always cover the banner bounds.
+            Positioned.fill(child: art),
             const IgnorePointer(
               child: DecoratedBox(
                 decoration: BoxDecoration(
@@ -142,10 +145,13 @@ class HeroBannerCopy extends StatelessWidget {
           const SizedBox(height: 12),
           belowTitle!,
         ],
-        const SizedBox(height: 10),
+        const SizedBox(height: 12),
         SizedBox(
-          height: 22,
-          child: ClipRect(child: meta),
+          height: 28,
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: ClipRect(child: meta),
+          ),
         ),
         const SizedBox(height: 12),
         SizedBox(

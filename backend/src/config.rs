@@ -19,6 +19,7 @@ struct LiveInner {
     jackett_url: Option<String>,
     jackett_api_key: Option<String>,
     streaming_resolution: String,
+    preferred_languages: String,
     opensubtitles_enabled: bool,
     opensubtitles_api_key: Option<String>,
 }
@@ -36,6 +37,7 @@ impl LiveSettings {
                 jackett_url: optional_env("JACKETT_URL"),
                 jackett_api_key: optional_env("JACKETT_API_KEY"),
                 streaming_resolution: env_or("STREAMING_RESOLUTION", "1080p"),
+                preferred_languages: env_or("PREFERRED_LANGUAGES", "en"),
                 opensubtitles_enabled: false,
                 opensubtitles_api_key: optional_env("OPENSUBTITLES_API_KEY"),
             })),
@@ -85,6 +87,20 @@ impl LiveSettings {
         self.inner.read().expect("settings lock").streaming_resolution.clone()
     }
 
+    /// Comma-separated ISO 639-1 codes. Empty string = all languages.
+    pub fn preferred_languages(&self) -> String {
+        self.inner
+            .read()
+            .expect("settings lock")
+            .preferred_languages
+            .clone()
+    }
+
+    /// Parsed preferred language codes. Empty vec = allow all.
+    pub fn preferred_language_codes(&self) -> Vec<String> {
+        parse_language_codes(&self.preferred_languages())
+    }
+
     pub fn set_app_token(&self, token: String) {
         self.inner.write().expect("settings lock").app_token = token;
     }
@@ -117,6 +133,7 @@ impl LiveSettings {
         jackett_url: Option<Option<String>>,
         jackett_api_key: Option<Option<String>>,
         streaming_resolution: Option<String>,
+        preferred_languages: Option<String>,
     ) {
         let mut g = self.inner.write().expect("settings lock");
         if let Some(v) = jackett_enabled {
@@ -132,6 +149,9 @@ impl LiveSettings {
             if matches!(v.as_str(), "2160p" | "1080p" | "720p" | "480p") {
                 g.streaming_resolution = v;
             }
+        }
+        if let Some(v) = preferred_languages {
+            g.preferred_languages = normalize_language_list(&v);
         }
     }
 
@@ -308,4 +328,44 @@ fn env_or(key: &str, default: &str) -> String {
 
 fn optional_env(key: &str) -> Option<String> {
     std::env::var(key).ok().filter(|s| !s.trim().is_empty())
+}
+
+pub fn parse_language_codes(raw: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for part in raw.split([',', '/', '|', '+', ' ']) {
+        let code = part.trim().to_ascii_lowercase();
+        if code.is_empty() || code == "all" {
+            continue;
+        }
+        if !out.iter().any(|e| e == &code) {
+            out.push(code);
+        }
+    }
+    out
+}
+
+pub fn normalize_language_list(raw: &str) -> String {
+    parse_language_codes(raw).join(",")
+}
+
+/// TMDB `language=` locale for metadata text (titles, overviews).
+pub fn tmdb_ui_locale(codes: &[String]) -> String {
+    match codes.first().map(String::as_str) {
+        None | Some("en") => "en-US".into(),
+        Some("ja") => "ja-JP".into(),
+        Some("ko") => "ko-KR".into(),
+        Some("zh") => "zh-CN".into(),
+        Some("hi") => "hi-IN".into(),
+        Some("es") => "es-ES".into(),
+        Some("fr") => "fr-FR".into(),
+        Some("de") => "de-DE".into(),
+        Some("it") => "it-IT".into(),
+        Some("pt") => "pt-BR".into(),
+        Some("ar") => "ar-SA".into(),
+        Some("tr") => "tr-TR".into(),
+        Some("ru") => "ru-RU".into(),
+        Some("th") => "th-TH".into(),
+        Some("id") => "id-ID".into(),
+        Some(code) => code.to_string(),
+    }
 }

@@ -105,7 +105,6 @@ class _EditTitleScreenState extends ConsumerState<EditTitleScreen> {
             entries: const [
               AppMenuEntry(value: 'MOVIE', label: 'Movie'),
               AppMenuEntry(value: 'SERIES', label: 'Series'),
-              AppMenuEntry(value: 'ANIME', label: 'Anime'),
             ],
             onSelected: (v) => setState(() => _kind = v),
           ),

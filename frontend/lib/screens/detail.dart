@@ -4,7 +4,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:graphql_flutter/graphql_flutter.dart';
 
-import '../graphql/client.dart';
 import '../graphql/queries.dart';
 import '../models.dart';
 import '../providers/catalog.dart';
@@ -13,9 +12,10 @@ import '../content_languages.dart';
 import '../theme.dart';
 import '../widgets/cached_art.dart';
 import '../widgets/hero_banner.dart';
-import '../widgets/rt_badge.dart';
 import '../widgets/streaming_picker.dart';
+import '../widgets/title_meta.dart';
 import '../widgets/tv_chrome.dart';
+import '../window_layout.dart';
 import '../youtube_stream.dart';
 import '../tv.dart';
 
@@ -59,11 +59,8 @@ class _DetailBodyState extends ConsumerState<_DetailBody> {
   final FocusNode _play = FocusNode(debugLabel: 'detail-play');
   final FocusNode _watched = FocusNode(debugLabel: 'detail-watched');
   final FocusNode _favorite = FocusNode(debugLabel: 'detail-favorite');
-  final FocusNode _refresh = FocusNode(debugLabel: 'detail-refresh');
   final FocusNode _back = FocusNode(debugLabel: 'detail-back');
   final ScrollController _scroll = ScrollController();
-
-  bool _refreshing = false;
 
   TitleItem get item => widget.item;
 
@@ -92,7 +89,6 @@ class _DetailBodyState extends ConsumerState<_DetailBody> {
     _play.dispose();
     _watched.dispose();
     _favorite.dispose();
-    _refresh.dispose();
     _back.dispose();
     _scroll.dispose();
     super.dispose();
@@ -105,29 +101,6 @@ class _DetailBodyState extends ConsumerState<_DetailBody> {
   void _pinTop() {
     if (!isAndroidTv || !_scroll.hasClients) return;
     _scroll.jumpTo(0);
-  }
-
-  Future<void> _refreshFromServer() async {
-    if (_refreshing) return;
-    setState(() => _refreshing = true);
-    try {
-      final result = await ref.read(graphQLClientProvider).mutate(
-            MutationOptions(
-              document: gql(REFRESH_TITLE),
-              variables: {'id': item.id},
-            ),
-          );
-      if (!mounted) return;
-      if (result.hasException) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(graphqlMessage(result))),
-        );
-        return;
-      }
-      ref.invalidate(detailProvider(item.id));
-    } finally {
-      if (mounted) setState(() => _refreshing = false);
-    }
   }
 
   void _leave() {
@@ -380,6 +353,7 @@ class _DetailBodyState extends ConsumerState<_DetailBody> {
                               ),
                             );
                         ref.invalidate(detailProvider(item.id));
+                        ref.invalidate(favoritesFeedProvider);
                       },
                     ),
                     if (files.length > 1)
@@ -406,7 +380,7 @@ class _DetailBodyState extends ConsumerState<_DetailBody> {
                         ),
                       ),
                     if (item.people.isNotEmpty) _CastRow(people: item.people),
-                    if (!isAndroidTv && item.playableTrailers.isNotEmpty) _TrailerRow(item: item),
+                    if (item.playableTrailers.isNotEmpty) _TrailerRow(item: item),
                     if (item.seasons.isNotEmpty)
                       _SeasonList(
                         item: item,
@@ -437,27 +411,6 @@ class _DetailBodyState extends ConsumerState<_DetailBody> {
                         tooltip: 'Back',
                         onPressed: _leave,
                         icon: const Icon(Icons.arrow_back_rounded),
-                      ),
-                    ),
-                  ),
-                  const Spacer(),
-                  Material(
-                    color: const Color(0xCC121218),
-                    shape: const CircleBorder(),
-                    elevation: 8,
-                    child: TvFocus(
-                      allowHorizontal: false,
-                      child: IconButton(
-                        focusNode: isAndroidTv ? _refresh : null,
-                        tooltip: 'Refresh',
-                        onPressed: _refreshing ? null : _refreshFromServer,
-                        icon: _refreshing
-                            ? const SizedBox(
-                                width: 18,
-                                height: 18,
-                                child: CircularProgressIndicator(strokeWidth: 2),
-                              )
-                            : const Icon(Icons.refresh_rounded),
                       ),
                     ),
                   ),
@@ -519,8 +472,13 @@ class _DetailHero extends StatelessWidget {
   Widget build(BuildContext context) {
     final file = playTarget;
     return HeroBannerFrame(
+      topInset: HeroBannerFrame.headerGap(context),
       art: BannerArt(
-        url: item.thumbUrl ?? item.backdropUrl ?? item.posterUrl,
+        url: bestBannerUrl(
+          backdropUrl: item.backdropUrl,
+          thumbUrl: item.thumbUrl,
+          posterUrl: item.posterUrl,
+        ),
         fallbackUrl: item.posterUrl,
         logoUrl: item.logoUrl,
       ),
@@ -528,34 +486,7 @@ class _DetailHero extends StatelessWidget {
         eyebrow: _eyebrow,
         title: item.title,
         synopsis: item.synopsis ?? '',
-        meta: Row(
-          children: [
-            RatingBadge(item: item, compact: false),
-            if (item.year != null) ...[
-              const SizedBox(width: 8),
-              Text('${item.year}', style: const TextStyle(color: Colors.white70, fontSize: 14)),
-            ],
-            if (item.runtimeMinutes != null) ...[
-              const SizedBox(width: 8),
-              Text('${item.runtimeMinutes} min', style: const TextStyle(color: Colors.white70, fontSize: 14)),
-            ],
-            for (final label in item.mediaLabels) ...[
-              const SizedBox(width: 8),
-              Text(label, style: const TextStyle(color: Colors.white70, fontSize: 14)),
-            ],
-            for (final genre in item.genres.take(2)) ...[
-              const SizedBox(width: 8),
-              Flexible(
-                child: Text(
-                  genre,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(color: Colors.white70, fontSize: 14),
-                ),
-              ),
-            ],
-          ],
-        ),
+        meta: TitleMetaRow(item: item, maxGenres: 3),
         belowTitle: file != null || canStream
             ? _PlayButtons(
                 playFocus: playFocus,
@@ -867,7 +798,14 @@ class _TrailerCardState extends State<_TrailerCard> {
       onEnter: (_) => setState(() => _highlighted = true),
       onExit: (_) => setState(() => _highlighted = false),
       child: GestureDetector(
-        onTap: () => playTrailer(context, videoId: t.youtubeKey, title: t.name),
+        onTap: () {
+          playTrailer(
+            context,
+            videoId: t.youtubeKey,
+            title: t.name,
+            preferredQuality: '720p',
+          );
+        },
         child: AnimatedScale(
           scale: _highlighted ? 1.08 : 1,
           alignment: Alignment.center,
@@ -927,7 +865,7 @@ class _TrailerRow extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('Trailers', style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700)),
+          Text('Trailer', style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700)),
           const SizedBox(height: 12),
           SizedBox(
             height: 140,

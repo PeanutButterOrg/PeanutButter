@@ -1,3 +1,4 @@
+use chrono::Datelike;
 use serde::Deserialize;
 use serde_json::json;
 use tracing::{info, warn};
@@ -20,6 +21,7 @@ query ($page: Int, $perPage: Int) {
       coverImage { extraLarge large }
       bannerImage
       genres
+      isAdult
       averageScore
       popularity
       seasonYear
@@ -65,6 +67,7 @@ query ($page: Int, $perPage: Int) {
       coverImage { extraLarge large }
       bannerImage
       genres
+      isAdult
       averageScore
       popularity
       seasonYear
@@ -109,6 +112,7 @@ query ($id: Int) {
     coverImage { extraLarge large }
     bannerImage
     genres
+    isAdult
     averageScore
     popularity
     seasonYear
@@ -170,6 +174,8 @@ struct AniMedia {
     #[serde(rename = "bannerImage")]
     banner_image: Option<String>,
     genres: Option<Vec<String>>,
+    #[serde(rename = "isAdult", default)]
+    is_adult: Option<bool>,
     #[serde(rename = "averageScore")]
     average_score: Option<i32>,
     popularity: Option<i32>,
@@ -226,42 +232,70 @@ struct AniCover {
 }
 
 pub async fn sync_trending(ctx: &IngestContext) -> Result<()> {
-    info!("fetching anime from AniList");
-    for (query, pages) in [(TRENDING_QUERY, 5usize), (POPULAR_QUERY, 4usize)] {
-        for page in 1..=pages {
-            let body = json!({
-                "query": query,
-                "variables": { "page": page, "perPage": 50 }
-            });
-            let resp = ctx
-                .http
-                .post(ANILIST_URL)
-                .header("Content-Type", "application/json")
-                .header("Accept", "application/json")
-                .json(&body)
-                .send()
-                .await?;
-            let status = resp.status();
-            if !status.is_success() {
-                let text = resp.text().await.unwrap_or_default();
-                return Err(AppError::Provider(format!(
-                    "AniList {status}: {}",
-                    text.chars().take(200).collect::<String>()
-                )));
+    info!(workers = super::SYNC_WORKERS, "fetching anime from AniList");
+    let work: Vec<(&'static str, usize)> = [(TRENDING_QUERY, 5usize), (POPULAR_QUERY, 4usize)]
+        .into_iter()
+        .flat_map(|(query, pages)| (1..=pages).map(move |page| (query, page)))
+        .collect();
+    let mut set = tokio::task::JoinSet::new();
+    let mut pending = work.into_iter();
+
+    while set.len() < super::SYNC_WORKERS {
+        let Some((query, page)) = pending.next() else {
+            break;
+        };
+        let c = ctx.clone();
+        set.spawn(async move {
+            if let Err(e) = sync_anilist_page(&c, query, page).await {
+                warn!(page, error = %e, "AniList page failed");
             }
-            let parsed: AniResponse = resp.json().await?;
-            let Some(data) = parsed.data else {
-                warn!(page, "AniList returned no data");
-                break;
-            };
-            for media in data.page.media {
-                if let Err(e) = upsert_anime(ctx, media).await {
-                    warn!(error = %e, "anime upsert failed");
+        });
+    }
+    while set.join_next().await.is_some() {
+        if let Some((query, page)) = pending.next() {
+            let c = ctx.clone();
+            set.spawn(async move {
+                if let Err(e) = sync_anilist_page(&c, query, page).await {
+                    warn!(page, error = %e, "AniList page failed");
                 }
-            }
-            throttle().await;
+            });
         }
     }
+    Ok(())
+}
+
+async fn sync_anilist_page(ctx: &IngestContext, query: &str, page: usize) -> Result<()> {
+    let body = json!({
+        "query": query,
+        "variables": { "page": page, "perPage": 50 }
+    });
+    let resp = ctx
+        .http
+        .post(ANILIST_URL)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json")
+        .json(&body)
+        .send()
+        .await?;
+    let status = resp.status();
+    if !status.is_success() {
+        let text = resp.text().await.unwrap_or_default();
+        return Err(AppError::Provider(format!(
+            "AniList {status}: {}",
+            text.chars().take(200).collect::<String>()
+        )));
+    }
+    let parsed: AniResponse = resp.json().await?;
+    let Some(data) = parsed.data else {
+        warn!(page, "AniList returned no data");
+        return Ok(());
+    };
+    for media in data.page.media {
+        if let Err(e) = upsert_anime(ctx, media).await {
+            warn!(error = %e, "anime upsert failed");
+        }
+    }
+    throttle().await;
     Ok(())
 }
 
@@ -359,6 +393,24 @@ async fn fetch_media(ctx: &IngestContext, anilist_id: i32) -> Result<Option<AniM
 }
 
 async fn upsert_anime(ctx: &IngestContext, media: AniMedia) -> Result<Uuid> {
+    if media.is_adult == Some(true) {
+        return Err(AppError::Message("skipped adult anime".into()));
+    }
+    if media
+        .season_year
+        .is_some_and(|y| y > chrono::Utc::now().date_naive().year())
+    {
+        return Err(AppError::Message("skipped unreleased anime".into()));
+    }
+    if media
+        .genres
+        .as_deref()
+        .unwrap_or(&[])
+        .iter()
+        .any(|g| crate::content_filter::is_blocked_genre(g))
+    {
+        return Err(AppError::Message("skipped anime with blocked genre".into()));
+    }
     let people = anilist_people(&media);
     let title = media
         .title
@@ -436,7 +488,7 @@ async fn upsert_anime(ctx: &IngestContext, media: AniMedia) -> Result<Uuid> {
         .await?;
     for name in media.genres.unwrap_or_default() {
         let name = name.trim().to_string();
-        if name.is_empty() {
+        if name.is_empty() || crate::content_filter::is_blocked_genre(&name) {
             continue;
         }
         let (genre_id,): (Uuid,) = sqlx::query_as(
@@ -473,7 +525,10 @@ async fn upsert_anime(ctx: &IngestContext, media: AniMedia) -> Result<Uuid> {
         }
     }
 
-    upsert_ratings(ctx, id, None, None, None, None, score, media.popularity, None).await?;
+    upsert_ratings(ctx, id, None, None, None, None, score, media.popularity, None, media.popularity.map(|p| p as f64)).await?;
+    if let Some(year) = media.season_year {
+        let _ = crate::ingest::tmdb::apply_released_at(ctx, id, Some(&format!("{year}-01-01"))).await;
+    }
     replace_credit_people(ctx, id, &people).await?;
     reindex(ctx, id).await?;
     Ok(id)

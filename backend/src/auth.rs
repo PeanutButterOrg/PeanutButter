@@ -109,6 +109,13 @@ pub async fn gate(
     if path == "/" || path == "/tokens" {
         return Ok(next.run(req).await);
     }
+    // Console Sync tab uses the admin session cookie (not a device pairing token).
+    if path.starts_with("/sync/") {
+        if crate::admin::has_session(&state, req.headers()).await {
+            return Ok(next.run(req).await);
+        }
+        return Err(AppError::Unauthorized("sign in to the server console".into()));
+    }
     if method == axum::http::Method::GET && path == "/graphql" {
         if crate::admin::has_session(&state, req.headers()).await {
             return Ok(next.run(req).await);

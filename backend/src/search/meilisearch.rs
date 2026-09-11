@@ -116,9 +116,43 @@ impl SearchClient {
             poster_path: title.poster_path.clone().unwrap_or_default(),
         };
         let index = self.inner.client.index(INDEX);
-        let task = index.add_or_replace(&[doc], Some("id")).await?;
-        let _ = task.wait_for_completion(&self.inner.client, None, None).await;
+        // Fire-and-forget: waiting for Meili per title was the #1 sync bottleneck.
+        let _ = index.add_or_replace(&[doc], Some("id")).await?;
         Ok(())
+    }
+
+    pub async fn index_titles_batch(
+        &self,
+        docs: &[TitleDocument],
+    ) -> Result<()> {
+        if docs.is_empty() {
+            return Ok(());
+        }
+        let index = self.inner.client.index(INDEX);
+        let _ = index.add_or_replace(docs, Some("id")).await?;
+        Ok(())
+    }
+
+    pub fn title_document(
+        title: &TitleRow,
+        genres: &[String],
+        rating: Option<f64>,
+    ) -> TitleDocument {
+        TitleDocument {
+            id: title.id.to_string(),
+            title: title.title.clone(),
+            original_title: title.original_title.clone().unwrap_or_default(),
+            synopsis: title
+                .synopsis
+                .clone()
+                .or_else(|| title.description.clone())
+                .unwrap_or_default(),
+            kind: title.kind.clone(),
+            year: title.year.unwrap_or(0),
+            genres: genres.to_vec(),
+            rating: rating.unwrap_or(0.0),
+            poster_path: title.poster_path.clone().unwrap_or_default(),
+        }
     }
 
     pub async fn delete_title(&self, id: Uuid) -> Result<()> {

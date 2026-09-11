@@ -1,7 +1,7 @@
 use tracing::{error, info};
 use tokio_cron_scheduler::{Job, JobScheduler};
 
-use super::{run_full_sync, IngestContext};
+use super::{spawn_full_sync, IngestContext};
 use crate::error::Result;
 
 pub async fn start(ctx: IngestContext) -> Result<JobScheduler> {
@@ -17,9 +17,7 @@ pub async fn start(ctx: IngestContext) -> Result<JobScheduler> {
                 let popular = popular.clone();
                 Box::pin(async move {
                     info!("scheduled popular/trending sync");
-                    if let Err(e) = run_full_sync(&popular).await {
-                        error!(error = %e, "scheduled sync failed");
-                    }
+                    spawn_full_sync(popular);
                 })
             })
             .map_err(|e| crate::error::AppError::Internal(format!("popular cron: {e}")))?,

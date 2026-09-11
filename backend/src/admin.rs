@@ -1,8 +1,10 @@
-use axum::extract::{ConnectInfo, State};
+use axum::extract::{ConnectInfo, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
+use axum::Json;
 use axum::Form;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use uuid::Uuid;
 
@@ -21,6 +23,44 @@ pub struct AdminForm {
     pub jackett_api_key: Option<String>,
     pub streaming_resolution: Option<String>,
     pub new_password: Option<String>,
+    pub tmdb_api_key: Option<String>,
+    pub omdb_api_key: Option<String>,
+    /// Language checkboxes use unique names (`lang_en`, `lang_hi`, …) so
+    /// `serde_urlencoded` does not reject repeated `preferred_languages` keys.
+    #[serde(flatten, default)]
+    pub extras: HashMap<String, String>,
+}
+
+impl AdminForm {
+    fn preferred_language_codes(&self) -> Vec<String> {
+        let mut codes: Vec<String> = self
+            .extras
+            .iter()
+            .filter_map(|(key, value)| {
+                let code = key.strip_prefix("lang_")?;
+                if code.is_empty() {
+                    return None;
+                }
+                let value = value.trim();
+                if value.is_empty() {
+                    None
+                } else if value.eq_ignore_ascii_case("on") {
+                    Some(code.to_ascii_lowercase())
+                } else {
+                    Some(value.to_ascii_lowercase())
+                }
+            })
+            .collect();
+        codes.sort();
+        codes.dedup();
+        codes
+    }
+}
+
+#[derive(Deserialize, Default)]
+pub struct TabQuery {
+    #[serde(default)]
+    pub tab: String,
 }
 
 fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
@@ -108,7 +148,17 @@ fn decode_flash(s: &str) -> String {
 }
 
 fn redirect_console(notice: Option<&str>, highlight: Option<&str>) -> Response {
-    let mut response = Redirect::to("/").into_response();
+    redirect_console_tab(notice, highlight, None)
+}
+
+fn redirect_console_tab(notice: Option<&str>, highlight: Option<&str>, tab: Option<&str>) -> Response {
+    let path = match tab {
+        Some("sync") => "/?tab=sync",
+        Some("devices") => "/?tab=devices",
+        Some("settings") => "/?tab=settings",
+        _ => "/",
+    };
+    let mut response = Redirect::to(path).into_response();
     let headers = response.headers_mut();
     if let Some(n) = notice.filter(|s| !s.is_empty()) {
         headers.append(header::SET_COOKIE, cookie_set("pb_flash", &encode_flash(n), 20));
@@ -137,15 +187,21 @@ pub async fn page(
     ConnectInfo(_addr): ConnectInfo<SocketAddr>,
     State(state): State<HttpState>,
     headers: HeaderMap,
+    Query(q): Query<TabQuery>,
 ) -> Result<Response, AppError> {
     let authed = session_ok(&state, &headers).await;
     let notice = cookie_value(&headers, "pb_flash").map(|s| decode_flash(&s));
     let highlight = cookie_value(&headers, "pb_pin");
+    let tab = match q.tab.as_str() {
+        "sync" | "devices" | "settings" => q.tab.as_str(),
+        _ => "streaming",
+    };
     let html = render(
         &state,
         authed,
         notice.as_deref().filter(|s| !s.is_empty()),
         highlight.as_deref().filter(|s| !s.is_empty()),
+        tab,
     )
     .await?;
     let mut response = Html(html).into_response();
@@ -156,6 +212,263 @@ pub async fn page(
         .headers_mut()
         .append(header::SET_COOKIE, cookie_set("pb_pin", "", 0));
     Ok(response)
+}
+
+#[derive(Serialize)]
+pub struct SyncStatusJson {
+    pub syncing: bool,
+    pub phase: Option<String>,
+    pub progress_done: i32,
+    pub progress_total: i32,
+    pub percent: i32,
+    pub workers_active: i32,
+    pub total_titles: i32,
+    pub last_sync_at: Option<String>,
+    pub last_error: Option<String>,
+    pub movies: i64,
+    pub series: i64,
+    pub anime: i64,
+}
+
+pub async fn sync_status(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    if !session_ok(&state, &headers).await {
+        return Ok(StatusCode::UNAUTHORIZED.into_response());
+    }
+    Ok(Json(build_sync_status_json(&state).await?).into_response())
+}
+
+#[derive(Serialize)]
+pub struct SyncLogJson {
+    pub at: String,
+    pub level: String,
+    pub phase: Option<String>,
+    pub message: String,
+}
+
+/// GET /sync/logs — recent sync event lines for the console Sync tab.
+pub async fn sync_logs(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    if !session_ok(&state, &headers).await {
+        return Ok(StatusCode::UNAUTHORIZED.into_response());
+    }
+    let rows = crate::db::list_sync_logs(&state.app.pool, 120).await?;
+    let logs: Vec<SyncLogJson> = rows
+        .into_iter()
+        .map(|(at, level, phase, message)| SyncLogJson {
+            at: at.to_rfc3339(),
+            level,
+            phase,
+            message,
+        })
+        .collect();
+    Ok(Json(serde_json::json!({ "logs": logs })).into_response())
+}
+
+#[derive(Deserialize, Default)]
+pub struct SyncStartBody {
+    /// When true, clear a stuck sync flag and start again.
+    #[serde(default)]
+    pub force: bool,
+}
+
+#[derive(Serialize)]
+pub struct SyncActionJson {
+    pub ok: bool,
+    pub started: bool,
+    pub message: String,
+    pub status: SyncStatusJson,
+}
+
+async fn build_sync_status_json(state: &HttpState) -> Result<SyncStatusJson, AppError> {
+    let mut row = crate::db::sync_state(&state.app.pool).await?;
+    let atomic = state
+        .app
+        .syncing
+        .load(std::sync::atomic::Ordering::Relaxed);
+    // Heal orphaned DB flag left behind when the process restarted mid-sync.
+    if row.syncing && !atomic {
+        let _ = sqlx::query(
+            r#"
+            UPDATE sync_state SET
+                syncing = FALSE,
+                workers_active = 0,
+                phase = COALESCE(phase, 'Interrupted'),
+                last_error = COALESCE(last_error, 'Previous sync was interrupted (server restarted). Tap Force sync.')
+            WHERE id = 1 AND syncing = TRUE
+            "#,
+        )
+        .execute(&state.app.pool)
+        .await;
+        row.syncing = false;
+        row.workers_active = 0;
+    }
+    let syncing = atomic || row.syncing;
+    let percent = if row.progress_total > 0 {
+        ((row.progress_done as f64 / row.progress_total as f64) * 100.0).round() as i32
+    } else if syncing {
+        0
+    } else if row.phase.as_deref() == Some("Done") {
+        100
+    } else {
+        0
+    };
+    let movies = crate::db::title_count_for_kind(&state.app.pool, "movie")
+        .await
+        .unwrap_or(0);
+    let series = crate::db::title_count_for_kind(&state.app.pool, "series")
+        .await
+        .unwrap_or(0);
+    let anime = crate::db::title_count_for_kind(&state.app.pool, "anime")
+        .await
+        .unwrap_or(0);
+    Ok(SyncStatusJson {
+        syncing,
+        phase: row.phase,
+        progress_done: row.progress_done,
+        progress_total: row.progress_total,
+        percent: percent.clamp(0, 100),
+        workers_active: if syncing { row.workers_active } else { 0 },
+        total_titles: row.total_titles,
+        last_sync_at: row.last_sync_at.map(|t| t.to_rfc3339()),
+        last_error: row.last_error,
+        movies,
+        series,
+        anime,
+    })
+}
+
+fn spawn_catalog_sync(state: &HttpState) {
+    let ingest = crate::ingest::IngestContext::from(&state.app);
+    crate::ingest::spawn_full_sync(ingest);
+}
+
+/// POST /sync/start — start catalog sync (JSON). Use force=true to unstick a hung sync.
+pub async fn sync_start(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    body: Result<Json<SyncStartBody>, axum::extract::rejection::JsonRejection>,
+) -> Result<Response, AppError> {
+    if !session_ok(&state, &headers).await {
+        return Ok(StatusCode::UNAUTHORIZED.into_response());
+    }
+    let force = body.ok().map(|Json(b)| b.force).unwrap_or(false);
+    let already = state
+        .app
+        .syncing
+        .load(std::sync::atomic::Ordering::Relaxed);
+    if already && !force {
+        let status = build_sync_status_json(&state).await?;
+        return Ok(Json(SyncActionJson {
+            ok: true,
+            started: false,
+            message: "Catalog sync is already running.".into(),
+            status,
+        })
+        .into_response());
+    }
+    if force {
+        // Always clear both the in-memory lock and any orphaned DB flag.
+        state
+            .app
+            .syncing
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        let _ = sqlx::query(
+            r#"
+            UPDATE sync_state SET
+                syncing = FALSE,
+                phase = 'Restarting',
+                progress_done = 0,
+                progress_total = 100,
+                workers_active = 0,
+                last_error = NULL
+            WHERE id = 1
+            "#,
+        )
+        .execute(&state.app.pool)
+        .await;
+        let _ = crate::db::append_sync_log(
+            &state.app.pool,
+            "warn",
+            Some("Restarting".into()),
+            "Unstick requested — starting a fresh sync",
+        )
+        .await;
+    }
+    if state.app.config.tmdb_key().is_empty() {
+        let status = build_sync_status_json(&state).await?;
+        return Ok(Json(SyncActionJson {
+            ok: false,
+            started: false,
+            message: "Add a TMDB API key in Settings before syncing.".into(),
+            status,
+        })
+        .into_response());
+    }
+    let _ = crate::db::set_sync_progress(&state.app.pool, "Starting", 0, 100).await;
+    spawn_catalog_sync(&state);
+    // Give the worker a tick to flip the atomic + DB flag.
+    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+    let status = build_sync_status_json(&state).await?;
+    Ok(Json(SyncActionJson {
+        ok: true,
+        started: true,
+        message: "Catalog sync started. Watch progress and logs on this tab.".into(),
+        status,
+    })
+    .into_response())
+}
+
+/// POST /sync/flush — wipe catalog titles and start a fresh sync (non-blocking).
+pub async fn sync_flush(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    if !session_ok(&state, &headers).await {
+        return Ok(StatusCode::UNAUTHORIZED.into_response());
+    }
+    state
+        .app
+        .syncing
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    state
+        .app
+        .jackett_syncing
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    let removed = crate::db::clear_catalog(&state.app.pool).await?;
+    if let Err(e) = state.app.search.clear_all().await {
+        tracing::warn!(error = %e, "could not clear search index after catalog flush");
+    }
+    state.app.gql_cache.invalidate();
+    if state.app.config.tmdb_key().is_empty() {
+        let status = build_sync_status_json(&state).await?;
+        return Ok(Json(SyncActionJson {
+            ok: true,
+            started: false,
+            message: format!(
+                "Flushed {removed} titles. Add a TMDB API key in Settings, then Force sync."
+            ),
+            status,
+        })
+        .into_response());
+    }
+    let _ = crate::db::set_sync_progress(&state.app.pool, "Flush complete · starting", 0, 100).await;
+    spawn_catalog_sync(&state);
+    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+    let status = build_sync_status_json(&state).await?;
+    Ok(Json(SyncActionJson {
+        ok: true,
+        started: true,
+        message: format!(
+            "Flushed {removed} titles. Fresh sync started — devices stay paired."
+        ),
+        status,
+    })
+    .into_response())
 }
 
 pub async fn action(
@@ -171,14 +484,16 @@ pub async fn action(
     }
 
     if !session_ok(&state, &headers).await {
-        let html = render(&state, false, Some("Sign in to continue."), None).await?;
+        let html = render(&state, false, Some("Sign in to continue."), None, "streaming").await?;
         return Ok((StatusCode::UNAUTHORIZED, Html(html)).into_response());
     }
 
     let mut notice: Option<String> = None;
     let mut highlight: Option<String> = None;
+    let mut tab: Option<&str> = None;
     match form.action.as_str() {
         "create" => {
+            tab = Some("devices");
             let name = form
                 .name
                 .as_deref()
@@ -194,6 +509,7 @@ pub async fn action(
             ));
         }
         "revoke" => {
+            tab = Some("devices");
             if let Some(id) = form.id.as_deref().and_then(|s| Uuid::parse_str(s).ok()) {
                 crate::db::revoke_device_token(&state.app.pool, id).await?;
                 state.app.gql_cache.invalidate();
@@ -206,7 +522,73 @@ pub async fn action(
         "test_jackett" => {
             notice = Some(test_jackett(&state, &form).await);
         }
+        "force_sync" => {
+            tab = Some("sync");
+            if state
+                .app
+                .syncing
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
+                notice = Some("Catalog sync is already running.".into());
+            } else {
+                let ingest = crate::ingest::IngestContext::from(&state.app);
+                crate::ingest::spawn_full_sync(ingest);
+                notice = Some("Catalog sync started. Watch progress and logs on this tab.".into());
+            }
+        }
+        "save_metadata_keys" => {
+            tab = Some("settings");
+            let tmdb = form
+                .tmdb_api_key
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            let omdb = form
+                .omdb_api_key
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            if tmdb.is_none() && omdb.is_none() {
+                notice = Some("Paste a TMDB and/or OMDb key to save.".into());
+            } else {
+                crate::db::save_settings(
+                    &state.app.pool,
+                    tmdb,
+                    omdb,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .await?;
+                state.app.config.live.apply(
+                    tmdb.map(|s| s.to_string()),
+                    omdb.map(|s| s.to_string()),
+                    None,
+                    None,
+                );
+                // Kick cast/trailer enrich right away when TMDB is set.
+                if tmdb.is_some() || !state.app.config.tmdb_key().is_empty() {
+                    let ingest = crate::ingest::IngestContext::from(&state.app);
+                    tokio::spawn(async move {
+                        if let Err(e) = crate::ingest::tmdb::enrich_missing_from_imdb(&ingest).await {
+                            tracing::warn!(error = %e, "TMDB enrich after key save failed");
+                        }
+                    });
+                }
+                notice = Some(
+                    "Metadata keys saved. Cast & trailers will fill in as TMDB enrichment runs."
+                        .into(),
+                );
+            }
+        }
         "set_password" => {
+            tab = Some("settings");
             let next = form.new_password.as_deref().unwrap_or("").trim();
             if next.len() < 8 {
                 notice = Some("Choose a password of at least 8 characters.".into());
@@ -215,9 +597,10 @@ pub async fn action(
                 let hash = crate::db::admin_password_hash(&state.app.pool)
                     .await?
                     .unwrap_or_default();
-                let mut response = redirect_console(
+                let mut response = redirect_console_tab(
                     Some("Password updated. Stay signed in on this browser."),
                     None,
+                    Some("settings"),
                 );
                 response.headers_mut().append(
                     header::SET_COOKIE,
@@ -229,6 +612,7 @@ pub async fn action(
             }
         }
         "clear_catalog" => {
+            tab = Some("settings");
             state
                 .app
                 .syncing
@@ -249,7 +633,7 @@ pub async fn action(
         _ => {}
     }
 
-    Ok(redirect_console(notice.as_deref(), highlight.as_deref()))
+    Ok(redirect_console_tab(notice.as_deref(), highlight.as_deref(), tab))
 }
 
 async fn login(state: &HttpState, form: &AdminForm) -> Result<Response, AppError> {
@@ -264,6 +648,7 @@ async fn login(state: &HttpState, form: &AdminForm) -> Result<Response, AppError
             false,
             Some("That password is not correct."),
             None,
+            "streaming",
         )
         .await?;
         return Ok((StatusCode::UNAUTHORIZED, Html(html)).into_response());
@@ -305,6 +690,7 @@ async fn save_jackett(state: &HttpState, form: &AdminForm) -> Result<String, App
         .streaming_resolution
         .as_deref()
         .filter(|s| matches!(*s, "2160p" | "1080p" | "720p" | "480p"));
+    let langs = crate::config::normalize_language_list(&form.preferred_language_codes().join(","));
     crate::db::save_settings(
         &state.app.pool,
         None,
@@ -317,6 +703,7 @@ async fn save_jackett(state: &HttpState, form: &AdminForm) -> Result<String, App
         resolution,
         None,
         None,
+        Some(langs.as_str()),
     )
     .await?;
     state.app.config.live.apply_streaming(
@@ -324,14 +711,15 @@ async fn save_jackett(state: &HttpState, form: &AdminForm) -> Result<String, App
         jackett_url.map(Some),
         key.map(|s| Some(s.to_string())),
         resolution.map(ToOwned::to_owned),
+        Some(langs),
     );
     state.app.gql_cache.invalidate();
     if enabled && state.app.config.live.jackett_configured() {
-        Ok("Jackett saved. Every TV and desktop will use this server.".into())
+        Ok("Jackett and content languages saved for all devices.".into())
     } else if enabled {
-        Ok("Jackett is on, but it still needs a URL and API key.".into())
+        Ok("Saved. Jackett still needs a URL and API key.".into())
     } else {
-        Ok("Jackett turned off for all devices.".into())
+        Ok("Saved content languages. Jackett is off for all devices.".into())
     }
 }
 
@@ -370,6 +758,7 @@ async fn render(
     authed: bool,
     notice: Option<&str>,
     highlight: Option<&str>,
+    tab: &str,
 ) -> Result<String, AppError> {
     let notice_html = notice
         .map(|n| format!(r#"<p class="banner">{}</p>"#, html_escape(n)))
@@ -394,7 +783,7 @@ async fn render(
             "#
         )
     } else {
-        dashboard(state, &notice_html, highlight).await?
+        dashboard(state, &notice_html, highlight, tab).await?
     };
 
     Ok(shell(if authed { "Console" } else { "Sign in" }, &body, authed))
@@ -404,6 +793,7 @@ async fn dashboard(
     state: &HttpState,
     notice_html: &str,
     highlight: Option<&str>,
+    tab: &str,
 ) -> Result<String, AppError> {
     let tokens = crate::db::list_device_tokens(&state.app.pool).await?;
     let live = &state.app.config.live;
@@ -453,6 +843,54 @@ async fn dashboard(
             format!(r#"<option value="{r}"{sel}>{label}</option>"#)
         })
         .collect::<String>();
+    let selected_langs = live.preferred_language_codes();
+    let lang_opts = [
+        ("en", "English"),
+        ("ja", "Japanese"),
+        ("ko", "Korean"),
+        ("zh", "Chinese"),
+        ("hi", "Hindi"),
+        ("es", "Spanish"),
+        ("fr", "French"),
+        ("de", "German"),
+        ("it", "Italian"),
+        ("pt", "Portuguese"),
+        ("ar", "Arabic"),
+        ("tr", "Turkish"),
+        ("ru", "Russian"),
+        ("th", "Thai"),
+        ("id", "Indonesian"),
+    ]
+    .into_iter()
+    .map(|(code, label)| {
+        let checked = if selected_langs.iter().any(|c| c == code) {
+            " checked"
+        } else {
+            ""
+        };
+        format!(
+            r#"<label class="check"><input type="checkbox" name="lang_{code}" value="{code}"{checked} /> {label}</label>"#
+        )
+    })
+    .collect::<String>();
+    let langs_hint = if selected_langs.is_empty() {
+        "All languages (none selected)".to_string()
+    } else {
+        selected_langs.join(", ")
+    };
+
+    fn tab_class(active: &str, name: &str) -> &'static str {
+        if active == name {
+            "tab on"
+        } else {
+            "tab"
+        }
+    }
+    let sync_on = tab == "sync";
+    let panel_streaming = if tab == "streaming" { "" } else { " hidden" };
+    let panel_devices = if tab == "devices" { "" } else { " hidden" };
+    let panel_sync = if sync_on { "" } else { " hidden" };
+    let panel_settings = if tab == "settings" { "" } else { " hidden" };
 
     Ok(format!(
         r#"
@@ -465,7 +903,24 @@ async fn dashboard(
           <form method="post" action="/"><input type="hidden" name="action" value="logout" /><button class="ghost" type="submit">Sign out</button></form>
         </header>
 
-        <section class="panel">
+        <div class="sync-strip" id="sync-strip" hidden>
+          <div class="sync-strip-meta">
+            <span class="pill warn" id="strip-pill">Syncing</span>
+            <strong id="strip-pct">0%</strong>
+            <span id="strip-phase">…</span>
+          </div>
+          <div class="sync-bar strip-bar"><span id="strip-fill" style="width:0%"></span></div>
+          <a class="tab" href="/?tab=sync">Open Sync</a>
+        </div>
+
+        <nav class="tabs">
+          <a class="{tab_streaming}" href="/?tab=streaming">Streaming</a>
+          <a class="{tab_devices}" href="/?tab=devices">Devices</a>
+          <a class="{tab_sync}" href="/?tab=sync">Sync</a>
+          <a class="{tab_settings}" href="/?tab=settings">Settings</a>
+        </nav>
+
+        <section class="panel{panel_streaming}" id="panel-streaming">
           <div class="row-head">
             <h2>Streaming</h2>
             {status}
@@ -485,14 +940,19 @@ async fn dashboard(
             <label>Preferred resolution
               <select name="streaming_resolution">{res_opts}</select>
             </label>
+            <fieldset class="langs">
+              <legend>Content languages</legend>
+              <p class="muted">Applies to <strong>TMDB catalog</strong> (movies/series + trailers) and <strong>Jackett Play</strong>. Leave all unchecked for every language. Active: {langs_hint}</p>
+              <div class="lang-grid">{lang_opts}</div>
+            </fieldset>
             <div class="actions">
-              <button type="submit" name="action" value="save_jackett">Save Jackett</button>
+              <button type="submit" name="action" value="save_jackett">Save streaming</button>
               <button type="submit" class="ghost" name="action" value="test_jackett">Test connection</button>
             </div>
           </form>
         </section>
 
-        <section class="panel">
+        <section class="panel{panel_devices}" id="panel-devices">
           <h2>Devices</h2>
           <p class="lead">Each TV, phone, or desktop gets its own 6-digit code. Play history and likes stay on that device. Catalog and Jackett are shared.</p>
           <form method="post" action="/" class="inline" autocomplete="off">
@@ -505,8 +965,54 @@ async fn dashboard(
           <div class="grid">{cards}</div>
         </section>
 
-        <section class="panel">
-          <h2>Console password</h2>
+        <section class="panel{panel_sync}" id="panel-sync">
+          <div class="row-head">
+            <h2>Catalog sync</h2>
+            <span class="pill" id="sync-pill">…</span>
+          </div>
+          <p class="lead">Catalog sync is <strong>TMDB-only</strong> (≤30 requests/sec). Add a free TMDB key in Settings first. Search also pulls unsynced titles from TMDB and saves them.</p>
+          <div class="sync-meter">
+            <div class="sync-bar"><span id="sync-fill" style="width:0%"></span></div>
+            <div class="sync-meta">
+              <strong id="sync-pct">0%</strong>
+              <span id="sync-phase">Idle</span>
+            </div>
+          </div>
+          <div class="sync-stats" id="sync-stats">
+            <div><span class="muted">Titles</span><strong id="stat-total">—</strong></div>
+            <div><span class="muted">Movies</span><strong id="stat-movies">—</strong></div>
+            <div><span class="muted">Series</span><strong id="stat-series">—</strong></div>
+            <div><span class="muted">Anime</span><strong id="stat-anime">—</strong></div>
+            <div><span class="muted">Workers</span><strong id="stat-workers">0</strong></div>
+            <div><span class="muted">Last sync</span><strong id="stat-last">—</strong></div>
+          </div>
+          <p class="muted" id="sync-error" hidden></p>
+          <div class="actions" style="margin-top:1rem">
+            <button type="button" id="sync-btn">Force sync now</button>
+            <button type="button" class="ghost" id="sync-force-btn">Unstick &amp; restart sync</button>
+            <button type="button" class="ghost danger" id="sync-flush-btn">Flush DB &amp; re-sync</button>
+          </div>
+          <p class="muted" style="margin-top:0.6rem">Flush removes all titles then starts a clean sync. Pairing codes and Jackett stay.</p>
+          <h3 style="margin:1.2rem 0 0.45rem;font-size:0.95rem">Sync log</h3>
+          <pre class="sync-log" id="sync-log">Waiting for sync activity…</pre>
+        </section>
+
+        <section class="panel{panel_settings}" id="panel-settings">
+          <h2>Metadata keys</h2>
+          <p class="lead"><strong>TMDB is required</strong> for catalog sync, cast/crew, trailers, posters, and search. Get a free key at themoviedb.org. OMDb is optional for IMDb / Rotten Tomatoes scores.</p>
+          <form method="post" action="/" class="grid-form">
+            <input type="hidden" name="action" value="save_metadata_keys" />
+            <label>TMDB API key
+              <input name="tmdb_api_key" type="password" autocomplete="off" placeholder="{tmdb_ph}" />
+            </label>
+            <label>OMDb API key
+              <input name="omdb_api_key" type="password" autocomplete="off" placeholder="{omdb_ph}" />
+            </label>
+            <div class="actions">
+              <button type="submit">Save keys</button>
+            </div>
+          </form>
+          <h2 style="margin-top:1.6rem">Console password</h2>
           <form method="post" action="/" class="inline">
             <input type="hidden" name="action" value="set_password" />
             <label>New password
@@ -514,18 +1020,155 @@ async fn dashboard(
             </label>
             <button type="submit">Update password</button>
           </form>
-        </section>
-
-        <section class="panel">
-          <h2>Danger zone</h2>
+          <h2 style="margin-top:1.6rem">Danger zone</h2>
           <p class="lead">Wipe every movie, series, and anime from this server. Device pairing codes and Jackett settings stay. Metadata will rebuild on the next sync.</p>
           <form method="post" action="/" onsubmit="return confirm('Clear the entire catalog on this server?\n\nThis removes all titles, listings, and progress. Device codes and Jackett settings are kept.\n\nThis cannot be undone.');">
             <input type="hidden" name="action" value="clear_catalog" />
             <button class="ghost danger" type="submit">Clear catalog</button>
           </form>
         </section>
+
+        <script>
+        (function () {{
+          const fill = document.getElementById('sync-fill');
+          const pct = document.getElementById('sync-pct');
+          const phase = document.getElementById('sync-phase');
+          const pill = document.getElementById('sync-pill');
+          const btn = document.getElementById('sync-btn');
+          const forceBtn = document.getElementById('sync-force-btn');
+          const flushBtn = document.getElementById('sync-flush-btn');
+          const err = document.getElementById('sync-error');
+          const strip = document.getElementById('sync-strip');
+          const stripFill = document.getElementById('strip-fill');
+          const stripPct = document.getElementById('strip-pct');
+          const stripPhase = document.getElementById('strip-phase');
+          const syncLog = document.getElementById('sync-log');
+          function fmtWhen(iso) {{
+            if (!iso) return 'Never';
+            try {{
+              const d = new Date(iso);
+              return d.toLocaleString();
+            }} catch (_) {{ return iso; }}
+          }}
+          function fmtLogTime(iso) {{
+            try {{
+              const d = new Date(iso);
+              return d.toLocaleTimeString();
+            }} catch (_) {{ return iso || ''; }}
+          }}
+          function setText(el, text) {{ if (el) el.textContent = text; }}
+          async function tickLogs() {{
+            if (!syncLog) return;
+            try {{
+              const r = await fetch('/sync/logs', {{ credentials: 'same-origin' }});
+              if (!r.ok) return;
+              const data = await r.json();
+              const lines = (data.logs || []).slice().reverse().map((l) => {{
+                const ph = l.phase ? ('[' + l.phase + '] ') : '';
+                return fmtLogTime(l.at) + '  ' + (l.level || 'info').toUpperCase().padEnd(5) + '  ' + ph + l.message;
+              }});
+              syncLog.textContent = lines.length ? lines.join('\\n') : 'Waiting for sync activity…';
+              syncLog.scrollTop = syncLog.scrollHeight;
+            }} catch (_) {{}}
+          }}
+          function applyStatus(s) {{
+            if (!s) return;
+            const p = Math.max(0, Math.min(100, s.percent || 0));
+            const phaseText = s.syncing
+              ? ((s.phase || 'Syncing') + (s.progress_total ? (' · ' + s.progress_done + '/' + s.progress_total) : ''))
+              : (s.phase === 'Done' ? 'Done' : 'Idle');
+            if (fill) fill.style.width = p + '%';
+            setText(pct, p + '%');
+            setText(phase, phaseText);
+            if (pill) {{
+              pill.textContent = s.syncing ? 'Syncing' : (s.phase === 'Done' ? 'Done' : 'Idle');
+              pill.className = 'pill' + (s.syncing ? ' warn' : ' ok');
+            }}
+            const stat = (id, v) => {{ const el = document.getElementById(id); if (el) el.textContent = v; }};
+            stat('stat-total', s.total_titles);
+            stat('stat-movies', s.movies);
+            stat('stat-series', s.series);
+            stat('stat-anime', s.anime);
+            stat('stat-workers', s.workers_active || 0);
+            stat('stat-last', fmtWhen(s.last_sync_at));
+            if (err) {{
+              if (s.last_error) {{ err.hidden = false; err.textContent = s.last_error; }}
+              else {{ err.hidden = true; err.textContent = ''; }}
+            }}
+            if (btn) btn.disabled = false;
+            if (forceBtn) forceBtn.disabled = false;
+            if (flushBtn) flushBtn.disabled = false;
+            if (strip) {{
+              strip.hidden = !s.syncing;
+              if (s.syncing) {{
+                if (stripFill) stripFill.style.width = p + '%';
+                setText(stripPct, p + '%');
+                setText(stripPhase, phaseText);
+              }}
+            }}
+          }}
+          async function tick() {{
+            try {{
+              const r = await fetch('/sync/status', {{ credentials: 'same-origin' }});
+              if (!r.ok) {{
+                if (err) {{ err.hidden = false; err.textContent = 'Sync status unavailable (' + r.status + '). Sign in again.'; }}
+                return;
+              }}
+              applyStatus(await r.json());
+              await tickLogs();
+            }} catch (e) {{
+              if (err) {{ err.hidden = false; err.textContent = 'Could not reach sync status.'; }}
+            }}
+          }}
+          async function postSync(url, payload, confirmMsg) {{
+            if (confirmMsg && !confirm(confirmMsg)) return;
+            if (btn) btn.disabled = true;
+            if (forceBtn) forceBtn.disabled = true;
+            if (flushBtn) flushBtn.disabled = true;
+            try {{
+              const r = await fetch(url, {{
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: {{ 'Content-Type': 'application/json' }},
+                body: JSON.stringify(payload || {{}}),
+              }});
+              const data = await r.json().catch(() => null);
+              if (!r.ok) {{
+                if (err) {{ err.hidden = false; err.textContent = 'Request failed (' + r.status + ').'; }}
+                return;
+              }}
+              if (data && data.message && err) {{
+                err.hidden = false;
+                err.textContent = data.message;
+              }}
+              if (data && data.status) applyStatus(data.status);
+              else await tick();
+            }} catch (_) {{
+              if (err) {{ err.hidden = false; err.textContent = 'Request failed.'; }}
+            }} finally {{
+              await tick();
+            }}
+          }}
+          if (btn) btn.addEventListener('click', () => postSync('/sync/start', {{ force: true }}));
+          if (forceBtn) forceBtn.addEventListener('click', () => postSync('/sync/start', {{ force: true }},
+            'Restart sync even if one looks stuck?'));
+          if (flushBtn) flushBtn.addEventListener('click', () => postSync('/sync/flush', {{}},
+            'Flush the entire catalog and start a clean sync?\\n\\nAll titles will be removed. Pairing codes and Jackett stay.\\n\\nThis cannot be undone.'));
+          tick();
+          tickLogs();
+          setInterval(tick, 1000);
+        }})();
+        </script>
         "#,
         notice_html = notice_html,
+        tab_streaming = tab_class(tab, "streaming"),
+        tab_devices = tab_class(tab, "devices"),
+        tab_sync = tab_class(tab, "sync"),
+        tab_settings = tab_class(tab, "settings"),
+        panel_streaming = panel_streaming,
+        panel_devices = panel_devices,
+        panel_sync = panel_sync,
+        panel_settings = panel_settings,
         status = status,
         checked = if jackett_on { "checked" } else { "" },
         url = html_escape(&jackett_url),
@@ -534,10 +1177,23 @@ async fn dashboard(
         } else {
             "Jackett API key"
         },
+        tmdb_ph = if live.tmdb_key().trim().is_empty() {
+            "Get a free key at themoviedb.org/settings/api"
+        } else {
+            "Configured — paste to replace"
+        },
+        omdb_ph = if live.omdb_key().trim().is_empty() {
+            "Get a free key at omdbapi.com/apikey.aspx"
+        } else {
+            "Configured — paste to replace"
+        },
         res_opts = res_opts,
+        lang_opts = lang_opts,
+        langs_hint = html_escape(&langs_hint),
         cards = cards,
     ))
 }
+
 
 fn shell(title: &str, body: &str, authed: bool) -> String {
     let width = if authed { "980px" } else { "440px" };
@@ -577,7 +1233,48 @@ fn shell(title: &str, body: &str, authed: bool) -> String {
   h3 {{ margin: 0; font-size: 1rem; }}
   .lead, .muted {{ color: var(--muted); }}
   .lead {{ margin: 0.45rem 0 1.1rem; max-width: 40rem; }}
-  .top {{ display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; margin-bottom: 1.4rem; }}
+  .top {{ display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; margin-bottom: 1rem; }}
+  .tabs {{
+    display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0 0 1.1rem;
+  }}
+  .tab {{
+    display: inline-block; padding: 0.55rem 0.9rem; border-radius: 999px;
+    border: 1px solid var(--line); color: var(--muted); text-decoration: none; font-weight: 700; font-size: 0.85rem;
+  }}
+  .tab.on {{ color: #081018; background: var(--accent); border-color: transparent; }}
+  .hidden {{ display: none !important; }}
+  .sync-strip {{
+    display: grid; gap: 0.55rem; margin: 0 0 1rem; padding: 0.8rem 1rem;
+    background: #e8c07a14; border: 1px solid #e8c07a44; border-radius: 14px;
+  }}
+  .sync-strip[hidden] {{ display: none !important; }}
+  .sync-strip-meta {{ display: flex; flex-wrap: wrap; align-items: center; gap: 0.55rem; }}
+  .sync-strip .strip-bar {{ height: 8px; }}
+  .sync-meter {{ margin: 0.4rem 0 1rem; }}
+  .sync-bar {{
+    height: 12px; border-radius: 999px; background: #ffffff12; overflow: hidden; border: 1px solid var(--line);
+  }}
+  .sync-bar > span {{
+    display: block; height: 100%; width: 0; background: linear-gradient(90deg, #3d6fb8, var(--accent));
+    transition: width 0.35s ease;
+  }}
+  .sync-meta {{ display: flex; justify-content: space-between; gap: 1rem; margin-top: 0.55rem; color: var(--muted); }}
+  .sync-meta strong {{ color: var(--ink); font-size: 1.15rem; }}
+  .sync-stats {{
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 0.75rem;
+    margin-top: 0.4rem;
+  }}
+  .sync-stats > div {{
+    background: #0e0e12; border: 1px solid var(--line); border-radius: 12px; padding: 0.7rem 0.8rem;
+    display: grid; gap: 0.2rem;
+  }}
+  .sync-stats strong {{ font-size: 1.05rem; }}
+  .sync-log {{
+    margin: 0; max-height: 280px; overflow: auto; padding: 0.85rem 1rem;
+    background: #08080c; border: 1px solid var(--line); border-radius: 12px;
+    color: #c8d0dc; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    white-space: pre-wrap; word-break: break-word;
+  }}
   .panel {{
     background: var(--card); border: 1px solid var(--line); border-radius: 18px;
     padding: 1.25rem 1.3rem 1.35rem; margin-bottom: 1.1rem;
@@ -596,6 +1293,15 @@ fn shell(title: &str, body: &str, authed: bool) -> String {
   form.grid-form {{ margin-top: 0.4rem; }}
   label {{ display: flex; flex-direction: column; gap: 0.35rem; font-size: 0.8rem; color: var(--muted); }}
   label.check {{ flex-direction: row; align-items: center; gap: 0.55rem; color: var(--ink); font-size: 0.95rem; }}
+  fieldset.langs {{
+    border: 1px solid var(--line); border-radius: 12px; padding: 0.85rem 1rem 1rem; margin: 0;
+  }}
+  fieldset.langs legend {{ padding: 0 0.35rem; color: var(--ink); font-size: 0.85rem; }}
+  .lang-grid {{
+    display: grid; gap: 0.35rem 0.75rem;
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    margin-top: 0.55rem;
+  }}
   input, select {{
     width: 100%; padding: 0.78rem 0.9rem; border: 1px solid var(--line);
     border-radius: 12px; background: #0e0e12; color: var(--ink); font: inherit;
@@ -606,6 +1312,7 @@ fn shell(title: &str, body: &str, authed: bool) -> String {
     padding: 0.78rem 1.05rem; border: 0; border-radius: 12px; background: var(--accent);
     color: #081018; font-weight: 700; cursor: pointer;
   }}
+  button:disabled {{ opacity: 0.55; cursor: not-allowed; }}
   button.ghost {{ background: transparent; color: var(--ink); border: 1px solid var(--line); }}
   button.ghost.danger {{ color: var(--danger); border-color: #ff8a8033; }}
   button.danger {{ color: var(--danger); border-color: #ff8a8033; }}

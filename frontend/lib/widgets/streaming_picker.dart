@@ -120,7 +120,7 @@ Future<StreamStart?> showStreamingPicker({
     barrierDismissible: false,
     builder: (_) => const _BusyDialog(label: 'Looking up sources…'),
   );
-  late final List<StreamSource> found;
+  late List<StreamSource> found;
   try {
     found = sourcesMatchingEpisode(
       await searchStreamingSources(
@@ -137,6 +137,28 @@ Future<StreamStart?> showStreamingPicker({
       season: season,
       episode: episode,
     );
+    // Client-side belt-and-suspenders: drop sources outside preferred languages.
+    if (language != null && language.trim().isNotEmpty) {
+      final wanted = language
+          .split(',')
+          .map((e) => e.trim().toLowerCase())
+          .where((e) => e.isNotEmpty && e != 'all')
+          .toSet();
+      if (wanted.isNotEmpty) {
+        found = found.where((s) {
+          final tags = s.language
+              .split(',')
+              .map((e) => e.trim().toLowerCase())
+              .where((e) => e.isNotEmpty)
+              .toSet();
+          if (tags.isEmpty) {
+            // Untagged ≈ English (and Japanese for anime).
+            return wanted.contains('en') || (kind.toLowerCase() == 'anime' && wanted.contains('ja'));
+          }
+          return tags.any(wanted.contains);
+        }).toList();
+      }
+    }
   } catch (e) {
     if (context.mounted) Navigator.of(context, rootNavigator: true).pop();
     if (context.mounted) await _alert(context, friendlyRequestError(e));

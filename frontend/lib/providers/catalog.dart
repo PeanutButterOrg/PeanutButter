@@ -107,7 +107,7 @@ class CatalogNotifier extends StateNotifier<CatalogState> {
       final result = await client.query(
         QueryOptions(
           document: gql(GET_CATALOG),
-          variables: filter.toVariables(page: page, perPage: 32),
+          variables: filter.toVariables(page: page, perPage: 50),
           fetchPolicy: replace ? FetchPolicy.networkOnly : catalogFetchPolicy,
         ),
       );
@@ -189,7 +189,7 @@ class LibraryNotifier extends StateNotifier<CatalogState> {
       final result = await client.query(
         QueryOptions(
           document: gql(GET_CATALOG),
-          variables: filter.toVariables(page: page, perPage: 32),
+          variables: filter.toVariables(page: page, perPage: 50),
           fetchPolicy: replace ? FetchPolicy.networkOnly : catalogFetchPolicy,
         ),
       );
@@ -292,6 +292,57 @@ final homeFeedProvider = FutureProvider.family<HomeFeed, String>((ref, kind) asy
   return feed;
 });
 
+class FavoritesFeed {
+  const FavoritesFeed({
+    required this.movies,
+    required this.series,
+    required this.anime,
+  });
+
+  final List<TitleItem> movies;
+  final List<TitleItem> series;
+  final List<TitleItem> anime;
+
+  bool get isEmpty => movies.isEmpty && series.isEmpty && anime.isEmpty;
+}
+
+/// Favourites home: Movies / Series / Anime rails (newest favourites first).
+final favoritesFeedProvider = FutureProvider<FavoritesFeed>((ref) async {
+  ref.watch(graphQLClientProvider);
+  ref.watch(catalogEpochProvider);
+  final client = ref.read(graphQLClientProvider);
+
+  Future<List<TitleItem>> load(String kind) async {
+    final result = await client
+        .query(
+          QueryOptions(
+            document: gql(GET_CATALOG),
+            variables: {
+              'kind': kind,
+              'sort': 'FAVORITES',
+              'dir': 'DESC',
+              'page': 1,
+              'perPage': 48,
+            },
+            fetchPolicy: FetchPolicy.networkOnly,
+          ),
+        )
+        .timeout(const Duration(seconds: 30));
+    if (result.hasException) throw result.exception!;
+    final items = (result.data?['catalog']?['items'] as List?) ?? const [];
+    return items.map((e) => TitleItem.fromJson(e as Map<String, dynamic>)).toList();
+  }
+
+  final movies = await load('MOVIE');
+  final series = await load('SERIES');
+  final anime = await load('ANIME');
+  final feed = FavoritesFeed(movies: movies, series: series, anime: anime);
+  if (!isAndroidTv) {
+    unawaited(ArtCache.prefetch([...movies.take(12), ...series.take(12), ...anime.take(12)]));
+  }
+  return feed;
+});
+
 /// Prefetches the other catalogs in the background after home is shown.
 final catalogWarmupProvider = FutureProvider<void>((ref) async {
   if (isAndroidTv) return;
@@ -314,7 +365,32 @@ final genresProvider = FutureProvider<List<String>>((ref) async {
     QueryOptions(document: gql(GET_GENRES), fetchPolicy: FetchPolicy.cacheFirst),
   );
   if (result.hasException) return const [];
-  return ((result.data?['genres'] as List?) ?? const []).map((e) => e.toString()).toList();
+  const blocked = {
+    'sex',
+    'adult',
+    'erotica',
+    'erotic',
+    'hentai',
+    'porn',
+    'pornographic',
+    'pornography',
+    'xxx',
+    'softcore',
+    'hardcore',
+    'adult animation',
+    'adults only',
+    'x',
+  };
+  return ((result.data?['genres'] as List?) ?? const [])
+      .map((e) => e.toString())
+      .where((g) {
+        final n = g.trim().toLowerCase();
+        return n.isNotEmpty &&
+            !blocked.contains(n) &&
+            !n.contains('hentai') &&
+            !n.contains('porn');
+      })
+      .toList();
 });
 
 final detailProvider = FutureProvider.family<TitleItem?, String>((ref, id) async {
@@ -611,6 +687,7 @@ Future<void> refreshCatalogData(WidgetRef ref) async {
     ref.invalidate(homeFeedProvider('MOVIE'));
     ref.invalidate(homeFeedProvider('SERIES'));
     ref.invalidate(homeFeedProvider('ANIME'));
+    ref.invalidate(favoritesFeedProvider);
     ref.invalidate(catalogWarmupProvider);
     ref.invalidate(genresProvider);
     await ref.read(catalogProvider.notifier).refresh();

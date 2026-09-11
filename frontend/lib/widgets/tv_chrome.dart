@@ -346,7 +346,7 @@ class _HeaderRightIntent extends Intent {
   const _HeaderRightIntent();
 }
 
-/// Top bar only: Movies → Series → Anime → Refresh → Search → Settings.
+/// Top bar only: Movies → Series → Favourites → Search → Settings.
 class TvBarFocusPolicy extends WidgetOrderTraversalPolicy {
   TvBarFocusPolicy({required this.nodes, this.onMoveDown});
 

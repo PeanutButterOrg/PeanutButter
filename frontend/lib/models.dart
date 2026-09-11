@@ -60,7 +60,9 @@ class TitleItem {
   List<Trailer> get playableTrailers {
     final list = trailers.where((t) => !t.isMobileSize).toList();
     list.sort((a, b) => (b.size ?? 0).compareTo(a.size ?? 0));
-    return list;
+    // One trailer only — easier to navigate on TV.
+    if (list.length <= 1) return list;
+    return list.sublist(0, 1);
   }
 
   /// Best 0–10 score from whatever platform we actually have.
@@ -73,13 +75,31 @@ class TitleItem {
   DisplayScore? get displayScore {
     final r = ratings;
     if (r == null) return null;
-    final rt = r.rtScore;
-    if (rt != null && rt > 0) {
-      return DisplayScore(source: 'RT', label: '$rt%', outOfTen: rt / 10.0, rtScore: rt);
+    // Prefer the platform that matches the title kind.
+    if (kind == 'ANIME') {
+      final anilist = r.anilistScore;
+      if (anilist != null && anilist > 0) {
+        final percent = anilist <= 10 ? (anilist * 10).round() : anilist.round();
+        return DisplayScore(
+          source: 'AniList',
+          label: '$percent%',
+          outOfTen: anilist > 10 ? anilist / 10.0 : anilist,
+        );
+      }
+    }
+    if (kind == 'SERIES') {
+      final tmdb = r.tmdbVoteAverage;
+      if (tmdb != null && tmdb > 0) {
+        return DisplayScore(source: 'TMDB', label: tmdb.toStringAsFixed(1), outOfTen: tmdb);
+      }
     }
     final imdb = r.imdbRating;
     if (imdb != null && imdb > 0) {
       return DisplayScore(source: 'IMDb', label: imdb.toStringAsFixed(1), outOfTen: imdb);
+    }
+    final rt = r.rtScore;
+    if (rt != null && rt > 0) {
+      return DisplayScore(source: 'RT', label: '$rt%', outOfTen: rt / 10.0, rtScore: rt);
     }
     final anilist = r.anilistScore;
     if (anilist != null && anilist > 0) {
@@ -93,7 +113,7 @@ class TitleItem {
     final tmdb = r.tmdbVoteAverage;
     if (tmdb != null && tmdb > 0) {
       return DisplayScore(
-        source: kind == 'SERIES' ? 'TVMaze' : 'TMDB',
+        source: 'TMDB',
         label: tmdb.toStringAsFixed(1),
         outOfTen: tmdb,
       );
@@ -566,6 +586,7 @@ class ServerInfo {
     this.jackettConfigured = false,
     this.jackettUrl,
     this.streamingResolution = '1080p',
+    this.preferredLanguages = const ['en'],
     this.jackettCatalog = const JackettCatalogStatus(),
     this.opensubtitlesEnabled = false,
     this.opensubtitlesConfigured = false,
@@ -583,12 +604,17 @@ class ServerInfo {
   final bool jackettConfigured;
   final String? jackettUrl;
   final String streamingResolution;
+  final List<String> preferredLanguages;
   final JackettCatalogStatus jackettCatalog;
   final bool opensubtitlesEnabled;
   final bool opensubtitlesConfigured;
 
   factory ServerInfo.fromJson(Map<String, dynamic> json) {
     final sync = json['syncStatus'] as Map<String, dynamic>? ?? const {};
+    final langs = ((json['preferredLanguages'] as List?) ?? const [])
+        .map((e) => e.toString().trim().toLowerCase())
+        .where((e) => e.isNotEmpty)
+        .toList();
     return ServerInfo(
       version: json['version'] as String? ?? '',
       libraryPath: json['libraryPath'] as String? ?? '',
@@ -602,6 +628,7 @@ class ServerInfo {
       jackettConfigured: json['jackettConfigured'] as bool? ?? false,
       jackettUrl: json['jackettUrl'] as String?,
       streamingResolution: json['streamingResolution'] as String? ?? '1080p',
+      preferredLanguages: langs,
       jackettCatalog: JackettCatalogStatus.fromJson(
         json['jackettCatalog'] as Map<String, dynamic>? ?? const {},
       ),

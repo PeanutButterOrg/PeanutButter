@@ -18,6 +18,12 @@ final discoveryServiceProvider = Provider<DiscoveryService>((ref) {
   return DiscoveryService();
 });
 
+/// True while PlayerScreen is open — keep playback going if the API blips.
+final playbackActiveProvider = StateProvider<bool>((ref) => false);
+
+/// Non-Riverpod mirror so SettingsNotifier can ignore auth blips mid-playback.
+bool playbackSessionActive = false;
+
 class SettingsState {
   const SettingsState({
     this.serverUrl = '',
@@ -114,8 +120,14 @@ class SettingsNotifier extends StateNotifier<SettingsState> {
 
   void _load() {
     final theme = _prefs.getString(_kTheme);
+    var serverUrl = _prefs.getString(_kUrl) ?? '';
+    // Drop stale loopback pairings — the app always uses a LAN/remote host.
+    if (isLocalServer(serverUrl)) {
+      serverUrl = '';
+      unawaited(_prefs.setString(_kUrl, ''));
+    }
     state = SettingsState(
-      serverUrl: _prefs.getString(_kUrl) ?? '',
+      serverUrl: serverUrl,
       apiToken: _prefs.getString(_kToken) ?? '',
       themeMode: theme == 'light'
           ? ThemeMode.light
@@ -134,7 +146,8 @@ class SettingsNotifier extends StateNotifier<SettingsState> {
   }
 
   Future<void> setServerUrl(String url) async {
-    final next = url.trim();
+    var next = url.trim();
+    if (isLocalServer(next)) next = '';
     if (next == state.serverUrl) return;
     await _prefs.setString(_kUrl, next);
     state = state.copyWith(serverUrl: next, connected: false, clearError: true);
@@ -166,6 +179,8 @@ class SettingsNotifier extends StateNotifier<SettingsState> {
   void noteUnauthorized() {
     if (_pairingAttempt) return;
     if (state.apiToken.isEmpty) return;
+    // Don't yank pairing while a movie/series is playing.
+    if (playbackSessionActive) return;
     unawaited(forgetPairing(
       message: 'This pairing code is no longer valid. Create a new code in the server console.',
     ));
@@ -248,13 +263,15 @@ class SettingsNotifier extends StateNotifier<SettingsState> {
     );
   }
 
-  Future<void> rememberJackettFromServer(ServerInfo info) {
-    return rememberJackett(
+  Future<void> rememberJackettFromServer(ServerInfo info) async {
+    await rememberJackett(
       enabled: info.jackettEnabled,
       url: info.jackettUrl ?? '',
       configured: info.jackettConfigured,
       resolution: info.streamingResolution,
     );
+    // Mirror server content languages for Play + subtitles on this device.
+    await setPreferredLanguages(info.preferredLanguages);
   }
 
   Future<bool> probeCurrent() async {

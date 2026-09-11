@@ -138,6 +138,7 @@ pub async fn enrich_missing_imdb(ctx: &IngestContext) -> Result<()> {
                     None,
                     None,
                     parsed.rt_score,
+                    None,
                 )
                 .await?;
                 let _ = reindex(ctx, title_id).await;
@@ -236,6 +237,7 @@ async fn upsert_omdb_title(ctx: &IngestContext, parsed: ParsedOmdb) -> Result<()
         Some(&parsed.imdb_id),
         None,
         None,
+        None,
     )
     .await?;
     replace_genre_names(ctx, id, &parsed.genres).await?;
@@ -250,6 +252,7 @@ async fn upsert_omdb_title(ctx: &IngestContext, parsed: ParsedOmdb) -> Result<()
         None,
         None,
         parsed.rt_score,
+        None,
     )
     .await?;
     reindex(ctx, id).await?;

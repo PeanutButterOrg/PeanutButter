@@ -37,18 +37,17 @@ class TvHeaderFocus {
   static final FocusNode movies = FocusNode(debugLabel: 'header-movies');
   static final FocusNode series = FocusNode(debugLabel: 'header-series');
   static final FocusNode anime = FocusNode(debugLabel: 'header-anime');
-  static final FocusNode refresh = FocusNode(debugLabel: 'header-refresh');
+  static final FocusNode favourites = FocusNode(debugLabel: 'header-favourites');
   static final FocusNode search = FocusNode(debugLabel: 'header-search-btn');
   static final FocusNode settings = FocusNode(debugLabel: 'header-settings');
   static final FocusNode catalogSort = FocusNode(debugLabel: 'header-catalog-sort');
   static final FocusNode bannerDetails = FocusNode(debugLabel: 'banner-details');
 
-  static List<FocusNode> get homeBar => [movies, series, anime, refresh, search, settings];
+  static List<FocusNode> get homeBar => [movies, series, favourites, search, settings];
 
   static FocusNode forKind(String kind) {
     return switch (kind) {
       'SERIES' => series,
-      'ANIME' => anime,
       _ => movies,
     };
   }

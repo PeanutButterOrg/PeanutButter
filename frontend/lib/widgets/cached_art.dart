@@ -179,7 +179,7 @@ class _KenBurnsArtState extends State<KenBurnsArt> with SingleTickerProviderStat
   }
 }
 
-/// Wide banner art: centered crop with darkened sides for title copy.
+/// Wide banner art: always fills the hero (cover), with a left scrim for copy.
 class BannerArt extends StatelessWidget {
   const BannerArt({
     super.key,
@@ -202,7 +202,7 @@ class BannerArt extends StatelessWidget {
           fallbackUrl: fallbackUrl,
           fit: BoxFit.cover,
           alignment: Alignment.center,
-          memCacheWidth: !kIsWeb && Platform.isAndroid ? 720 : 1600,
+          memCacheWidth: !kIsWeb && Platform.isAndroid ? 720 : 1920,
         ),
         const DecoratedBox(
           decoration: BoxDecoration(

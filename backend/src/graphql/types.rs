@@ -79,6 +79,7 @@ pub enum SortField {
     RottenTomatoes,
     Availability,
     ContinueWatching,
+    Favorites,
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq, Debug)]
@@ -403,6 +404,7 @@ impl Title {
               AND COALESCE(size, 720) >= 720
               AND name NOT ILIKE '%mobile%'
             ORDER BY size DESC NULLS LAST, created_at
+            LIMIT 1
             "#,
         )
         .bind(self.id)
@@ -589,6 +591,10 @@ pub struct SyncStatus {
     pub last_sync_at: Option<DateTime<Utc>>,
     pub total_titles: i32,
     pub syncing: bool,
+    pub phase: Option<String>,
+    pub progress_done: i32,
+    pub progress_total: i32,
+    pub workers_active: i32,
 }
 
 #[derive(SimpleObject, Clone, Debug)]
@@ -603,6 +609,7 @@ pub struct ServerInfo {
     pub jackett_configured: bool,
     pub jackett_url: Option<String>,
     pub streaming_resolution: String,
+    pub preferred_languages: Vec<String>,
     pub jackett_catalog: JackettCatalogStatus,
     pub opensubtitles_enabled: bool,
     pub opensubtitles_configured: bool,

@@ -26,23 +26,28 @@ class _PairingScreenState extends ConsumerState<PairingScreen> {
   final FocusNode _findFocus = FocusNode(debugLabel: 'pair-find');
   bool _connecting = false;
   bool _finding = false;
+  /// URL field stays hidden until LAN discovery fails (or user already typed one).
+  bool _showUrlField = false;
+  String? _foundLabel;
 
   @override
   void initState() {
     super.initState();
     final saved = ref.read(settingsProvider);
-    _url = TextEditingController(text: saved.serverUrl);
+    final savedUrl = saved.serverUrl.trim();
+    final hasUsableUrl = savedUrl.isNotEmpty && !isLocalServer(savedUrl);
+    _url = TextEditingController(text: hasUsableUrl ? savedUrl : '');
     _token = TextEditingController();
+    _showUrlField = hasUsableUrl;
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (!mounted) return;
-      if (isAndroidTv && _urlFocus.canRequestFocus) {
-        _urlFocus.requestFocus();
+      if (hasUsableUrl) {
+        if (isAndroidTv && _tokenFocus.canRequestFocus) {
+          _tokenFocus.requestFocus();
+        }
+        return;
       }
-      if (saved.serverUrl.isEmpty) {
-        final found = await ref.read(settingsProvider.notifier).discoverLocalhost();
-        if (!mounted) return;
-        if (found != null) _url.text = found;
-      }
+      await _autoFindServer();
     });
   }
 
@@ -73,12 +78,50 @@ class _PairingScreenState extends ConsumerState<PairingScreen> {
     );
   }
 
+  Future<void> _autoFindServer() async {
+    if (_connecting || _finding) return;
+    setState(() {
+      _finding = true;
+      _showUrlField = false;
+      _foundLabel = null;
+    });
+    final found = await ref.read(settingsProvider.notifier).discoverLocalhost();
+    if (!mounted) return;
+    if (found != null) {
+      _url.text = found;
+      setState(() {
+        _finding = false;
+        _showUrlField = false;
+        _foundLabel = found;
+      });
+      if (isAndroidTv && _tokenFocus.canRequestFocus) {
+        _tokenFocus.requestFocus();
+      }
+      return;
+    }
+    setState(() {
+      _finding = false;
+      _showUrlField = true;
+      _foundLabel = null;
+    });
+    if (isAndroidTv && _urlFocus.canRequestFocus) {
+      _urlFocus.requestFocus();
+    }
+  }
+
   Future<void> _connect() async {
     if (_connecting || _finding) return;
     setState(() => _connecting = true);
     final notifier = ref.read(settingsProvider.notifier);
     await notifier.runPairingAttempt(() async {
-      await notifier.setServerUrl(_url.text);
+      final typed = _url.text.trim();
+      if (typed.isEmpty) {
+        await notifier.clearPairingAttempt(
+          'No server found yet. Wait for network search, or enter the server address.',
+        );
+        return;
+      }
+      await notifier.setServerUrl(typed);
       await notifier.setApiToken(_token.text);
       if (mounted) _token.text = ref.read(settingsProvider).apiToken;
       final reachable = await notifier.probeCurrent();
@@ -87,6 +130,9 @@ class _PairingScreenState extends ConsumerState<PairingScreen> {
           ref.read(settingsProvider).lastError ??
               'Cannot reach that server. Check the address and try again.',
         );
+        if (mounted) {
+          setState(() => _showUrlField = true);
+        }
         return;
       }
       ref.invalidate(serverInfoProvider);
@@ -108,18 +154,13 @@ class _PairingScreenState extends ConsumerState<PairingScreen> {
   }
 
   Future<void> _findServer() async {
-    if (_connecting || _finding) return;
-    setState(() => _finding = true);
-    final found = await ref.read(settingsProvider.notifier).discoverLocalhost();
-    if (!mounted) return;
-    if (found != null) _url.text = found;
-    setState(() => _finding = false);
-    if (isAndroidTv && _urlFocus.canRequestFocus) _urlFocus.requestFocus();
+    await _autoFindServer();
   }
 
   @override
   Widget build(BuildContext context) {
     final settings = ref.watch(settingsProvider);
+    final searching = _finding || settings.discovering;
     final form = Column(
       mainAxisAlignment: MainAxisAlignment.center,
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -141,57 +182,101 @@ class _PairingScreenState extends ConsumerState<PairingScreen> {
           style: Theme.of(context).textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.w800),
         ),
         const SizedBox(height: 8),
-        const Text(
-          'Sign in on the server console, create a 6-digit code, then type it here. Every TV and desktop needs its own code.',
+        Text(
+          searching
+              ? 'Looking for a catalog server on this network…'
+              : (_foundLabel != null
+                  ? 'Server found on this network. Enter the 6-digit pairing code from the console.'
+                  : 'Sign in on the server console, create a 6-digit code, then type it here.'),
           textAlign: TextAlign.center,
-          style: TextStyle(color: Colors.white54, height: 1.45, fontSize: 15),
+          style: const TextStyle(color: Colors.white54, height: 1.45, fontSize: 15),
         ),
         const SizedBox(height: 28),
-        TvTextField(
-          chromeFocus: _urlFocus,
-          controller: _url,
-          autofocus: isAndroidTv,
-          keyboardType: TextInputType.url,
-          textInputAction: TextInputAction.next,
-          decoration: _field('Server address'),
-          onMoveDown: () => _tokenFocus.requestFocus(),
-          onSubmitted: (_) {
-            if (isAndroidTv) {
-              _tokenFocus.requestFocus();
-            } else {
-              _connect();
-            }
-          },
-        ),
-        const SizedBox(height: 12),
-        TvTextField(
-          chromeFocus: _tokenFocus,
-          controller: _token,
-          keyboardType: const TextInputType.numberWithOptions(decimal: false, signed: false),
-          textInputAction: TextInputAction.done,
-          decoration: _field('6-digit pairing code'),
-          onMoveDown: () => _connectFocus.requestFocus(),
-          onSubmitted: (_) => _connect(),
-        ),
-        const SizedBox(height: 20),
-        TvFocus(
-          allowHorizontal: false,
-          child: FilledButton(
-            focusNode: isAndroidTv ? _connectFocus : null,
-            onPressed: (_connecting || _finding) ? null : _connect,
-            child: Text(_connecting ? 'Connecting…' : 'Connect'),
+        if (searching) ...[
+          const Center(
+            child: SizedBox(
+              width: 28,
+              height: 28,
+              child: CircularProgressIndicator(strokeWidth: 2.5),
+            ),
           ),
-        ),
-        const SizedBox(height: 10),
-        TvFocus(
-          allowHorizontal: false,
-          child: TextButton(
-            focusNode: isAndroidTv ? _findFocus : null,
-            onPressed: (_connecting || _finding || settings.discovering) ? null : _findServer,
-            child: Text((_finding || settings.discovering) ? 'Searching…' : 'Find on this network'),
+          const SizedBox(height: 20),
+        ] else ...[
+          if (_foundLabel != null && !_showUrlField) ...[
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+              decoration: BoxDecoration(
+                color: const Color(0xFF121218),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.dns_rounded, color: Colors.white54, size: 20),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      _foundLabel!,
+                      style: const TextStyle(color: Colors.white70, fontSize: 14),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: () => setState(() => _showUrlField = true),
+                    child: const Text('Change'),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+          ],
+          if (_showUrlField) ...[
+            TvTextField(
+              chromeFocus: _urlFocus,
+              controller: _url,
+              autofocus: isAndroidTv && _foundLabel == null,
+              keyboardType: TextInputType.url,
+              textInputAction: TextInputAction.next,
+              decoration: _field('Server address'),
+              onMoveDown: () => _tokenFocus.requestFocus(),
+              onSubmitted: (_) {
+                if (isAndroidTv) {
+                  _tokenFocus.requestFocus();
+                } else {
+                  _connect();
+                }
+              },
+            ),
+            const SizedBox(height: 12),
+          ],
+          TvTextField(
+            chromeFocus: _tokenFocus,
+            controller: _token,
+            keyboardType: const TextInputType.numberWithOptions(decimal: false, signed: false),
+            textInputAction: TextInputAction.done,
+            decoration: _field('6-digit pairing code'),
+            onMoveDown: () => _connectFocus.requestFocus(),
+            onSubmitted: (_) => _connect(),
           ),
-        ),
-        if (settings.lastError != null) ...[
+          const SizedBox(height: 20),
+          TvFocus(
+            allowHorizontal: false,
+            child: FilledButton(
+              focusNode: isAndroidTv ? _connectFocus : null,
+              onPressed: (_connecting || searching) ? null : _connect,
+              child: Text(_connecting ? 'Connecting…' : 'Connect'),
+            ),
+          ),
+          const SizedBox(height: 10),
+          TvFocus(
+            allowHorizontal: false,
+            child: TextButton(
+              focusNode: isAndroidTv ? _findFocus : null,
+              onPressed: (_connecting || searching) ? null : _findServer,
+              child: Text(searching ? 'Searching…' : 'Find on this network'),
+            ),
+          ),
+        ],
+        if (settings.lastError != null && !searching) ...[
           const SizedBox(height: 16),
           Text(
             settings.lastError!,

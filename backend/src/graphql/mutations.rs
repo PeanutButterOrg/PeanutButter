@@ -20,11 +20,7 @@ impl Mutation {
             });
         }
         let ingest = IngestContext::from(state);
-        tokio::spawn(async move {
-            if let Err(e) = ingest::run_full_sync(&ingest).await {
-                tracing::error!(error = %e, "background sync failed");
-            }
-        });
+        ingest::spawn_full_sync(ingest);
         Ok(MutationResult {
             success: true,
             message: "metadata sync started".into(),
@@ -155,6 +151,7 @@ impl Mutation {
             None,
             input.opensubtitles_enabled,
             input.opensubtitles_api_key.as_deref().filter(|s| !s.trim().is_empty()),
+            None,
         )
         .await?;
         state.config.live.apply(

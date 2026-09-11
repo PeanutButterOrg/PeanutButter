@@ -188,7 +188,11 @@ String _ensureSentence(String raw) {
 String emptyKindMessage({
   required String kind,
   required bool omdbConfigured,
+  bool tmdbConfigured = true,
 }) {
+  if (!tmdbConfigured) {
+    return 'No TMDB key on the server. Open the web console → Settings, add a free TMDB API key, then Force sync.';
+  }
   switch (kind) {
     case 'MOVIE':
       return 'Nothing to show in Movies yet. Tap Refresh after a metadata sync.';
@@ -253,6 +257,10 @@ String searchIdleTitle(String kind) {
   }
 }
 
-bool kindBlockedByMissingKeys(String kind, {required bool omdbConfigured}) {
-  return false;
+bool kindBlockedByMissingKeys(
+  String kind, {
+  required bool omdbConfigured,
+  bool tmdbConfigured = true,
+}) {
+  return !tmdbConfigured;
 }

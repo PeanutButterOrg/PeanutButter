@@ -9,13 +9,14 @@ import '../models.dart';
 import '../providers/catalog.dart';
 import '../providers/settings.dart';
 import '../tv.dart';
+import '../window_layout.dart';
 import '../widgets/cached_art.dart';
 import '../widgets/empty_state.dart';
 import '../widgets/hero_banner.dart';
 import '../widgets/local_overlay.dart';
 import '../widgets/poster_card.dart';
-import '../widgets/rt_badge.dart';
 import '../widgets/filter_bar.dart';
+import '../widgets/title_meta.dart';
 import '../widgets/tv_chrome.dart';
 
 class HomeScreen extends ConsumerWidget {
@@ -26,7 +27,6 @@ class HomeScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final kind = ref.watch(selectedKindProvider);
-    final refreshing = ref.watch(refreshBusyProvider);
     final feed = ref.watch(homeFeedProvider(kind));
     ref.watch(catalogWarmupProvider);
     final info = ref.watch(serverInfoProvider);
@@ -70,9 +70,9 @@ class HomeScreen extends ConsumerWidget {
                 child: Row(
                 children: [
                   KindSwitch(
-                    kind: kind,
+                    kind: kind == 'ANIME' ? 'MOVIE' : kind,
                     moviesFocus: TvHeaderFocus.movies,
-                    onMoveTrailing: () => TvHeaderFocus.refresh.requestFocus(),
+                    onMoveTrailing: () => TvHeaderFocus.favourites.requestFocus(),
                     onMoveDown: () {
                       TvHomeScroll.exitHeader?.call();
                       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -85,11 +85,10 @@ class HomeScreen extends ConsumerWidget {
                   ),
                   const Spacer(),
                   TvHeaderButton(
-                    tooltip: 'Refresh',
-                    focusNode: TvHeaderFocus.refresh,
-                    busy: refreshing,
-                    onPressed: () => _refresh(ref),
-                    onMoveLeft: () => TvHeaderFocus.anime.requestFocus(),
+                    tooltip: 'Favourites',
+                    focusNode: TvHeaderFocus.favourites,
+                    onPressed: () => context.push('/favourites'),
+                    onMoveLeft: () => TvHeaderFocus.series.requestFocus(),
                     onMoveRight: () => TvHeaderFocus.search.requestFocus(),
                     onMoveDown: () {
                       TvHomeScroll.exitHeader?.call();
@@ -97,13 +96,13 @@ class HomeScreen extends ConsumerWidget {
                         TvHomeScroll.toBanner?.call();
                       });
                     },
-                    icon: const Icon(Icons.refresh_rounded),
+                    icon: const Icon(Icons.favorite_rounded),
                   ),
                   TvHeaderButton(
                     tooltip: 'Search',
                     focusNode: TvHeaderFocus.search,
                     onPressed: () => context.push('/search'),
-                    onMoveLeft: () => TvHeaderFocus.refresh.requestFocus(),
+                    onMoveLeft: () => TvHeaderFocus.favourites.requestFocus(),
                     onMoveRight: () => TvHeaderFocus.settings.requestFocus(),
                     // Down on search button → open the search screen
                     onMoveDown: () => context.push('/search'),
@@ -142,10 +141,11 @@ class HomeScreen extends ConsumerWidget {
               showSettings: true,
             ),
             data: (data) {
+              final tmdb = info.asData?.value?.tmdbConfigured ?? false;
               final omdb = info.asData?.value?.omdbConfigured ?? true;
-              if (kindBlockedByMissingKeys(kind, omdbConfigured: omdb)) {
+              if (kindBlockedByMissingKeys(kind, omdbConfigured: omdb, tmdbConfigured: tmdb)) {
                 return EmptyState(
-                  message: emptyKindMessage(kind: kind, omdbConfigured: omdb),
+                  message: emptyKindMessage(kind: kind, omdbConfigured: omdb, tmdbConfigured: tmdb),
                   onRefresh: () => _refresh(ref),
                   showSettings: true,
                 );
@@ -153,7 +153,7 @@ class HomeScreen extends ConsumerWidget {
               final empty = data.trending.isEmpty && data.popular.isEmpty && data.recent.isEmpty;
               if (empty) {
                 return EmptyState(
-                  message: emptyKindMessage(kind: kind, omdbConfigured: omdb),
+                  message: emptyKindMessage(kind: kind, omdbConfigured: omdb, tmdbConfigured: tmdb),
                   onRefresh: () => _refresh(ref),
                   showSettings: true,
                 );
@@ -363,7 +363,11 @@ class _FeaturedBannerState extends State<FeaturedBanner> {
     if (widget.items.isEmpty) return const SizedBox.shrink();
     final item = widget.items[_index % widget.items.length];
     final art = BannerArt(
-      url: item.thumbUrl ?? item.backdropUrl ?? item.posterUrl,
+      url: bestBannerUrl(
+        backdropUrl: item.backdropUrl,
+        thumbUrl: item.thumbUrl,
+        posterUrl: item.posterUrl,
+      ),
       fallbackUrl: item.posterUrl,
       logoUrl: item.logoUrl,
     );
@@ -372,7 +376,7 @@ class _FeaturedBannerState extends State<FeaturedBanner> {
       onExit: (_) => _paused = false,
       child: HeroBannerFrame(
         bannerKey: _bannerKey,
-        topInset: isAndroidTv ? HeroBannerFrame.headerGap(context) : 0,
+        topInset: HeroBannerFrame.headerGap(context),
         art: isAndroidTv
             ? AnimatedSwitcher(
                 duration: const Duration(milliseconds: 550),
@@ -410,7 +414,11 @@ class _FeaturedBannerState extends State<FeaturedBanner> {
                           return Opacity(opacity: opacity, child: child);
                         },
                         child: BannerArt(
-                          url: slide.thumbUrl ?? slide.backdropUrl ?? slide.posterUrl,
+                          url: bestBannerUrl(
+                            backdropUrl: slide.backdropUrl,
+                            thumbUrl: slide.thumbUrl,
+                            posterUrl: slide.posterUrl,
+                          ),
                           fallbackUrl: slide.posterUrl,
                           logoUrl: slide.logoUrl,
                         ),
@@ -474,30 +482,7 @@ class _BannerCopy extends StatelessWidget {
       eyebrow: 'Trending now',
       title: item.title,
       synopsis: item.synopsis ?? '',
-      meta: Row(
-        children: [
-          RatingBadge(item: item, compact: false),
-          if (item.year != null) ...[
-            const SizedBox(width: 8),
-            Text('${item.year}', style: const TextStyle(color: Colors.white70, fontSize: 14)),
-          ],
-          for (final label in item.mediaLabels) ...[
-            const SizedBox(width: 8),
-            Text(label, style: const TextStyle(color: Colors.white70, fontSize: 14)),
-          ],
-          for (final genre in item.genres.take(2)) ...[
-            const SizedBox(width: 8),
-            Flexible(
-              child: Text(
-                genre,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(color: Colors.white70, fontSize: 14),
-              ),
-            ),
-          ],
-        ],
-      ),
+      meta: TitleMetaRow(item: item, maxGenres: 3),
     );
   }
 }

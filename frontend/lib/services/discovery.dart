@@ -7,9 +7,19 @@ import 'package:network_info_plus/network_info_plus.dart';
 
 import '../graphql/client.dart';
 
-/// Finds a catalog API on this machine or LAN via `/health`.
+/// Finds a catalog API on the LAN (gateway + subnet) via `/health`.
+/// Never uses loopback — the app always targets a real network host.
 class DiscoveryService {
-  DiscoveryService({Dio? dio}) : _dio = dio ?? Dio();
+  DiscoveryService({Dio? dio})
+      : _dio = dio ??
+            Dio(
+              BaseOptions(
+                // Without connectTimeout, dead LAN IPs hang Find for a long time.
+                connectTimeout: const Duration(milliseconds: 700),
+                sendTimeout: const Duration(milliseconds: 1000),
+                receiveTimeout: const Duration(milliseconds: 1000),
+              ),
+            );
 
   final Dio _dio;
 
@@ -17,36 +27,26 @@ class DiscoveryService {
 
   Future<String?> discover({
     String? savedUrl,
-    Duration timeout = const Duration(milliseconds: 1200),
+    Duration timeout = const Duration(milliseconds: 1000),
   }) async {
     final candidates = <String>[];
 
+    // 1) Prefer a previously saved LAN/remote URL (ignore loopback leftovers).
     if (savedUrl != null && savedUrl.trim().isNotEmpty) {
       final saved = normalizeServerBase(savedUrl);
-      if (!(_android && isLocalServer(saved))) {
+      if (!isLocalServer(saved)) {
         candidates.add(saved);
       }
     }
 
-    if (!_android) {
-      candidates.addAll(const [
-        'http://127.0.0.1:3001',
-        'http://localhost:3001',
-        'http://127.0.0.1:8080',
-        'http://localhost:8080',
-        'http://10.0.2.2:3001',
-        'http://10.0.2.2:8080',
-      ]);
-    }
-
+    // 2) Local network: gateway first, then common hosts on this subnet.
     if (!kIsWeb) {
       try {
-        final lan = await _lanCandidates();
-        candidates.addAll(lan);
+        candidates.addAll(await _lanCandidates());
       } catch (_) {}
     } else {
       final origin = Uri.base.origin;
-      if (origin.isNotEmpty) {
+      if (origin.isNotEmpty && !isLocalServer(origin)) {
         candidates.add(origin);
       }
     }
@@ -55,6 +55,7 @@ class DiscoveryService {
     final unique = <String>[];
     for (final url in candidates) {
       final base = normalizeServerBase(url);
+      if (isLocalServer(base)) continue;
       if (seen.add(base)) unique.add(base);
     }
 
@@ -75,9 +76,11 @@ class DiscoveryService {
   }
 
   Future<bool> probeHealth(String serverUrl, {Duration timeout = const Duration(seconds: 2)}) async {
+    final base = normalizeServerBase(serverUrl);
+    if (isLocalServer(base)) return false;
     try {
       final response = await _dio.get<Map<String, dynamic>>(
-        '${normalizeServerBase(serverUrl)}/health',
+        '$base/health',
         options: Options(
           sendTimeout: timeout,
           receiveTimeout: timeout,
@@ -97,9 +100,21 @@ class DiscoveryService {
   }
 
   Future<List<String>> _lanCandidates() async {
-    final prefixes = await _subnetPrefixes();
     final candidates = <String>[];
-    const preferred = [1, 2, 4, 5, 7, 8, 10, 20, 28, 30, 50, 100, 101, 150, 200, 254];
+
+    // Gateway / router IP often hosts the home server (e.g. ZimaOS).
+    try {
+      final gateway = await NetworkInfo().getWifiGatewayIP();
+      final gw = gateway?.trim() ?? '';
+      if (gw.isNotEmpty && !gw.startsWith('127.')) {
+        candidates.add('http://$gw:3001');
+        candidates.add('http://$gw:8080');
+      }
+    } catch (_) {}
+
+    final prefixes = await _subnetPrefixes();
+    // Prefer known / common NAS hosts early (110 = typical Zima / PeanutButter box).
+    const preferred = [110, 1, 2, 4, 5, 7, 8, 10, 20, 28, 30, 50, 100, 101, 150, 200, 254];
     for (final prefix in prefixes) {
       for (final host in preferred) {
         candidates.add('http://$prefix.$host:3001');

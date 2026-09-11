@@ -23,8 +23,7 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
   final _controller = TextEditingController();
   final _movies = FocusNode(debugLabel: 'header-movies');
   final _series = FocusNode(debugLabel: 'header-series');
-  final _anime = FocusNode(debugLabel: 'header-anime');
-  final _refresh = FocusNode(debugLabel: 'header-refresh');
+  final _favourites = FocusNode(debugLabel: 'header-favourites');
   final _searchBtn = FocusNode(debugLabel: 'header-search-btn');
   final _settings = FocusNode(debugLabel: 'header-settings');
   final _fieldChrome = FocusNode(debugLabel: 'header-search');
@@ -34,9 +33,8 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
   List<FocusNode> get _barNodes => [
         _movies,
         _series,
-        _anime,
         _fieldChrome,
-        _refresh,
+        _favourites,
         _searchBtn,
         _settings,
       ];
@@ -59,8 +57,7 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
     _controller.dispose();
     _movies.dispose();
     _series.dispose();
-    _anime.dispose();
-    _refresh.dispose();
+    _favourites.dispose();
     _searchBtn.dispose();
     _settings.dispose();
     _fieldChrome.dispose();
@@ -72,8 +69,6 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
     ref.read(selectedKindProvider.notifier).state = value;
     ref.read(searchProvider.notifier).setKind(value);
   }
-
-  Future<void> _refreshCatalog() => refreshCatalogData(ref);
 
   void _openField() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -122,7 +117,6 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
     final search = ref.watch(searchProvider);
     final selectedKind = ref.watch(selectedKindProvider);
     final String kind = search.kind ?? selectedKind;
-    final refreshing = ref.watch(refreshBusyProvider);
     final tv = isAndroidTv;
 
     final field = TvTextField(
@@ -135,8 +129,8 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
       debugLabel: 'header-search',
       textInputAction: TextInputAction.search,
       onMoveDown: tv ? () => _focusResults() : null,
-      onMoveLeft: tv ? () => _anime.requestFocus() : null,
-      onMoveRight: tv ? () => _refresh.requestFocus() : null,
+      onMoveLeft: tv ? () => _series.requestFocus() : null,
+      onMoveRight: tv ? () => _favourites.requestFocus() : null,
       onChanged: (v) => ref.read(searchProvider.notifier).onQueryChanged(v),
       onSubmitted: (v) {
         ref.read(searchProvider.notifier).onQueryChanged(v);
@@ -166,20 +160,19 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
         mainAxisSize: MainAxisSize.min,
         children: [
           TvHeaderButton(
-            tooltip: 'Refresh',
-            focusNode: tv ? _refresh : null,
-            busy: refreshing,
-            onPressed: _refreshCatalog,
+            tooltip: 'Favourites',
+            focusNode: tv ? _favourites : null,
+            onPressed: () => context.push('/favourites'),
             onMoveLeft: tv ? _focusSearchBar : null,
             onMoveRight: tv ? () => _searchBtn.requestFocus() : null,
             onMoveDown: tv ? () => _focusResults() : null,
-            icon: const Icon(Icons.refresh_rounded),
+            icon: const Icon(Icons.favorite_rounded),
           ),
           TvHeaderButton(
             tooltip: 'Search',
             focusNode: tv ? _searchBtn : null,
             onPressed: _openField,
-            onMoveLeft: tv ? () => _refresh.requestFocus() : null,
+            onMoveLeft: tv ? () => _favourites.requestFocus() : null,
             onMoveRight: tv ? () => _settings.requestFocus() : null,
             onMoveDown: tv ? () => _focusResults() : null,
             icon: const Icon(Icons.search_rounded),
@@ -222,10 +215,9 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
                         icon: const Icon(Icons.arrow_back_rounded),
                       ),
                     KindSwitch(
-                      kind: kind,
+                      kind: kind == 'ANIME' ? 'MOVIE' : kind,
                       moviesFocus: _movies,
                       seriesFocus: _series,
-                      animeFocus: _anime,
                       onMoveTrailing: tv ? _focusSearchBar : null,
                       onMoveDown: tv ? () => _focusResults() : null,
                       onChanged: _setKind,
@@ -245,12 +237,11 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
     final body = Stack(
       children: [
         Positioned.fill(child: _body(search, kind)),
-        if (search.loading)
-          const Positioned(
-            top: 0,
-            left: 0,
-            right: 0,
-            child: LinearProgressIndicator(minHeight: 2),
+        if (search.loading && search.results.isEmpty)
+          const Positioned.fill(
+            child: Center(
+              child: CircularProgressIndicator(),
+            ),
           ),
       ],
     );

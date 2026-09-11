@@ -34,6 +34,7 @@ class PlayerScreen extends ConsumerStatefulWidget {
     required this.playbackUrl,
     required this.title,
     this.youtubeKey,
+    this.trailerPreferredQuality,
     this.titleId,
     this.episodeId,
     this.season,
@@ -51,6 +52,7 @@ class PlayerScreen extends ConsumerStatefulWidget {
   final String fileId;
   final String playbackUrl;
   final String? youtubeKey;
+  final String? trailerPreferredQuality;
   final String? titleId;
   final String? episodeId;
   final int? season;
@@ -104,7 +106,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   bool _progressFlushed = false;
   bool _savedOnce = false;
   bool _closing = false;
+  bool _allowLeave = false;
   bool _confirmExitOpen = false;
+  DateTime? _confirmOpenedAt;
+  DateTime? _lastBackHandledAt;
   bool _inFullscreen = false;
   bool _buffering = false;
   bool _streamOpening = false;
@@ -112,6 +117,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   String? _streamError;
   Duration _buffered = Duration.zero;
   StreamSession? _streamInfo;
+  List<YoutubeQualityOption> _trailerQualities = const [];
+  int? _trailerHeight;
   final GlobalKey _videoKey = GlobalKey();
   late final GraphQLClient _client;
 
@@ -129,6 +136,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   @override
   void initState() {
     super.initState();
+    playbackSessionActive = true;
+    ref.read(playbackActiveProvider.notifier).state = true;
     _client = ref.read(graphQLClientProvider);
     _url = widget.playbackUrl;
     _fileId = widget.fileId;
@@ -189,6 +198,16 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   /// controls cannot swallow D-pad / media keys.
   bool _onHardwareKey(KeyEvent event) {
     if (event is! KeyDownEvent && event is! KeyRepeatEvent) return false;
+    // While the leave-confirm dialog is up, don't steal Select/OK from its buttons.
+    if (_confirmExitOpen) {
+      if (event.logicalKey == LogicalKeyboardKey.goBack ||
+          event.logicalKey == LogicalKeyboardKey.escape ||
+          event.logicalKey == LogicalKeyboardKey.browserBack) {
+        unawaited(_onBackPressed());
+        return true;
+      }
+      return false;
+    }
     return _handlePlayerKey(event.logicalKey);
   }
 
@@ -230,15 +249,32 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     return false;
   }
 
-  /// First back exits fullscreen; second back asks before leaving the player.
+  /// First back exits fullscreen; next back opens leave confirm.
+  /// While the dialog is open, Back never leaves — only the Leave button does.
   Future<void> _onBackPressed() async {
     if (_closing) return;
+
+    final now = DateTime.now();
     if (_confirmExitOpen) {
-      if (mounted && Navigator.of(context).canPop()) {
-        Navigator.of(context).pop(false);
+      final opened = _confirmOpenedAt;
+      // Swallow the duplicate Back that opened this dialog.
+      if (opened != null && now.difference(opened) < const Duration(milliseconds: 700)) {
+        return;
+      }
+      // Back while the dialog is open = stay in the player (same as Keep watching).
+      if (mounted) {
+        final nav = Navigator.of(context, rootNavigator: true);
+        if (nav.canPop()) nav.pop(false);
       }
       return;
     }
+
+    if (_lastBackHandledAt != null &&
+        now.difference(_lastBackHandledAt!) < const Duration(milliseconds: 450)) {
+      return;
+    }
+    _lastBackHandledAt = now;
+
     if (await _tryExitFullscreen()) return;
     await _confirmLeavePlayer();
   }
@@ -269,38 +305,55 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   Future<void> _confirmLeavePlayer() async {
     if (!mounted || _closing || _confirmExitOpen) return;
     _confirmExitOpen = true;
+    _confirmOpenedAt = DateTime.now();
     try {
       final leave = await showDialog<bool>(
         context: context,
-        barrierDismissible: true,
+        barrierDismissible: false,
+        useRootNavigator: true,
         builder: (ctx) {
-          return AlertDialog(
-            backgroundColor: PtTheme.panel,
-            title: const Text('Leave player?'),
-            content: const Text('Stop playback and go back to the previous screen?'),
-            actions: [
-              TvFocus(
-                allowHorizontal: false,
-                child: TextButton(
-                  autofocus: true,
-                  onPressed: () => Navigator.of(ctx).pop(false),
-                  child: const Text('Keep watching'),
+          return PopScope(
+            // Keep dialog open on Back — only Leave button exits playback.
+            canPop: false,
+            onPopInvokedWithResult: (didPop, _) {
+              if (didPop) return;
+              final opened = _confirmOpenedAt;
+              if (opened != null &&
+                  DateTime.now().difference(opened) < const Duration(milliseconds: 700)) {
+                return;
+              }
+              // Back = Keep watching (never Leave).
+              Navigator.of(ctx).pop(false);
+            },
+            child: AlertDialog(
+              backgroundColor: PtTheme.panel,
+              title: const Text('Leave player?'),
+              content: const Text('Stop playback and go back to the previous screen?'),
+              actions: [
+                TvFocus(
+                  allowHorizontal: true,
+                  child: TextButton(
+                    autofocus: true,
+                    onPressed: () => Navigator.of(ctx).pop(false),
+                    child: const Text('Keep watching'),
+                  ),
                 ),
-              ),
-              TvFocus(
-                allowHorizontal: false,
-                child: FilledButton(
-                  onPressed: () => Navigator.of(ctx).pop(true),
-                  child: const Text('Leave'),
+                TvFocus(
+                  allowHorizontal: true,
+                  child: FilledButton(
+                    onPressed: () => Navigator.of(ctx).pop(true),
+                    child: const Text('Leave'),
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           );
         },
       );
       if (leave == true && mounted) await _closePlayer();
     } finally {
       _confirmExitOpen = false;
+      _confirmOpenedAt = null;
     }
   }
 
@@ -368,7 +421,15 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   }
 
   @override
+  void deactivate() {
+    playbackSessionActive = false;
+    ref.read(playbackActiveProvider.notifier).state = false;
+    super.deactivate();
+  }
+
+  @override
   void dispose() {
+    playbackSessionActive = false;
     HardwareKeyboard.instance.removeHandler(_onHardwareKey);
     _posSub?.cancel();
     _completedSub?.cancel();
@@ -401,8 +462,27 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   Future<void> _closePlayer() async {
     if (_closing) return;
     _closing = true;
-    await _saveProgress(closing: true, invalidateHome: true);
-    if (mounted) Navigator.of(context).pop();
+    try {
+      await _saveProgress(closing: true, invalidateHome: true)
+          .timeout(const Duration(seconds: 2), onTimeout: () {});
+    } catch (_) {}
+    if (!mounted) return;
+    // PopScope keeps canPop=false while playing, so context.canPop() stays false
+    // unless we flip this flag — otherwise Leave appears to do nothing.
+    setState(() => _allowLeave = true);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (context.canPop()) {
+        context.pop();
+        return;
+      }
+      final nav = Navigator.of(context);
+      if (nav.canPop()) {
+        nav.pop();
+        return;
+      }
+      Navigator.of(context, rootNavigator: true).maybePop();
+    });
   }
 
   void _onPosition(Duration position) {
@@ -495,14 +575,27 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     await _open(next.playbackUrl, fileId: next.id);
   }
 
-  Future<void> _openTrailer() async {
+  Future<void> _openTrailer({int? preferHeight}) async {
     final key = widget.youtubeKey;
     if (key == null || key.isEmpty) return;
     setState(() => _buffering = true);
     try {
-      final url = await youtubePlaybackUrl(key);
+      final quality = widget.trailerPreferredQuality ?? '720p';
+      final height = preferHeight ?? youtubeHeightForQuality(quality);
+      final options = await youtubeQualityOptions(key);
       if (!mounted) return;
-      await _open(url);
+      if (options.isEmpty) {
+        throw StateError('No playable trailer streams found');
+      }
+      // Best muxed at/under target — YouTube muxed is usually ≤720p and includes audio.
+      final pick = youtubePickQuality(options, preferHeight: height) ?? options.last;
+      setState(() {
+        _trailerQualities = options;
+        _trailerHeight = pick.height;
+      });
+      await _open(pick.url, youtube: true);
+      await _player?.play();
+      if (mounted) setState(() => _buffering = false);
     } catch (e) {
       if (!mounted) return;
       setState(() => _buffering = false);
@@ -510,6 +603,23 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
         SnackBar(content: Text('Couldn’t load that trailer in the player. $e')),
       );
     }
+  }
+
+  Future<void> _switchTrailerQuality(YoutubeQualityOption option) async {
+    if (!_isTrailer || option.height == _trailerHeight) return;
+    final pos = _player?.state.position ?? Duration.zero;
+    setState(() {
+      _buffering = true;
+      _trailerHeight = option.height;
+    });
+    await _open(option.url, youtube: true);
+    if (pos.inMilliseconds > 500) {
+      try {
+        await _player?.seek(pos);
+      } catch (_) {}
+    }
+    await _player?.play();
+    if (mounted) setState(() => _buffering = false);
   }
 
   Future<void> _prepareStream() async {
@@ -709,15 +819,25 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     return _buffering;
   }
 
-  Future<void> _open(String url, {String? fileId}) async {
+  Future<void> _open(String url, {String? fileId, bool youtube = false}) async {
     if (fileId != null) _fileId = fileId;
+    final isYoutube = youtube ||
+        url.contains('googlevideo.com') ||
+        url.contains('youtube.com');
     final local = url.contains('127.0.0.1') || url.contains('localhost') || url.contains('[::1]');
     final token = ref.read(settingsProvider).apiToken;
-    final headers = local ? const <String, String>{} : mediaAuthHeaders(token);
+    final headers = isYoutube
+        ? youtubeStreamHeaders
+        : (local ? const <String, String>{} : mediaAuthHeaders(token));
     if (_useExo) {
       await _openExo(url, headers);
       _loadSubtitles();
       return;
+    }
+    final native = _player?.platform;
+    if (native is NativePlayer) {
+      // Clear any leftover external-audio binding from older builds.
+      await native.setProperty('audio-files', '');
     }
     await _player?.open(Media(url, httpHeaders: headers));
     if (widget.startMs > 0) {
@@ -986,7 +1106,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   @override
   Widget build(BuildContext context) {
     return PopScope(
-      canPop: false,
+      canPop: _allowLeave,
       onPopInvokedWithResult: (didPop, _) async {
         if (didPop) return;
         await _onBackPressed();
@@ -1026,6 +1146,21 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
+                if (_isTrailer && _trailerQualities.length > 1)
+                  PopupMenuButton<YoutubeQualityOption>(
+                    color: PtTheme.panel,
+                    tooltip: 'Trailer quality',
+                    icon: const Icon(Icons.high_quality_outlined, color: Colors.white),
+                    onSelected: _switchTrailerQuality,
+                    itemBuilder: (context) => [
+                      for (final q in _trailerQualities)
+                        CheckedPopupMenuItem(
+                          value: q,
+                          checked: q.height == _trailerHeight,
+                          child: Text(q.label),
+                        ),
+                    ],
+                  ),
                 if (!_isTrailer) ...[
                   if (_subsLoading)
                     const Padding(

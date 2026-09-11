@@ -22,6 +22,7 @@ enum SortField {
   ROTTEN_TOMATOES
   AVAILABILITY
   CONTINUE_WATCHING
+  FAVORITES
 }
 
 enum SortDir {
@@ -261,6 +262,7 @@ type ServerInfo {
   jackettConfigured: Boolean!
   jackettUrl: String
   streamingResolution: String!
+  preferredLanguages: [String!]!
   jackettCatalog: JackettCatalogStatus!
   opensubtitlesEnabled: Boolean!
   opensubtitlesConfigured: Boolean!

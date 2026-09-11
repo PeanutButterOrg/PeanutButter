@@ -22,11 +22,21 @@ const EMBEDDED_MIGRATION_009: &str = include_str!("migrations/009_jackett_catalo
 const EMBEDDED_MIGRATION_010: &str = include_str!("migrations/010_opensubtitles.sql");
 const EMBEDDED_MIGRATION_011: &str = include_str!("migrations/011_device_tokens.sql");
 const EMBEDDED_MIGRATION_012: &str = include_str!("migrations/012_admin_password.sql");
+const EMBEDDED_MIGRATION_013: &str = include_str!("migrations/013_sync_progress.sql");
+const EMBEDDED_MIGRATION_014: &str = include_str!("migrations/014_sync_workers.sql");
+const EMBEDDED_MIGRATION_015: &str = include_str!("migrations/015_sync_logs.sql");
+const EMBEDDED_MIGRATION_016: &str = include_str!("migrations/016_tmdb_id_kind_unique.sql");
+const EMBEDDED_MIGRATION_017: &str = include_str!("migrations/017_preferred_languages.sql");
+const EMBEDDED_MIGRATION_018: &str = include_str!("migrations/018_list_shelf_tags.sql");
+const EMBEDDED_MIGRATION_019: &str = include_str!("migrations/019_tmdb_shelf_pages.sql");
+const EMBEDDED_MIGRATION_020: &str = include_str!("migrations/020_block_adult_content.sql");
+const EMBEDDED_MIGRATION_021: &str = include_str!("migrations/021_popcorn_sort_fields.sql");
+const EMBEDDED_MIGRATION_022: &str = include_str!("migrations/022_hide_unreleased.sql");
 
 pub async fn connect(database_url: &str) -> Result<PgPool> {
     let pool = PgPoolOptions::new()
-        .max_connections(16)
-        .min_connections(2)
+        .max_connections(40)
+        .min_connections(4)
         .acquire_timeout(Duration::from_secs(15))
         .idle_timeout(Duration::from_secs(300))
         .max_lifetime(Duration::from_secs(1800))
@@ -60,6 +70,16 @@ pub async fn run_migrations(pool: &PgPool, extra_dir: Option<&Path>) -> Result<(
     apply_one(pool, "010_opensubtitles", EMBEDDED_MIGRATION_010).await?;
     apply_one(pool, "011_device_tokens", EMBEDDED_MIGRATION_011).await?;
     apply_one(pool, "012_admin_password", EMBEDDED_MIGRATION_012).await?;
+    apply_one(pool, "013_sync_progress", EMBEDDED_MIGRATION_013).await?;
+    apply_one(pool, "014_sync_workers", EMBEDDED_MIGRATION_014).await?;
+    apply_one(pool, "015_sync_logs", EMBEDDED_MIGRATION_015).await?;
+    apply_one(pool, "016_tmdb_id_kind_unique", EMBEDDED_MIGRATION_016).await?;
+    apply_one(pool, "017_preferred_languages", EMBEDDED_MIGRATION_017).await?;
+    apply_one(pool, "018_list_shelf_tags", EMBEDDED_MIGRATION_018).await?;
+    apply_one(pool, "019_tmdb_shelf_pages", EMBEDDED_MIGRATION_019).await?;
+    apply_one(pool, "020_block_adult_content", EMBEDDED_MIGRATION_020).await?;
+    apply_one(pool, "021_popcorn_sort_fields", EMBEDDED_MIGRATION_021).await?;
+    apply_one(pool, "022_hide_unreleased", EMBEDDED_MIGRATION_022).await?;
 
     if let Some(dir) = extra_dir {
         if dir.is_dir() {
@@ -89,6 +109,16 @@ pub async fn run_migrations(pool: &PgPool, extra_dir: Option<&Path>) -> Result<(
                     || version == "010_opensubtitles"
                     || version == "011_device_tokens"
                     || version == "012_admin_password"
+                    || version == "013_sync_progress"
+                    || version == "014_sync_workers"
+                    || version == "015_sync_logs"
+                    || version == "016_tmdb_id_kind_unique"
+                    || version == "017_preferred_languages"
+                    || version == "018_list_shelf_tags"
+                    || version == "019_tmdb_shelf_pages"
+                    || version == "020_block_adult_content"
+                    || version == "021_popcorn_sort_fields"
+                    || version == "022_hide_unreleased"
                 {
                     continue;
                 }
@@ -149,6 +179,233 @@ pub async fn title_count_for_kind(pool: &PgPool, kind: &str) -> Result<i64> {
     Ok(count)
 }
 
+/// Highest TMDB list page already cached for a shelf/media pair.
+pub async fn tmdb_shelf_max_page(pool: &PgPool, shelf: &str, media: &str) -> Result<i32> {
+    let (max_page,): (Option<i32>,) = sqlx::query_as(
+        r#"
+        SELECT MAX(page) FROM tmdb_shelf_pages
+        WHERE shelf = $1 AND media = $2
+        "#,
+    )
+    .bind(shelf)
+    .bind(media)
+    .fetch_one(pool)
+    .await?;
+    Ok(max_page.unwrap_or(0))
+}
+
+/// TMDB-reported total pages for a shelf (from the latest synced page row).
+pub async fn tmdb_shelf_total_pages(pool: &PgPool, shelf: &str, media: &str) -> Result<i32> {
+    let row: Option<(i32,)> = sqlx::query_as(
+        r#"
+        SELECT total_pages FROM tmdb_shelf_pages
+        WHERE shelf = $1 AND media = $2
+        ORDER BY page DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(shelf)
+    .bind(media)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|(t,)| t).unwrap_or(0))
+}
+
+pub async fn tmdb_shelf_page_synced(
+    pool: &PgPool,
+    shelf: &str,
+    media: &str,
+    page: i32,
+) -> Result<bool> {
+    let (exists,): (bool,) = sqlx::query_as(
+        r#"
+        SELECT EXISTS(
+            SELECT 1 FROM tmdb_shelf_pages
+            WHERE shelf = $1 AND media = $2 AND page = $3
+        )
+        "#,
+    )
+    .bind(shelf)
+    .bind(media)
+    .bind(page)
+    .fetch_one(pool)
+    .await?;
+    Ok(exists)
+}
+
+pub async fn record_tmdb_shelf_page(
+    pool: &PgPool,
+    shelf: &str,
+    media: &str,
+    page: i32,
+    total_pages: i32,
+    item_count: i32,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO tmdb_shelf_pages (shelf, media, page, total_pages, item_count, synced_at)
+        VALUES ($1, $2, $3, $4, $5, now())
+        ON CONFLICT (shelf, media, page) DO UPDATE SET
+            total_pages = EXCLUDED.total_pages,
+            item_count = EXCLUDED.item_count,
+            synced_at = now()
+        "#,
+    )
+    .bind(shelf)
+    .bind(media)
+    .bind(page)
+    .bind(total_pages.max(1))
+    .bind(item_count.max(0))
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn set_sync_progress(
+    pool: &PgPool,
+    phase: &str,
+    done: i32,
+    total: i32,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        UPDATE sync_state SET
+            syncing = TRUE,
+            phase = $1,
+            progress_done = $2,
+            progress_total = $3
+        WHERE id = 1
+        "#,
+    )
+    .bind(phase)
+    .bind(done.max(0))
+    .bind(total.max(0))
+    .execute(pool)
+    .await?;
+    // Mirror progress into the Sync tab log (dedupe identical consecutive phases).
+    let last: Option<(Option<String>,)> = sqlx::query_as(
+        r#"
+        SELECT phase FROM sync_logs
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_optional(pool)
+    .await
+    .unwrap_or(None);
+    let same = last
+        .as_ref()
+        .and_then(|r| r.0.as_deref())
+        .is_some_and(|p| p == phase);
+    if !same {
+        let _ = append_sync_log(
+            pool,
+            "info",
+            Some(phase.to_string()),
+            format!("Progress {done}/{total}"),
+        )
+        .await;
+    }
+    Ok(())
+}
+
+pub async fn set_sync_workers(pool: &PgPool, workers: i32) -> Result<()> {
+    sqlx::query("UPDATE sync_state SET workers_active = $1 WHERE id = 1")
+        .bind(workers.max(0))
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn clear_sync_logs(pool: PgPool) -> Result<()> {
+    sqlx::query("DELETE FROM sync_logs").execute(&pool).await?;
+    Ok(())
+}
+
+pub async fn append_sync_log(
+    pool: &PgPool,
+    level: impl AsRef<str>,
+    phase: Option<String>,
+    message: impl AsRef<str>,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO sync_logs (level, phase, message)
+        VALUES ($1, $2, $3)
+        "#,
+    )
+    .bind(level.as_ref())
+    .bind(phase)
+    .bind(message.as_ref())
+    .execute(pool)
+    .await?;
+    // Keep the log bounded so the Sync tab stays snappy.
+    sqlx::query(
+        r#"
+        DELETE FROM sync_logs
+        WHERE id < COALESCE(
+            (SELECT id FROM sync_logs ORDER BY id DESC OFFSET 400 LIMIT 1),
+            0
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn list_sync_logs(pool: &PgPool, limit: i64) -> Result<Vec<(chrono::DateTime<chrono::Utc>, String, Option<String>, String)>> {
+    let rows = sqlx::query_as(
+        r#"
+        SELECT created_at, level, phase, message
+        FROM sync_logs
+        ORDER BY id DESC
+        LIMIT $1
+        "#,
+    )
+    .bind(limit.clamp(1, 500))
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+pub async fn bump_sync_progress(pool: &PgPool, by: i32) -> Result<()> {
+    sqlx::query(
+        r#"
+        UPDATE sync_state SET
+            progress_done = LEAST(progress_total, progress_done + $1)
+        WHERE id = 1
+        "#,
+    )
+    .bind(by.max(0))
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn sync_state(pool: &PgPool) -> Result<crate::db::models::SyncStateRow> {
+    let row = sqlx::query_as::<_, crate::db::models::SyncStateRow>(
+        r#"
+        SELECT id, last_sync_at, syncing, total_titles, last_error,
+               phase, progress_done, progress_total, workers_active
+        FROM sync_state WHERE id = 1
+        "#,
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.unwrap_or(crate::db::models::SyncStateRow {
+        id: 1,
+        last_sync_at: None,
+        syncing: false,
+        total_titles: 0,
+        last_error: None,
+        phase: None,
+        progress_done: 0,
+        progress_total: 0,
+        workers_active: 0,
+    }))
+}
+
 pub async fn genre_names_for_title(pool: &PgPool, title_id: Uuid) -> Result<Vec<String>> {
     let rows: Vec<(String,)> = sqlx::query_as(
         r#"
@@ -169,7 +426,11 @@ pub async fn all_genre_names(pool: &PgPool) -> Result<Vec<String>> {
     let rows: Vec<(String,)> = sqlx::query_as("SELECT name FROM genres ORDER BY name")
         .fetch_all(pool)
         .await?;
-    Ok(rows.into_iter().map(|(n,)| n).collect())
+    Ok(rows
+        .into_iter()
+        .map(|(n,)| n)
+        .filter(|n| !crate::content_filter::is_blocked_genre(n))
+        .collect())
 }
 
 #[derive(sqlx::FromRow)]
@@ -182,6 +443,7 @@ struct SettingsRow {
     jackett_url: Option<String>,
     jackett_api_key: Option<String>,
     streaming_resolution: String,
+    preferred_languages: String,
     opensubtitles_enabled: bool,
     opensubtitles_api_key: Option<String>,
 }
@@ -191,6 +453,7 @@ pub async fn overlay_saved_settings(pool: &PgPool, config: &crate::config::Confi
         r#"
         SELECT tmdb_api_key, omdb_api_key, anilist_client_id, media_path,
                jackett_enabled, jackett_url, jackett_api_key, streaming_resolution,
+               preferred_languages,
                opensubtitles_enabled, opensubtitles_api_key
         FROM app_settings WHERE id = 1
         "#,
@@ -223,6 +486,7 @@ pub async fn overlay_saved_settings(pool: &PgPool, config: &crate::config::Confi
         Some(row.jackett_url.filter(|s| !s.trim().is_empty())),
         Some(row.jackett_api_key.filter(|s| !s.trim().is_empty())),
         Some(row.streaming_resolution),
+        Some(row.preferred_languages),
     );
     config.live.apply_opensubtitles(
         Some(row.opensubtitles_enabled),
@@ -564,18 +828,19 @@ pub async fn save_settings(
     streaming_resolution: Option<&str>,
     opensubtitles_enabled: Option<bool>,
     opensubtitles_api_key: Option<&str>,
+    preferred_languages: Option<&str>,
 ) -> Result<()> {
     sqlx::query(
         r#"
         INSERT INTO app_settings (
             id, tmdb_api_key, omdb_api_key, anilist_client_id, media_path,
             jackett_enabled, jackett_url, jackett_api_key, streaming_resolution,
-            opensubtitles_enabled, opensubtitles_api_key, updated_at
+            opensubtitles_enabled, opensubtitles_api_key, preferred_languages, updated_at
         )
         VALUES (
             1, COALESCE($1, ''), COALESCE($2, ''), $3, $4,
             COALESCE($5, FALSE), $6, $7, COALESCE($8, '1080p'),
-            COALESCE($9, FALSE), $10, now()
+            COALESCE($9, FALSE), $10, COALESCE($11, 'en'), now()
         )
         ON CONFLICT (id) DO UPDATE SET
             tmdb_api_key = COALESCE($1, app_settings.tmdb_api_key),
@@ -588,6 +853,7 @@ pub async fn save_settings(
             streaming_resolution = COALESCE($8, app_settings.streaming_resolution),
             opensubtitles_enabled = COALESCE($9, app_settings.opensubtitles_enabled),
             opensubtitles_api_key = COALESCE($10, app_settings.opensubtitles_api_key),
+            preferred_languages = COALESCE($11, app_settings.preferred_languages),
             updated_at = now()
         "#,
     )
@@ -601,6 +867,7 @@ pub async fn save_settings(
     .bind(streaming_resolution)
     .bind(opensubtitles_enabled)
     .bind(opensubtitles_api_key)
+    .bind(preferred_languages)
     .execute(pool)
     .await?;
     Ok(())
@@ -1070,7 +1337,11 @@ pub async fn clear_catalog(pool: &PgPool) -> Result<u64> {
             last_sync_at = NULL,
             syncing = FALSE,
             total_titles = 0,
-            last_error = NULL
+            last_error = NULL,
+            phase = NULL,
+            progress_done = 0,
+            progress_total = 0,
+            workers_active = 0
         WHERE id = 1
         "#,
     )

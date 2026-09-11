@@ -20,7 +20,7 @@ class _KindTrailingIntent extends Intent {
   const _KindTrailingIntent();
 }
 
-/// Movies / Series / Anime — same control on Home and Search.
+/// Movies / Series — same control on Home and Search.
 class KindSwitch extends StatelessWidget {
   const KindSwitch({
     super.key,
@@ -37,16 +37,16 @@ class KindSwitch extends StatelessWidget {
   final ValueChanged<String> onChanged;
   final FocusNode? moviesFocus;
   final FocusNode? seriesFocus;
+  /// Kept for call-site compatibility; Anime tab is hidden for now.
   final FocusNode? animeFocus;
   final VoidCallback? onMoveDown;
   final VoidCallback? onMoveTrailing;
 
-  static const _keys = ['MOVIE', 'SERIES', 'ANIME'];
+  static const _keys = ['MOVIE', 'SERIES'];
 
   FocusNode _nodeFor(String k) {
     return switch (k) {
       'SERIES' => seriesFocus ?? TvHeaderFocus.series,
-      'ANIME' => animeFocus ?? TvHeaderFocus.anime,
       _ => moviesFocus ?? TvHeaderFocus.movies,
     };
   }
@@ -74,7 +74,6 @@ class KindSwitch extends StatelessWidget {
     const items = [
       ('Movies', 'MOVIE'),
       ('Series', 'SERIES'),
-      ('Anime', 'ANIME'),
     ];
     return Actions(
       actions: {
