@@ -36,20 +36,12 @@ import 'player_cache.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final android = !kIsWeb && Platform.isAndroid;
-  // media_kit (libmpv) is used on Android TV for torrent HTTP streams — ExoPlayer
-  // stays black while the download progresses. Never block first paint if init fails.
-  try {
-    MediaKit.ensureInitialized();
-  } catch (e, st) {
-    debugPrint('MediaKit.ensureInitialized failed: $e\n$st');
-  }
+  // Don't init media_kit / torrents before the first frame — on Windows/macOS
+  // that delayed paint and left a blank white Flutter surface.
   if (!android) {
     try {
       await dotenv.load(fileName: '.env');
     } catch (_) {}
-  }
-  if (LocalTorrentEngine.instance.supported) {
-    unawaited(LocalTorrentEngine.instance.ensureInit());
   }
   final prefs = await SharedPreferences.getInstance();
   runApp(
@@ -60,6 +52,16 @@ Future<void> main() async {
       child: const PeanutButterApp(),
     ),
   );
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    try {
+      MediaKit.ensureInitialized();
+    } catch (e, st) {
+      debugPrint('MediaKit.ensureInitialized failed: $e\n$st');
+    }
+    if (LocalTorrentEngine.instance.supported) {
+      unawaited(LocalTorrentEngine.instance.ensureInit());
+    }
+  });
 }
 
 final _router = GoRouter(
@@ -267,9 +269,12 @@ class _PeanutButterAppState extends ConsumerState<PeanutButterApp> with WidgetsB
   @override
   Widget build(BuildContext context) {
     final settings = ref.watch(settingsProvider);
-    // Android TV / many desktops report a light system theme; that paints a white
-    // Material surface behind the gate and looks like a blank white launch.
-    final themeMode = isAndroidTv ? ThemeMode.dark : settings.themeMode;
+    // Windows/macOS/TV "system" theme is usually light → Material scaffolds paint
+    // white over our dark chrome (looks like a blank white launch). Only honor an
+    // explicit Light choice from Settings; everything else stays dark.
+    final themeMode = settings.themeMode == ThemeMode.light
+        ? ThemeMode.light
+        : ThemeMode.dark;
     // While booting, mount ONLY the loading app — never MaterialApp.router /
     // Unreachable / Home underneath the gate (avoids first-frame flashes).
     if (settings.booting) {
@@ -287,7 +292,8 @@ class _PeanutButterAppState extends ConsumerState<PeanutButterApp> with WidgetsB
       title: 'PeanutButter',
       debugShowCheckedModeBanner: false,
       themeMode: themeMode,
-      theme: AppTheme.light(),
+      // Even "light" mode keeps the catalog chrome dark — this app is dark-first.
+      theme: AppTheme.dark(),
       darkTheme: AppTheme.dark(),
       color: AppTheme.canvas,
       routerConfig: _router,

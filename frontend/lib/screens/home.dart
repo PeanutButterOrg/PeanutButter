@@ -8,6 +8,7 @@ import '../friendly_error.dart';
 import '../models.dart';
 import '../providers/catalog.dart';
 import '../providers/settings.dart';
+import '../theme.dart';
 import '../tv.dart';
 import '../window_layout.dart';
 import '../widgets/cached_art.dart';
@@ -32,6 +33,7 @@ class HomeScreen extends ConsumerWidget {
     final info = ref.watch(serverInfoProvider);
 
     return Scaffold(
+      backgroundColor: AppTheme.canvas,
       body: TvBackScope(
         overlapHeader: true,
         root: true,

@@ -170,7 +170,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     for (final mode in const [
                       (ThemeMode.dark, 'Dark'),
                       (ThemeMode.light, 'Light'),
-                      (ThemeMode.system, 'System'),
                     ])
                       AppFilterChip(
                         label: mode.$2,

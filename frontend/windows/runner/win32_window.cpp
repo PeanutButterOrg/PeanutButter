@@ -180,6 +180,16 @@ Win32Window::MessageHandler(HWND hwnd,
                             WPARAM const wparam,
                             LPARAM const lparam) noexcept {
   switch (message) {
+    case WM_ERASEBKGND: {
+      // Paint dark canvas under the Flutter view (avoids white flash).
+      HDC hdc = reinterpret_cast<HDC>(wparam);
+      RECT rect;
+      GetClientRect(hwnd, &rect);
+      HBRUSH brush = CreateSolidBrush(RGB(0x0E, 0x0E, 0x12));
+      FillRect(hdc, &rect, brush);
+      DeleteObject(brush);
+      return 1;
+    }
     case WM_DESTROY:
       window_handle_ = nullptr;
       Destroy();

@@ -132,14 +132,16 @@ class SettingsNotifier extends StateNotifier<SettingsState> {
       unawaited(_prefs.setString(_kUrl, ''));
     }
     final apiToken = _prefs.getString(_kToken) ?? '';
+    // Drop legacy "system" preference — on Windows/macOS it followed the OS
+    // light theme and painted a white home screen after boot.
+    final theme = _prefs.getString(_kTheme);
+    if (theme == 'system') {
+      unawaited(_prefs.setString(_kTheme, 'dark'));
+    }
     state = SettingsState(
       serverUrl: serverUrl,
       apiToken: apiToken,
-      themeMode: theme == 'light'
-          ? ThemeMode.light
-          : theme == 'system'
-              ? ThemeMode.system
-              : ThemeMode.dark,
+      themeMode: theme == 'light' ? ThemeMode.light : ThemeMode.dark,
       defaultQuality: _prefs.getString(_kQuality) ?? '1080p',
       preferredLanguages: _prefs.getStringList(_kLangs) ?? const ['en'],
       // Always start on the loading gate; bootstrap decides home / pairing / unreachable.
@@ -210,15 +212,13 @@ class SettingsNotifier extends StateNotifier<SettingsState> {
   }
 
   Future<void> setThemeMode(ThemeMode mode) async {
+    // "System" followed OS light theme on Windows/macOS and blanked the UI white.
+    final effective = mode == ThemeMode.system ? ThemeMode.dark : mode;
     await _prefs.setString(
       _kTheme,
-      mode == ThemeMode.light
-          ? 'light'
-          : mode == ThemeMode.system
-              ? 'system'
-              : 'dark',
+      effective == ThemeMode.light ? 'light' : 'dark',
     );
-    state = state.copyWith(themeMode: mode);
+    state = state.copyWith(themeMode: effective);
   }
 
   Future<void> setDefaultQuality(String quality) async {

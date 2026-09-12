@@ -1,0 +1,31 @@
+# syntax=docker/dockerfile:1
+# Cached Flutter Linux desktop builder for PeanutButter.
+#
+# macOS / Windows CANNOT be built in a Linux container (Flutter + Apple/MSVC
+# require native hosts). Use this image for fast local Linux packages, and
+# `scripts/build-desktop-docker.sh --ci-windows|--ci-macos` for the rest.
+#
+#   docker build -t peanutbutter-linux-desktop -f packaging/docker/Dockerfile.linux-desktop packaging/docker
+#   ./scripts/build-desktop-docker.sh
+
+FROM ghcr.io/cirruslabs/flutter:stable
+
+USER root
+RUN apt-get update -y \
+ && apt-get install -y --no-install-recommends \
+      clang cmake ninja-build pkg-config \
+      libgtk-3-dev liblzma-dev libstdc++-12-dev \
+      libmpv-dev mpv \
+      libwebkit2gtk-4.1-dev \
+      dpkg-dev rsync curl file zip unzip \
+      python3-pil ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+ENV PUB_CACHE=/cache/pub
+RUN mkdir -p /cache/pub /work \
+ && flutter config --enable-linux-desktop \
+ && flutter precache --linux \
+ && flutter doctor -v || true
+
+WORKDIR /work
+CMD ["bash"]
