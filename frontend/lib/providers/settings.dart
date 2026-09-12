@@ -124,7 +124,7 @@ class SettingsNotifier extends StateNotifier<SettingsState> {
   static const _kJackettRes = 'jackettStreamingResolution';
 
   void _load() {
-    final theme = _prefs.getString(_kTheme);
+    var theme = _prefs.getString(_kTheme);
     var serverUrl = _prefs.getString(_kUrl) ?? '';
     // Drop stale loopback pairings — the app always uses a LAN/remote host.
     if (isLocalServer(serverUrl)) {
@@ -134,8 +134,8 @@ class SettingsNotifier extends StateNotifier<SettingsState> {
     final apiToken = _prefs.getString(_kToken) ?? '';
     // Drop legacy "system" preference — on Windows/macOS it followed the OS
     // light theme and painted a white home screen after boot.
-    final theme = _prefs.getString(_kTheme);
     if (theme == 'system') {
+      theme = 'dark';
       unawaited(_prefs.setString(_kTheme, 'dark'));
     }
     state = SettingsState(
