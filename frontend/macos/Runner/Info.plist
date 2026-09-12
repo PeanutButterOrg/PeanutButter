@@ -31,5 +31,12 @@
 	<!-- Impeller has caused blank black windows on macOS desktop; use Skia. -->
 	<key>FLTEnableImpeller</key>
 	<false/>
+	<!-- Required on recent macOS for LAN discovery (/health scan). -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>PeanutButter finds your catalog server on the local network.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_http._tcp</string>
+	</array>
 </dict>
 </plist>

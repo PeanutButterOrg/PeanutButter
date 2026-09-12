@@ -4,5 +4,11 @@
 <dict>
 	<key>com.apple.security.app-sandbox</key>
 	<true/>
+	<!-- Outbound HTTP to the catalog API / TMDB art / torrent streams -->
+	<key>com.apple.security.network.client</key>
+	<true/>
+	<!-- Local torrent engine may bind a short-lived HTTP listener -->
+	<key>com.apple.security.network.server</key>
+	<true/>
 </dict>
 </plist>
