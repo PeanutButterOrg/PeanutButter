@@ -33,6 +33,23 @@ import 'player_cache.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // Surface build failures instead of a silent black window.
+  ErrorWidget.builder = (details) {
+    return Material(
+      color: const Color(0xFF0E0E12),
+      child: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: SingleChildScrollView(
+            child: Text(
+              'UI error\n\n${details.exceptionAsString()}',
+              style: const TextStyle(color: Color(0xFFFF6B6B), fontSize: 14, height: 1.4),
+            ),
+          ),
+        ),
+      ),
+    );
+  };
   final android = !kIsWeb && Platform.isAndroid;
   if (!android) {
     try {
@@ -118,9 +135,12 @@ class _PeanutButterAppState extends ConsumerState<PeanutButterApp> with WidgetsB
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    // Start reachability immediately — do not wait for the first frame, and do
-    // not mount Home/Unreachable until this finishes.
-    unawaited(_bootstrapSession());
+    // Paint boot UI first — then discover/health. Starting bootstrap in initState
+    // raced the first frame and left Win/Mac on a blank native surface.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      unawaited(_bootstrapSession());
+    });
     _sessionWatch = Timer.periodic(const Duration(seconds: 12), (_) => _checkSession());
   }
 
@@ -269,13 +289,9 @@ class _PeanutButterAppState extends ConsumerState<PeanutButterApp> with WidgetsB
   @override
   Widget build(BuildContext context) {
     final settings = ref.watch(settingsProvider);
-    // Windows/macOS/TV "system" theme is usually light → Material scaffolds paint
-    // white over our dark chrome. Only honor an explicit Light choice from Settings.
     final themeMode = settings.themeMode == ThemeMode.light
         ? ThemeMode.light
         : ThemeMode.dark;
-    // ONE MaterialApp for the whole lifetime. Swapping boot MaterialApp ↔
-    // MaterialApp.router left Windows/macOS stuck on an empty black surface.
     return MaterialApp.router(
       title: 'PeanutButter',
       debugShowCheckedModeBanner: false,
@@ -291,23 +307,23 @@ class _PeanutButterAppState extends ConsumerState<PeanutButterApp> with WidgetsB
         const SingleActivator(LogicalKeyboardKey.gameButtonA): const ActivateIntent(),
       },
       builder: (context, child) {
-        return ColoredBox(
-          color: AppTheme.canvas,
-          child: MediaQuery(
-            data: MediaQuery.of(context).copyWith(
-              navigationMode: NavigationMode.directional,
-            ),
-            child: _SessionGate(child: child),
-          ),
-        );
+        final mq = MediaQuery.maybeOf(context);
+        Widget body = _SessionGate(child: child);
+        if (mq != null) {
+          body = MediaQuery(
+            data: mq.copyWith(navigationMode: NavigationMode.directional),
+            child: body,
+          );
+        }
+        return ColoredBox(color: AppTheme.canvas, child: body);
       },
     );
   }
 }
 
 /// Boot → Pairing / Unreachable / routed child.
-/// Always keeps the router [child] mounted (offstage) while gating — dropping
-/// the Navigator on Windows/macOS was leaving a permanent blank black surface.
+/// While gated, do NOT mount Home under Offstage — building the catalog tree
+/// during boot froze the first frame on Windows/macOS (blank black window).
 class _SessionGate extends ConsumerWidget {
   const _SessionGate({required this.child});
 
@@ -320,30 +336,17 @@ class _SessionGate extends ConsumerWidget {
     final online = paired && settings.connected;
     final playing = ref.watch(playbackActiveProvider) || playbackSessionActive;
 
-    final routed = child ?? const SizedBox.shrink();
-
-    Widget? gate;
     if (settings.booting) {
-      gate = const _BootConnectingScreen();
-    } else if (settings.pairingInProgress || !paired) {
-      if (!playing) gate = const PairingScreen();
-    } else if (!online && !playing) {
-      gate = const UnreachableScreen();
-    }
-
-    if (gate == null) {
-      // Online (or playing through a gate): show the real route.
-      if (child != null) return routed;
       return const _BootConnectingScreen();
     }
-
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        Offstage(offstage: true, child: routed),
-        gate,
-      ],
-    );
+    if ((settings.pairingInProgress || !paired) && !playing) {
+      return const PairingScreen();
+    }
+    if (!online && !playing) {
+      return const UnreachableScreen();
+    }
+    if (child != null) return child!;
+    return const _BootConnectingScreen();
   }
 }
 
@@ -398,10 +401,11 @@ class _BootConnectingScreen extends ConsumerWidget {
                 Text(
                   title,
                   textAlign: TextAlign.center,
-                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                        fontWeight: FontWeight.w700,
-                        color: Colors.white,
-                      ),
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w700,
+                    color: Colors.white,
+                    fontSize: 22,
+                  ),
                 ),
                 const SizedBox(height: 10),
                 Text(

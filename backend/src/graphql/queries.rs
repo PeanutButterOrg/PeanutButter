@@ -39,8 +39,9 @@ impl Query {
         let per_page = per_page.unwrap_or(24).clamp(1, 100);
         let offset = (page - 1) * per_page;
 
-        // Lazy TMDB pagination: kick off shelf fill in the background so catalog
-        // scrolls stay fast. Pages already in Postgres return immediately.
+        // Lazy TMDB pagination: wait for shelf pages covering this request so
+        // scroll/sort return real rows (fire-and-forget left the client on empty
+        // "next" pages). First catalog page also warms 3 pages ahead.
         let mut remote_has_more = false;
         if let Some(shelf) = match sort {
             SortField::Trending => Some("trending"),
@@ -54,19 +55,41 @@ impl Query {
                 TitleKind::Anime => "anime",
             });
             let ingest = crate::ingest::IngestContext::from(state);
-            remote_has_more = crate::ingest::tmdb::shelf_has_more_for_catalog(&ingest, shelf, kind)
-                .await
-                .unwrap_or(false);
-            let page_bg = page;
-            let per_bg = per_page;
-            tokio::spawn(async move {
-                if let Err(e) = crate::ingest::tmdb::ensure_shelf_pages_for_catalog(
-                    &ingest, shelf, kind, page_bg, per_bg,
-                )
-                .await
-                {
-                    tracing::warn!(error = %e, shelf, page = page_bg, "background TMDB shelf fetch failed");
+            let ensure_depth = if page <= 1 { 3 } else { page };
+            remote_has_more = match tokio::time::timeout(
+                std::time::Duration::from_secs(25),
+                crate::ingest::tmdb::ensure_shelf_pages_for_catalog(
+                    &ingest,
+                    shelf,
+                    kind,
+                    ensure_depth,
+                    per_page,
+                ),
+            )
+            .await
+            {
+                Ok(Ok(more)) => more,
+                Ok(Err(e)) => {
+                    tracing::warn!(error = %e, shelf, page, "TMDB shelf ensure failed");
+                    crate::ingest::tmdb::shelf_has_more_for_catalog(&ingest, shelf, kind)
+                        .await
+                        .unwrap_or(true)
                 }
+                Err(_) => {
+                    tracing::warn!(shelf, page, "TMDB shelf ensure timed out");
+                    // Keep hasNextPage true so the client can retry on scroll.
+                    true
+                }
+            };
+            // Warm the next page in the background after we've served this one.
+            let warm_page = ensure_depth + 1;
+            let per_bg = per_page;
+            let ingest_bg = crate::ingest::IngestContext::from(state);
+            tokio::spawn(async move {
+                let _ = crate::ingest::tmdb::ensure_shelf_pages_for_catalog(
+                    &ingest_bg, shelf, kind, warm_page, per_bg,
+                )
+                .await;
             });
         }
 

@@ -91,6 +91,8 @@ class CatalogNotifier extends StateNotifier<CatalogState> {
   Future<void> refresh() async {
     state = state.copyWith(loading: true, clearError: true);
     await _load(page: 1, replace: true);
+    // Sort / open should land with a deep wall (at least 3 pages) before scroll.
+    await _prefetchPages(throughPage: 3);
   }
 
   void scheduleRefresh() {
@@ -102,6 +104,16 @@ class CatalogNotifier extends StateNotifier<CatalogState> {
     if (!state.hasNextPage || state.loadingMore || state.loading) return;
     state = state.copyWith(loadingMore: true);
     await _load(page: state.page + 1, replace: false);
+  }
+
+  Future<void> _prefetchPages({required int throughPage}) async {
+    while (state.hasNextPage &&
+        state.page < throughPage &&
+        !state.loading &&
+        state.error == null) {
+      state = state.copyWith(loadingMore: true);
+      await _load(page: state.page + 1, replace: false);
+    }
   }
 
   @override
@@ -138,8 +150,9 @@ class CatalogNotifier extends StateNotifier<CatalogState> {
           .map((e) => TitleItem.fromJson(e as Map<String, dynamic>))
           .toList();
       if (!isAndroidTv) unawaited(ArtCache.prefetch(items.take(12)));
+      final merged = replace ? items : _dedupeTitles(state.items, items);
       state = state.copyWith(
-        items: replace ? items : _dedupeTitles(state.items, items),
+        items: merged,
         page: conn['page'] as int? ?? page,
         hasNextPage: conn['hasNextPage'] as bool? ?? false,
         totalCount: conn['totalCount'] as int? ?? items.length,
@@ -173,6 +186,8 @@ class LibraryNotifier extends StateNotifier<CatalogState> {
   Future<void> refresh() async {
     state = state.copyWith(loading: true, clearError: true);
     await _load(page: 1, replace: true);
+    // Sort / open should land with a deep wall (at least 3 pages) before scroll.
+    await _prefetchPages(throughPage: 3);
   }
 
   void scheduleRefresh() {
@@ -184,6 +199,16 @@ class LibraryNotifier extends StateNotifier<CatalogState> {
     if (!state.hasNextPage || state.loadingMore || state.loading) return;
     state = state.copyWith(loadingMore: true);
     await _load(page: state.page + 1, replace: false);
+  }
+
+  Future<void> _prefetchPages({required int throughPage}) async {
+    while (state.hasNextPage &&
+        state.page < throughPage &&
+        !state.loading &&
+        state.error == null) {
+      state = state.copyWith(loadingMore: true);
+      await _load(page: state.page + 1, replace: false);
+    }
   }
 
   @override
@@ -220,8 +245,9 @@ class LibraryNotifier extends StateNotifier<CatalogState> {
           .map((e) => TitleItem.fromJson(e as Map<String, dynamic>))
           .toList();
       if (!isAndroidTv) unawaited(ArtCache.prefetch(items.take(12)));
+      final merged = replace ? items : _dedupeTitles(state.items, items);
       state = state.copyWith(
-        items: replace ? items : _dedupeTitles(state.items, items),
+        items: merged,
         page: conn['page'] as int? ?? page,
         hasNextPage: conn['hasNextPage'] as bool? ?? false,
         totalCount: conn['totalCount'] as int? ?? items.length,
