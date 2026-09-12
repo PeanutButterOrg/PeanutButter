@@ -70,56 +70,90 @@ Future<void> main() async {
   );
 }
 
-final _router = GoRouter(
-  routes: [
-    GoRoute(path: '/', builder: (_, __) => const HomeScreen()),
-    GoRoute(path: '/catalog', builder: (_, __) => const CatalogScreen()),
-    GoRoute(path: '/search', builder: (_, __) => const SearchScreen()),
-    GoRoute(path: '/favourites', builder: (_, __) => const FavouritesScreen()),
-    GoRoute(path: '/watched', builder: (_, __) => const WatchedScreen()),
-    GoRoute(
-      path: '/title/:id',
-      builder: (_, state) => DetailScreen(titleId: state.pathParameters['id']!),
-    ),
-    GoRoute(
-      path: '/edit/:id',
-      builder: (_, state) => EditTitleScreen(titleId: state.pathParameters['id']!),
-    ),
-    GoRoute(
-      path: '/player/:fileId',
-      builder: (_, state) {
-        final extra = state.extra as Map<String, dynamic>? ?? const {};
-        final files = (extra['files'] as List<FileReference>?) ?? const <FileReference>[];
-        return PlayerScreen(
-          fileId: state.pathParameters['fileId']!,
-          playbackUrl: extra['url'] as String? ?? '',
-          youtubeKey: extra['youtubeKey'] as String?,
-          trailerPreferredQuality: extra['preferredQuality'] as String?,
-          trailerInitialHeight: extra['trailerHeight'] as int?,
-          titleId: extra['titleId'] as String?,
-          episodeId: extra['episodeId'] as String?,
-          season: extra['season'] as int?,
-          episode: extra['episode'] as int?,
-          title: extra['title'] as String? ?? 'Playback',
-          startMs: extra['startMs'] as int? ?? 0,
-          files: files,
-          isStream: extra['isStream'] as bool? ?? false,
-          sessionId: extra['sessionId'] as String?,
-          magnet: extra['magnet'] as String?,
-          localTorrent: extra['localTorrent'] as bool? ?? false,
-          streamFileIndex: extra['streamFileIndex'] as int?,
-          listedSeeders: extra['listedSeeders'] as int? ?? 0,
-          listedPeers: extra['listedPeers'] as int? ?? 0,
-          catalogTitle: extra['catalogTitle'] as String?,
-          kind: extra['kind'] as String?,
-          posterUrl: extra['posterUrl'] as String?,
-          backdropUrl: extra['backdropUrl'] as String?,
-        );
-      },
-    ),
-    GoRoute(path: '/settings', builder: (_, __) => const SettingsScreen()),
-  ],
-);
+final _routerRefresh = _RouterRefresh();
+
+class _RouterRefresh extends ChangeNotifier {
+  void bump() => notifyListeners();
+}
+
+GoRouter _buildRouter(SettingsState Function() readSettings) {
+  return GoRouter(
+    initialLocation: '/boot',
+    refreshListenable: _routerRefresh,
+    redirect: (context, state) {
+      final settings = readSettings();
+      final path = state.uri.path;
+      final onPlayer = path.startsWith('/player');
+      final playing = playbackSessionActive;
+
+      if (settings.booting) {
+        return path == '/boot' ? null : '/boot';
+      }
+      if ((settings.apiToken.isEmpty || settings.pairingInProgress) &&
+          !(playing && onPlayer)) {
+        return path == '/pair' ? null : '/pair';
+      }
+      if (!settings.connected && !(playing && onPlayer)) {
+        return path == '/unreachable' ? null : '/unreachable';
+      }
+      if (path == '/boot' || path == '/pair' || path == '/unreachable') {
+        return '/';
+      }
+      return null;
+    },
+    routes: [
+      GoRoute(path: '/boot', builder: (_, __) => const _BootConnectingScreen()),
+      GoRoute(path: '/pair', builder: (_, __) => const PairingScreen()),
+      GoRoute(path: '/unreachable', builder: (_, __) => const UnreachableScreen()),
+      GoRoute(path: '/', builder: (_, __) => const HomeScreen()),
+      GoRoute(path: '/catalog', builder: (_, __) => const CatalogScreen()),
+      GoRoute(path: '/search', builder: (_, __) => const SearchScreen()),
+      GoRoute(path: '/favourites', builder: (_, __) => const FavouritesScreen()),
+      GoRoute(path: '/watched', builder: (_, __) => const WatchedScreen()),
+      GoRoute(
+        path: '/title/:id',
+        builder: (_, state) => DetailScreen(titleId: state.pathParameters['id']!),
+      ),
+      GoRoute(
+        path: '/edit/:id',
+        builder: (_, state) => EditTitleScreen(titleId: state.pathParameters['id']!),
+      ),
+      GoRoute(
+        path: '/player/:fileId',
+        builder: (_, state) {
+          final extra = state.extra as Map<String, dynamic>? ?? const {};
+          final files = (extra['files'] as List<FileReference>?) ?? const <FileReference>[];
+          return PlayerScreen(
+            fileId: state.pathParameters['fileId']!,
+            playbackUrl: extra['url'] as String? ?? '',
+            youtubeKey: extra['youtubeKey'] as String?,
+            trailerPreferredQuality: extra['preferredQuality'] as String?,
+            trailerInitialHeight: extra['trailerHeight'] as int?,
+            titleId: extra['titleId'] as String?,
+            episodeId: extra['episodeId'] as String?,
+            season: extra['season'] as int?,
+            episode: extra['episode'] as int?,
+            title: extra['title'] as String? ?? 'Playback',
+            startMs: extra['startMs'] as int? ?? 0,
+            files: files,
+            isStream: extra['isStream'] as bool? ?? false,
+            sessionId: extra['sessionId'] as String?,
+            magnet: extra['magnet'] as String?,
+            localTorrent: extra['localTorrent'] as bool? ?? false,
+            streamFileIndex: extra['streamFileIndex'] as int?,
+            listedSeeders: extra['listedSeeders'] as int? ?? 0,
+            listedPeers: extra['listedPeers'] as int? ?? 0,
+            catalogTitle: extra['catalogTitle'] as String?,
+            kind: extra['kind'] as String?,
+            posterUrl: extra['posterUrl'] as String?,
+            backdropUrl: extra['backdropUrl'] as String?,
+          );
+        },
+      ),
+      GoRoute(path: '/settings', builder: (_, __) => const SettingsScreen()),
+    ],
+  );
+}
 
 class PeanutButterApp extends ConsumerStatefulWidget {
   const PeanutButterApp({super.key});
@@ -130,13 +164,14 @@ class PeanutButterApp extends ConsumerStatefulWidget {
 
 class _PeanutButterAppState extends ConsumerState<PeanutButterApp> with WidgetsBindingObserver {
   Timer? _sessionWatch;
+  late final GoRouter _router;
 
   @override
   void initState() {
     super.initState();
+    _router = _buildRouter(() => ref.read(settingsProvider));
     WidgetsBinding.instance.addObserver(this);
-    // Paint boot UI first — then discover/health. Starting bootstrap in initState
-    // raced the first frame and left Win/Mac on a blank native surface.
+    // Paint boot route first, then discover/health.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       unawaited(_bootstrapSession());
@@ -273,6 +308,7 @@ class _PeanutButterAppState extends ConsumerState<PeanutButterApp> with WidgetsB
   void dispose() {
     _sessionWatch?.cancel();
     WidgetsBinding.instance.removeObserver(this);
+    _router.dispose();
     super.dispose();
   }
 
@@ -288,6 +324,8 @@ class _PeanutButterAppState extends ConsumerState<PeanutButterApp> with WidgetsB
 
   @override
   Widget build(BuildContext context) {
+    // Re-run redirects when pairing / reachability changes.
+    ref.listen(settingsProvider, (_, __) => _routerRefresh.bump());
     final settings = ref.watch(settingsProvider);
     final themeMode = settings.themeMode == ThemeMode.light
         ? ThemeMode.light
@@ -308,7 +346,7 @@ class _PeanutButterAppState extends ConsumerState<PeanutButterApp> with WidgetsB
       },
       builder: (context, child) {
         final mq = MediaQuery.maybeOf(context);
-        Widget body = _SessionGate(child: child);
+        Widget body = child ?? const SizedBox.shrink();
         if (mq != null) {
           body = MediaQuery(
             data: mq.copyWith(navigationMode: NavigationMode.directional),
@@ -318,35 +356,6 @@ class _PeanutButterAppState extends ConsumerState<PeanutButterApp> with WidgetsB
         return ColoredBox(color: AppTheme.canvas, child: body);
       },
     );
-  }
-}
-
-/// Boot → Pairing / Unreachable / routed child.
-/// While gated, do NOT mount Home under Offstage — building the catalog tree
-/// during boot froze the first frame on Windows/macOS (blank black window).
-class _SessionGate extends ConsumerWidget {
-  const _SessionGate({required this.child});
-
-  final Widget? child;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final settings = ref.watch(settingsProvider);
-    final paired = settings.apiToken.isNotEmpty;
-    final online = paired && settings.connected;
-    final playing = ref.watch(playbackActiveProvider) || playbackSessionActive;
-
-    if (settings.booting) {
-      return const _BootConnectingScreen();
-    }
-    if ((settings.pairingInProgress || !paired) && !playing) {
-      return const PairingScreen();
-    }
-    if (!online && !playing) {
-      return const UnreachableScreen();
-    }
-    if (child != null) return child!;
-    return const _BootConnectingScreen();
   }
 }
 
