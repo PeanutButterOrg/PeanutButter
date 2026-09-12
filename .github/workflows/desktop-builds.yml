@@ -180,14 +180,26 @@ jobs:
         run: |
           $ver = (Select-String -Path frontend\pubspec.yaml -Pattern '^version:\s*([0-9]+\.[0-9]+\.[0-9]+)').Matches.Groups[1].Value
           if (-not $ver) { $ver = "0.2.0" }
-          $src = Resolve-Path "frontend\${{ steps.winout.outputs.dir }}"
-          $out = Resolve-Path "frontend\dist"
-          $iss = Resolve-Path "packaging\windows\peanutbutter.iss"
+          New-Item -ItemType Directory -Force -Path frontend\dist | Out-Null
+          $src = (Resolve-Path "frontend\${{ steps.winout.outputs.dir }}").Path
+          $out = (Resolve-Path "frontend\dist").Path
+          $icon = (Resolve-Path "frontend\windows\runner\resources\app_icon.ico").Path
+          $iss = (Resolve-Path "packaging\windows\peanutbutter.iss").Path
+          if (-not (Test-Path (Join-Path $src "peanutbutter.exe"))) {
+            throw "Missing peanutbutter.exe in $src"
+          }
+          Write-Host "ISCC source=$src"
+          Write-Host "ISCC output=$out"
+          Write-Host "ISCC icon=$icon"
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" `
             "/DMyAppVersion=$ver" `
             "/DMyAppSource=$src" `
             "/DMyAppOutputDir=$out" `
+            "/DMyAppIcon=$icon" `
             $iss
+          if (-not (Test-Path "frontend\dist\PeanutButter-windows-x64-setup.exe")) {
+            throw "setup exe was not produced"
+          }
           Get-ChildItem frontend\dist
 
       - uses: actions/upload-artifact@v4

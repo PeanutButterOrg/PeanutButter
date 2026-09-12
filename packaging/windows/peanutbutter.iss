@@ -1,13 +1,17 @@
 ; PeanutButter Windows installer (Inno Setup 6)
+; Paths are relative to this .iss file unless overridden with /DMyApp* defines.
 #define MyAppName "PeanutButter"
 #define MyAppVersion "0.2.0"
 #define MyAppPublisher "PeanutButter"
 #define MyAppExeName "peanutbutter.exe"
 #ifndef MyAppSource
-  #define MyAppSource "..\frontend\build\windows\x64\runner\Release"
+  #define MyAppSource "..\..\frontend\build\windows\x64\runner\Release"
 #endif
 #ifndef MyAppOutputDir
-  #define MyAppOutputDir "..\frontend\dist"
+  #define MyAppOutputDir "..\..\frontend\dist"
+#endif
+#ifndef MyAppIcon
+  #define MyAppIcon "..\..\frontend\windows\runner\resources\app_icon.ico"
 #endif
 
 [Setup]
@@ -24,7 +28,7 @@ Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
 ArchitecturesInstallIn64BitMode=x64compatible
-SetupIconFile=..\frontend\windows\runner\resources\app_icon.ico
+SetupIconFile={#MyAppIcon}
 UninstallDisplayIcon={app}\{#MyAppExeName}
 
 [Languages]

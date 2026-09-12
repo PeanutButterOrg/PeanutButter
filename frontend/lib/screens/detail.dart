@@ -122,8 +122,7 @@ class _DetailBodyState extends ConsumerState<_DetailBody> {
 
     ({Season season, Episode episode})? seriesPlayTarget() {
       if (item.kind == 'MOVIE') return null;
-      bool completed(Episode e) =>
-          e.userState?.watched == true || (e.userState?.progressPercent ?? 0) >= 0.85;
+      bool completed(Episode e) => e.userState?.watched == true;
 
       final resumeId = item.userState?.episodeId;
       final flat = <({Season season, Episode episode})>[];
@@ -151,9 +150,7 @@ class _DetailBodyState extends ConsumerState<_DetailBody> {
 
     final resumeMs = item.userState?.positionMs ?? 0;
     final resumeTarget = seriesPlayTarget();
-    final resumeEpisodeDone = resumeTarget != null &&
-        (resumeTarget.episode.userState?.watched == true ||
-            (resumeTarget.episode.userState?.progressPercent ?? 0) >= 0.85);
+    final resumeEpisodeDone = resumeTarget?.episode.userState?.watched == true;
     final resumeEpPos = resumeTarget?.episode.userState?.positionMs ?? 0;
     final resume = item.kind == 'MOVIE'
         ? (resumeMs > 2000 && item.userState?.watched != true)
@@ -279,8 +276,7 @@ class _DetailBodyState extends ConsumerState<_DetailBody> {
         }
       }
       final state = item.userState;
-      final epDone = episode.userState?.watched == true ||
-          (episode.userState?.progressPercent ?? 0) >= 0.85;
+      final epDone = episode.userState?.watched == true;
       final epPos = episode.userState?.positionMs ?? 0;
       final titleResumeHere = state != null &&
           state.episodeId == episode.id &&
@@ -978,7 +974,8 @@ class _SeasonListState extends State<_SeasonList> {
       if (s.seasonNumber <= 0) return false;
       final name = (s.name ?? '').toLowerCase();
       if (name.contains('special')) return false;
-      return s.episodes.isNotEmpty || (s.episodeCount ?? 0) > 0;
+      // Only list seasons that already have at least one aired episode.
+      return _episodesOf(s).isNotEmpty;
     }).toList()
       ..sort((a, b) => a.seasonNumber.compareTo(b.seasonNumber));
     return seasons;
@@ -1025,12 +1022,9 @@ class _SeasonListState extends State<_SeasonList> {
   }
 
   List<Episode> _episodesOf(Season season) {
-    if (season.episodes.isNotEmpty) return season.episodes;
-    final count = season.episodeCount ?? 0;
-    return [
-      for (var n = 1; n <= count; n++)
-        Episode(id: '${season.id}-$n', episodeNumber: n, name: 'Episode $n'),
-    ];
+    // Never invent placeholder episodes from episodeCount — those are often
+    // unreleased slots. Only show real, already-aired episodes.
+    return season.episodes.where((e) => e.isReleased).toList();
   }
 
   void _setExpanded(int index, bool open) {
@@ -1062,13 +1056,11 @@ class _SeasonListState extends State<_SeasonList> {
     final busy = _busyEpisodeId == e.id;
     final tv = isAndroidTv;
     final epState = e.userState;
-    final completed = epState?.watched == true || (epState?.progressPercent ?? 0) >= 0.85;
+    final completed = epState?.watched == true;
     final pct = ((epState?.progressPercent ?? 0) * 100).clamp(0, 100).round();
-    final started = (epState?.positionMs ?? 0) > 2000 || pct > 0;
-    String statusLine;
-    if (completed) {
-      statusLine = 'Completed';
-    } else if (started) {
+    final started = !completed && ((epState?.positionMs ?? 0) > 2000 || pct > 0);
+    final String statusLine;
+    if (started) {
       statusLine = 'In progress · $pct%';
     } else if (hasLocal) {
       statusLine = 'Play from library';
@@ -1104,7 +1096,7 @@ class _SeasonListState extends State<_SeasonList> {
                                 size: 22,
                               ),
                             ),
-                      if (started && !completed)
+                      if (started)
                         Align(
                           alignment: Alignment.bottomCenter,
                           child: LinearProgressIndicator(
@@ -1112,16 +1104,6 @@ class _SeasonListState extends State<_SeasonList> {
                             minHeight: 3,
                             backgroundColor: Colors.black45,
                             color: AppTheme.seed,
-                          ),
-                        ),
-                      if (completed)
-                        const Align(
-                          alignment: Alignment.bottomCenter,
-                          child: LinearProgressIndicator(
-                            value: 1,
-                            minHeight: 3,
-                            backgroundColor: Colors.black45,
-                            color: PtTheme.completed,
                           ),
                         ),
                       if (completed)
@@ -1156,24 +1138,20 @@ class _SeasonListState extends State<_SeasonList> {
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
-                        color: completed
-                            ? PtTheme.completed
-                            : (started ? AppTheme.seed.withValues(alpha: 0.9) : Colors.white54),
+                        color: started ? AppTheme.seed.withValues(alpha: 0.9) : Colors.white54,
                         fontSize: tv ? 11 : 12,
-                        fontWeight: started || completed ? FontWeight.w600 : FontWeight.w400,
+                        fontWeight: started ? FontWeight.w600 : FontWeight.w400,
                       ),
                     ),
-                    if (started || completed) ...[
+                    if (started) ...[
                       const SizedBox(height: 5),
                       ClipRRect(
                         borderRadius: BorderRadius.circular(2),
                         child: LinearProgressIndicator(
-                          value: completed
-                              ? 1
-                              : (epState?.progressPercent ?? 0).clamp(0.02, 1),
+                          value: (epState?.progressPercent ?? 0).clamp(0.02, 1),
                           minHeight: 3,
                           backgroundColor: Colors.white12,
-                          color: completed ? PtTheme.completed : AppTheme.seed,
+                          color: AppTheme.seed,
                         ),
                       ),
                     ],
@@ -1195,10 +1173,8 @@ class _SeasonListState extends State<_SeasonList> {
                 )
               else
                 Icon(
-                  completed ? Icons.check_rounded : Icons.play_arrow_rounded,
-                  color: completed
-                      ? PtTheme.completed
-                      : (inProgress || started ? AppTheme.seed : Colors.white54),
+                  Icons.play_arrow_rounded,
+                  color: inProgress || started ? AppTheme.seed : Colors.white54,
                 ),
             ],
           ),
@@ -1248,13 +1224,10 @@ class _SeasonListState extends State<_SeasonList> {
                     Builder(
                       builder: (_) {
                         final eps = _episodesOf(seasons[i]);
-                        final done = eps.where((e) =>
-                            e.userState?.watched == true ||
-                            (e.userState?.progressPercent ?? 0) >= 0.85).length;
+                        final done = eps.where((e) => e.userState?.watched == true).length;
                         final started = eps.where((e) {
                           final s = e.userState;
-                          if (s == null) return false;
-                          if (s.watched || s.progressPercent >= 0.85) return false;
+                          if (s == null || s.watched) return false;
                           return s.positionMs > 2000 || s.progressPercent > 0;
                         }).length;
                         if (done == 0 && started == 0) {
@@ -1276,13 +1249,6 @@ class _SeasonListState extends State<_SeasonList> {
                       },
                     ),
                   ],
-                ),
-                subtitle: Text(
-                  '${_episodesOf(seasons[i]).length} episodes',
-                  style: TextStyle(
-                    color: scheme.onSurfaceVariant,
-                    fontSize: 12,
-                  ),
                 ),
                 children: [
                   for (final e in _episodesOf(seasons[i]))

@@ -199,87 +199,97 @@ Future<StreamStart?> showStreamingPicker({
     return null;
   }
 
-  // Multi-file torrents / season packs: let the user pick which video to play.
-  // Only that file is downloaded (server sets only_files).
-  // If metadata listing fails, fall back to server-side file pick so Play still works.
+  // Only list files for season packs / multi-episode dumps. Single-episode
+  // magnets go straight to startStream — listing was fetching metadata twice
+  // and made "Reading torrent files…" feel stuck.
   int? fileIndex;
-  final filesCancel = Completer<void>();
-  var filesDone = false;
+  final needsFilePick = _looksLikeSeasonPack(picked.title);
+  if (needsFilePick) {
+    final filesCancel = Completer<void>();
+    var filesDone = false;
+    unawaited(
+      showDialog<void>(
+        context: context,
+        barrierDismissible: true,
+        builder: (ctx) => _BusyDialog(
+          label: 'Reading torrent files…',
+          onCancel: () => Navigator.of(ctx).pop(),
+        ),
+      ).whenComplete(() {
+        if (!filesDone && !filesCancel.isCompleted) {
+          filesCancel.complete();
+        }
+      }),
+    );
+    try {
+      final listedFuture = client.query(
+        QueryOptions(
+          document: gql(TORRENT_FILES),
+          fetchPolicy: FetchPolicy.networkOnly,
+          queryRequestTimeout: const Duration(seconds: 25),
+          variables: {
+            'magnet': picked.magnet,
+            'season': season,
+            'episode': episode,
+          },
+        ),
+      );
+      unawaited(listedFuture.then((_) {}, onError: (_) {}));
+      final listed = await Future.any<QueryResult?>([
+        listedFuture.then((v) => v),
+        filesCancel.future.then((_) => null),
+        Future<QueryResult?>.delayed(const Duration(seconds: 20), () => null),
+      ]);
+      if (filesCancel.isCompleted) return null;
+      filesDone = true;
+      if (context.mounted) {
+        final nav = Navigator.of(context, rootNavigator: true);
+        if (nav.canPop()) nav.pop();
+      }
+      if (listed == null || listed.hasException) {
+        fileIndex = null;
+      } else {
+        final files = ((listed.data?['torrentFiles'] as List?) ?? const [])
+            .whereType<Map<String, dynamic>>()
+            .map(TorrentFileOption.fromJson)
+            .toList();
+        if (files.isEmpty) {
+          fileIndex = null;
+        } else if (files.length == 1) {
+          fileIndex = files.first.index;
+        } else {
+          if (!context.mounted) return null;
+          files.sort((a, b) {
+            if (a.recommended != b.recommended) return a.recommended ? -1 : 1;
+            return b.sizeBytes.compareTo(a.sizeBytes);
+          });
+          final chosen = await showDialog<TorrentFileOption>(
+            context: context,
+            builder: (ctx) => _FilePickerDialog(files: files),
+          );
+          if (chosen == null || !context.mounted) return null;
+          fileIndex = chosen.index;
+        }
+      }
+    } catch (_) {
+      if (filesCancel.isCompleted) return null;
+      filesDone = true;
+      if (context.mounted) {
+        final nav = Navigator.of(context, rootNavigator: true);
+        if (nav.canPop()) nav.pop();
+      }
+      fileIndex = null;
+    }
+  }
+
+  if (!context.mounted) return null;
   unawaited(
     showDialog<void>(
       context: context,
-      barrierDismissible: true,
-      builder: (ctx) => _BusyDialog(
-        label: 'Reading torrent files…',
-        onCancel: () => Navigator.of(ctx).pop(),
-      ),
-    ).whenComplete(() {
-      if (!filesDone && !filesCancel.isCompleted) {
-        filesCancel.complete();
-      }
-    }),
+      barrierDismissible: false,
+      builder: (ctx) => const _BusyDialog(label: 'Starting stream…'),
+    ),
   );
-  try {
-    final listedFuture = client.query(
-      QueryOptions(
-        document: gql(TORRENT_FILES),
-        fetchPolicy: FetchPolicy.networkOnly,
-        queryRequestTimeout: const Duration(seconds: 120),
-        variables: {
-          'magnet': picked.magnet,
-          'season': season,
-          'episode': episode,
-        },
-      ),
-    );
-    unawaited(listedFuture.then((_) {}, onError: (_) {}));
-    final listed = await Future.any<QueryResult?>([
-      listedFuture.then((v) => v),
-      filesCancel.future.then((_) => null),
-    ]);
-    if (listed == null || filesCancel.isCompleted) return null;
-    filesDone = true;
-    if (context.mounted) {
-      final nav = Navigator.of(context, rootNavigator: true);
-      if (nav.canPop()) nav.pop();
-    }
-    if (listed.hasException) {
-      // Metadata fetch failed — continue without a fileIndex; server will pick.
-      fileIndex = null;
-    } else {
-      final files = ((listed.data?['torrentFiles'] as List?) ?? const [])
-          .whereType<Map<String, dynamic>>()
-          .map(TorrentFileOption.fromJson)
-          .toList();
-      if (files.isEmpty) {
-        fileIndex = null;
-      } else if (files.length == 1) {
-        fileIndex = files.first.index;
-      } else {
-        if (!context.mounted) return null;
-        // Prefer recommended (SxxExx match), then largest.
-        files.sort((a, b) {
-          if (a.recommended != b.recommended) return a.recommended ? -1 : 1;
-          return b.sizeBytes.compareTo(a.sizeBytes);
-        });
-        final chosen = await showDialog<TorrentFileOption>(
-          context: context,
-          builder: (ctx) => _FilePickerDialog(files: files),
-        );
-        if (chosen == null || !context.mounted) return null;
-        fileIndex = chosen.index;
-      }
-    }
-  } catch (_) {
-    if (filesCancel.isCompleted) return null;
-    filesDone = true;
-    if (context.mounted) {
-      final nav = Navigator.of(context, rootNavigator: true);
-      if (nav.canPop()) nav.pop();
-    }
-    fileIndex = null;
-  }
-
   try {
     final previous = stopPreviousSessionId?.trim();
     if (previous != null && previous.isNotEmpty && !previous.startsWith('local-')) {
@@ -310,6 +320,10 @@ Future<StreamStart?> showStreamingPicker({
         },
       ),
     );
+    if (context.mounted) {
+      final nav = Navigator.of(context, rootNavigator: true);
+      if (nav.canPop()) nav.pop();
+    }
     if (started.hasException) {
       throw graphqlMessage(started);
     }
@@ -325,9 +339,26 @@ Future<StreamStart?> showStreamingPicker({
       fileIndex: fileIndex,
     );
   } catch (e) {
-    if (context.mounted) await _alert(context, friendlyRequestError(e));
+    if (context.mounted) {
+      final nav = Navigator.of(context, rootNavigator: true);
+      if (nav.canPop()) nav.pop();
+      await _alert(context, friendlyRequestError(e));
+    }
     return null;
   }
+}
+
+bool _looksLikeSeasonPack(String title) {
+  final n = title.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '');
+  if (n.contains('complete') || n.contains('pack') || n.contains('season')) {
+    // Single SxxExx episode releases are not packs.
+    if (RegExp(r's\d{1,2}e\d{1,3}').hasMatch(n)) return false;
+    return true;
+  }
+  // Batch dumps like S01E01-E10 / E01-E08
+  if (RegExp(r's\d{1,2}e\d{1,3}-e?\d{1,3}').hasMatch(n)) return true;
+  if (RegExp(r'e\d{1,3}-e\d{1,3}').hasMatch(n)) return true;
+  return false;
 }
 
 Future<void> _alert(BuildContext context, String message) {

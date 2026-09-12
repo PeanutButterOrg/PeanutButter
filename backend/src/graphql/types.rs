@@ -279,6 +279,7 @@ impl Season {
                    air_date, runtime, tmdb_episode_id
             FROM episodes
             WHERE season_id = $1
+              AND (air_date IS NULL OR air_date <= CURRENT_DATE)
             ORDER BY episode_number
             "#,
         )
@@ -295,6 +296,7 @@ impl Season {
                            air_date, runtime, tmdb_episode_id
                     FROM episodes
                     WHERE season_id = $1
+                      AND (air_date IS NULL OR air_date <= CURRENT_DATE)
                     ORDER BY episode_number
                     "#,
                 )

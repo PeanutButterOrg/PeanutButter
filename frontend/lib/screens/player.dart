@@ -151,9 +151,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   bool _playNextVisible = false;
   bool _playNextDismissed = false;
   bool _playNextBusy = false;
-  int _playNextSecondsLeft = 10;
+  int _playNextSecondsLeft = 15;
   DateTime? _playNextArmedAt;
   Timer? _playNextTick;
+  static const int _playNextAutoHideSecs = 15;
   bool _episodeMarkedComplete = false;
   DateTime _lastProgress = DateTime.fromMillisecondsSinceEpoch(0);
   bool _progressFlushed = false;
@@ -485,9 +486,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     native.setProperty('force-seekable', 'yes');
     // Progressive HTTP/torrent streams hit EOF when the next piece isn't ready.
     // Keep the file open so we can resume instead of restarting at 0.
+    // Do NOT pause at EOF — that left torrents stuck on "connected" with a
+    // black frame after a premature underrun before pieces arrived.
     if (widget.isStream) {
       native.setProperty('keep-open', 'yes');
-      native.setProperty('keep-open-pause', 'yes');
+      native.setProperty('keep-open-pause', 'no');
       native.setProperty('stream-lavf-o', 'reconnect_streamed=1,reconnect_delay_max=5');
     }
   }
@@ -835,8 +838,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       }
     }
     MediaSegment? hit;
-    // Prefer intro → recap → preview → credits when ranges overlap.
-    const order = ['INTRO', 'RECAP', 'PREVIEW', 'CREDITS'];
+    // Only opening skips (intro / recap). Credits are handled by Play Next.
+    const order = ['INTRO', 'RECAP'];
     for (final kind in order) {
       for (final s in _segments) {
         if (s.kind != kind) continue;
@@ -907,7 +910,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       var nextSeasonNum = season;
       var isNextSeason = false;
       if (curSeason != null) {
-        final eps = List<Episode>.from(curSeason.episodes)
+        final eps = List<Episode>.from(curSeason.episodes.where((e) => e.isReleased))
           ..sort((a, b) => a.episodeNumber.compareTo(b.episodeNumber));
         for (final e in eps) {
           if (e.episodeNumber > episode) {
@@ -915,31 +918,14 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
             break;
           }
         }
-        // Season metadata may only have episodeCount — synthesize the next ep.
-        if (nextEp == null) {
-          final count = curSeason.episodeCount ?? eps.length;
-          if (episode < count) {
-            nextEp = Episode(
-              id: '',
-              episodeNumber: episode + 1,
-              name: 'Episode ${episode + 1}',
-            );
-          }
-        }
       }
       if (nextEp == null) {
         for (final s in seasons) {
           if (s.seasonNumber <= season) continue;
-          final eps = List<Episode>.from(s.episodes)
+          final eps = List<Episode>.from(s.episodes.where((e) => e.isReleased))
             ..sort((a, b) => a.episodeNumber.compareTo(b.episodeNumber));
           if (eps.isNotEmpty) {
             nextEp = eps.first;
-            nextSeasonNum = s.seasonNumber;
-            isNextSeason = true;
-            break;
-          }
-          if ((s.episodeCount ?? 0) > 0) {
-            nextEp = const Episode(id: '', episodeNumber: 1, name: 'Episode 1');
             nextSeasonNum = s.seasonNumber;
             isNextSeason = true;
             break;
@@ -979,7 +965,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       }
       final armed = _playNextArmedAt;
       if (armed == null) return;
-      final left = 10 - DateTime.now().difference(armed).inSeconds;
+      final left = _playNextAutoHideSecs - DateTime.now().difference(armed).inSeconds;
       if (left <= 0) {
         _playNextTick?.cancel();
         setState(() {
@@ -992,14 +978,14 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       }
       setState(() {
         _playNextVisible = true;
-        _playNextSecondsLeft = left.clamp(1, 10);
+        _playNextSecondsLeft = left.clamp(1, _playNextAutoHideSecs);
       });
       _notifyOverlays();
     });
     if (!mounted) return;
     setState(() {
       _playNextVisible = true;
-      _playNextSecondsLeft = 10;
+      _playNextSecondsLeft = _playNextAutoHideSecs;
     });
     _notifyOverlays();
   }
@@ -1015,27 +1001,40 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     }
     final durMs = _playbackDurationMs();
     final posMs = position.inMilliseconds;
-    final inCredits = _activeSegment?.kind == 'CREDITS';
-    // Don't make people sit through credits — arm as soon as credits start,
-    // or once ~85% of a real episode runtime is done.
+    // Credits markers still drive completion / Play Next timing, but we never
+    // show a Skip Credits button (_activeSegment is intro/recap only).
+    final inCredits = _segments.any(
+      (s) =>
+          s.kind == 'CREDITS' &&
+          s.contains(posMs, durationMs: durMs > 0 ? durMs : _durationMs),
+    );
+
+    // Mark the episode done once we're clearly past the meat of it —
+    // without showing Play Next yet (that was firing too early at 85%).
     final mostlyDone = durMs >= 5 * 60 * 1000 &&
         posMs > 0 &&
         posMs >= (durMs * 0.85).round();
-    final shouldShow = inCredits || mostlyDone;
-    if (!shouldShow) {
-      if (_playNextVisible && _playNextArmedAt == null && mounted) {
-        setState(() => _playNextVisible = false);
-        _notifyOverlays();
-      }
-      return;
-    }
-    if (shouldShow && !_episodeMarkedComplete) {
+    if ((mostlyDone || inCredits) && !_episodeMarkedComplete) {
       _episodeMarkedComplete = true;
       unawaited(_saveProgress(
         position: position,
         duration: Duration(milliseconds: durMs > 0 ? durMs : posMs),
         complete: true,
       ));
+    }
+
+    // Play Next only in real credits, or in the last ~45s / final 3%.
+    final nearEnd = durMs > 0 &&
+        posMs > 0 &&
+        (posMs >= durMs - 45 * 1000 ||
+            (durMs >= 5 * 60 * 1000 && posMs >= (durMs * 0.97).round()));
+    final shouldShow = inCredits || nearEnd;
+    if (!shouldShow) {
+      if (_playNextVisible && _playNextArmedAt == null && mounted) {
+        setState(() => _playNextVisible = false);
+        _notifyOverlays();
+      }
+      return;
     }
     _armPlayNextPrompt();
   }
@@ -1228,25 +1227,30 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   Future<void> _skipActiveSegment() async {
     final seg = _activeSegment;
     if (seg == null) return;
+    // Only skip opening segments — never credits (that ended the episode).
+    if (seg.kind != 'INTRO' && seg.kind != 'RECAP') {
+      if (mounted) {
+        setState(() => _activeSegment = null);
+        _notifyOverlays();
+      }
+      return;
+    }
     final duration = _playbackDurationMs();
     final targetMs = seg.skipTargetMs(durationMs: duration);
-    final maxMs = duration > 0 ? duration : targetMs;
-    final target = Duration(milliseconds: targetMs.clamp(0, maxMs));
+    final target = Duration(milliseconds: targetMs < 0 ? 0 : targetMs);
     if (mounted) {
       setState(() => _activeSegment = null);
       _notifyOverlays();
     }
-    // Skipping credits = episode is done — mark complete and offer Play Next.
-    if (seg.kind == 'CREDITS' && _nextEpisode != null && !_playNextDismissed) {
-      _episodeMarkedComplete = true;
-      unawaited(_saveProgress(
-        position: Duration(milliseconds: duration > 0 ? duration : targetMs),
-        duration: Duration(milliseconds: duration > 0 ? duration : targetMs),
-        complete: true,
-      ));
-      _armPlayNextPrompt(force: true);
-    }
     await _seekPlayback(target);
+    // Keep playing after the skip — progressive streams can pause on seek.
+    try {
+      if (_useExo) {
+        await _exo?.play();
+      } else {
+        await _player?.play();
+      }
+    } catch (_) {}
   }
 
   Future<void> _saveProgress({
@@ -1423,8 +1427,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
             progress: 0,
             bufferProgress: 0,
             downloadMbps: 0,
-            seeders: widget.listedSeeders,
-            peers: widget.listedPeers,
+            seeders: 0,
+            peers: 0,
             resumePosition: widget.startMs,
             status: 'starting',
             streamUrl: '',
@@ -1446,8 +1450,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                 progress: (local.bufferPct / 100).clamp(0, 1),
                 bufferProgress: (local.bufferPct / 100).clamp(0, 1),
                 downloadMbps: local.downloadMbps,
-                seeders: local.seeders > 0 ? local.seeders : widget.listedSeeders,
-                peers: local.peers > 0 ? local.peers : widget.listedPeers,
+                seeders: local.seeders,
+                peers: local.peers,
                 resumePosition: widget.startMs,
                 status: local.ready ? 'ready' : 'buffering',
                 streamUrl: _url,
@@ -1459,9 +1463,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
         _url = handle.url;
         await _open(_url, fileId: _fileId);
         if (!mounted) return;
+        await _player?.play();
         setState(() {
           _streamOpened = true;
           _streamError = null;
+          _buffering = true;
         });
       } catch (e) {
         if (!mounted) return;
@@ -1486,8 +1492,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
           progress: 0,
           bufferProgress: 0,
           downloadMbps: 0,
-          seeders: widget.listedSeeders,
-          peers: widget.listedPeers,
+          seeders: 0,
+          peers: 0,
           resumePosition: widget.startMs,
           status: 'starting',
           streamUrl: widget.playbackUrl,
@@ -1534,9 +1540,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     _url = session.streamUrl;
     await _open(_url, fileId: _fileId);
     if (!mounted) return;
+    await _player?.play();
     setState(() {
       _streamOpened = true;
       _streamError = null;
+      _buffering = true;
     });
   }
 
@@ -1553,8 +1561,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
           progress: (local.bufferPct / 100).clamp(0, 1),
           bufferProgress: (local.bufferPct / 100).clamp(0, 1),
           downloadMbps: local.downloadMbps,
-          seeders: local.seeders > 0 ? local.seeders : widget.listedSeeders,
-          peers: local.peers > 0 ? local.peers : widget.listedPeers,
+          seeders: local.seeders,
+          peers: local.peers,
           resumePosition: widget.startMs,
           status: local.ready ? 'ready' : 'buffering',
           streamUrl: _url,
@@ -1587,7 +1595,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     final player = _player;
     if (player == null) return false;
     if ((player.state.width ?? 0) > 0 && (player.state.height ?? 0) > 0) return true;
-    return player.state.duration.inMilliseconds > 0 || _streamOpened;
+    // Don't treat "_streamOpened" alone as video — that hid the HUD while the
+    // demuxer was still waiting on the first torrent pieces.
+    return player.state.duration.inMilliseconds > 0 &&
+        (player.state.position.inMilliseconds > 0 || _buffered.inMilliseconds > 0 || _playing);
   }
 
   bool get _showStreamHud {
@@ -1825,15 +1836,16 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     final local = LocalTorrentEngine.instance.currentStats();
     final pct = ((info?.bufferProgress ?? 0) * 100).clamp(0, 100);
     final speed = info?.downloadMbps ?? local?.downloadMbps ?? 0;
-    var seeders = info?.seeders ?? local?.seeders ?? widget.listedSeeders;
-    var peers = info?.peers ?? local?.peers ?? widget.listedPeers;
-    if (seeders <= 0) seeders = widget.listedSeeders;
-    if (peers <= 0) peers = widget.listedPeers;
+    // Live swarm only — never Jackett listed counts.
+    final seeders = info?.seeders ?? local?.seeders ?? 0;
+    final peers = info?.peers ?? local?.peers ?? 0;
     final line = _streamStatsLine(pct: pct, speed: speed, seeders: seeders, peers: peers);
     final art = widget.backdropUrl ?? widget.posterUrl;
+    // Poster only while waiting for first start — never over mid-playback rebuffers.
+    final showPoster = !_streamOpened && art != null && art.isNotEmpty;
 
     return Stack(fit: StackFit.expand, children: [
-      if (art != null && art.isNotEmpty) ...[
+      if (showPoster) ...[
         CachedArt(
           url: art,
           fallbackUrl: widget.posterUrl,
@@ -1899,7 +1911,17 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     required int seeders,
     required int peers,
   }) {
-    final speedStr = speed > 0 ? '${speed.toStringAsFixed(1)} MB/s' : 'finding peers…';
+    final String speedStr;
+    if (speed >= 0.05) {
+      speedStr = '${speed.toStringAsFixed(1)} MB/s';
+    } else if (pct >= 2 && (_hasVideo || _playing)) {
+      speedStr = 'ready';
+    } else if (seeders > 0 || peers > 0) {
+      // Peers alone ≠ playable data yet.
+      speedStr = pct > 0 ? 'buffering…' : 'connected · waiting for data…';
+    } else {
+      speedStr = 'finding peers…';
+    }
     final swarm = seeders > 0
         ? '  ·  $seeders seeds'
         : (peers > 0 ? '  ·  $peers peers' : '');
@@ -2125,10 +2147,18 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
 
   List<Widget> _skipAndPlayNextOverlays() {
     final bottom = _skipPlayNextBottom;
+    // Skip Intro only after playback has actually started (not during peer find).
+    final showSkip = _activeSegment != null &&
+        (_activeSegment!.kind == 'INTRO' || _activeSegment!.kind == 'RECAP') &&
+        !_isTrailer &&
+        _streamOpened &&
+        !_showStreamHud &&
+        _lastGoodPos.inMilliseconds >= 400;
+    // Same bottom-left spot for both — they never show at the same time.
     return [
-      if (_activeSegment != null && !_isTrailer)
+      if (showSkip)
         Positioned(
-          right: _actionChipInset,
+          left: _actionChipInset,
           bottom: bottom,
           child: _skipSegmentButton(_activeSegment!),
         ),
@@ -2173,10 +2203,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     final local = LocalTorrentEngine.instance.currentStats();
     final pct = ((info?.bufferProgress ?? 0) * 100).clamp(0, 100);
     final speed = info?.downloadMbps ?? local?.downloadMbps ?? 0;
-    var seeders = info?.seeders ?? local?.seeders ?? widget.listedSeeders;
-    var peers = info?.peers ?? local?.peers ?? widget.listedPeers;
-    if (seeders <= 0) seeders = widget.listedSeeders;
-    if (peers <= 0) peers = widget.listedPeers;
+    final seeders = info?.seeders ?? local?.seeders ?? 0;
+    final peers = info?.peers ?? local?.peers ?? 0;
     final line = _streamStatsLine(pct: pct, speed: speed, seeders: seeders, peers: peers);
     return SafeArea(
       child: DecoratedBox(

@@ -141,7 +141,8 @@ class LocalTorrentEngine {
       );
       engine.preloadStream(stream.id, preloadBytes: 16 * 1024 * 1024);
 
-      // Hand the HTTP URL to the player quickly so it becomes the torrent reader.
+      // Wait until the HTTP stream URL exists AND we have a little head data
+      // (or live download), so the player doesn't open an empty pipe.
       var url = stream.url;
       final urlDeadline = DateTime.now().add(const Duration(seconds: 8));
       while (url.isEmpty && DateTime.now().isBefore(urlDeadline)) {
@@ -156,6 +157,26 @@ class LocalTorrentEngine {
         await stop();
         throw 'Couldn’t start this stream. Try another result.';
       }
+
+      final headDeadline = DateTime.now().add(const Duration(seconds: 75));
+      while (DateTime.now().isBefore(headDeadline)) {
+        final live = engine.torrents[id];
+        if (live != null && live.isPaused) engine.resumeTorrent(id);
+        final info = engine.getStreamInfo(stream.id);
+        if (live != null) onStats?.call(_statsFrom(live, info));
+        final ready = info?.isReady == true;
+        final buffered = (info?.bufferPct ?? live?.progress ?? 0) > 0.002;
+        final downloading = (live?.downloadRate ?? 0) > 32 * 1024;
+        if (ready || buffered || downloading) break;
+        if (live?.state == TorrentState.error) {
+          await stop();
+          throw live!.errorMsg.isNotEmpty
+              ? live.errorMsg
+              : 'Couldn’t start this stream. Try another result.';
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+      }
+
       return LocalStreamHandle(
         torrentId: id,
         streamId: stream.id,

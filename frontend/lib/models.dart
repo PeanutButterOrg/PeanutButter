@@ -597,6 +597,18 @@ class Episode {
           : EpisodeUserState.fromJson(json['userState'] as Map<String, dynamic>),
     );
   }
+
+  /// True when the episode has already aired (or has no air date from TMDB).
+  bool get isReleased {
+    final raw = airDate?.trim();
+    if (raw == null || raw.isEmpty) return true;
+    final parsed = DateTime.tryParse(raw.length >= 10 ? raw.substring(0, 10) : raw);
+    if (parsed == null) return true;
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final air = DateTime(parsed.year, parsed.month, parsed.day);
+    return !air.isAfter(today);
+  }
 }
 
 class EpisodeUserState {
@@ -897,22 +909,39 @@ class MediaSegment {
   /// Target position after tapping Skip. Never jumps to EOF for intro/recap
   /// when TheIntroDB omits `end_ms` (that used to slam the seek bar to the end).
   int skipTargetMs({required int durationMs}) {
+    final isOpening = kind == 'INTRO' || kind == 'RECAP';
     final end = endMs;
+    int target;
     if (end != null && end > startMs) {
-      // Land just past the segment so the button clears immediately.
-      final target = end + 50;
-      if (durationMs > 0) return target.clamp(0, durationMs);
-      return target;
-    }
-    // Open-ended credits/preview: leave a couple seconds before true EOF so
-    // the player doesn't enter completed/stopped state.
-    if (kind == 'CREDITS' || kind == 'PREVIEW') {
+      final span = end - startMs;
+      // Bad IntroDB rows sometimes span most of the episode — treat as missing.
+      final absurdSpan = isOpening && span > 8 * 60 * 1000;
+      final nearEof =
+          durationMs >= 2 * 60 * 1000 && end >= durationMs - 15 * 1000;
+      if (absurdSpan || (isOpening && nearEof)) {
+        target = startMs + 90 * 1000;
+      } else {
+        target = end + 50;
+      }
+    } else if (kind == 'CREDITS' || kind == 'PREVIEW') {
+      // Unused in UI; keep a safe fallback that does not hit completed.
       if (durationMs > 2000) return durationMs - 2000;
       return startMs;
+    } else {
+      // Intro/recap without an end: skip ~90s past start (typical intros).
+      target = startMs + 90 * 1000;
     }
-    // Intro/recap without an end: skip ~90s past start (typical intros).
-    final guess = startMs + 90000;
-    if (durationMs > 0) return guess.clamp(0, durationMs);
-    return guess;
+
+    // Progressive torrents often report a tiny duration while buffering.
+    // Never clamp an intro skip to that fake EOF — it ends the episode.
+    if (durationMs < 2 * 60 * 1000) {
+      return target < 0 ? 0 : target;
+    }
+
+    // Stay well clear of the ending so Skip Intro can't finish the episode.
+    final maxSafe = (durationMs - 30 * 1000)
+        .clamp(0, (durationMs * 0.92).round());
+    if (target > maxSafe) target = maxSafe;
+    return target.clamp(0, durationMs);
   }
 }

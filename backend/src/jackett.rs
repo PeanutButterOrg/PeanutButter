@@ -1362,8 +1362,12 @@ pub fn languages_for_title(title: &str) -> String {
     language_codes(title).join(",")
 }
 
-/// Accept only releases that explicitly match preferred languages, or multi/dual.
-/// Untagged titles are NOT assumed English — that let Spanish/etc. leak through.
+/// Match preferred languages against tags in the release name.
+///
+/// Untagged titles are treated as English when `en` is in the preference list —
+/// nearly all Western WEB-DL/BluRay names omit "English", and requiring the tag
+/// left the app with ~2 hits while Jackett returned hundreds.
+/// Explicit foreign tags (Hindi, Spanish, …) still must match the preference.
 fn language_matches(found: &[&str], preferred: &str, _kind: &str) -> bool {
     let wanted: Vec<String> = preferred
         .split([',', '/', '|', '+'])
@@ -1377,8 +1381,16 @@ fn language_matches(found: &[&str], preferred: &str, _kind: &str) -> bool {
     if found.iter().any(|c| *c == "multi") {
         return true;
     }
-    // Must advertise at least one preferred language in the release name.
-    found.iter().any(|c| wanted.iter().any(|w| w == c))
+    // Explicit language tag must intersect the preference list.
+    if found
+        .iter()
+        .any(|c| *c != "multi" && wanted.iter().any(|w| w == c))
+    {
+        return true;
+    }
+    // No language tag in the title → assume English (only when English is wanted).
+    let wants_english = wanted.iter().any(|w| w == "en");
+    found.is_empty() && wants_english
 }
 
 fn stored_language(found: &[&str], _kind: &str) -> String {
@@ -1429,7 +1441,7 @@ pub fn health_for(seeders: i32) -> &'static str {
     }
 }
 
-/// Rank playable torrents: alive swarms first, then quality — keep a wider list.
+/// Rank playable torrents: most seeders first (peers are only a weak tiebreak).
 pub fn rank_sources(mut out: Vec<StreamSource>, preferred_resolution: &str) -> Vec<StreamSource> {
     let preferred_res = preferred_resolution.trim().to_ascii_lowercase();
     // Prefer real magnets — raw .torrent HTTP links often fail to start.
@@ -1442,24 +1454,17 @@ pub fn rank_sources(mut out: Vec<StreamSource>, preferred_resolution: &str) -> V
         out = magnets;
     }
 
-    // Lenient but not dead: keep anything with a real swarm. Quality score >= 2
-    // still drops cam/unknown junk (score 0).
-    out.retain(|s| {
-        let alive = s.seeders >= 3 || (s.seeders >= 2 && s.peers >= 1);
-        alive && source_quality_score(&s.title) >= 2
-    });
+    // Alive = enough seeders. Peers alone never make a dead release viable.
+    out.retain(|s| s.seeders >= 2 && source_quality_score(&s.title) >= 2);
 
     out.sort_by(|a, b| {
         let a_magnet = a.magnet.to_ascii_lowercase().starts_with("magnet:") as i32;
         let b_magnet = b.magnet.to_ascii_lowercase().starts_with("magnet:") as i32;
-        // Activity first so busy swarms float up; still show mid-seed options below.
-        let a_activity = a.seeders.saturating_mul(3).saturating_add(a.peers);
-        let b_activity = b.seeders.saturating_mul(3).saturating_add(b.peers);
         let a_exact = episode_specificity(&a.title);
         let b_exact = episode_specificity(&b.title);
         b_magnet
             .cmp(&a_magnet)
-            .then(b_activity.cmp(&a_activity))
+            // Seeders first — that is what actually starts streams.
             .then(b.seeders.cmp(&a.seeders))
             .then(b_exact.cmp(&a_exact))
             .then(
@@ -1467,6 +1472,7 @@ pub fn rank_sources(mut out: Vec<StreamSource>, preferred_resolution: &str) -> V
                     .cmp(&resolution_rank(&a.title, &preferred_res)),
             )
             .then(source_quality_score(&b.title).cmp(&source_quality_score(&a.title)))
+            // Peers only break ties between equal-seeder magnets.
             .then(b.peers.cmp(&a.peers))
     });
 
@@ -1678,11 +1684,13 @@ mod tests {
     }
 
     #[test]
-    fn unlabeled_title_is_not_assumed_english() {
+    fn unlabeled_title_assumed_english_when_en_preferred() {
         let found = super::language_codes("Dune.2024.1080p.BluRay.x264");
         assert!(found.is_empty());
-        // Preferred en,hi — untagged must NOT pass (was leaking foreign audio).
-        assert!(!super::language_matches(&found, "en,hi", "movie"));
+        // Preferred includes English → untagged Western WEB-DL/BluRay is kept.
+        assert!(super::language_matches(&found, "en,hi", "movie"));
+        assert!(super::language_matches(&found, "en", "movie"));
+        // Hindi-only still requires an explicit Hindi/multi tag.
         assert!(!super::language_matches(&found, "hi", "movie"));
     }
 
@@ -1719,11 +1727,12 @@ mod tests {
     }
 
     #[test]
-    fn unlabeled_anime_no_longer_assumed_japanese() {
+    fn unlabeled_title_not_assumed_japanese() {
         let found = super::language_codes("Shogun S01E01 1080p WEB-DL");
         assert!(found.is_empty());
         assert!(!super::language_matches(&found, "ja", "anime"));
-        assert!(!super::language_matches(&found, "en,hi", "anime"));
+        assert!(super::language_matches(&found, "en,hi", "anime"));
+        assert!(!super::language_matches(&found, "hi", "anime"));
     }
 
     #[test]
