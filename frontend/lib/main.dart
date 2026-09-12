@@ -8,13 +8,11 @@ import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:graphql_flutter/graphql_flutter.dart';
-import 'package:media_kit/media_kit.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'friendly_error.dart';
 import 'graphql/client.dart';
 import 'graphql/queries.dart';
-import 'local_torrent.dart';
 import 'models.dart';
 import 'providers/settings.dart';
 import 'screens/catalog.dart';
@@ -36,13 +34,14 @@ import 'player_cache.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final android = !kIsWeb && Platform.isAndroid;
-  // Don't init media_kit / torrents before the first frame — on Windows/macOS
-  // that delayed paint and left a blank white Flutter surface.
   if (!android) {
     try {
       await dotenv.load(fileName: '.env');
     } catch (_) {}
   }
+  // Do NOT init MediaKit / libtorrent here — on Windows/macOS that can leave a
+  // blank black surface before any UI mounts. Player / LocalTorrentEngine init
+  // themselves when streaming actually starts.
   final prefs = await SharedPreferences.getInstance();
   runApp(
     ProviderScope(
@@ -52,16 +51,6 @@ Future<void> main() async {
       child: const PeanutButterApp(),
     ),
   );
-  WidgetsBinding.instance.addPostFrameCallback((_) {
-    try {
-      MediaKit.ensureInitialized();
-    } catch (e, st) {
-      debugPrint('MediaKit.ensureInitialized failed: $e\n$st');
-    }
-    if (LocalTorrentEngine.instance.supported) {
-      unawaited(LocalTorrentEngine.instance.ensureInit());
-    }
-  });
 }
 
 final _router = GoRouter(
@@ -139,46 +128,57 @@ class _PeanutButterAppState extends ConsumerState<PeanutButterApp> with WidgetsB
     final notifier = ref.read(settingsProvider.notifier);
     notifier.beginBoot();
     try {
-      const definedUrl = String.fromEnvironment('GRAPHQL_URI');
-      const definedToken = String.fromEnvironment('API_KEY');
-      // Installed builds often have no .env — never touch dotenv.env unless loaded
-      // (NotInitializedError used to abort boot and flash Unreachable).
-      final envUrl = definedUrl.isNotEmpty
-          ? definedUrl
-          : (dotenv.isInitialized ? (dotenv.env['GRAPHQL_URI'] ?? '') : '');
-      final envToken = definedToken.isNotEmpty
-          ? definedToken
-          : (dotenv.isInitialized ? (dotenv.env['API_KEY'] ?? '') : '');
-      if (envUrl.isNotEmpty) {
-        final base = envUrl.replaceFirst(RegExp(r'/graphql$'), '');
-        if (!isLocalServer(base)) {
-          await notifier.setServerUrl(base);
-        }
-      }
-      if (envToken.isNotEmpty) {
-        await notifier.setApiToken(envToken);
-      }
-      var settings = ref.read(settingsProvider);
-      // Never keep a loopback URL — always rediscover on the LAN.
-      if (isLocalServer(settings.serverUrl)) {
-        await notifier.setServerUrl('');
-        settings = ref.read(settingsProvider);
-      }
-      if (settings.apiToken.isEmpty) {
-        // Unpaired: scan LAN so PairingScreen can show the found host quickly.
-        await notifier.discoverLocalhost();
-        return;
-      }
-
-      // Paired: /health alone decides Home vs Unreachable (GraphQL warms after).
-      if (await _ensureHealthy(notifier)) {
-        await notifier.markConnected();
-        _warmServerInfo();
-      }
+      // Hard cap: never leave the user on a blank/boot gate forever
+      // (LAN scans + hung /health were trapping Win/Mac on a black frame).
+      await _bootstrapBody(notifier).timeout(
+        const Duration(seconds: 8),
+        onTimeout: () {
+          debugPrint('bootstrap timed out after 8s — showing session gate');
+        },
+      );
     } catch (e, st) {
       debugPrint('bootstrap failed: $e\n$st');
     } finally {
       ref.read(settingsProvider.notifier).finishBoot();
+    }
+  }
+
+  Future<void> _bootstrapBody(SettingsNotifier notifier) async {
+    const definedUrl = String.fromEnvironment('GRAPHQL_URI');
+    const definedToken = String.fromEnvironment('API_KEY');
+    // Installed builds often have no .env — never touch dotenv.env unless loaded
+    // (NotInitializedError used to abort boot and flash Unreachable).
+    final envUrl = definedUrl.isNotEmpty
+        ? definedUrl
+        : (dotenv.isInitialized ? (dotenv.env['GRAPHQL_URI'] ?? '') : '');
+    final envToken = definedToken.isNotEmpty
+        ? definedToken
+        : (dotenv.isInitialized ? (dotenv.env['API_KEY'] ?? '') : '');
+    if (envUrl.isNotEmpty) {
+      final base = envUrl.replaceFirst(RegExp(r'/graphql$'), '');
+      if (!isLocalServer(base)) {
+        await notifier.setServerUrl(base);
+      }
+    }
+    if (envToken.isNotEmpty) {
+      await notifier.setApiToken(envToken);
+    }
+    var settings = ref.read(settingsProvider);
+    // Never keep a loopback URL — always rediscover on the LAN.
+    if (isLocalServer(settings.serverUrl)) {
+      await notifier.setServerUrl('');
+      settings = ref.read(settingsProvider);
+    }
+    if (settings.apiToken.isEmpty) {
+      // Unpaired: show Pairing immediately — do not block boot on a full LAN scan.
+      unawaited(notifier.discoverLocalhost());
+      return;
+    }
+
+    // Paired: /health alone decides Home vs Unreachable (GraphQL warms after).
+    if (await _ensureHealthy(notifier)) {
+      await notifier.markConnected();
+      _warmServerInfo();
     }
   }
 
@@ -270,29 +270,16 @@ class _PeanutButterAppState extends ConsumerState<PeanutButterApp> with WidgetsB
   Widget build(BuildContext context) {
     final settings = ref.watch(settingsProvider);
     // Windows/macOS/TV "system" theme is usually light → Material scaffolds paint
-    // white over our dark chrome (looks like a blank white launch). Only honor an
-    // explicit Light choice from Settings; everything else stays dark.
+    // white over our dark chrome. Only honor an explicit Light choice from Settings.
     final themeMode = settings.themeMode == ThemeMode.light
         ? ThemeMode.light
         : ThemeMode.dark;
-    // While booting, mount ONLY the loading app — never MaterialApp.router /
-    // Unreachable / Home underneath the gate (avoids first-frame flashes).
-    if (settings.booting) {
-      return MaterialApp(
-        title: 'PeanutButter',
-        debugShowCheckedModeBanner: false,
-        themeMode: ThemeMode.dark,
-        theme: AppTheme.dark(),
-        darkTheme: AppTheme.dark(),
-        color: AppTheme.canvas,
-        home: const _BootConnectingScreen(),
-      );
-    }
+    // ONE MaterialApp for the whole lifetime. Swapping boot MaterialApp ↔
+    // MaterialApp.router left Windows/macOS stuck on an empty black surface.
     return MaterialApp.router(
       title: 'PeanutButter',
       debugShowCheckedModeBanner: false,
       themeMode: themeMode,
-      // Even "light" mode keeps the catalog chrome dark — this app is dark-first.
       theme: AppTheme.dark(),
       darkTheme: AppTheme.dark(),
       color: AppTheme.canvas,
@@ -304,8 +291,6 @@ class _PeanutButterAppState extends ConsumerState<PeanutButterApp> with WidgetsB
         const SingleActivator(LogicalKeyboardKey.gameButtonA): const ActivateIntent(),
       },
       builder: (context, child) {
-        // Always paint the brand canvas first so a null router child never
-        // shows the OS-default white window on Windows / macOS / TV.
         return ColoredBox(
           color: AppTheme.canvas,
           child: MediaQuery(
@@ -320,7 +305,9 @@ class _PeanutButterAppState extends ConsumerState<PeanutButterApp> with WidgetsB
   }
 }
 
-/// After boot: Pairing / Unreachable / Home. Booting is handled above.
+/// Boot → Pairing / Unreachable / routed child.
+/// Always keeps the router [child] mounted (offstage) while gating — dropping
+/// the Navigator on Windows/macOS was leaving a permanent blank black surface.
 class _SessionGate extends ConsumerWidget {
   const _SessionGate({required this.child});
 
@@ -333,27 +320,29 @@ class _SessionGate extends ConsumerWidget {
     final online = paired && settings.connected;
     final playing = ref.watch(playbackActiveProvider) || playbackSessionActive;
 
-    if (settings.pairingInProgress || !paired) {
-      return playing
-          ? (child ?? const _DarkPlaceholder())
-          : const PairingScreen();
-    }
-    if (!online && !playing) {
-      return const UnreachableScreen();
-    }
-    // Never return an empty shrink — that shows the white native window.
-    return child ?? const _DarkPlaceholder();
-  }
-}
+    final routed = child ?? const SizedBox.shrink();
 
-class _DarkPlaceholder extends StatelessWidget {
-  const _DarkPlaceholder();
+    Widget? gate;
+    if (settings.booting) {
+      gate = const _BootConnectingScreen();
+    } else if (settings.pairingInProgress || !paired) {
+      if (!playing) gate = const PairingScreen();
+    } else if (!online && !playing) {
+      gate = const UnreachableScreen();
+    }
 
-  @override
-  Widget build(BuildContext context) {
-    return const ColoredBox(
-      color: AppTheme.canvas,
-      child: SizedBox.expand(),
+    if (gate == null) {
+      // Online (or playing through a gate): show the real route.
+      if (child != null) return routed;
+      return const _BootConnectingScreen();
+    }
+
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        Offstage(offstage: true, child: routed),
+        gate,
+      ],
     );
   }
 }
