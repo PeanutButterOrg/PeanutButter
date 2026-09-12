@@ -55,6 +55,7 @@ type Query {
   nextPlayback(fileId: UUID!): FileReference
   streamingSearch(query: String!, kind: TitleKind!, season: Int, episode: Int, language: String, titleId: UUID, year: Int, live: Boolean): [StreamSource!]!
   torrentFiles(magnet: String!, season: Int, episode: Int): [TorrentFile!]!
+  torrentProbe(magnet: String!): TorrentProbe!
   streamStatus(sessionId: String!): StreamSession
   jackettCatalog: JackettCatalogStatus!
   mediaSegments(titleId: UUID!, season: Int, episode: Int, durationMs: Int): MediaSegments!
@@ -315,6 +316,12 @@ type TorrentFile {
   size: String!
   sizeBytes: Int!
   recommended: Boolean!
+}
+
+type TorrentProbe {
+  seeders: Int!
+  peers: Int!
+  health: String!
 }
 
 type StreamSession {

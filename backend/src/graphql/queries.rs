@@ -6,7 +6,7 @@ use crate::error::AppError;
 use crate::graphql::types::{
     HomeFeed, JackettCatalogStatus, MediaSegment, MediaSegments, SearchResult, ServerInfo, SortDir,
     SortField, StreamSession, StreamSource, SyncStatus, Title, TitleConnection, TitleFilter,
-    TitleKind, TorrentFile,
+    TitleKind, TorrentFile, TorrentProbe,
 };
 use crate::AppState;
 
@@ -530,7 +530,43 @@ impl Query {
         } else {
             found
         };
+        // Jackett Seeders are often 0/missing on public trackers — sample live
+        // DHT/tracker peers for the top candidates before returning the picker.
+        let fallback = found.clone();
+        let found = match tokio::time::timeout(
+            std::time::Duration::from_secs(12),
+            state.streams.enrich_sources_with_swarm(found),
+        )
+        .await
+        {
+            Ok(enriched) => enriched,
+            Err(_) => {
+                tracing::warn!("swarm probe timed out — returning Jackett counts");
+                fallback
+            }
+        };
         Ok(found)
+    }
+
+    /// Resolve a magnet briefly and return live DHT/tracker peer counts.
+    async fn torrent_probe(
+        &self,
+        ctx: &Context<'_>,
+        magnet: String,
+    ) -> async_graphql::Result<TorrentProbe> {
+        let state = ctx.data::<AppState>()?;
+        if !state.config.live.jackett_enabled() {
+            return Err(crate::error::AppError::BadRequest(
+                "Jackett streaming is turned off. Enable it in Settings.".into(),
+            )
+            .into());
+        }
+        let probe = state.streams.probe_swarm(&magnet).await?;
+        Ok(TorrentProbe {
+            seeders: probe.seeders,
+            peers: probe.peers,
+            health: crate::jackett::health_for(probe.seeders).to_string(),
+        })
     }
 
     /// List video files inside a magnet before starting playback (season packs / folders).

@@ -749,6 +749,14 @@ pub struct TorrentFile {
     pub recommended: bool,
 }
 
+/// Live swarm sample from resolving a magnet (DHT / trackers).
+#[derive(SimpleObject, Clone, Debug)]
+pub struct TorrentProbe {
+    pub seeders: i32,
+    pub peers: i32,
+    pub health: String,
+}
+
 #[derive(SimpleObject, Clone, Debug)]
 pub struct SearchResult {
     pub items: Vec<Title>,

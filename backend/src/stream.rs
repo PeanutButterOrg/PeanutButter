@@ -48,6 +48,15 @@ pub struct TorrentFileEntry {
     pub size_bytes: u64,
 }
 
+/// Live swarm sample from DHT/trackers (Jackett Seeders are often missing/wrong).
+#[derive(Debug, Clone, Copy)]
+pub struct SwarmProbe {
+    /// Connected peers right now (best live signal librqbit exposes).
+    pub seeders: i32,
+    /// Peers discovered via DHT/trackers during resolve.
+    pub peers: i32,
+}
+
 #[derive(Clone)]
 pub struct StreamService {
     inner: Arc<StreamInner>,
@@ -278,6 +287,181 @@ impl StreamService {
                 size_bytes: size,
             })
             .collect())
+    }
+
+    /// Briefly resolve a magnet and sample DHT/tracker peers.
+    /// Used to replace Jackett's often-missing Seeders with a live signal.
+    pub async fn probe_swarm(&self, magnet: &str) -> Result<SwarmProbe, AppError> {
+        let magnet = magnet.trim();
+        if magnet.is_empty() {
+            return Err(AppError::BadRequest(
+                "That torrent link is missing. Try another result.".into(),
+            ));
+        }
+        let session = self
+            .inner
+            .session
+            .get_or_try_init(|| async {
+                tokio::fs::create_dir_all(&self.inner.output_root)
+                    .await
+                    .map_err(|_| {
+                        "Couldn’t prepare the stream folder on the server. Try again.".to_string()
+                    })?;
+                Session::new_with_opts(
+                    self.inner.output_root.clone(),
+                    SessionOptions {
+                        disable_dht: false,
+                        disable_dht_persistence: false,
+                        enable_upnp_port_forwarding: true,
+                        listen_port_range: Some(torrent_listen_range()),
+                        defer_writes_up_to: Some(512),
+                        concurrent_init_limit: Some(16),
+                        peer_opts: Some(PeerConnectionOptions {
+                            connect_timeout: Some(Duration::from_secs(2)),
+                            read_write_timeout: Some(Duration::from_secs(8)),
+                            keep_alive_interval: Some(Duration::from_secs(8)),
+                        }),
+                        ratelimits: torrent_limits(),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .map_err(|_| "Couldn’t start the stream engine. Try again.".to_string())
+            })
+            .await
+            .map_err(|e| AppError::Message(e.to_string()))?
+            .clone();
+
+        let tmp = self
+            .inner
+            .output_root
+            .join(format!("probe-{}", Uuid::new_v4()));
+        tokio::fs::create_dir_all(&tmp)
+            .await
+            .map_err(AppError::Io)?;
+        let add = resolve_torrent_source(magnet).await.map_err(AppError::Message)?;
+
+        // list_only resolves metadata via DHT/trackers and returns seen_peers —
+        // that's the live swarm signal Jackett usually lacks.
+        let listed = session
+            .add_torrent(
+                add.to_add(),
+                Some(AddTorrentOptions {
+                    list_only: true,
+                    overwrite: true,
+                    output_folder: Some(tmp.to_string_lossy().into_owned()),
+                    force_tracker_interval: Some(Duration::from_secs(2)),
+                    trackers: Some(EXTRA_TRACKERS.iter().map(|s| (*s).to_string()).collect()),
+                    ratelimits: torrent_limits(),
+                    peer_opts: Some(PeerConnectionOptions {
+                        connect_timeout: Some(Duration::from_secs(2)),
+                        read_write_timeout: Some(Duration::from_secs(6)),
+                        keep_alive_interval: Some(Duration::from_secs(6)),
+                    }),
+                    ..Default::default()
+                }),
+            )
+            .await;
+        let _ = tokio::fs::remove_dir_all(&tmp).await;
+
+        match listed {
+            Ok(AddTorrentResponse::ListOnly(resp)) => {
+                let peers = resp.seen_peers.len() as i32;
+                Ok(SwarmProbe {
+                    seeders: peers,
+                    peers,
+                })
+            }
+            Ok(AddTorrentResponse::Added(id, handle) | AddTorrentResponse::AlreadyManaged(id, handle)) => {
+                // Rare for list_only — sample briefly then delete.
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+                let mut best_live = 0i32;
+                let mut best_seen = 0i32;
+                while tokio::time::Instant::now() < deadline {
+                    if let Some(live) = handle.stats().live.as_ref() {
+                        let snap = &live.snapshot.peer_stats;
+                        best_live = best_live.max(snap.live as i32);
+                        best_seen = best_seen.max(snap.seen as i32);
+                        if best_live >= 2 {
+                            break;
+                        }
+                    }
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                }
+                let _ = session.delete(id.into(), true).await;
+                let peers = best_seen.max(best_live);
+                Ok(SwarmProbe {
+                    seeders: best_live.max(peers),
+                    peers,
+                })
+            }
+            Err(e) => Err(AppError::Message(friendly_list_files_error(&e.to_string()))),
+        }
+    }
+
+    /// Probe Jackett hits that lack seeder stats and rewrite seeders/peers/health.
+    pub async fn enrich_sources_with_swarm(
+        &self,
+        mut sources: Vec<crate::graphql::types::StreamSource>,
+    ) -> Vec<crate::graphql::types::StreamSource> {
+        const MAX_PROBES: usize = 6;
+        let mut idxs: Vec<usize> = sources
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| {
+                s.magnet.to_ascii_lowercase().starts_with("magnet:")
+                    && (s.health == "unknown" || s.health == "dead" || s.seeders < 2)
+            })
+            .map(|(i, _)| i)
+            .take(MAX_PROBES)
+            .collect();
+        // If everything already has seeders, still spot-check the top magnet.
+        if idxs.is_empty() {
+            if let Some((i, _)) = sources.iter().enumerate().find(|(_, s)| {
+                s.magnet.to_ascii_lowercase().starts_with("magnet:")
+            }) {
+                idxs.push(i);
+            }
+        }
+        if idxs.is_empty() {
+            return sources;
+        }
+
+        let probes = futures::future::join_all(idxs.iter().copied().map(|i| {
+            let magnet = sources[i].magnet.clone();
+            let this = self.clone();
+            async move {
+                let result =
+                    tokio::time::timeout(Duration::from_secs(8), this.probe_swarm(&magnet)).await;
+                (i, result)
+            }
+        }))
+        .await;
+
+        for (i, result) in probes {
+            let Ok(Ok(probe)) = result else {
+                continue;
+            };
+            if probe.seeders <= 0 && probe.peers <= 0 {
+                continue;
+            }
+            let Some(src) = sources.get_mut(i) else {
+                continue;
+            };
+            let seeders = probe.seeders.max(if probe.peers > 0 { 1 } else { 0 });
+            src.seeders = seeders.max(src.seeders);
+            src.peers = probe.peers.max(src.peers);
+            src.health = crate::jackett::health_for(src.seeders).into();
+            src.rating = crate::jackett::calculate_rating(src.seeders);
+        }
+
+        sources.sort_by(|a, b| {
+            b.seeders
+                .cmp(&a.seeders)
+                .then(b.peers.cmp(&a.peers))
+                .then(a.title.to_ascii_lowercase().cmp(&b.title.to_ascii_lowercase()))
+        });
+        sources
     }
 
     pub async fn status(&self, session_id: &str) -> Option<StreamSession> {

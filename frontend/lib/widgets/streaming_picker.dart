@@ -557,7 +557,9 @@ class _TorrentTile extends StatelessWidget {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  '${source.size}  ·  ${source.seeders} seeders  ·  ${languageDisplayName(source.language)}',
+                  '${source.size}  ·  ${source.seeders} seeders'
+                  '${source.peers > 0 ? "  ·  ${source.peers} peers" : ""}'
+                  '  ·  ${languageDisplayName(source.language)}',
                   style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 13, height: 1.3),
                 ),
                 const SizedBox(height: 2),
