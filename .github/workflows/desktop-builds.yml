@@ -1,9 +1,9 @@
 # Build PeanutButter desktop clients (Windows / macOS / Linux)
 #
-# Artifacts (upload raw files/folders — Actions already zips on download):
-#   Linux  — portable/ | .deb | .AppImage
-#   macOS  — .app
-#   Windows — portable/ | setup.exe
+# Artifacts (upload the deliverable itself — no wrapping folder, no zip-in-zip):
+#   Linux  — portable files at zip root | .deb | .AppImage
+#   macOS  — PeanutButter.app
+#   Windows — portable files at zip root | setup.exe
 #
 # Native Windows/macOS binaries must be compiled on those OSes.
 # Local Linux (fast, Docker): ./scripts/build-desktop-docker.sh
@@ -88,11 +88,12 @@ jobs:
           ./scripts/package-linux.sh frontend/build/linux/x64/release/bundle
           ls -lh frontend/dist/
 
-      # Upload folders/files directly — Actions zips once on download (no zip-in-zip).
+      # Upload contents (not a wrapping PeanutButter/ folder). Actions zips once on download.
       - uses: actions/upload-artifact@v4
         with:
           name: PeanutButter-linux-portable
-          path: frontend/dist/PeanutButter/
+          path: frontend/dist/PeanutButter/*
+          include-hidden-files: true
           if-no-files-found: error
 
       - uses: actions/upload-artifact@v4
@@ -233,7 +234,8 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: PeanutButter-windows-portable
-          path: frontend/dist/PeanutButter/
+          path: frontend/dist/PeanutButter/*
+          include-hidden-files: true
           if-no-files-found: error
 
       - uses: actions/upload-artifact@v4
