@@ -1,9 +1,9 @@
 # Build PeanutButter desktop clients (Windows / macOS / Linux)
 #
-# Artifacts (each uploaded separately — never bundled together):
-#   Linux  — portable.zip | amd64-deb.zip | AppImage.zip
-#   macOS  — universal.zip
-#   Windows — portable.zip | setup.zip
+# Artifacts (upload raw files/folders — Actions already zips on download):
+#   Linux  — portable/ | .deb | .AppImage
+#   macOS  — .app
+#   Windows — portable/ | setup.exe
 #
 # Native Windows/macOS binaries must be compiled on those OSes.
 # Local Linux (fast, Docker): ./scripts/build-desktop-docker.sh
@@ -15,7 +15,7 @@ on:
   workflow_dispatch:
     inputs:
       linux:
-        description: Build Linux (deb + AppImage + zip)
+        description: Build Linux (deb + AppImage + portable)
         type: boolean
         default: true
       windows:
@@ -23,7 +23,7 @@ on:
         type: boolean
         default: true
       macos:
-        description: Build macOS (universal zip)
+        description: Build macOS (universal .app)
         type: boolean
         default: true
   push:
@@ -44,7 +44,7 @@ concurrency:
 
 jobs:
   linux:
-    name: Linux (deb + AppImage + zip)
+    name: Linux (deb + AppImage + portable)
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.linux }}
     runs-on: ubuntu-latest
     defaults:
@@ -75,7 +75,7 @@ jobs:
       - run: flutter pub get
       - run: flutter build linux --release
 
-      - name: Package zip / deb / AppImage
+      - name: Package portable / deb / AppImage
         working-directory: .
         run: |
           chmod +x scripts/package-linux.sh
@@ -85,32 +85,30 @@ jobs:
             'export LD_LIBRARY_PATH="$PWD/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"' \
             'exec ./peanutbutter "$@"' > frontend/dist/PeanutButter/run.sh
           chmod +x frontend/dist/PeanutButter/run.sh frontend/dist/PeanutButter/peanutbutter
-          (cd frontend/dist && zip -qr PeanutButter-linux-x64-portable.zip PeanutButter)
           ./scripts/package-linux.sh frontend/build/linux/x64/release/bundle
-          # One archive per deliverable (never bundle formats together).
-          (cd frontend/dist && zip -qr PeanutButter-linux-amd64-deb.zip PeanutButter-linux-amd64.deb)
-          (cd frontend/dist && zip -qr PeanutButter-linux-x86_64-AppImage.zip PeanutButter-linux-x86_64.AppImage)
+          ls -lh frontend/dist/
 
+      # Upload folders/files directly — Actions zips once on download (no zip-in-zip).
       - uses: actions/upload-artifact@v4
         with:
           name: PeanutButter-linux-portable
-          path: frontend/dist/PeanutButter-linux-x64-portable.zip
+          path: frontend/dist/PeanutButter/
           if-no-files-found: error
 
       - uses: actions/upload-artifact@v4
         with:
           name: PeanutButter-linux-deb
-          path: frontend/dist/PeanutButter-linux-amd64-deb.zip
+          path: frontend/dist/PeanutButter-linux-amd64.deb
           if-no-files-found: error
 
       - uses: actions/upload-artifact@v4
         with:
           name: PeanutButter-linux-appimage
-          path: frontend/dist/PeanutButter-linux-x86_64-AppImage.zip
+          path: frontend/dist/PeanutButter-linux-x86_64.AppImage
           if-no-files-found: error
 
   windows:
-    name: Windows (portable zip + setup zip)
+    name: Windows (portable + setup)
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.windows }}
     runs-on: windows-latest
     defaults:
@@ -187,16 +185,15 @@ jobs:
           Write-Host "Release dir: $src"
           "dir=$src" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
-      - name: Package portable zip
+      - name: Stage portable folder
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path dist | Out-Null
           $src = "${{ steps.winout.outputs.dir }}"
-          $stage = Join-Path $env:RUNNER_TEMP "PeanutButter-portable"
+          $stage = "dist\PeanutButter"
           if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
           Copy-Item -Recurse -Force "$src\*" $stage
-          Compress-Archive -Path "$stage\*" -DestinationPath "dist\PeanutButter-windows-x64-portable.zip" -Force
+          Get-ChildItem $stage | Select-Object -First 10 Name
 
       - name: Install Inno Setup
         shell: pwsh
@@ -231,20 +228,18 @@ jobs:
           if (-not (Test-Path $setup)) {
             throw "setup exe was not produced"
           }
-          # Own zip — never ship portable + setup in one archive.
-          Compress-Archive -Path $setup -DestinationPath "frontend\dist\PeanutButter-windows-x64-setup.zip" -Force
           Get-ChildItem frontend\dist
 
       - uses: actions/upload-artifact@v4
         with:
           name: PeanutButter-windows-portable
-          path: frontend/dist/PeanutButter-windows-x64-portable.zip
+          path: frontend/dist/PeanutButter/
           if-no-files-found: error
 
       - uses: actions/upload-artifact@v4
         with:
           name: PeanutButter-windows-setup
-          path: frontend/dist/PeanutButter-windows-x64-setup.zip
+          path: frontend/dist/PeanutButter-windows-x64-setup.exe
           if-no-files-found: error
 
   macos:
@@ -301,10 +296,11 @@ jobs:
             lipo -info "$BIN" || true
           fi
           mkdir -p dist
-          ditto -c -k --sequesterRsrc --keepParent "$APP" dist/PeanutButter-macos-universal.zip
+          rm -rf dist/PeanutButter.app
+          ditto "$APP" dist/PeanutButter.app
 
       - uses: actions/upload-artifact@v4
         with:
           name: PeanutButter-macos-universal
-          path: frontend/dist/PeanutButter-macos-universal.zip
+          path: frontend/dist/PeanutButter.app
           if-no-files-found: error
