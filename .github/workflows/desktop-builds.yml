@@ -1,11 +1,16 @@
 # Build PeanutButter desktop clients (Windows / macOS / Linux)
 #
-# Artifacts (upload the deliverable itself — no wrapping folder, no zip-in-zip):
-#   Linux  — portable files at zip root | .deb | .AppImage
-#   macOS  — PeanutButter.app
-#   Windows — portable files at zip root | setup.exe
+# Each artifact is a real .zip we create (zip/Compress-Archive/ditto), containing
+# the deliverable — never rename .exe/.deb/.AppImage to .zip.
 #
-# Native Windows/macOS binaries must be compiled on those OSes.
+# After Actions download (one outer unwrap from GitHub), you get:
+#   PeanutButter-linux-x64-portable.zip
+#   PeanutButter-linux-amd64-deb.zip          → contains .deb
+#   PeanutButter-linux-x86_64-AppImage.zip    → contains .AppImage
+#   PeanutButter-windows-x64-portable.zip
+#   PeanutButter-windows-x64-setup.zip        → contains .exe
+#   PeanutButter-macos-universal.zip          → contains .app
+#
 # Local Linux (fast, Docker): ./scripts/build-desktop-docker.sh
 # Selective CI: ./scripts/build-desktop-docker.sh --ci-windows --ci-macos --watch --download
 
@@ -19,11 +24,11 @@ on:
         type: boolean
         default: true
       windows:
-        description: Build Windows (portable + setup exe)
+        description: Build Windows (portable + setup)
         type: boolean
         default: true
       macos:
-        description: Build macOS (universal .app)
+        description: Build macOS (universal zip)
         type: boolean
         default: true
   push:
@@ -67,7 +72,7 @@ jobs:
             libmpv-dev mpv \
             libwebkit2gtk-4.1-dev \
             dpkg-dev rsync curl file \
-            python3-pil
+            python3-pil zip
 
       - name: Enable Linux desktop
         run: flutter config --enable-linux-desktop
@@ -75,7 +80,7 @@ jobs:
       - run: flutter pub get
       - run: flutter build linux --release
 
-      - name: Package portable / deb / AppImage
+      - name: Package portable / deb / AppImage as real zips
         working-directory: .
         run: |
           chmod +x scripts/package-linux.sh
@@ -86,26 +91,31 @@ jobs:
             'exec ./peanutbutter "$@"' > frontend/dist/PeanutButter/run.sh
           chmod +x frontend/dist/PeanutButter/run.sh frontend/dist/PeanutButter/peanutbutter
           ./scripts/package-linux.sh frontend/build/linux/x64/release/bundle
-          ls -lh frontend/dist/
 
-      # Upload contents (not a wrapping PeanutButter/ folder). Actions zips once on download.
+          cd frontend/dist
+          # Real zip archives (do not rename .deb / .AppImage to .zip).
+          zip -qr PeanutButter-linux-x64-portable.zip PeanutButter
+          zip -qj PeanutButter-linux-amd64-deb.zip PeanutButter-linux-amd64.deb
+          zip -qj PeanutButter-linux-x86_64-AppImage.zip PeanutButter-linux-x86_64.AppImage
+          ls -lh PeanutButter-linux-*.zip
+          file PeanutButter-linux-*.zip
+
       - uses: actions/upload-artifact@v4
         with:
           name: PeanutButter-linux-portable
-          path: frontend/dist/PeanutButter/*
-          include-hidden-files: true
+          path: frontend/dist/PeanutButter-linux-x64-portable.zip
           if-no-files-found: error
 
       - uses: actions/upload-artifact@v4
         with:
           name: PeanutButter-linux-deb
-          path: frontend/dist/PeanutButter-linux-amd64.deb
+          path: frontend/dist/PeanutButter-linux-amd64-deb.zip
           if-no-files-found: error
 
       - uses: actions/upload-artifact@v4
         with:
           name: PeanutButter-linux-appimage
-          path: frontend/dist/PeanutButter-linux-x86_64.AppImage
+          path: frontend/dist/PeanutButter-linux-x86_64-AppImage.zip
           if-no-files-found: error
 
   windows:
@@ -186,15 +196,20 @@ jobs:
           Write-Host "Release dir: $src"
           "dir=$src" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
-      - name: Stage portable folder
+      - name: Package portable zip
         shell: pwsh
         run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
           $src = "${{ steps.winout.outputs.dir }}"
-          $stage = "dist\PeanutButter"
+          $stage = Join-Path $env:RUNNER_TEMP "PeanutButter-portable"
           if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
           Copy-Item -Recurse -Force "$src\*" $stage
-          Get-ChildItem $stage | Select-Object -First 10 Name
+          $zip = "dist\PeanutButter-windows-x64-portable.zip"
+          if (Test-Path $zip) { Remove-Item -Force $zip }
+          # Real zip of the app folder contents (not a renamed exe).
+          Compress-Archive -Path "$stage\*" -DestinationPath $zip -Force
+          Get-Item $zip | Format-List Name, Length
 
       - name: Install Inno Setup
         shell: pwsh
@@ -202,7 +217,7 @@ jobs:
           choco install innosetup -y --no-progress
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /? | Select-Object -First 3
 
-      - name: Build setup exe
+      - name: Build setup exe and wrap in zip
         shell: pwsh
         working-directory: .
         run: |
@@ -229,19 +244,22 @@ jobs:
           if (-not (Test-Path $setup)) {
             throw "setup exe was not produced"
           }
-          Get-ChildItem frontend\dist
+          $zip = "frontend\dist\PeanutButter-windows-x64-setup.zip"
+          if (Test-Path $zip) { Remove-Item -Force $zip }
+          # Zip the .exe — do not rename .exe to .zip.
+          Compress-Archive -Path $setup -DestinationPath $zip -Force
+          Get-ChildItem frontend\dist | Format-Table Name, Length
 
       - uses: actions/upload-artifact@v4
         with:
           name: PeanutButter-windows-portable
-          path: frontend/dist/PeanutButter/*
-          include-hidden-files: true
+          path: frontend/dist/PeanutButter-windows-x64-portable.zip
           if-no-files-found: error
 
       - uses: actions/upload-artifact@v4
         with:
           name: PeanutButter-windows-setup
-          path: frontend/dist/PeanutButter-windows-x64-setup.exe
+          path: frontend/dist/PeanutButter-windows-x64-setup.zip
           if-no-files-found: error
 
   macos:
@@ -298,11 +316,13 @@ jobs:
             lipo -info "$BIN" || true
           fi
           mkdir -p dist
-          rm -rf dist/PeanutButter.app
-          ditto "$APP" dist/PeanutButter.app
+          # Real zip containing PeanutButter.app (ditto), not a renamed folder.
+          ditto -c -k --sequesterRsrc --keepParent "$APP" dist/PeanutButter-macos-universal.zip
+          ls -lh dist/PeanutButter-macos-universal.zip
+          file dist/PeanutButter-macos-universal.zip
 
       - uses: actions/upload-artifact@v4
         with:
           name: PeanutButter-macos-universal
-          path: frontend/dist/PeanutButter.app
+          path: frontend/dist/PeanutButter-macos-universal.zip
           if-no-files-found: error

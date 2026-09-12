@@ -99,13 +99,15 @@ run_linux_docker() {
         "exec ./peanutbutter \"\$@\"" > dist/PeanutButter/run.sh
       chmod +x dist/PeanutButter/run.sh dist/PeanutButter/peanutbutter
       /work/scripts/package-linux.sh build/linux/x64/release/bundle
-      # Keep a portable zip for local sharing; leave .deb / .AppImage unwrapped.
+      # Real zip archives — never rename .deb / .AppImage to .zip.
       (cd dist && zip -qr PeanutButter-linux-x64-portable.zip PeanutButter)
-      ls -lh dist/PeanutButter-linux-* dist/PeanutButter 2>/dev/null || true
+      (cd dist && zip -qj PeanutButter-linux-amd64-deb.zip PeanutButter-linux-amd64.deb)
+      (cd dist && zip -qj PeanutButter-linux-x86_64-AppImage.zip PeanutButter-linux-x86_64.AppImage)
+      ls -lh dist/PeanutButter-linux-*.zip || true
+      file dist/PeanutButter-linux-*.zip || true
     '
   echo "Linux artifacts → $DIST"
-  ls -lh "$DIST"/PeanutButter-linux-* 2>/dev/null || true
-  ls -ld "$DIST"/PeanutButter 2>/dev/null || true
+  ls -lh "$DIST"/PeanutButter-linux-*.zip 2>/dev/null || true
 }
 
 trigger_ci() {
