@@ -71,6 +71,8 @@ class AppTheme {
     return ThemeData(
       useMaterial3: true,
       colorScheme: scheme,
+      // Keep splash / empty router frames off pure white even in light mode.
+      scaffoldBackgroundColor: scheme.surface,
       popupMenuTheme: PopupMenuThemeData(
         color: scheme.surfaceContainerHighest,
         surfaceTintColor: Colors.transparent,

@@ -37,8 +37,12 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final android = !kIsWeb && Platform.isAndroid;
   // media_kit (libmpv) is used on Android TV for torrent HTTP streams — ExoPlayer
-  // stays black while the download progresses.
-  MediaKit.ensureInitialized();
+  // stays black while the download progresses. Never block first paint if init fails.
+  try {
+    MediaKit.ensureInitialized();
+  } catch (e, st) {
+    debugPrint('MediaKit.ensureInitialized failed: $e\n$st');
+  }
   if (!android) {
     try {
       await dotenv.load(fileName: '.env');
@@ -263,24 +267,29 @@ class _PeanutButterAppState extends ConsumerState<PeanutButterApp> with WidgetsB
   @override
   Widget build(BuildContext context) {
     final settings = ref.watch(settingsProvider);
+    // Android TV / many desktops report a light system theme; that paints a white
+    // Material surface behind the gate and looks like a blank white launch.
+    final themeMode = isAndroidTv ? ThemeMode.dark : settings.themeMode;
     // While booting, mount ONLY the loading app — never MaterialApp.router /
     // Unreachable / Home underneath the gate (avoids first-frame flashes).
     if (settings.booting) {
       return MaterialApp(
         title: 'PeanutButter',
         debugShowCheckedModeBanner: false,
-        themeMode: settings.themeMode,
-        theme: AppTheme.light(),
+        themeMode: ThemeMode.dark,
+        theme: AppTheme.dark(),
         darkTheme: AppTheme.dark(),
+        color: AppTheme.canvas,
         home: const _BootConnectingScreen(),
       );
     }
     return MaterialApp.router(
       title: 'PeanutButter',
       debugShowCheckedModeBanner: false,
-      themeMode: settings.themeMode,
+      themeMode: themeMode,
       theme: AppTheme.light(),
       darkTheme: AppTheme.dark(),
+      color: AppTheme.canvas,
       routerConfig: _router,
       shortcuts: {
         ...WidgetsApp.defaultShortcuts,
@@ -289,11 +298,16 @@ class _PeanutButterAppState extends ConsumerState<PeanutButterApp> with WidgetsB
         const SingleActivator(LogicalKeyboardKey.gameButtonA): const ActivateIntent(),
       },
       builder: (context, child) {
-        return MediaQuery(
-          data: MediaQuery.of(context).copyWith(
-            navigationMode: NavigationMode.directional,
+        // Always paint the brand canvas first so a null router child never
+        // shows the OS-default white window on Windows / macOS / TV.
+        return ColoredBox(
+          color: AppTheme.canvas,
+          child: MediaQuery(
+            data: MediaQuery.of(context).copyWith(
+              navigationMode: NavigationMode.directional,
+            ),
+            child: _SessionGate(child: child),
           ),
-          child: _SessionGate(child: child),
         );
       },
     );
@@ -314,12 +328,27 @@ class _SessionGate extends ConsumerWidget {
     final playing = ref.watch(playbackActiveProvider) || playbackSessionActive;
 
     if (settings.pairingInProgress || !paired) {
-      return playing ? (child ?? const SizedBox.shrink()) : const PairingScreen();
+      return playing
+          ? (child ?? const _DarkPlaceholder())
+          : const PairingScreen();
     }
     if (!online && !playing) {
       return const UnreachableScreen();
     }
-    return child ?? const SizedBox.shrink();
+    // Never return an empty shrink — that shows the white native window.
+    return child ?? const _DarkPlaceholder();
+  }
+}
+
+class _DarkPlaceholder extends StatelessWidget {
+  const _DarkPlaceholder();
+
+  @override
+  Widget build(BuildContext context) {
+    return const ColoredBox(
+      color: AppTheme.canvas,
+      child: SizedBox.expand(),
+    );
   }
 }
 
