@@ -773,17 +773,21 @@ impl JackettClient {
                 if !size_plausible(bytes, kind, &hit.title) {
                     return None;
                 }
-                let seeders = hit.seeders.unwrap_or(0).max(0) as i32;
+                // Jackett uses missing / negative Seeders when the indexer doesn't
+                // report swarm stats (common on TPB, Lime, Knaben, …). Many public
+                // trackers also report 0 even for live swarms — don't hard-drop here;
+                // rank_sources prefers real seeders and falls back to unknowns.
+                let seeders_raw = hit.seeders.unwrap_or(-1);
+                let seeders_unknown = seeders_raw < 0;
+                let seeders = seeders_raw.max(0) as i32;
                 let peers = hit.peers.unwrap_or(0).max(0) as i32;
-                // Drop dead swarms only. 2–3 seeders can still start; 0 never will.
-                if seeders < 2 {
-                    return None;
-                }
                 let langs = language_codes(&hit.title);
                 let id = hit
                     .guid
                     .filter(|s| !s.trim().is_empty())
                     .unwrap_or_else(|| magnet.chars().take(80).collect());
+                // Rank unknown-seeder magnets as "poor but tryable" (1), not dead (0).
+                let rank_seeders = if seeders_unknown { 1 } else { seeders };
                 Some(StreamSource {
                     id,
                     title: if hit.title.trim().is_empty() {
@@ -792,10 +796,14 @@ impl JackettClient {
                         hit.title
                     },
                     magnet,
-                    seeders,
+                    seeders: rank_seeders,
                     peers,
-                    rating: calculate_rating(seeders),
-                    health: health_for(seeders).into(),
+                    rating: calculate_rating(rank_seeders),
+                    health: if seeders_unknown {
+                        "unknown".into()
+                    } else {
+                        health_for(seeders).into()
+                    },
                     size: format_size(bytes),
                     tracker: hit
                         .tracker
@@ -807,7 +815,7 @@ impl JackettClient {
             })
             .collect();
         if !preferred_lang.is_empty() && preferred_lang != "all" {
-            // Strict: only preferred languages + multi. Untagged ≠ English.
+            // Preferred languages + multi. Untagged Western releases ≈ English.
             out = out
                 .into_iter()
                 .filter(|src| {
@@ -1444,7 +1452,8 @@ pub fn health_for(seeders: i32) -> &'static str {
 /// Rank playable torrents: most seeders first (peers are only a weak tiebreak).
 pub fn rank_sources(mut out: Vec<StreamSource>, preferred_resolution: &str) -> Vec<StreamSource> {
     let preferred_res = preferred_resolution.trim().to_ascii_lowercase();
-    // Prefer real magnets — raw .torrent HTTP links often fail to start.
+    // Prefer real magnets when any exist — but don't throw away the whole list
+    // if every magnet has unknown seeders while .torrent links would remain.
     let magnets: Vec<StreamSource> = out
         .iter()
         .filter(|s| s.magnet.to_ascii_lowercase().starts_with("magnet:"))
@@ -1454,16 +1463,39 @@ pub fn rank_sources(mut out: Vec<StreamSource>, preferred_resolution: &str) -> V
         out = magnets;
     }
 
-    // Alive = enough seeders. Peers alone never make a dead release viable.
-    out.retain(|s| s.seeders >= 2 && source_quality_score(&s.title) >= 2);
+    out.retain(|s| source_quality_score(&s.title) >= 2);
+
+    // Prefer known healthy swarms when available. Public indexers often report
+    // Seeders=0 for live torrents — fall back to those rather than showing nothing.
+    let with_seeders: Vec<StreamSource> = out
+        .iter()
+        .filter(|s| s.seeders >= 2 && s.health != "unknown" && s.health != "dead")
+        .cloned()
+        .collect();
+    if !with_seeders.is_empty() {
+        out = with_seeders;
+    } else {
+        let tryable: Vec<StreamSource> = out
+            .iter()
+            .filter(|s| s.health == "unknown" || s.seeders >= 1)
+            .cloned()
+            .collect();
+        if !tryable.is_empty() {
+            out = tryable;
+        }
+        // else keep all quality-ok rows (including explicit 0) so the picker isn't empty
+    }
 
     out.sort_by(|a, b| {
         let a_magnet = a.magnet.to_ascii_lowercase().starts_with("magnet:") as i32;
         let b_magnet = b.magnet.to_ascii_lowercase().starts_with("magnet:") as i32;
         let a_exact = episode_specificity(&a.title);
         let b_exact = episode_specificity(&b.title);
+        let a_known = (a.health != "unknown") as i32;
+        let b_known = (b.health != "unknown") as i32;
         b_magnet
             .cmp(&a_magnet)
+            .then(b_known.cmp(&a_known))
             // Seeders first — that is what actually starts streams.
             .then(b.seeders.cmp(&a.seeders))
             .then(b_exact.cmp(&a_exact))
@@ -1477,7 +1509,7 @@ pub fn rank_sources(mut out: Vec<StreamSource>, preferred_resolution: &str) -> V
     });
 
     // Wider picker: best first, but don't hide solid mid-seed magnets.
-    out.into_iter().take(18).collect()
+    out.into_iter().take(24).collect()
 }
 
 /// Prefer single-episode releases over season packs when both are listed.

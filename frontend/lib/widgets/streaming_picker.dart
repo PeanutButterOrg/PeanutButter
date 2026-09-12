@@ -615,6 +615,8 @@ String _healthLabel(String health) {
       return 'OK';
     case 'poor':
       return 'Weak';
+    case 'unknown':
+      return 'Unlisted seeds';
     default:
       return 'Low seeds';
   }
