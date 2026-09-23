@@ -78,7 +78,7 @@ Future<List<StreamSource>> searchStreamingSources({
   String? titleId,
   int? season,
   int? episode,
-  bool? live,
+  bool live = false,
 }) async {
   final result = await client.query(
     QueryOptions(
@@ -90,7 +90,7 @@ Future<List<StreamSource>> searchStreamingSources({
         'season': season,
         'episode': episode,
         'titleId': titleId,
-        if (live != null) 'live': live,
+        'live': live,
       },
     ),
   );
@@ -99,6 +99,20 @@ Future<List<StreamSource>> searchStreamingSources({
   }
   final raw = (result.data?['streamingSearch'] as List?) ?? const [];
   return raw.whereType<Map<String, dynamic>>().map(StreamSource.fromJson).toList();
+}
+
+String _lookupHeading({
+  required String title,
+  int? season,
+  int? episode,
+}) {
+  final name = title.trim();
+  if (season != null && episode != null) {
+    final s = season.toString().padLeft(2, '0');
+    final e = episode.toString().padLeft(2, '0');
+    return name.isEmpty ? 'S${s}E${e}' : '$name · S${s}E${e}';
+  }
+  return name;
 }
 
 Future<StreamStart?> showStreamingPicker({
@@ -116,6 +130,7 @@ Future<StreamStart?> showStreamingPicker({
 }) async {
   if (!context.mounted) return null;
   final languageLabel = _preferredLanguageLabel(preferredLanguages);
+  final heading = _lookupHeading(title: title, season: season, episode: episode);
 
   // Cancel must return immediately so episode/movie busy spinners clear;
   // in-flight GraphQL work is ignored when it eventually finishes.
@@ -127,6 +142,7 @@ Future<StreamStart?> showStreamingPicker({
       barrierDismissible: true,
       builder: (ctx) => _BusyDialog(
         label: 'Looking up sources…',
+        title: heading,
         onCancel: () => Navigator.of(ctx).pop(),
       ),
     ).whenComplete(() {
@@ -138,6 +154,7 @@ Future<StreamStart?> showStreamingPicker({
 
   late List<StreamSource> found;
   try {
+    // Cache-first on the server (3-day TTL). Pass live:true only from Refresh.
     final searchFuture = searchStreamingSources(
       client: client,
       title: title,
@@ -145,7 +162,7 @@ Future<StreamStart?> showStreamingPicker({
       titleId: titleId,
       season: season,
       episode: episode,
-      live: true,
+      live: false,
     );
     // Ignore late success/failure after the user already cancelled.
     unawaited(searchFuture.then((_) {}, onError: (_) {}));
@@ -191,6 +208,22 @@ Future<StreamStart?> showStreamingPicker({
     builder: (ctx) => _ResultsDialog(
       sources: found,
       languageLabel: languageLabel,
+      title: heading,
+      onRefresh: () => searchStreamingSources(
+        client: client,
+        title: title,
+        kind: kind,
+        titleId: titleId,
+        season: season,
+        episode: episode,
+        live: true,
+      ).then(
+        (list) => sourcesMatchingEpisode(
+          list,
+          season: season,
+          episode: episode,
+        ),
+      ),
     ),
   );
   if (picked == null || !context.mounted) return null;
@@ -213,6 +246,7 @@ Future<StreamStart?> showStreamingPicker({
         barrierDismissible: true,
         builder: (ctx) => _BusyDialog(
           label: 'Reading torrent files…',
+          title: heading,
           onCancel: () => Navigator.of(ctx).pop(),
         ),
       ).whenComplete(() {
@@ -287,7 +321,7 @@ Future<StreamStart?> showStreamingPicker({
     showDialog<void>(
       context: context,
       barrierDismissible: false,
-      builder: (ctx) => const _BusyDialog(label: 'Starting stream…'),
+      builder: (ctx) => _BusyDialog(label: 'Starting stream…', title: heading),
     ),
   );
   try {
@@ -392,35 +426,56 @@ String _preferredLanguageLabel(List<String>? codes) {
 }
 
 class _BusyDialog extends StatelessWidget {
-  const _BusyDialog({required this.label, this.onCancel});
+  const _BusyDialog({required this.label, this.title, this.onCancel});
   final String label;
+  final String? title;
   final VoidCallback? onCancel;
 
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final heading = (title ?? '').trim();
     return AlertDialog(
       contentPadding: const EdgeInsets.fromLTRB(20, 8, 8, 20),
       content: SizedBox(
-        width: 340,
+        width: 420,
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            if (onCancel != null)
-              Align(
-                alignment: Alignment.topRight,
-                child: TvFocus(
-                  child: IconButton(
-                    tooltip: 'Close',
-                    visualDensity: VisualDensity.compact,
-                    padding: EdgeInsets.zero,
-                    constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-                    onPressed: onCancel,
-                    icon: const Icon(Icons.close),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(4, 10, 8, 0),
+                    child: Text(
+                      heading.isEmpty ? label : heading,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: heading.isEmpty ? 16 : 15,
+                        fontWeight: FontWeight.w700,
+                        height: 1.25,
+                        color: scheme.onSurface,
+                      ),
+                    ),
                   ),
                 ),
-              ),
+                if (onCancel != null)
+                  TvFocus(
+                    child: IconButton(
+                      tooltip: 'Close',
+                      visualDensity: VisualDensity.compact,
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                      onPressed: onCancel,
+                      icon: const Icon(Icons.close),
+                    ),
+                  ),
+              ],
+            ),
             Padding(
-              padding: EdgeInsets.fromLTRB(4, onCancel != null ? 0 : 12, 12, 4),
+              padding: const EdgeInsets.fromLTRB(4, 10, 12, 4),
               child: Row(
                 children: [
                   const SizedBox(
@@ -429,7 +484,15 @@ class _BusyDialog extends StatelessWidget {
                     child: CircularProgressIndicator(strokeWidth: 2),
                   ),
                   const SizedBox(width: 16),
-                  Expanded(child: Text(label, style: const TextStyle(fontSize: 16))),
+                  Expanded(
+                    child: Text(
+                      heading.isEmpty ? 'Please wait…' : label,
+                      style: TextStyle(
+                        fontSize: 14,
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ),
                 ],
               ),
             ),
@@ -440,18 +503,82 @@ class _BusyDialog extends StatelessWidget {
   }
 }
 
-class _ResultsDialog extends StatelessWidget {
-  const _ResultsDialog({required this.sources, required this.languageLabel});
+class _ResultsDialog extends StatefulWidget {
+  const _ResultsDialog({
+    required this.sources,
+    required this.languageLabel,
+    required this.title,
+    required this.onRefresh,
+  });
+
   final List<StreamSource> sources;
   final String languageLabel;
+  final String title;
+  final Future<List<StreamSource>> Function() onRefresh;
+
+  @override
+  State<_ResultsDialog> createState() => _ResultsDialogState();
+}
+
+class _ResultsDialogState extends State<_ResultsDialog> {
+  late List<StreamSource> _sources = List<StreamSource>.from(widget.sources);
+  var _refreshing = false;
+  String? _refreshError;
+
+  Future<void> _refresh() async {
+    if (_refreshing) return;
+    setState(() {
+      _refreshing = true;
+      _refreshError = null;
+    });
+    try {
+      final next = await widget.onRefresh();
+      if (!mounted) return;
+      if (next.isEmpty) {
+        setState(() {
+          _refreshing = false;
+          _refreshError = 'No healthy sources found. Try again later.';
+        });
+        return;
+      }
+      setState(() {
+        _sources = next;
+        _refreshing = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _refreshing = false;
+        _refreshError = friendlyRequestError(e);
+      });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final maxH = MediaQuery.sizeOf(context).height * 0.72;
+    final heading = widget.title.trim();
     return AlertDialog(
       backgroundColor: Theme.of(context).scaffoldBackgroundColor,
-      title: const Text('Choose a stream'),
+      title: Row(
+        children: [
+          const Expanded(child: Text('Choose a stream')),
+          TvFocus(
+            child: IconButton(
+              tooltip: 'Refresh from Jackett',
+              onPressed: _refreshing ? null : _refresh,
+              icon: _refreshing
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.refresh_rounded),
+            ),
+          ),
+        ],
+      ),
       contentPadding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
       content: SizedBox(
         width: 560,
@@ -461,16 +588,34 @@ class _ResultsDialog extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              if (heading.isNotEmpty) ...[
+                Text(
+                  heading,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 14, height: 1.3),
+                ),
+                const SizedBox(height: 6),
+              ],
               Text(
-                'Showing $languageLabel — most seeded magnets first.',
+                _refreshing
+                    ? 'Refreshing sources from Jackett…'
+                    : 'Showing ${widget.languageLabel} — most seeded magnets first. Cached up to 3 days; refresh for live results.',
                 style: TextStyle(color: scheme.onSurfaceVariant, height: 1.35, fontSize: 13),
               ),
+              if (_refreshError != null) ...[
+                const SizedBox(height: 8),
+                Text(
+                  _refreshError!,
+                  style: TextStyle(color: scheme.error, fontSize: 13, height: 1.3),
+                ),
+              ],
               const SizedBox(height: 12),
               Flexible(
                 child: ListView.separated(
                   shrinkWrap: true,
-                  itemCount: sources.length,
-                  separatorBuilder: (_, i) => i == 0 && sources.length > 1
+                  itemCount: _sources.length,
+                  separatorBuilder: (_, i) => i == 0 && _sources.length > 1
                       ? Padding(
                           padding: const EdgeInsets.fromLTRB(4, 14, 4, 10),
                           child: Text(
@@ -485,7 +630,7 @@ class _ResultsDialog extends StatelessWidget {
                       : const SizedBox(height: 8),
                   itemBuilder: (context, i) {
                     return _TorrentTile(
-                      source: sources[i],
+                      source: _sources[i],
                       best: i == 0,
                       autofocus: i == 0,
                     );
@@ -544,7 +689,13 @@ class _TorrentTile extends StatelessWidget {
                         child: _Tag(label: 'Best match', emphasized: true),
                       ),
                     _Tag(label: _healthLabel(source.health), emphasized: source.seeders >= 20),
-                    const Spacer(),
+                    const SizedBox(width: 8),
+                    Flexible(
+                      child: Align(
+                        alignment: Alignment.centerLeft,
+                        child: _Tag(label: _torrentSourceLabel(source)),
+                      ),
+                    ),
                     Icon(Icons.play_arrow_rounded, size: 22, color: best ? AppTheme.seed : scheme.onSurfaceVariant),
                   ],
                 ),
@@ -562,11 +713,6 @@ class _TorrentTile extends StatelessWidget {
                   '  ·  ${languageDisplayName(source.language)}',
                   style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 13, height: 1.3),
                 ),
-                const SizedBox(height: 2),
-                Text(
-                  source.indexer,
-                  style: TextStyle(color: scheme.onSurfaceVariant.withValues(alpha: 0.8), fontSize: 12),
-                ),
               ],
             ),
           ),
@@ -574,6 +720,20 @@ class _TorrentTile extends StatelessWidget {
       ),
     );
   }
+}
+
+String _torrentSourceLabel(StreamSource source) {
+  final indexer = source.indexer.trim();
+  final tracker = source.tracker.trim();
+  final indexerOk = indexer.isNotEmpty && indexer.toLowerCase() != 'jackett';
+  final trackerOk = tracker.isNotEmpty && tracker.toLowerCase() != 'unknown';
+  if (indexerOk && trackerOk) {
+    final same = indexer.toLowerCase() == tracker.toLowerCase();
+    return same ? indexer : '$indexer · $tracker';
+  }
+  if (indexerOk) return indexer;
+  if (trackerOk) return tracker;
+  return 'Unknown source';
 }
 
 class _Tag extends StatelessWidget {

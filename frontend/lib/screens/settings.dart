@@ -12,6 +12,7 @@ import '../theme.dart';
 import '../tv.dart';
 import '../widgets/app_menu.dart';
 import '../widgets/cached_art.dart';
+import '../player_cache.dart';
 import '../widgets/tv_chrome.dart';
 import '../widgets/tv_text_field.dart';
 
@@ -105,8 +106,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
   Future<void> _clearCache() async {
     await ArtCache.clear();
+    await PlayerCache.clear();
     if (!mounted) return;
-    setState(() => _cacheMessage = 'Artwork cache cleared.');
+    setState(() => _cacheMessage = 'Artwork and stream cache cleared.');
   }
 
   @override
@@ -309,7 +311,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               const _Divider(),
               _SimpleRow(
                 label: 'Artwork cache',
-                subtitle: _cacheMessage ?? 'Posters saved on this device',
+                subtitle: _cacheMessage ?? 'Posters and stream downloads on this device',
                 trailing: TvFocus(
                   child: TextButton(
                     onPressed: _clearCache,
@@ -320,6 +322,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               const _Divider(),
               _SimpleRow(
                 label: 'Clear cache on exit',
+                subtitle: 'Delete streamed downloads when the app closes',
                 trailing: TvFocus(
                   child: Switch(
                     value: settings.clearCacheOnExit,

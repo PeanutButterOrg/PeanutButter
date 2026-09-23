@@ -709,7 +709,7 @@ pub struct JackettCatalogStatus {
     pub last_error: Option<String>,
 }
 
-#[derive(SimpleObject, Clone, Debug)]
+#[derive(SimpleObject, Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct StreamSource {
     pub id: String,
     pub title: String,

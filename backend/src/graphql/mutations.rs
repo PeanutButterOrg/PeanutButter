@@ -507,7 +507,7 @@ impl Mutation {
     ) -> async_graphql::Result<MutationResult> {
         Ok(MutationResult {
             success: true,
-            message: "Jackett is queried when you open a title. Listings are cached after that.".into(),
+            message: "Stream results are cached for 3 days per title. Use Refresh in the picker for a live Jackett search.".into(),
         })
     }
 }

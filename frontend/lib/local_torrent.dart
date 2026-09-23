@@ -214,7 +214,7 @@ class LocalTorrentEngine {
     );
   }
 
-  Future<void> stop() async {
+  Future<void> stop({bool deleteFiles = true}) async {
     if (!_ready) return;
     final engine = LibtorrentFlutter.instance;
     final sid = _streamId;
@@ -228,12 +228,58 @@ class LocalTorrentEngine {
     }
     if (tid != null) {
       try {
-        engine.disposeTorrent(tid);
+        if (deleteFiles) {
+          engine.removeTorrent(tid, deleteFiles: true);
+        } else {
+          engine.disposeTorrent(tid);
+        }
       } catch (_) {
         try {
-          engine.removeTorrent(tid, deleteFiles: true);
+          engine.disposeTorrent(tid);
         } catch (_) {}
       }
+    }
+  }
+
+  /// Stop every local torrent and delete downloaded stream pieces from disk.
+  Future<void> purgeDownloads() async {
+    if (!supported) return;
+    try {
+      await stop(deleteFiles: true);
+    } catch (_) {}
+    if (_ready) {
+      try {
+        final engine = LibtorrentFlutter.instance;
+        final ids = engine.torrents.keys.toList();
+        for (final id in ids) {
+          try {
+            engine.removeTorrent(id, deleteFiles: true);
+          } catch (_) {
+            try {
+              engine.disposeTorrent(id);
+            } catch (_) {}
+          }
+        }
+      } catch (_) {}
+    }
+    final root = _savePath ??
+        '${(await getTemporaryDirectory()).path}/peanutbutter-streams';
+    final dir = Directory(root);
+    try {
+      if (await dir.exists()) {
+        await dir.delete(recursive: true);
+      }
+    } catch (_) {
+      // Best-effort: remove children if the folder is busy.
+      try {
+        if (await dir.exists()) {
+          await for (final entity in dir.list(recursive: false)) {
+            try {
+              await entity.delete(recursive: true);
+            } catch (_) {}
+          }
+        }
+      } catch (_) {}
     }
   }
 

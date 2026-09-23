@@ -8,6 +8,7 @@
 #
 # Commands:
 #   ./scripts/install-linux-service.sh --public-url=http://10.0.0.110:3001
+#   ./scripts/install-linux-service.sh --unit-only   # write/enable systemd only (no rebuild)
 #   ./scripts/install-linux-service.sh --status
 #   ./scripts/install-linux-service.sh --start
 #   ./scripts/install-linux-service.sh --stop
@@ -27,6 +28,7 @@ DO_PURGE=0
 DO_STOP=0
 DO_START=0
 DO_STATUS=0
+DO_UNIT_ONLY=0
 INSTALL_ROOT="$ROOT"
 
 die() { echo "error: $*" >&2; exit 1; }
@@ -92,7 +94,19 @@ compose() {
   as_docker_user docker compose -f "${INSTALL_ROOT}/${COMPOSE_FILE}" "$@"
 }
 
-can_write_systemd() {
+# Prefer a small local image already present (avoids pulls on every enable).
+docker_helper_image() {
+  local img
+  for img in alpine:3.20 alpine:latest debian:bookworm-slim; do
+    if docker image inspect "$img" >/dev/null 2>&1; then
+      echo "$img"
+      return 0
+    fi
+  done
+  echo "alpine:3.20"
+}
+
+can_write_systemd_via_sudo() {
   [[ -d /etc/systemd/system ]] || return 1
   if [[ "${EUID}" -eq 0 ]]; then
     touch /etc/systemd/system/.pb-write-test 2>/dev/null || return 1
@@ -105,16 +119,39 @@ can_write_systemd() {
   return 0
 }
 
+# ZimaOS / CasaOS: user is in docker group but often lacks passwordless sudo.
+# Mount /etc/systemd/system into a helper container to install the unit.
+can_write_systemd_via_docker() {
+  command -v docker >/dev/null 2>&1 || return 1
+  [[ -d /etc/systemd/system ]] || return 1
+  local img
+  img="$(docker_helper_image)"
+  docker run --rm -v /etc/systemd/system:/sysd "$img" \
+    sh -c 'echo ok > /sysd/.pb-write-test && rm -f /sysd/.pb-write-test' >/dev/null 2>&1
+}
+
+can_write_systemd() {
+  can_write_systemd_via_sudo || can_write_systemd_via_docker
+}
+
+# Run systemctl on the host via privileged nsenter when sudo is unavailable.
+sys_via_docker() {
+  local img
+  img="$(docker_helper_image)"
+  docker run --rm --privileged --pid=host "$img" \
+    nsenter -t 1 -m -u -i -n systemctl "$@"
+}
+
 # Critical: ExecStop uses "stop" NOT "down".
 # "down" deletes containers on reboot/shutdown → nothing left if next boot races Docker.
 write_unit() {
-  local docker_bin unit_group url
+  local docker_bin unit_group url unit_file
   docker_bin="$(command -v docker)" || die "docker not found"
   unit_group="$(docker_sock_group)"
   url="${PUBLIC_URL}"
+  unit_file="$(mktemp)"
 
-  local unit_body
-  unit_body=$(cat <<EOF
+  cat >"$unit_file" <<EOF
 [Unit]
 Description=PeanutButter catalog API (Docker Compose)
 Documentation=file://${INSTALL_ROOT}/docs/SERVER.md
@@ -145,13 +182,21 @@ RestartSec=20
 [Install]
 WantedBy=multi-user.target
 EOF
-)
 
   if [[ "${EUID}" -eq 0 ]]; then
-    printf '%s\n' "$unit_body" >"${UNIT_PATH}"
+    cp "$unit_file" "${UNIT_PATH}"
+  elif can_write_systemd_via_sudo; then
+    sudo cp "$unit_file" "${UNIT_PATH}"
   else
-    printf '%s\n' "$unit_body" | sudo tee "${UNIT_PATH}" >/dev/null
+    local img
+    img="$(docker_helper_image)"
+    docker run --rm \
+      -v "$unit_file":/unit.service:ro \
+      -v /etc/systemd/system:/sysd \
+      "$img" \
+      sh -c "cp /unit.service /sysd/${SERVICE_NAME}.service && chmod 644 /sysd/${SERVICE_NAME}.service"
   fi
+  rm -f "$unit_file"
   echo "==> Wrote ${UNIT_PATH} (User=${DOCKER_USER} Group=${unit_group})"
   echo "==> PUBLIC_URL=${url}"
 }
@@ -159,8 +204,10 @@ EOF
 sys() {
   if [[ "${EUID}" -eq 0 ]]; then
     systemctl "$@"
-  else
+  elif can_write_systemd_via_sudo; then
     sudo systemctl "$@"
+  else
+    sys_via_docker "$@"
   fi
 }
 
@@ -187,6 +234,7 @@ for arg in "$@"; do
     --stop) DO_STOP=1 ;;
     --start) DO_START=1 ;;
     --status) DO_STATUS=1 ;;
+    --unit-only) DO_UNIT_ONLY=1 ;;
     --public-url=*) PUBLIC_URL="${arg#*=}" ;;
     --public-url) die "use --public-url=http://IP:3001" ;;
     --root=*) INSTALL_ROOT="${arg#*=}" ;;
@@ -261,8 +309,10 @@ if [[ -z "$PUBLIC_URL" ]]; then
 fi
 export PUBLIC_URL
 
-echo "==> Building API image ${IMAGE} (if needed)"
-as_docker_user docker build -t "${IMAGE}" "${INSTALL_ROOT}/backend"
+if [[ "$DO_UNIT_ONLY" -eq 0 ]]; then
+  echo "==> Building API image ${IMAGE} (if needed)"
+  as_docker_user docker build -t "${IMAGE}" "${INSTALL_ROOT}/backend"
+fi
 
 # Bring stack up first so health works even before unit is written.
 echo "==> Starting compose stack"
@@ -279,10 +329,10 @@ if can_write_systemd || [[ "${EUID}" -eq 0 ]]; then
   echo "  (ExecStop uses compose stop — not down — so reboot keeps the stack.)"
 else
   echo
-  echo "Could not write systemd unit automatically (need sudo once)."
-  echo "Stack is running now with Docker restart: always/unless-stopped."
+  echo "Could not write systemd unit (need sudo or Docker write to /etc/systemd/system)."
+  echo "Stack is running now with Docker restart: always."
   echo "To enable on boot, re-run with sudo:"
-  echo "  sudo ./scripts/install-linux-service.sh --public-url=${PUBLIC_URL} --root=${INSTALL_ROOT}"
+  echo "  sudo ./scripts/install-linux-service.sh --public-url=${PUBLIC_URL} --root=${INSTALL_ROOT} --unit-only"
 fi
 
 echo "  Console:  ${PUBLIC_URL}/"

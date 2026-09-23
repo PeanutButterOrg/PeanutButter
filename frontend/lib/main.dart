@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io' show Platform;
+import 'dart:ui' show AppExitResponse;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -30,6 +31,7 @@ import 'theme.dart';
 import 'tv.dart';
 import 'widgets/cached_art.dart';
 import 'player_cache.dart';
+import 'local_torrent.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -86,14 +88,17 @@ GoRouter _buildRouter(SettingsState Function() readSettings) {
       final onPlayer = path.startsWith('/player');
       final playing = playbackSessionActive;
 
+      // Never yank the user off the player while a stream is active —
+      // local torrents keep playing even if the catalog API is down.
+      if (playing && onPlayer) return null;
+
       if (settings.booting) {
         return path == '/boot' ? null : '/boot';
       }
-      if ((settings.apiToken.isEmpty || settings.pairingInProgress) &&
-          !(playing && onPlayer)) {
+      if (settings.apiToken.isEmpty || settings.pairingInProgress) {
         return path == '/pair' ? null : '/pair';
       }
-      if (!settings.connected && !(playing && onPlayer)) {
+      if (!settings.connected) {
         return path == '/unreachable' ? null : '/unreachable';
       }
       if (path == '/boot' || path == '/pair' || path == '/unreachable') {
@@ -312,14 +317,36 @@ class _PeanutButterAppState extends ConsumerState<PeanutButterApp> with WidgetsB
     super.dispose();
   }
 
+  Future<void> _clearCachesOnExit() async {
+    final settings = ref.read(settingsProvider);
+    if (!settings.clearCacheOnExit && !isAndroidTv) return;
+    try {
+      await LocalTorrentEngine.instance.purgeDownloads();
+    } catch (_) {}
+    try {
+      await PlayerCache.clear();
+    } catch (_) {}
+    try {
+      await ArtCache.clear();
+    } catch (_) {}
+  }
+
+  @override
+  Future<AppExitResponse> didRequestAppExit() async {
+    // Desktop: await wipe before the process dies (lifecycle alone is too late).
+    await _clearCachesOnExit();
+    return AppExitResponse.exit;
+  }
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state != AppLifecycleState.detached && state != AppLifecycleState.hidden) return;
-    final settings = ref.read(settingsProvider);
-    if (settings.clearCacheOnExit || isAndroidTv) {
-      ArtCache.clear();
-      unawaited(PlayerCache.clear());
+    if (state != AppLifecycleState.detached &&
+        state != AppLifecycleState.hidden &&
+        state != AppLifecycleState.paused) {
+      return;
     }
+    // Mobile / TV often tear down without didRequestAppExit.
+    unawaited(_clearCachesOnExit());
   }
 
   @override

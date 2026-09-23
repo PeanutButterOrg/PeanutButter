@@ -6,6 +6,7 @@ import '../friendly_error.dart';
 import '../providers/catalog.dart';
 import '../theme.dart';
 import '../tv.dart';
+import '../tv_nav.dart';
 import '../widgets/empty_state.dart';
 import '../widgets/filter_bar.dart';
 import '../widgets/poster_grid.dart';
@@ -201,12 +202,7 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
           children: [
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 6, 8, 0),
-              child: FocusTraversalGroup(
-                policy: TvBarFocusPolicy(
-                  nodes: _barNodes,
-                  onMoveDown: tv ? () => _focusResults() : null,
-                ),
-                child: Row(
+              child: Row(
                   children: [
                     if (!tv)
                       IconButton(
@@ -227,7 +223,6 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
                     actions(),
                   ],
                 ),
-              ),
             ),
           ],
         ),
@@ -259,12 +254,21 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
     }
 
     return Scaffold(
-      body: TvBackScope(
-        popOnFirstBack: true,
-        headerLive: true,
-        headerFocus: _fieldChrome,
-        header: homeHeader,
-        body: body,
+      body: TvNavHost(
+        strategies: [
+          TvNavBarStrategy(
+            nodes: _barNodes,
+            onMoveDown: () => _focusResults(),
+          ),
+          TvNavGridStrategy(onMoveUp: _focusSearchBar),
+        ],
+        child: TvBackScope(
+          popOnFirstBack: true,
+          headerLive: true,
+          headerFocus: _fieldChrome,
+          header: homeHeader,
+          body: body,
+        ),
       ),
     );
   }

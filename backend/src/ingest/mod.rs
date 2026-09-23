@@ -384,6 +384,7 @@ pub async fn refresh_title(ctx: &IngestContext, id: Uuid) -> Result<()> {
         .bind(id)
         .execute(&ctx.pool)
         .await?;
+    crate::db::stream_search_cache_delete_title(&ctx.pool, id).await?;
     Ok(())
 }
 

@@ -481,10 +481,37 @@ impl Query {
             )
             .into());
         }
-        let _ = live;
         if !state.config.live.jackett_configured() {
             return Ok(vec![]);
         }
+
+        let force_live = live.unwrap_or(false);
+        let cache_key = crate::db::stream_search_cache_key(
+            title_id,
+            &query,
+            kind.as_db(),
+            season,
+            episode,
+        );
+        const CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(3 * 24 * 60 * 60);
+
+        // Serve fresh cache (< 3 days) unless the client forces a refresh.
+        if !force_live {
+            if let Ok(Some(cached)) =
+                crate::db::stream_search_cache_get(&state.pool, &cache_key, CACHE_TTL).await
+            {
+                if let Ok(sources) =
+                    serde_json::from_value::<Vec<StreamSource>>(cached)
+                {
+                    if !sources.is_empty() {
+                        return Ok(sources);
+                    }
+                }
+            }
+        } else {
+            let _ = crate::db::stream_search_cache_delete_key(&state.pool, &cache_key).await;
+        }
+
         let client = crate::jackett::JackettClient::from_live(&state.http, &state.config.live)?;
 
         // Prefer catalog metadata over the client string so searches stay exact
@@ -530,21 +557,40 @@ impl Query {
         } else {
             found
         };
-        // Jackett Seeders are often 0/missing on public trackers — sample live
-        // DHT/tracker peers for the top candidates before returning the picker.
-        let fallback = found.clone();
-        let found = match tokio::time::timeout(
-            std::time::Duration::from_secs(12),
-            state.streams.enrich_sources_with_swarm(found),
-        )
-        .await
-        {
-            Ok(enriched) => enriched,
-            Err(_) => {
-                tracing::warn!("swarm probe timed out — returning Jackett counts");
-                fallback
+        // Jackett Seeders are often 0/missing on public trackers — lightly sample
+        // DHT/tracker peers only when ranking looks weak (don't block the picker).
+        let known_good = found.iter().filter(|s| s.seeders >= 2).count();
+        let found = if known_good >= 3 {
+            found
+        } else {
+            let fallback = found.clone();
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(4),
+                state.streams.enrich_sources_with_swarm(found),
+            )
+            .await
+            {
+                Ok(enriched) => enriched,
+                Err(_) => {
+                    tracing::warn!("swarm probe timed out — returning Jackett counts");
+                    fallback
+                }
             }
         };
+
+        if !found.is_empty() {
+            if let Ok(value) = serde_json::to_value(&found) {
+                let _ = crate::db::stream_search_cache_upsert(
+                    &state.pool,
+                    &cache_key,
+                    title_id,
+                    season,
+                    episode,
+                    &value,
+                )
+                .await;
+            }
+        }
         Ok(found)
     }
 

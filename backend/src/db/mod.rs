@@ -33,6 +33,7 @@ const EMBEDDED_MIGRATION_020: &str = include_str!("migrations/020_block_adult_co
 const EMBEDDED_MIGRATION_021: &str = include_str!("migrations/021_popcorn_sort_fields.sql");
 const EMBEDDED_MIGRATION_022: &str = include_str!("migrations/022_hide_unreleased.sql");
 const EMBEDDED_MIGRATION_023: &str = include_str!("migrations/023_episode_progress.sql");
+const EMBEDDED_MIGRATION_024: &str = include_str!("migrations/024_stream_search_cache.sql");
 
 pub async fn connect(database_url: &str) -> Result<PgPool> {
     let pool = PgPoolOptions::new()
@@ -82,6 +83,7 @@ pub async fn run_migrations(pool: &PgPool, extra_dir: Option<&Path>) -> Result<(
     apply_one(pool, "021_popcorn_sort_fields", EMBEDDED_MIGRATION_021).await?;
     apply_one(pool, "022_hide_unreleased", EMBEDDED_MIGRATION_022).await?;
     apply_one(pool, "023_episode_progress", EMBEDDED_MIGRATION_023).await?;
+    apply_one(pool, "024_stream_search_cache", EMBEDDED_MIGRATION_024).await?;
 
     if let Some(dir) = extra_dir {
         if dir.is_dir() {
@@ -122,6 +124,7 @@ pub async fn run_migrations(pool: &PgPool, extra_dir: Option<&Path>) -> Result<(
                     || version == "021_popcorn_sort_fields"
                     || version == "022_hide_unreleased"
                     || version == "023_episode_progress"
+                    || version == "024_stream_search_cache"
                 {
                     continue;
                 }
@@ -1283,6 +1286,105 @@ pub async fn jackett_listings_for_title(pool: &PgPool, title_id: Uuid) -> Result
     .bind(title_id)
     .fetch_all(pool)
     .await?)
+}
+
+/// Cache key for stream picker results (title + optional S/E, else query text).
+pub fn stream_search_cache_key(
+    title_id: Option<Uuid>,
+    query: &str,
+    kind: &str,
+    season: Option<i32>,
+    episode: Option<i32>,
+) -> String {
+    let s = season.unwrap_or(0);
+    let e = episode.unwrap_or(0);
+    if let Some(id) = title_id {
+        format!("title:{id}:{s}:{e}")
+    } else {
+        let q = query.trim().to_ascii_lowercase();
+        format!("query:{kind}:{q}:{s}:{e}")
+    }
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct StreamSearchCacheRow {
+    pub sources: serde_json::Value,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Fresh cache hit: sources updated within `max_age`.
+pub async fn stream_search_cache_get(
+    pool: &PgPool,
+    cache_key: &str,
+    max_age: Duration,
+) -> Result<Option<serde_json::Value>> {
+    let row: Option<StreamSearchCacheRow> = sqlx::query_as(
+        r#"
+        SELECT sources, updated_at
+        FROM stream_search_cache
+        WHERE cache_key = $1
+        "#,
+    )
+    .bind(cache_key)
+    .fetch_optional(pool)
+    .await?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let age = chrono::Utc::now()
+        .signed_duration_since(row.updated_at)
+        .to_std()
+        .unwrap_or(Duration::from_secs(u64::MAX));
+    if age > max_age {
+        return Ok(None);
+    }
+    Ok(Some(row.sources))
+}
+
+pub async fn stream_search_cache_upsert(
+    pool: &PgPool,
+    cache_key: &str,
+    title_id: Option<Uuid>,
+    season: Option<i32>,
+    episode: Option<i32>,
+    sources: &serde_json::Value,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO stream_search_cache (cache_key, title_id, season, episode, sources, updated_at)
+        VALUES ($1, $2, $3, $4, $5, now())
+        ON CONFLICT (cache_key) DO UPDATE SET
+            title_id = EXCLUDED.title_id,
+            season = EXCLUDED.season,
+            episode = EXCLUDED.episode,
+            sources = EXCLUDED.sources,
+            updated_at = now()
+        "#,
+    )
+    .bind(cache_key)
+    .bind(title_id)
+    .bind(season)
+    .bind(episode)
+    .bind(sources)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn stream_search_cache_delete_key(pool: &PgPool, cache_key: &str) -> Result<()> {
+    sqlx::query("DELETE FROM stream_search_cache WHERE cache_key = $1")
+        .bind(cache_key)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn stream_search_cache_delete_title(pool: &PgPool, title_id: Uuid) -> Result<()> {
+    sqlx::query("DELETE FROM stream_search_cache WHERE title_id = $1")
+        .bind(title_id)
+        .execute(pool)
+        .await?;
+    Ok(())
 }
 
 /// Create Season 1 + numbered episodes when a series/anime has no episode list yet.

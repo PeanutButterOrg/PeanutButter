@@ -404,7 +404,12 @@ impl StreamService {
         &self,
         mut sources: Vec<crate::graphql::types::StreamSource>,
     ) -> Vec<crate::graphql::types::StreamSource> {
-        const MAX_PROBES: usize = 6;
+        // Keep this cheap — probing magnets is for ranking ties, not blocking the picker.
+        const MAX_PROBES: usize = 2;
+        let known_good = sources.iter().filter(|s| s.seeders >= 2).count();
+        if known_good >= 3 {
+            return sources;
+        }
         let mut idxs: Vec<usize> = sources
             .iter()
             .enumerate()
@@ -416,7 +421,7 @@ impl StreamService {
             .take(MAX_PROBES)
             .collect();
         // If everything already has seeders, still spot-check the top magnet.
-        if idxs.is_empty() {
+        if idxs.is_empty() && known_good < 2 {
             if let Some((i, _)) = sources.iter().enumerate().find(|(_, s)| {
                 s.magnet.to_ascii_lowercase().starts_with("magnet:")
             }) {
@@ -432,7 +437,7 @@ impl StreamService {
             let this = self.clone();
             async move {
                 let result =
-                    tokio::time::timeout(Duration::from_secs(8), this.probe_swarm(&magnet)).await;
+                    tokio::time::timeout(Duration::from_secs(3), this.probe_swarm(&magnet)).await;
                 (i, result)
             }
         }))

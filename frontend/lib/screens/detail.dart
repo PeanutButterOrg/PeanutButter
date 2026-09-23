@@ -13,10 +13,11 @@ import '../widgets/cached_art.dart';
 import '../widgets/hero_banner.dart';
 import '../widgets/streaming_picker.dart';
 import '../widgets/title_meta.dart';
+import '../tv.dart';
+import '../tv_nav.dart';
 import '../widgets/tv_chrome.dart';
 import '../window_layout.dart';
 import '../youtube_stream.dart';
-import '../tv.dart';
 
 class DetailScreen extends ConsumerWidget {
   const DetailScreen({super.key, required this.titleId});
@@ -325,7 +326,9 @@ class _DetailBodyState extends ConsumerState<_DetailBody> {
       );
     }
 
-    return PopScope(
+    return TvNavHost(
+      strategies: [TvNavDetailStrategy()],
+      child: PopScope(
       canPop: false,
       onPopInvokedWithResult: (didPop, _) {
         if (didPop) return;
@@ -439,7 +442,7 @@ class _DetailBodyState extends ConsumerState<_DetailBody> {
                   ],
                 );
                 if (!isAndroidTv) return list;
-                return FocusTraversalGroup(policy: TvDetailFocusPolicy(), child: list);
+                return list;
               },
             ),
             Positioned(
@@ -467,6 +470,7 @@ class _DetailBodyState extends ConsumerState<_DetailBody> {
             ),
           ],
         ),
+      ),
       ),
     );
   }
@@ -968,6 +972,11 @@ class _SeasonList extends StatefulWidget {
 class _SeasonListState extends State<_SeasonList> {
   String? _busyEpisodeId;
   late List<bool> _expanded;
+  final Map<String, ExpansionTileController> _controllers = {};
+
+  ExpansionTileController _controllerFor(String id) {
+    return _controllers.putIfAbsent(id, ExpansionTileController.new);
+  }
 
   List<Season> get _seasons {
     final seasons = widget.item.seasons.where((s) {
@@ -994,6 +1003,11 @@ class _SeasonListState extends State<_SeasonList> {
     final active = _seasonIndexForProgress(seasons);
     if (_expanded.length != seasons.length || preferProgress) {
       _expanded = List.generate(seasons.length, (i) => i == active);
+      // Drive expand/collapse through controllers so the tile can animate.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _applyControllers(seasons);
+      });
       return;
     }
     while (_expanded.length < seasons.length) {
@@ -1001,6 +1015,17 @@ class _SeasonListState extends State<_SeasonList> {
     }
     if (_expanded.length > seasons.length) {
       _expanded = _expanded.sublist(0, seasons.length);
+    }
+  }
+
+  void _applyControllers(List<Season> seasons) {
+    for (var i = 0; i < seasons.length; i++) {
+      final c = _controllerFor(seasons[i].id);
+      if (_expanded[i]) {
+        c.expand();
+      } else {
+        c.collapse();
+      }
     }
   }
 
@@ -1021,13 +1046,27 @@ class _SeasonListState extends State<_SeasonList> {
     }
   }
 
+  @override
+  void dispose() {
+    _controllers.clear();
+    super.dispose();
+  }
+
   List<Episode> _episodesOf(Season season) {
     // Never invent placeholder episodes from episodeCount — those are often
     // unreleased slots. Only show real, already-aired episodes.
     return season.episodes.where((e) => e.isReleased).toList();
   }
 
-  void _setExpanded(int index, bool open) {
+  void _setExpanded(int index, bool open, List<Season> seasons) {
+    // Animate siblings closed via controllers — do not remount tiles (that
+    // killed ExpansionTile's built-in expand/collapse animation).
+    if (open) {
+      for (var i = 0; i < seasons.length; i++) {
+        if (i == index) continue;
+        _controllerFor(seasons[i].id).collapse();
+      }
+    }
     setState(() {
       if (open) {
         for (var i = 0; i < _expanded.length; i++) {
@@ -1205,55 +1244,65 @@ class _SeasonListState extends State<_SeasonList> {
               color: scheme.surfaceContainerHighest.withValues(alpha: 0.35),
               borderRadius: BorderRadius.circular(12),
               clipBehavior: Clip.antiAlias,
-              child: ExpansionTile(
-                // Remount when expansion target changes so initiallyExpanded applies.
-                key: ValueKey('season-${seasons[i].id}-${_expanded[i]}'),
-                initiallyExpanded: _expanded[i],
-                onExpansionChanged: (v) => _setExpanded(i, v),
-                tilePadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
-                childrenPadding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
-                shape: const Border(),
-                collapsedShape: const Border(),
-                title: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      seasons[i].name ?? 'Season ${seasons[i].seasonNumber}',
-                      style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15),
-                    ),
-                    Builder(
-                      builder: (_) {
-                        final eps = _episodesOf(seasons[i]);
-                        final done = eps.where((e) => e.userState?.watched == true).length;
-                        final started = eps.where((e) {
-                          final s = e.userState;
-                          if (s == null || s.watched) return false;
-                          return s.positionMs > 2000 || s.progressPercent > 0;
-                        }).length;
-                        if (done == 0 && started == 0) {
+              child: Theme(
+                data: Theme.of(context).copyWith(
+                  dividerColor: Colors.transparent,
+                  splashColor: scheme.primary.withValues(alpha: 0.08),
+                ),
+                child: ExpansionTile(
+                  // Stable key so expand/collapse can animate (never remount on toggle).
+                  key: ValueKey('season-${seasons[i].id}'),
+                  controller: _controllerFor(seasons[i].id),
+                  initiallyExpanded: _expanded[i],
+                  maintainState: true,
+                  onExpansionChanged: (v) => _setExpanded(i, v, seasons),
+                  tilePadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+                  childrenPadding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+                  expandedAlignment: Alignment.centerLeft,
+                  expandedCrossAxisAlignment: CrossAxisAlignment.stretch,
+                  shape: const Border(),
+                  collapsedShape: const Border(),
+                  title: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        seasons[i].name ?? 'Season ${seasons[i].seasonNumber}',
+                        style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15),
+                      ),
+                      Builder(
+                        builder: (_) {
+                          final eps = _episodesOf(seasons[i]);
+                          final done = eps.where((e) => e.userState?.watched == true).length;
+                          final started = eps.where((e) {
+                            final s = e.userState;
+                            if (s == null || s.watched) return false;
+                            return s.positionMs > 2000 || s.progressPercent > 0;
+                          }).length;
+                          if (done == 0 && started == 0) {
+                            return Text(
+                              '${eps.length} episodes',
+                              style: const TextStyle(color: Colors.white54, fontSize: 12),
+                            );
+                          }
                           return Text(
-                            '${eps.length} episodes',
-                            style: const TextStyle(color: Colors.white54, fontSize: 12),
+                            '$done of ${eps.length} completed'
+                            '${started > 0 ? ' · $started in progress' : ''}',
+                            style: TextStyle(
+                              color: done == eps.length
+                                  ? PtTheme.completed
+                                  : Colors.white54,
+                              fontSize: 12,
+                            ),
                           );
-                        }
-                        return Text(
-                          '$done of ${eps.length} completed'
-                          '${started > 0 ? ' · $started in progress' : ''}',
-                          style: TextStyle(
-                            color: done == eps.length
-                                ? PtTheme.completed
-                                : Colors.white54,
-                            fontSize: 12,
-                          ),
-                        );
-                      },
-                    ),
+                        },
+                      ),
+                    ],
+                  ),
+                  children: [
+                    for (final e in _episodesOf(seasons[i]))
+                      _episodeTile(seasons[i], e),
                   ],
                 ),
-                children: [
-                  for (final e in _episodesOf(seasons[i]))
-                    _episodeTile(seasons[i], e),
-                ],
               ),
             ),
             const SizedBox(height: 8),

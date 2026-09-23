@@ -10,6 +10,7 @@ import '../providers/catalog.dart';
 import '../providers/settings.dart';
 import '../theme.dart';
 import '../tv.dart';
+import '../tv_nav.dart';
 import '../window_layout.dart';
 import '../widgets/cached_art.dart';
 import '../widgets/empty_state.dart';
@@ -32,9 +33,24 @@ class HomeScreen extends ConsumerWidget {
     ref.watch(catalogWarmupProvider);
     final info = ref.watch(serverInfoProvider);
 
+    void exitHeaderToBanner() {
+      TvHomeScroll.exitHeader?.call();
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        TvHomeScroll.toBanner?.call();
+      });
+    }
+
     return Scaffold(
       backgroundColor: AppTheme.canvas,
-      body: TvBackScope(
+      body: TvNavHost(
+        strategies: [
+          TvNavBarStrategy(
+            nodes: TvHeaderFocus.homeBar,
+            onMoveDown: exitHeaderToBanner,
+          ),
+          TvNavHomeStrategy(),
+        ],
+        child: TvBackScope(
         overlapHeader: true,
         root: true,
         headerFocus: TvHeaderFocus.forKind(kind),
@@ -59,28 +75,13 @@ class HomeScreen extends ConsumerWidget {
               children: [
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 6, 8, 0),
-              child: FocusTraversalGroup(
-                policy: TvBarFocusPolicy(
-                  nodes: TvHeaderFocus.homeBar,
-                  onMoveDown: () {
-                    TvHomeScroll.exitHeader?.call();
-                    WidgetsBinding.instance.addPostFrameCallback((_) {
-                      TvHomeScroll.toBanner?.call();
-                    });
-                  },
-                ),
-                child: Row(
+              child: Row(
                 children: [
                   KindSwitch(
                     kind: kind == 'ANIME' ? 'MOVIE' : kind,
                     moviesFocus: TvHeaderFocus.movies,
                     onMoveTrailing: () => TvHeaderFocus.favourites.requestFocus(),
-                    onMoveDown: () {
-                      TvHomeScroll.exitHeader?.call();
-                      WidgetsBinding.instance.addPostFrameCallback((_) {
-                        TvHomeScroll.toBanner?.call();
-                      });
-                    },
+                    onMoveDown: exitHeaderToBanner,
                     onChanged: (value) {
                       ref.read(selectedKindProvider.notifier).state = value;
                     },
@@ -92,12 +93,7 @@ class HomeScreen extends ConsumerWidget {
                     onPressed: () => context.push('/favourites'),
                     onMoveLeft: () => TvHeaderFocus.series.requestFocus(),
                     onMoveRight: () => TvHeaderFocus.watched.requestFocus(),
-                    onMoveDown: () {
-                      TvHomeScroll.exitHeader?.call();
-                      WidgetsBinding.instance.addPostFrameCallback((_) {
-                        TvHomeScroll.toBanner?.call();
-                      });
-                    },
+                    onMoveDown: exitHeaderToBanner,
                     icon: const Icon(Icons.favorite_rounded),
                   ),
                   TvHeaderButton(
@@ -106,12 +102,7 @@ class HomeScreen extends ConsumerWidget {
                     onPressed: () => context.push('/watched'),
                     onMoveLeft: () => TvHeaderFocus.favourites.requestFocus(),
                     onMoveRight: () => TvHeaderFocus.search.requestFocus(),
-                    onMoveDown: () {
-                      TvHomeScroll.exitHeader?.call();
-                      WidgetsBinding.instance.addPostFrameCallback((_) {
-                        TvHomeScroll.toBanner?.call();
-                      });
-                    },
+                    onMoveDown: exitHeaderToBanner,
                     icon: const Icon(Icons.video_library_rounded),
                   ),
                   TvHeaderButton(
@@ -120,7 +111,6 @@ class HomeScreen extends ConsumerWidget {
                     onPressed: () => context.push('/search'),
                     onMoveLeft: () => TvHeaderFocus.watched.requestFocus(),
                     onMoveRight: () => TvHeaderFocus.settings.requestFocus(),
-                    // Down on search button → open the search screen
                     onMoveDown: () => context.push('/search'),
                     icon: const Icon(Icons.search_rounded),
                   ),
@@ -129,16 +119,10 @@ class HomeScreen extends ConsumerWidget {
                     focusNode: TvHeaderFocus.settings,
                     onPressed: () => context.push('/settings'),
                     onMoveLeft: () => TvHeaderFocus.search.requestFocus(),
-                    onMoveDown: () {
-                      TvHomeScroll.exitHeader?.call();
-                      WidgetsBinding.instance.addPostFrameCallback((_) {
-                        TvHomeScroll.toBanner?.call();
-                      });
-                    },
+                    onMoveDown: exitHeaderToBanner,
                     icon: const Icon(Icons.settings_outlined),
                   ),
                 ],
-              ),
               ),
             ),
               ],
@@ -178,6 +162,7 @@ class HomeScreen extends ConsumerWidget {
             },
           ),
         ),
+      ),
       ),
     );
   }
@@ -287,11 +272,7 @@ class _HomeBodyState extends ConsumerState<_HomeBody> {
         _HomeRow(title: 'Last added', sort: 'DATE_ADDED', items: feed.recent, kind: kind, railIndex: 3),
       ],
     );
-    return ClippedOverlay(
-      child: isAndroidTv
-          ? FocusTraversalGroup(policy: TvHomeFocusPolicy(), child: list)
-          : list,
-    );
+    return ClippedOverlay(child: list);
   }
 }
 

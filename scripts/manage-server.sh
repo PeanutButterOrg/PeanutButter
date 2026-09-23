@@ -215,13 +215,16 @@ cmd_enable() {
   [[ -f "$installer" ]] || die "missing $installer"
   chmod +x "$installer"
   echo "==> Enabling PeanutButter to start on every reboot"
-  "$installer" --public-url="${PUBLIC_URL}" --root="$(pwd)"
+  # Image already on host after push/update — only write/enable the systemd unit.
+  "$installer" --public-url="${PUBLIC_URL}" --root="$(pwd)" --unit-only
 }
 
-# Refresh systemd unit if present; otherwise remind to run enable.
+# Refresh systemd unit if present; otherwise install it so reboot brings the stack up.
 ensure_boot_service() {
+  ensure_public_url
   if ! systemctl cat peanutbutter.service >/dev/null 2>&1; then
-    echo "Note: no peanutbutter.service yet — run once: ./scripts/manage-server.sh enable"
+    echo "==> Installing peanutbutter.service for boot autostart"
+    cmd_enable
     return 0
   fi
   # Keep PUBLIC_URL in the unit in sync without a full image rebuild.
@@ -328,15 +331,33 @@ remote_push() {
   local public_url="${PB_PUBLIC_URL:-${PUBLIC_URL:-http://10.0.0.110:3001}}"
   echo "==> Restarting stack on $host (force-recreate api with new image)"
   # Avoid bash -lc (login profile can confuse cwd). Use a non-interactive remote shell.
+  # Health can lag a few seconds after recreate — wait instead of failing the push.
   ssh -o BatchMode=yes "$host" \
     "export DOCKER_CONFIG='${remote_dir}/.docker-config' PUBLIC_URL='$public_url'; \
      cd '$remote_dir' && \
-     chmod +x scripts/manage-server.sh && \
+     chmod +x scripts/manage-server.sh scripts/install-linux-service.sh && \
      docker compose -f '$COMPOSE_FILE' up -d --no-build --force-recreate --remove-orphans api && \
      docker compose -f '$COMPOSE_FILE' up -d --no-build --remove-orphans && \
-     curl -fsS http://127.0.0.1:3001/health && echo"
+     for i in \$(seq 1 40); do \
+       if curl -fsS http://127.0.0.1:3001/health >/dev/null 2>&1; then \
+         curl -fsS http://127.0.0.1:3001/health && echo && exit 0; \
+       fi; \
+       sleep 2; \
+     done; \
+     echo 'warning: health not ready yet' >&2; exit 0"
+
+  echo "==> Enabling systemd autostart on boot ($host)"
+  # Uses sudo when available, else Docker mount + nsenter (ZimaOS / no passwordless sudo).
+  ssh -o BatchMode=yes "$host" \
+    "export DOCKER_CONFIG='${remote_dir}/.docker-config' PUBLIC_URL='$public_url' PB_APP_DIR='$remote_dir'; \
+     cd '$remote_dir' && \
+     chmod +x scripts/manage-server.sh scripts/install-linux-service.sh && \
+     ./scripts/manage-server.sh enable" \
+    || echo "warning: enable failed. Containers still have restart: always."
+
   echo
   echo "Pushed $IMAGE to $host. Console: $public_url/"
+  echo "Boot: peanutbutter.service should be enabled (systemctl is-enabled peanutbutter)."
 }
 
 local_run() {

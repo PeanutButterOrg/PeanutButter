@@ -151,10 +151,15 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   bool _playNextVisible = false;
   bool _playNextDismissed = false;
   bool _playNextBusy = false;
-  int _playNextSecondsLeft = 15;
+  int _playNextSecondsLeft = 30;
   DateTime? _playNextArmedAt;
   Timer? _playNextTick;
-  static const int _playNextAutoHideSecs = 15;
+  static const int _playNextAutoHideSecs = 30;
+  /// Desktop/mouse chrome: seek ±10s + audio/subs (auto-hide).
+  bool _chromeVisible = true;
+  Timer? _chromeHideTimer;
+  static const int _chromeHideSecs = 15;
+  static const Duration _chromeAnim = Duration(milliseconds: 280);
   bool _episodeMarkedComplete = false;
   DateTime _lastProgress = DateTime.fromMillisecondsSinceEpoch(0);
   bool _progressFlushed = false;
@@ -237,6 +242,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
           _audioTracks = audio;
           _activeAudioId ??= _player?.state.track.audio.id;
         });
+        unawaited(_applyPreferredAudioLanguage(audio));
       });
       _completedSub = _player!.stream.completed.listen((done) {
         if (!done || _seeking) return;
@@ -283,6 +289,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     // Register hardware key handler AFTER everything is set up.
     HardwareKeyboard.instance.addHandler(_onHardwareKey);
+    // Desktop: show controls briefly, then auto-hide.
+    if (!isAndroidTv) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _bumpChrome());
+    }
   }
 
   /// Low-level hardware key handler — fires before the Focus tree so media_kit
@@ -308,6 +318,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   }
 
   bool _handlePlayerKey(LogicalKeyboardKey key) {
+    _bumpChrome();
     if (key == LogicalKeyboardKey.select ||
         key == LogicalKeyboardKey.enter ||
         key == LogicalKeyboardKey.gameButtonA ||
@@ -538,13 +549,14 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       return;
     }
 
-    unawaited(_saveProgress());
-    // Streams: surface Play Next instead of the local-file nextPlayback path.
+    unawaited(_saveProgress(complete: true));
+    // Streams with a next episode: show Play Next for 30s, then exit if unused.
     if (widget.isStream && _nextEpisode != null && !_playNextDismissed) {
       _armPlayNextPrompt(force: true);
       return;
     }
-    _playNext();
+    // Movie / last episode / no next: leave and tear down the torrent/stream.
+    unawaited(_endPlaybackAndExit());
   }
 
   void _playOrPause() {
@@ -716,6 +728,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     _streamPoll?.cancel();
     _playNextTick?.cancel();
     _pauseBufferTimer?.cancel();
+    _chromeHideTimer?.cancel();
     _overlayEpoch.dispose();
     final position = _useExo ? _exo?.value.position : _player?.state.position;
     final duration = _useExo ? _exo?.value.duration : _player?.state.duration;
@@ -724,13 +737,16 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     unawaited(_exo?.dispose());
     _player?.dispose();
     final sessionId = widget.sessionId;
-    if (widget.isStream && sessionId != null && !widget.localTorrent && !sessionId.startsWith('local-')) {
-      _client.mutate(
-        MutationOptions(document: gql(STOP_STREAM), variables: {'sessionId': sessionId}),
-      );
-    }
-    if (widget.localTorrent || (widget.isStream && (sessionId?.startsWith('local-') ?? false))) {
-      unawaited(LocalTorrentEngine.instance.stop());
+    // Prefer the explicit stop in _closePlayer; keep dispose as a safety net.
+    if (!_closing) {
+      if (widget.isStream && sessionId != null && !widget.localTorrent && !sessionId.startsWith('local-')) {
+        _client.mutate(
+          MutationOptions(document: gql(STOP_STREAM), variables: {'sessionId': sessionId}),
+        );
+      }
+      if (widget.localTorrent || (widget.isStream && (sessionId?.startsWith('local-') ?? false))) {
+        unawaited(LocalTorrentEngine.instance.stop());
+      }
     }
     if (!kIsWeb && Platform.isAndroid) {
       unawaited(PlayerCache.clear());
@@ -742,6 +758,16 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   Future<void> _closePlayer() async {
     if (_closing) return;
     _closing = true;
+    _playNextTick?.cancel();
+    _pauseBufferTimer?.cancel();
+    try {
+      await _player?.pause();
+    } catch (_) {}
+    try {
+      await _exo?.pause();
+    } catch (_) {}
+    // Stop torrent / remote stream before leaving so downloads & uploads die.
+    await _stopStreamingSession();
     try {
       await _saveProgress(closing: true, invalidateHome: true)
           .timeout(const Duration(seconds: 2), onTimeout: () {});
@@ -763,6 +789,47 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       }
       Navigator.of(context, rootNavigator: true).maybePop();
     });
+  }
+
+  /// End playback: hide prompts, stop torrent/stream, leave the player.
+  Future<void> _endPlaybackAndExit() async {
+    if (_closing) return;
+    _playNextTick?.cancel();
+    if (mounted) {
+      setState(() {
+        _playNextVisible = false;
+        _playNextDismissed = true;
+      });
+      _notifyOverlays();
+    }
+    await _closePlayer();
+  }
+
+  /// Stop remote Jackett stream session and/or local libtorrent download/upload.
+  Future<void> _stopStreamingSession() async {
+    final sessionId = widget.sessionId;
+    if (widget.isStream &&
+        sessionId != null &&
+        !widget.localTorrent &&
+        !sessionId.startsWith('local-')) {
+      try {
+        await _client
+            .mutate(
+              MutationOptions(
+                document: gql(STOP_STREAM),
+                variables: {'sessionId': sessionId},
+              ),
+            )
+            .timeout(const Duration(seconds: 3));
+      } catch (_) {}
+    }
+    if (widget.localTorrent ||
+        (widget.isStream && (sessionId?.startsWith('local-') ?? false)) ||
+        LocalTorrentEngine.instance.isActive) {
+      try {
+        await LocalTorrentEngine.instance.stop();
+      } catch (_) {}
+    }
   }
 
   void _onPosition(Duration position) {
@@ -953,8 +1020,46 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     _overlayEpoch.value++;
   }
 
+  bool get _showChrome => isAndroidTv || _chromeVisible;
+
+  /// Reveal seek / audio / subtitle chrome; restart the 15s auto-hide timer.
+  void _bumpChrome() {
+    if (isAndroidTv) return;
+    _chromeHideTimer?.cancel();
+    if (!_chromeVisible) {
+      if (mounted) setState(() => _chromeVisible = true);
+    }
+    _chromeHideTimer = Timer(const Duration(seconds: _chromeHideSecs), () {
+      if (!mounted || isAndroidTv) return;
+      setState(() => _chromeVisible = false);
+    });
+  }
+
+  Widget _chromeLayer({
+    required Widget child,
+    required Offset hiddenOffset,
+  }) {
+    final show = _showChrome;
+    return IgnorePointer(
+      ignoring: !show,
+      child: AnimatedOpacity(
+        opacity: show ? 1 : 0,
+        duration: _chromeAnim,
+        curve: Curves.easeOutCubic,
+        child: AnimatedSlide(
+          offset: show ? Offset.zero : hiddenOffset,
+          duration: _chromeAnim,
+          curve: Curves.easeOutCubic,
+          child: child,
+        ),
+      ),
+    );
+  }
+
   void _armPlayNextPrompt({bool force = false}) {
     if (_nextEpisode == null || _playNextDismissed || _isTrailer) return;
+    // Don't surface Play Next while still connecting / buffering the first pieces.
+    if (!force && !_playbackStarted) return;
     if (!force && _playNextVisible) return;
     _playNextArmedAt ??= DateTime.now();
     _playNextTick?.cancel();
@@ -968,12 +1073,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       final left = _playNextAutoHideSecs - DateTime.now().difference(armed).inSeconds;
       if (left <= 0) {
         _playNextTick?.cancel();
-        setState(() {
-          _playNextVisible = false;
-          _playNextDismissed = true;
-          _playNextSecondsLeft = 0;
-        });
-        _notifyOverlays();
+        // Timed out without picking next — leave and stop the torrent/stream.
+        unawaited(_endPlaybackAndExit());
         return;
       }
       setState(() {
@@ -993,6 +1094,14 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   void _updatePlayNextPrompt(Duration position) {
     final next = _nextEpisode;
     if (next == null || _playNextDismissed || _isTrailer) {
+      if (_playNextVisible && mounted) {
+        setState(() => _playNextVisible = false);
+        _notifyOverlays();
+      }
+      return;
+    }
+    // Hide (and don't arm) until the stream is actually playing.
+    if (!_playbackStarted) {
       if (_playNextVisible && mounted) {
         setState(() => _playNextVisible = false);
         _notifyOverlays();
@@ -1314,27 +1423,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     }
   }
 
-  Future<void> _playNext() async {
-    if (_isTrailer || widget.isStream || !mounted) return;
-    final client = ref.read(graphQLClientProvider);
-    final result = await client.query(
-      QueryOptions(
-        document: gql(NEXT_PLAYBACK),
-        variables: {'fileId': _fileId},
-        fetchPolicy: FetchPolicy.networkOnly,
-      ),
-    );
-    if (!mounted) return;
-    final json = result.data?['nextPlayback'] as Map<String, dynamic>?;
-    if (json == null) return;
-    final next = FileReference.fromJson(json);
-    setState(() {
-      _url = next.playbackUrl;
-      _fileId = next.id;
-    });
-    await _open(next.playbackUrl, fileId: next.id);
-  }
-
   Future<void> _openTrailer({int? preferHeight}) async {
     final key = widget.youtubeKey;
     if (key == null || key.isEmpty) return;
@@ -1601,6 +1689,16 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
         (player.state.position.inMilliseconds > 0 || _buffered.inMilliseconds > 0 || _playing);
   }
 
+  /// Skip Intro / Play Next once real video is on screen.
+  /// Do NOT require `!_showStreamHud` — torrent intros often rebuffer, and that
+  /// used to hide Skip Intro for the whole opening.
+  bool get _playbackStarted {
+    if (!_hasVideo) return false;
+    // Still on the poster / peer-find phase (no frames yet counted as opened play).
+    if (widget.isStream && !_streamOpened && !_playing) return false;
+    return _playing || _lastGoodPos.inMilliseconds >= 400;
+  }
+
   bool get _showStreamHud {
     if (!widget.isStream || _streamError != null) return false;
     if (!_hasVideo) return true;
@@ -1678,8 +1776,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     });
     _onPosition(v.position);
     if (v.isCompleted) {
-      unawaited(_saveProgress(position: v.position, duration: v.duration));
-      _playNext();
+      unawaited(_saveProgress(position: v.position, duration: v.duration, complete: true));
+      if (widget.isStream && _nextEpisode != null && !_playNextDismissed) {
+        _armPlayNextPrompt(force: true);
+      } else {
+        unawaited(_endPlaybackAndExit());
+      }
     }
   }
 
@@ -1831,6 +1933,46 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     return 'Track ${track.id}';
   }
 
+  bool _audioLanguagePicked = false;
+
+  /// Pick the first audio track matching server/device preferred languages.
+  Future<void> _applyPreferredAudioLanguage(List<AudioTrack> audio) async {
+    if (_audioLanguagePicked || audio.isEmpty || _player == null) return;
+    final preferred = preferredLanguageCodes(
+      ref.read(serverInfoProvider).valueOrNull?.preferredLanguages ??
+          ref.read(settingsProvider).preferredLanguages,
+    );
+    if (preferred.isEmpty) return;
+
+    AudioTrack? match;
+    for (final code in preferred) {
+      for (final track in audio) {
+        final lang = (track.language ?? '').trim().toLowerCase();
+        final title = (track.title ?? '').trim().toLowerCase();
+        if (lang == code ||
+            lang.startsWith('$code-') ||
+            lang.startsWith('${code}_') ||
+            title.contains(languageDisplayName(code).toLowerCase()) ||
+            title.contains(code)) {
+          match = track;
+          break;
+        }
+      }
+      if (match != null) break;
+    }
+    if (match == null) return;
+    if (match.id == _activeAudioId) {
+      _audioLanguagePicked = true;
+      return;
+    }
+    try {
+      await _player!.setAudioTrack(match);
+      if (!mounted) return;
+      _audioLanguagePicked = true;
+      setState(() => _activeAudioId = match!.id);
+    } catch (_) {}
+  }
+
   Widget _bufferOverlay() {
     final info = _streamInfo;
     final local = LocalTorrentEngine.instance.currentStats();
@@ -1846,10 +1988,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
 
     return Stack(fit: StackFit.expand, children: [
       if (showPoster) ...[
+        const ColoredBox(color: Colors.black),
         CachedArt(
           url: art,
           fallbackUrl: widget.posterUrl,
-          fit: BoxFit.cover,
+          // FIT_XY: stretch to the exact player viewport (no letterbox / crop).
+          fit: BoxFit.fill,
         ),
         DecoratedBox(
           decoration: BoxDecoration(
@@ -1940,7 +2084,13 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
         autofocus: true,
         descendantsAreFocusable: !isAndroidTv,
         onKeyEvent: _onFocusKey,
-        child: Scaffold(
+        child: MouseRegion(
+          onHover: (_) => _bumpChrome(),
+          child: Listener(
+            onPointerHover: (_) => _bumpChrome(),
+            onPointerMove: (_) => _bumpChrome(),
+            onPointerDown: (_) => _bumpChrome(),
+            child: Scaffold(
       backgroundColor: Colors.black,
       body: Stack(
         children: [
@@ -1960,9 +2110,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
           Positioned(
             top: 12,
             left: 8,
-            child: IconButton(
-              onPressed: _onBackPressed,
-              icon: const Icon(Icons.arrow_back, color: Colors.white),
+            child: _chromeLayer(
+              hiddenOffset: const Offset(0, -0.35),
+              child: IconButton(
+                onPressed: _onBackPressed,
+                icon: const Icon(Icons.arrow_back, color: Colors.white),
+              ),
             ),
           ),
           if (_showSeekControls)
@@ -1970,7 +2123,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
               left: 0,
               right: 0,
               bottom: widget.isStream ? 96 : 28,
-              child: _seekSkipBar(),
+              child: _chromeLayer(
+                hiddenOffset: const Offset(0, 0.45),
+                child: _seekSkipBar(),
+              ),
             ),
           // Windowed: align with the seeding chip on the scaffold. Fullscreen
           // copies live inside media_kit controls (native fullscreen route).
@@ -1984,7 +2140,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
           Positioned(
             top: 12,
             right: 12,
-            child: Row(
+            child: _chromeLayer(
+              hiddenOffset: const Offset(0, -0.35),
+              child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
                 if (_isTrailer && _trailerQualities.length > 1)
@@ -1992,7 +2150,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                     color: PtTheme.panel,
                     tooltip: 'Trailer quality',
                     icon: const Icon(Icons.high_quality_outlined, color: Colors.white),
-                    onSelected: _switchTrailerQuality,
+                    onOpened: _bumpChrome,
+                    onSelected: (q) {
+                      _bumpChrome();
+                      _switchTrailerQuality(q);
+                    },
                     itemBuilder: (context) => [
                       for (final q in _trailerQualities)
                         CheckedPopupMenuItem(
@@ -2016,9 +2178,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                     color: PtTheme.panel,
                     tooltip: 'Audio language',
                     icon: const Icon(Icons.language, color: Colors.white),
+                    onOpened: _bumpChrome,
                     onSelected: (id) {
+                      _bumpChrome();
                       final match = _audioTracks.where((t) => t.id == id);
                       if (match.isEmpty) return;
+                      _audioLanguagePicked = true;
                       _player?.setAudioTrack(match.first);
                       setState(() => _activeAudioId = id);
                     },
@@ -2049,7 +2214,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                       _activeSubId == null ? Icons.closed_caption_off : Icons.closed_caption,
                       color: Colors.white,
                     ),
+                    onOpened: _bumpChrome,
                     onSelected: (value) {
+                      _bumpChrome();
                       if (value == 'settings') {
                         context.push('/settings');
                         return;
@@ -2115,7 +2282,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                   PopupMenuButton<FileReference>(
                     color: PtTheme.panel,
                     icon: const Icon(Icons.high_quality_outlined, color: Colors.white),
+                    onOpened: _bumpChrome,
                     onSelected: (f) {
+                      _bumpChrome();
                       setState(() => _url = f.playbackUrl);
                       _open(f.playbackUrl, fileId: f.id);
                     },
@@ -2126,9 +2295,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                   ),
               ],
             ),
+            ),
           ),
         ],
       ),
+            ),
+          ),
         ),
       ),
     );
@@ -2147,13 +2319,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
 
   List<Widget> _skipAndPlayNextOverlays() {
     final bottom = _skipPlayNextBottom;
-    // Skip Intro only after playback has actually started (not during peer find).
-    final showSkip = _activeSegment != null &&
+    // Skip Intro / Play Next only after playback has actually started.
+    final showSkip = _playbackStarted &&
+        _activeSegment != null &&
         (_activeSegment!.kind == 'INTRO' || _activeSegment!.kind == 'RECAP') &&
-        !_isTrailer &&
-        _streamOpened &&
-        !_showStreamHud &&
-        _lastGoodPos.inMilliseconds >= 400;
+        !_isTrailer;
+    final showPlayNext = _playbackStarted && _playNextVisible && _nextEpisode != null;
     // Same bottom-left spot for both — they never show at the same time.
     return [
       if (showSkip)
@@ -2162,7 +2333,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
           bottom: bottom,
           child: _skipSegmentButton(_activeSegment!),
         ),
-      if (_playNextVisible && _nextEpisode != null)
+      if (showPlayNext)
         Positioned(
           left: _actionChipInset,
           bottom: bottom,

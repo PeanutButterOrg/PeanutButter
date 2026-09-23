@@ -2,8 +2,8 @@ import 'package:flutter/material.dart';
 
 import '../models.dart';
 import '../tv.dart';
+import '../tv_nav.dart';
 import 'poster_card.dart';
-import 'tv_chrome.dart';
 
 /// Poster wall that fills the available width so the last column is not left empty.
 class PosterGrid extends StatefulWidget {
@@ -141,9 +141,11 @@ class _PosterGridState extends State<PosterGrid> {
           ),
         );
         if (!tv) return grid;
-        return FocusTraversalGroup(
-          policy: TvGridFocusPolicy(onMoveUp: widget.onMoveUp),
-          child: TvNoJumpScroll(child: grid),
+        // Prefer a screen-level TvNavHost; otherwise own a grid strategy.
+        if (TvNavScope.maybeOf(context) != null) return grid;
+        return TvNavHost(
+          strategies: [TvNavGridStrategy(onMoveUp: widget.onMoveUp)],
+          child: grid,
         );
       },
     );

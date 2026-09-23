@@ -285,20 +285,27 @@ class SettingsNotifier extends StateNotifier<SettingsState> {
   Future<bool> probeCurrent() async {
     final url = state.serverUrl.trim();
     if (url.isEmpty) {
-      state = state.copyWith(connected: false);
+      if (!playbackSessionActive) {
+        state = state.copyWith(connected: false);
+      }
       return false;
     }
     final ok = await _discovery.probeHealth(url);
     if (!ok) {
-      state = state.copyWith(connected: false, lastError: 'Cannot reach $url');
+      // Don't flip connected→false mid-playback (would rebuild chrome / confuse mpv).
+      if (!playbackSessionActive) {
+        state = state.copyWith(connected: false, lastError: 'Cannot reach $url');
+      }
       return false;
     }
     if (state.apiToken.isEmpty) {
-      state = state.copyWith(
-        connected: false,
-        lastError:
-            'Type the 6-digit pairing code from the server console (sign in at the server address in a browser).',
-      );
+      if (!playbackSessionActive) {
+        state = state.copyWith(
+          connected: false,
+          lastError:
+              'Type the 6-digit pairing code from the server console (sign in at the server address in a browser).',
+        );
+      }
       return false;
     }
     return true;
@@ -322,6 +329,8 @@ class SettingsNotifier extends StateNotifier<SettingsState> {
   }
 
   Future<void> markDisconnected(String message) async {
+    // Keep watching — local/torrent playback does not need the API online.
+    if (playbackSessionActive) return;
     state = state.copyWith(connected: false, lastError: message);
   }
 

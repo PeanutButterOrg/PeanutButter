@@ -159,57 +159,52 @@ impl JackettClient {
             return Ok(vec![]);
         }
 
-        // Start Jackett's aggregate search immediately (same path as the UI logs).
-        // Cold queries often take 20–50s — our old 12s timeout false-failed while
-        // Jackett still finished and cached.
-        let all_fut =
-            self.search_all_results(&q, kind, preferred_resolution, preferred_language);
-
-        // Parallel fast path: per-indexer Torznab may return sooner.
-        let fast_fut = async {
-            let found = self
-                .search_torznab_all(
-                    &q,
-                    kind,
-                    season,
-                    episode,
-                    year,
-                    imdb_id,
-                    preferred_resolution,
-                    preferred_language,
-                )
-                .await
-                .unwrap_or_default();
-            let found = Self::filter_episode(found, season, episode);
-            if !found.is_empty() {
-                return found;
-            }
-            let fallback = self
-                .search_indexers_individually(&q, preferred_resolution, preferred_language, kind)
-                .await
-                .unwrap_or_default();
-            Self::filter_episode(fallback, season, episode)
-        };
-
-        tokio::pin!(all_fut);
-        tokio::pin!(fast_fut);
-
-        tokio::select! {
-            fast = &mut fast_fut => {
-                if !fast.is_empty() {
-                    return Ok(fast);
-                }
-                let all = all_fut.await?;
-                Ok(Self::filter_episode(all, season, episode))
-            }
-            all = &mut all_fut => {
-                let filtered = Self::filter_episode(all?, season, episode);
-                if !filtered.is_empty() {
-                    return Ok(filtered);
-                }
-                Ok(fast_fut.await)
-            }
+        // Fast path only: parallel Torznab against a small ranked indexer set.
+        // Do NOT race `/all/results` at the same time — that hammered Jackett and
+        // made every search wait on the slowest indexer (20–50s).
+        let torznab = self
+            .search_torznab_all(
+                &q,
+                kind,
+                season,
+                episode,
+                year,
+                imdb_id,
+                preferred_resolution,
+                preferred_language,
+            )
+            .await
+            .unwrap_or_default();
+        let mut found = Self::filter_episode(torznab, season, episode);
+        if picker_ready(&found) {
+            return Ok(found);
         }
+
+        // Thin Torznab result → quick Query+Category pass (still early-exits).
+        let plain = self
+            .search_indexers_individually(&q, preferred_resolution, preferred_language, kind)
+            .await
+            .unwrap_or_default();
+        found = merge_ranked(
+            found,
+            Self::filter_episode(plain, season, episode),
+            preferred_resolution,
+        );
+        if picker_ready(&found) {
+            return Ok(found);
+        }
+
+        // Last resort: aggregate search with a short budget (not 75s).
+        let all = match tokio::time::timeout(
+            Duration::from_secs(18),
+            self.search_all_results(&q, kind, preferred_resolution, preferred_language),
+        )
+        .await
+        {
+            Ok(Ok(v)) => Self::filter_episode(v, season, episode),
+            _ => Vec::new(),
+        };
+        Ok(merge_ranked(found, all, preferred_resolution))
     }
 
     async fn search_all_results(
@@ -226,7 +221,7 @@ impl JackettClient {
             ("Query", query),
             ("Category", cats),
         ]);
-        let res = match tokio::time::timeout(Duration::from_secs(75), req.send()).await {
+        let res = match tokio::time::timeout(Duration::from_secs(18), req.send()).await {
             Ok(Ok(res)) => res,
             Ok(Err(e)) => return Err(self.redact_err(e)),
             Err(_) => {
@@ -363,7 +358,7 @@ impl JackettClient {
             let imdb = imdb_id.map(str::to_string);
             set.spawn(async move {
                 let result = tokio::time::timeout(
-                    Duration::from_secs(10),
+                    Duration::from_secs(6),
                     this.search_torznab_one(
                         &id,
                         &query,
@@ -384,7 +379,8 @@ impl JackettClient {
             match timed {
                 Ok(Ok(batch)) => {
                     hits.extend(batch);
-                    if healthy_hit_count(&hits) >= 4 {
+                    // Return as soon as we have a usable picker set.
+                    if healthy_hit_count(&hits) >= 2 || magnet_hit_count(&hits) >= 8 {
                         set.abort_all();
                         break;
                     }
@@ -399,7 +395,6 @@ impl JackettClient {
     }
 
     /// Single-indexer Torznab search with t=movie/tvsearch/search + structured params.
-    /// Falls back to plain Query + Category if structured params return nothing.
     async fn search_torznab_one(
         &self,
         id: &str,
@@ -450,14 +445,9 @@ impl JackettClient {
         // Always include the text query so indexers that ignore structured params still work
         params.push(("q", query.to_string()));
 
-        let hits = self.fetch_indexer_results(&url, &params).await?;
-        if !hits.is_empty() {
-            return Ok(hits);
-        }
-
-        // Fallback: some indexers ignore Torznab `t=` but honor Query + Category.
-        self.search_one_indexer_with(&self.http, id, query, Some(cats))
-            .await
+        // One request per indexer — empty results fall through to the outer
+        // Query+Category pass instead of doubling Jackett load here.
+        self.fetch_indexer_results(&url, &params).await
     }
 
     async fn fetch_indexer_results(
@@ -541,9 +531,9 @@ impl JackettClient {
         self.ranked_indexer_ids(kind, 4).await
     }
 
-    /// Live Play searches: more indexers than catalog, still kind-filtered and ranked.
+    /// Live Play searches: few ranked indexers — more just slows Jackett.
     async fn stream_indexer_ids(&self, kind: &str) -> Vec<String> {
-        self.ranked_indexer_ids(kind, 12).await
+        self.ranked_indexer_ids(kind, 6).await
     }
 
     async fn ranked_indexer_ids(&self, kind: &str, limit: usize) -> Vec<String> {
@@ -698,7 +688,7 @@ impl JackettClient {
             let kind2 = kind.to_string();
             set.spawn(async move {
                 let result = tokio::time::timeout(
-                    Duration::from_secs(10),
+                    Duration::from_secs(5),
                     this.search_one_indexer(&id, &q, &kind2),
                 )
                 .await;
@@ -711,7 +701,7 @@ impl JackettClient {
             match timed {
                 Ok(Ok(batch)) => {
                     hits.extend(batch);
-                    if healthy_hit_count(&hits) >= 4 {
+                    if healthy_hit_count(&hits) >= 2 || magnet_hit_count(&hits) >= 8 {
                         set.abort_all();
                         break;
                     }
@@ -955,6 +945,41 @@ fn healthy_hit_count(hits: &[JackettHit]) -> usize {
     hits.iter()
         .filter(|hit| hit.seeders.unwrap_or(0) >= 3 && torrent_locator(hit).is_some())
         .count()
+}
+
+fn magnet_hit_count(hits: &[JackettHit]) -> usize {
+    hits.iter().filter(|hit| torrent_locator(hit).is_some()).count()
+}
+
+/// Enough results to show the picker without waiting on slower indexers.
+fn picker_ready(sources: &[StreamSource]) -> bool {
+    if sources.len() >= 4 {
+        return true;
+    }
+    sources.iter().filter(|s| s.seeders >= 3).count() >= 2
+}
+
+fn merge_ranked(
+    a: Vec<StreamSource>,
+    b: Vec<StreamSource>,
+    preferred_resolution: &str,
+) -> Vec<StreamSource> {
+    if b.is_empty() {
+        return a;
+    }
+    if a.is_empty() {
+        return b;
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::with_capacity(a.len() + b.len());
+    for src in a.into_iter().chain(b) {
+        let key = src.magnet.trim().to_ascii_lowercase();
+        if key.is_empty() || !seen.insert(key) {
+            continue;
+        }
+        out.push(src);
+    }
+    rank_sources(out, preferred_resolution)
 }
 
 fn connect_error_message(err: &reqwest::Error) -> String {
