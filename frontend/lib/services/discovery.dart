@@ -94,6 +94,28 @@ class DiscoveryService {
     }
   }
 
+  /// Probe [serverUrl]; if it fails and no non-default port was typed, try `:3001`
+  /// (PeanutButter’s published console/API port). Returns the reachable base or null.
+  Future<String?> resolveReachableBase(
+    String serverUrl, {
+    Duration timeout = const Duration(seconds: 2),
+  }) async {
+    final base = normalizeServerBase(serverUrl);
+    if (base.isEmpty || isLocalServer(base)) return null;
+    if (await probeHealth(base, timeout: timeout)) return base;
+
+    final uri = Uri.tryParse(base);
+    if (uri == null || uri.host.isEmpty) return null;
+    // Default http→80 / https→443, or an explicit :80 — try the app port.
+    final try3001 = !uri.hasPort || uri.port == 80 || uri.port == 443;
+    if (!try3001) return null;
+
+    final alt = uri.replace(port: 3001).toString().replaceFirst(RegExp(r'/+$'), '');
+    if (alt == base) return null;
+    if (await probeHealth(alt, timeout: timeout)) return alt;
+    return null;
+  }
+
   /// Legacy name used by settings.
   Future<bool> probe(String graphqlUrl, {Duration timeout = const Duration(seconds: 2)}) {
     return probeHealth(graphqlUrl, timeout: timeout);

@@ -219,6 +219,41 @@ class _DetailBodyState extends ConsumerState<_DetailBody> {
       String? episodeLabel,
       int? startMs,
     }) async {
+      void openPlayer(StreamStart started) {
+        if (!context.mounted) return;
+        final queryTitle = (season != null && episode != null)
+            ? '${item.title} S${season.toString().padLeft(2, '0')}E${episode.toString().padLeft(2, '0')}'
+            : item.title;
+        final sameEpisode = episodeId == null || episodeId == item.userState?.episodeId;
+        final userResume = sameEpisode ? (item.userState?.positionMs ?? 0) : 0;
+        final streamResume = sameEpisode ? started.session.resumePosition : 0;
+        final seek = startMs ?? (userResume > 2000 ? userResume : (streamResume > 2000 ? streamResume : 0));
+        context.push(
+          '/player/${started.session.id}',
+          extra: {
+            'url': started.session.streamUrl,
+            'title': episodeLabel ?? queryTitle,
+            'titleId': item.id,
+            'episodeId': episodeId ?? item.userState?.episodeId,
+            'season': season,
+            'episode': episode,
+            'startMs': seek,
+            'isStream': true,
+            'sessionId': started.session.id,
+            'magnet': started.magnet,
+            'localTorrent': started.localTorrent,
+            'listedSeeders': started.session.seeders,
+            'listedPeers': started.session.peers,
+            'streamFileIndex': started.fileIndex,
+            'catalogTitle': item.title,
+            'kind': item.kind,
+            'posterUrl': item.posterUrl,
+            'backdropUrl': item.backdropUrl,
+          },
+        );
+      }
+
+      var opened = false;
       final started = await showStreamingPicker(
         context: context,
         client: ref.read(graphQLClientProvider),
@@ -230,39 +265,14 @@ class _DetailBodyState extends ConsumerState<_DetailBody> {
         preferredLanguages: ref.read(serverInfoProvider).valueOrNull?.preferredLanguages ??
             ref.read(settingsProvider).preferredLanguages,
         resumePlayback: startMs == null || startMs > 0,
-      );
-      if (started == null) return;
-      if (!context.mounted) return;
-      final queryTitle = (season != null && episode != null)
-          ? '${item.title} S${season.toString().padLeft(2, '0')}E${episode.toString().padLeft(2, '0')}'
-          : item.title;
-      final sameEpisode = episodeId == null || episodeId == item.userState?.episodeId;
-      final userResume = sameEpisode ? (item.userState?.positionMs ?? 0) : 0;
-      final streamResume = sameEpisode ? started.session.resumePosition : 0;
-      final seek = startMs ?? (userResume > 2000 ? userResume : (streamResume > 2000 ? streamResume : 0));
-      context.push(
-        '/player/${started.session.id}',
-        extra: {
-          'url': started.session.streamUrl,
-          'title': episodeLabel ?? queryTitle,
-          'titleId': item.id,
-          'episodeId': episodeId ?? item.userState?.episodeId,
-          'season': season,
-          'episode': episode,
-          'startMs': seek,
-          'isStream': true,
-          'sessionId': started.session.id,
-          'magnet': started.magnet,
-          'localTorrent': started.localTorrent,
-          'listedSeeders': started.session.seeders,
-          'listedPeers': started.session.peers,
-          'streamFileIndex': started.fileIndex,
-          'catalogTitle': item.title,
-          'kind': item.kind,
-          'posterUrl': item.posterUrl,
-          'backdropUrl': item.backdropUrl,
+        onReadyToPlay: (s) {
+          opened = true;
+          openPlayer(s);
         },
       );
+      if (started == null || opened) return;
+      if (!context.mounted) return;
+      openPlayer(started);
     }
 
     Future<void> playEpisode(Season season, Episode episode) async {

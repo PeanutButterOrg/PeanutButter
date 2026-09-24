@@ -144,20 +144,30 @@ sys_via_docker() {
 
 # Critical: ExecStop uses "stop" NOT "down".
 # "down" deletes containers on reboot/shutdown → nothing left if next boot races Docker.
+#
+# ZimaOS note: docker.service often becomes active *after* multi-user.target, so a
+# plain WantedBy=multi-user unit can be skipped entirely. We also install a
+# docker.service.d drop-in (Wants=peanutbutter) so compose runs once dockerd is up.
 write_unit() {
-  local docker_bin unit_group url unit_file
+  local docker_bin unit_group url unit_file boot_script drop_in_dir drop_in
   docker_bin="$(command -v docker)" || die "docker not found"
   unit_group="$(docker_sock_group)"
   url="${PUBLIC_URL}"
+  boot_script="${INSTALL_ROOT}/scripts/boot-start.sh"
   unit_file="$(mktemp)"
+  drop_in_dir="/etc/systemd/system/docker.service.d"
+  drop_in="${drop_in_dir}/peanutbutter.conf"
+
+  chmod +x "${INSTALL_ROOT}/scripts/boot-start.sh" 2>/dev/null || true
 
   cat >"$unit_file" <<EOF
 [Unit]
 Description=PeanutButter catalog API (Docker Compose)
 Documentation=file://${INSTALL_ROOT}/docs/SERVER.md
-Requires=docker.service
-After=docker.service network-online.target
-Wants=network-online.target
+# Soft dep: Requires= cancelled this unit when dockerd restarted mid-boot on ZimaOS.
+Wants=docker.service network-online.target
+After=docker.service docker.socket network-online.target
+RequiresMountsFor=${INSTALL_ROOT}
 StartLimitIntervalSec=0
 
 [Service]
@@ -170,23 +180,27 @@ Environment=COMPOSE_PROJECT_NAME=peanutbutter
 Environment=DOCKER_CONFIG=${DOCKER_CONFIG_DIR}
 Environment=HOME=${DOCKER_HOME}
 Environment=PUBLIC_URL=${url}
-# Give Docker a moment after boot before compose runs.
-ExecStartPre=/bin/sleep 3
-ExecStart=${docker_bin} compose -f ${COMPOSE_FILE} up -d --remove-orphans
+Environment=PB_BOOT_ATTEMPTS=40
+Environment=PB_BOOT_SLEEP=3
+ExecStart=${boot_script}
 # stop (not down): containers stay defined so Docker restart policy + next boot work
 ExecStop=${docker_bin} compose -f ${COMPOSE_FILE} stop
 TimeoutStartSec=0
-Restart=on-failure
-RestartSec=20
+TimeoutStopSec=120
 
 [Install]
 WantedBy=multi-user.target
+WantedBy=docker.service
 EOF
 
   if [[ "${EUID}" -eq 0 ]]; then
     cp "$unit_file" "${UNIT_PATH}"
+    mkdir -p "$drop_in_dir"
+    printf '%s\n' '[Unit]' 'Wants=peanutbutter.service' 'After=docker.service' >"$drop_in"
   elif can_write_systemd_via_sudo; then
     sudo cp "$unit_file" "${UNIT_PATH}"
+    sudo mkdir -p "$drop_in_dir"
+    printf '%s\n' '[Unit]' 'Wants=peanutbutter.service' | sudo tee "$drop_in" >/dev/null
   else
     local img
     img="$(docker_helper_image)"
@@ -194,11 +208,13 @@ EOF
       -v "$unit_file":/unit.service:ro \
       -v /etc/systemd/system:/sysd \
       "$img" \
-      sh -c "cp /unit.service /sysd/${SERVICE_NAME}.service && chmod 644 /sysd/${SERVICE_NAME}.service"
+      sh -c "cp /unit.service /sysd/${SERVICE_NAME}.service && chmod 644 /sysd/${SERVICE_NAME}.service && mkdir -p /sysd/docker.service.d && printf '%s\\n' '[Unit]' 'Wants=peanutbutter.service' > /sysd/docker.service.d/peanutbutter.conf && chmod 644 /sysd/docker.service.d/peanutbutter.conf"
   fi
   rm -f "$unit_file"
   echo "==> Wrote ${UNIT_PATH} (User=${DOCKER_USER} Group=${unit_group})"
+  echo "==> Wrote ${drop_in} (docker.service → Wants peanutbutter)"
   echo "==> PUBLIC_URL=${url}"
+  echo "==> Boot script: ${boot_script}"
 }
 
 sys() {
@@ -287,9 +303,14 @@ if [[ "$DO_UNINSTALL" -eq 1 ]]; then
   if systemctl cat "${SERVICE_NAME}.service" >/dev/null 2>&1; then
     sys disable --now "${SERVICE_NAME}.service" 2>/dev/null || true
     if [[ "${EUID}" -eq 0 ]]; then
-      rm -f "${UNIT_PATH}"
+      rm -f "${UNIT_PATH}" /etc/systemd/system/docker.service.d/peanutbutter.conf
+    elif can_write_systemd_via_sudo; then
+      sudo rm -f "${UNIT_PATH}" /etc/systemd/system/docker.service.d/peanutbutter.conf
     else
-      sudo rm -f "${UNIT_PATH}"
+      local img
+      img="$(docker_helper_image)"
+      docker run --rm -v /etc/systemd/system:/sysd "$img" \
+        sh -c "rm -f /sysd/${SERVICE_NAME}.service /sysd/docker.service.d/peanutbutter.conf" || true
     fi
     sys daemon-reload || true
   fi

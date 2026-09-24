@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:graphql_flutter/graphql_flutter.dart';
+import 'package:media_kit_libs_android_video/media_kit_libs_android_video.dart';
 
 import '../content_languages.dart';
 import '../graphql/client.dart';
@@ -115,6 +116,40 @@ String _lookupHeading({
   return name;
 }
 
+/// On Android TV, [showDialog] uses a transparent route so the heavy catalog
+/// underneath keeps painting every frame and ANRs. Opaque fullscreen routes
+/// skip painting routes below.
+Future<T?> _showPickerOverlay<T>({
+  required BuildContext context,
+  required WidgetBuilder builder,
+  bool barrierDismissible = true,
+}) {
+  if (!isAndroidTv) {
+    return showDialog<T>(
+      context: context,
+      barrierDismissible: barrierDismissible,
+      builder: builder,
+    );
+  }
+  return Navigator.of(context, rootNavigator: true).push<T>(
+    PageRouteBuilder<T>(
+      opaque: true,
+      barrierDismissible: barrierDismissible,
+      barrierColor: Colors.black,
+      transitionDuration: Duration.zero,
+      reverseTransitionDuration: Duration.zero,
+      pageBuilder: (ctx, animation, secondaryAnimation) {
+        return Material(
+          color: Theme.of(ctx).scaffoldBackgroundColor,
+          child: SafeArea(
+            child: Center(child: builder(ctx)),
+          ),
+        );
+      },
+    ),
+  );
+}
+
 Future<StreamStart?> showStreamingPicker({
   required BuildContext context,
   required GraphQLClient client,
@@ -127,6 +162,62 @@ Future<StreamStart?> showStreamingPicker({
   bool resumePlayback = true,
   /// Stop this session before starting the new torrent (Play Next).
   String? stopPreviousSessionId,
+  /// Called on Android TV *before* the opaque picker pops so the caller can
+  /// push the player route while the covering page is still up (avoids ANR).
+  void Function(StreamStart started)? onReadyToPlay,
+}) async {
+  if (!context.mounted) return null;
+  // Android TV: one opaque route for lookup → pick → start. Swapping transparent
+  // dialogs was painting the detail/catalog underneath and ANRing on select.
+  if (isAndroidTv) {
+    return Navigator.of(context, rootNavigator: true).push<StreamStart>(
+      PageRouteBuilder<StreamStart>(
+        opaque: true,
+        barrierDismissible: false,
+        transitionDuration: Duration.zero,
+        reverseTransitionDuration: Duration.zero,
+        pageBuilder: (ctx, animation, secondaryAnimation) {
+          return _TvStreamingPickerPage(
+            client: client,
+            title: title,
+            kind: kind,
+            titleId: titleId,
+            season: season,
+            episode: episode,
+            preferredLanguages: preferredLanguages,
+            resumePlayback: resumePlayback,
+            stopPreviousSessionId: stopPreviousSessionId,
+            onReadyToPlay: onReadyToPlay,
+          );
+        },
+      ),
+    );
+  }
+  return _showStreamingPickerDialogs(
+    context: context,
+    client: client,
+    title: title,
+    kind: kind,
+    titleId: titleId,
+    season: season,
+    episode: episode,
+    preferredLanguages: preferredLanguages,
+    resumePlayback: resumePlayback,
+    stopPreviousSessionId: stopPreviousSessionId,
+  );
+}
+
+Future<StreamStart?> _showStreamingPickerDialogs({
+  required BuildContext context,
+  required GraphQLClient client,
+  required String title,
+  required String kind,
+  String? titleId,
+  int? season,
+  int? episode,
+  List<String>? preferredLanguages,
+  bool resumePlayback = true,
+  String? stopPreviousSessionId,
 }) async {
   if (!context.mounted) return null;
   final languageLabel = _preferredLanguageLabel(preferredLanguages);
@@ -137,7 +228,7 @@ Future<StreamStart?> showStreamingPicker({
   final searchCancel = Completer<void>();
   var searchDone = false;
   unawaited(
-    showDialog<void>(
+    _showPickerOverlay<void>(
       context: context,
       barrierDismissible: true,
       builder: (ctx) => _BusyDialog(
@@ -194,6 +285,10 @@ Future<StreamStart?> showStreamingPicker({
     final nav = Navigator.of(context, rootNavigator: true);
     if (nav.canPop()) nav.pop();
   }
+  // Let the busy dialog unmount and paint before building the results list —
+  // building dozens of TV focus tiles in the same frame as the pop ANRs on
+  // Android TV emulators.
+  await Future<void>.delayed(Duration.zero);
   if (!context.mounted) return null;
   if (found.isEmpty) {
     await _alert(
@@ -202,8 +297,12 @@ Future<StreamStart?> showStreamingPicker({
     );
     return null;
   }
+  // Server ranks to 24; cap anyway so a fat cache entry cannot freeze the UI.
+  if (found.length > 24) {
+    found = found.sublist(0, 24);
+  }
 
-  final picked = await showDialog<StreamSource>(
+  final picked = await _showPickerOverlay<StreamSource>(
     context: context,
     builder: (ctx) => _ResultsDialog(
       sources: found,
@@ -218,11 +317,14 @@ Future<StreamStart?> showStreamingPicker({
         episode: episode,
         live: true,
       ).then(
-        (list) => sourcesMatchingEpisode(
-          list,
-          season: season,
-          episode: episode,
-        ),
+        (list) {
+          final matched = sourcesMatchingEpisode(
+            list,
+            season: season,
+            episode: episode,
+          );
+          return matched.length > 24 ? matched.sublist(0, 24) : matched;
+        },
       ),
     ),
   );
@@ -241,7 +343,7 @@ Future<StreamStart?> showStreamingPicker({
     final filesCancel = Completer<void>();
     var filesDone = false;
     unawaited(
-      showDialog<void>(
+      _showPickerOverlay<void>(
         context: context,
         barrierDismissible: true,
         builder: (ctx) => _BusyDialog(
@@ -297,7 +399,7 @@ Future<StreamStart?> showStreamingPicker({
             if (a.recommended != b.recommended) return a.recommended ? -1 : 1;
             return b.sizeBytes.compareTo(a.sizeBytes);
           });
-          final chosen = await showDialog<TorrentFileOption>(
+          final chosen = await _showPickerOverlay<TorrentFileOption>(
             context: context,
             builder: (ctx) => _FilePickerDialog(files: files),
           );
@@ -317,8 +419,10 @@ Future<StreamStart?> showStreamingPicker({
   }
 
   if (!context.mounted) return null;
+  await Future<void>.delayed(Duration.zero);
+  if (!context.mounted) return null;
   unawaited(
-    showDialog<void>(
+    _showPickerOverlay<void>(
       context: context,
       barrierDismissible: false,
       builder: (ctx) => _BusyDialog(label: 'Starting stream…', title: heading),
@@ -341,6 +445,7 @@ Future<StreamStart?> showStreamingPicker({
       MutationOptions(
         document: gql(START_STREAM),
         fetchPolicy: FetchPolicy.networkOnly,
+        queryRequestTimeout: const Duration(seconds: 45),
         variables: {
           'magnet': picked.magnet,
           'title': title,
@@ -396,7 +501,7 @@ bool _looksLikeSeasonPack(String title) {
 }
 
 Future<void> _alert(BuildContext context, String message) {
-  return showDialog<void>(
+  return _showPickerOverlay<void>(
     context: context,
     builder: (ctx) => AlertDialog(
       title: const Text('Couldn’t stream'),
@@ -423,6 +528,303 @@ String _preferredLanguageLabel(List<String>? codes) {
   final names = cleaned.map(languageDisplayName).where((n) => n.isNotEmpty).join(', ');
   if (names.isEmpty) return 'All languages';
   return '$names + Multi';
+}
+
+/// Single opaque page for Android TV: search → choose → start, without
+/// uncovering the detail/catalog between steps (that handoff ANRs).
+class _TvStreamingPickerPage extends StatefulWidget {
+  const _TvStreamingPickerPage({
+    required this.client,
+    required this.title,
+    required this.kind,
+    this.titleId,
+    this.season,
+    this.episode,
+    this.preferredLanguages,
+    this.resumePlayback = true,
+    this.stopPreviousSessionId,
+    this.onReadyToPlay,
+  });
+
+  final GraphQLClient client;
+  final String title;
+  final String kind;
+  final String? titleId;
+  final int? season;
+  final int? episode;
+  final List<String>? preferredLanguages;
+  final bool resumePlayback;
+  final String? stopPreviousSessionId;
+  final void Function(StreamStart started)? onReadyToPlay;
+
+  @override
+  State<_TvStreamingPickerPage> createState() => _TvStreamingPickerPageState();
+}
+
+class _TvStreamingPickerPageState extends State<_TvStreamingPickerPage> {
+  static const _phaseLookup = 0;
+  static const _phaseResults = 1;
+  static const _phaseFiles = 2;
+  static const _phaseStarting = 3;
+  static const _phaseError = 4;
+
+  var _phase = _phaseLookup;
+  var _busyLabel = 'Looking up sources…';
+  String? _error;
+  List<StreamSource> _sources = const [];
+  List<TorrentFileOption> _files = const [];
+  StreamSource? _picked;
+
+  String get _heading =>
+      _lookupHeading(title: widget.title, season: widget.season, episode: widget.episode);
+  String get _languageLabel => _preferredLanguageLabel(widget.preferredLanguages);
+
+  @override
+  void initState() {
+    super.initState();
+    // Load libmpv on a Java worker while Jackett search runs — must not block UI.
+    unawaited(MediaKitAndroidVideo.preload());
+    unawaited(_runSearch(live: false));
+  }
+
+  Future<void> _runSearch({required bool live}) async {
+    setState(() {
+      _phase = _phaseLookup;
+      _busyLabel = live ? 'Refreshing sources from Jackett…' : 'Looking up sources…';
+      _error = null;
+    });
+    try {
+      final sources = await searchStreamingSources(
+        client: widget.client,
+        title: widget.title,
+        kind: widget.kind,
+        titleId: widget.titleId,
+        season: widget.season,
+        episode: widget.episode,
+        live: live,
+      );
+      if (!mounted) return;
+      var found = sourcesMatchingEpisode(
+        sources,
+        season: widget.season,
+        episode: widget.episode,
+      );
+      if (found.length > 24) found = found.sublist(0, 24);
+      if (found.isEmpty) {
+        setState(() {
+          _phase = _phaseError;
+          _error =
+              'No healthy sources with enough seeders were found. Try again later, or check Jackett on the server console.';
+        });
+        return;
+      }
+      setState(() {
+        _sources = found;
+        _phase = _phaseResults;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _phase = _phaseError;
+        _error = friendlyRequestError(e);
+      });
+    }
+  }
+
+  Future<void> _onPick(StreamSource source) async {
+    if (source.magnet.trim().isEmpty) {
+      setState(() {
+        _phase = _phaseError;
+        _error = 'That result has no torrent link. Try another result.';
+      });
+      return;
+    }
+    _picked = source;
+    int? fileIndex;
+    if (_looksLikeSeasonPack(source.title)) {
+      setState(() {
+        _phase = _phaseLookup;
+        _busyLabel = 'Reading torrent files…';
+      });
+      try {
+        final listed = await widget.client.query(
+          QueryOptions(
+            document: gql(TORRENT_FILES),
+            fetchPolicy: FetchPolicy.networkOnly,
+            queryRequestTimeout: const Duration(seconds: 25),
+            variables: {
+              'magnet': source.magnet,
+              'season': widget.season,
+              'episode': widget.episode,
+            },
+          ),
+        );
+        if (!mounted) return;
+        if (!listed.hasException) {
+          final files = ((listed.data?['torrentFiles'] as List?) ?? const [])
+              .whereType<Map<String, dynamic>>()
+              .map(TorrentFileOption.fromJson)
+              .toList();
+          if (files.length > 1) {
+            files.sort((a, b) {
+              if (a.recommended != b.recommended) return a.recommended ? -1 : 1;
+              return b.sizeBytes.compareTo(a.sizeBytes);
+            });
+            setState(() {
+              _files = files;
+              _phase = _phaseFiles;
+            });
+            return;
+          }
+          if (files.length == 1) fileIndex = files.first.index;
+        }
+      } catch (_) {}
+    }
+    await _startStream(source, fileIndex);
+  }
+
+  Future<void> _onPickFile(TorrentFileOption file) async {
+    final source = _picked;
+    if (source == null) return;
+    await _startStream(source, file.index);
+  }
+
+  Future<void> _startStream(StreamSource source, int? fileIndex) async {
+    if (!mounted) return;
+    setState(() {
+      _phase = _phaseStarting;
+      _busyLabel = 'Starting stream…';
+    });
+    // Let "Starting stream…" paint and the input dispatcher settle.
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    if (!mounted) return;
+    try {
+      final nativeReady = MediaKitAndroidVideo.preload();
+      final previous = widget.stopPreviousSessionId?.trim();
+      if (previous != null && previous.isNotEmpty && !previous.startsWith('local-')) {
+        try {
+          await widget.client.mutate(
+            MutationOptions(
+              document: gql(STOP_STREAM),
+              fetchPolicy: FetchPolicy.networkOnly,
+              variables: {'sessionId': previous},
+            ),
+          );
+        } catch (_) {}
+      }
+      if (!mounted) return;
+      final started = await widget.client.mutate(
+        MutationOptions(
+          document: gql(START_STREAM),
+          fetchPolicy: FetchPolicy.networkOnly,
+          queryRequestTimeout: const Duration(seconds: 45),
+          variables: {
+            'magnet': source.magnet,
+            'title': widget.title,
+            'titleId': widget.titleId,
+            'resume': widget.resumePlayback,
+            'seeders': source.seeders,
+            'peers': source.peers,
+            'season': widget.season,
+            'episode': widget.episode,
+            'fileIndex': fileIndex,
+          },
+        ),
+      );
+      await nativeReady;
+      if (!mounted) return;
+      if (started.hasException) throw graphqlMessage(started);
+      final session = StreamSession.fromJson(
+        started.data?['startStream'] as Map<String, dynamic>? ?? const {},
+      );
+      if (session.id.isEmpty) {
+        throw 'Couldn’t start this stream. Try another result.';
+      }
+      final result = StreamStart(
+        session: session,
+        magnet: source.magnet,
+        fileIndex: fileIndex,
+      );
+      // Push player under this opaque cover, then pop immediately so Player()
+      // init (next frames) does not run while we still owe a Navigator.pop —
+      // that ordering left the UI stuck on "Starting stream…" and ANR'd.
+      widget.onReadyToPlay?.call(result);
+      if (mounted) Navigator.of(context).pop(result);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _phase = _phaseError;
+        _error = friendlyRequestError(e);
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return PopScope(
+      canPop: _phase != _phaseStarting,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        if (_phase == _phaseStarting) return;
+        Navigator.of(context).pop();
+      },
+      child: Material(
+        color: Theme.of(context).scaffoldBackgroundColor,
+        child: SafeArea(
+          child: Center(
+            child: switch (_phase) {
+              _phaseResults => _ResultsDialog(
+                  sources: _sources,
+                  languageLabel: _languageLabel,
+                  title: _heading,
+                  onRefresh: () => searchStreamingSources(
+                    client: widget.client,
+                    title: widget.title,
+                    kind: widget.kind,
+                    titleId: widget.titleId,
+                    season: widget.season,
+                    episode: widget.episode,
+                    live: true,
+                  ).then((list) {
+                    final matched = sourcesMatchingEpisode(
+                      list,
+                      season: widget.season,
+                      episode: widget.episode,
+                    );
+                    return matched.length > 24 ? matched.sublist(0, 24) : matched;
+                  }),
+                  onSelected: _onPick,
+                ),
+              _phaseFiles => _FilePickerDialog(
+                  files: _files,
+                  onSelected: _onPickFile,
+                ),
+              _phaseError => AlertDialog(
+                  title: const Text('Couldn’t stream'),
+                  content: Text(_error ?? 'Something went wrong.'),
+                  actions: [
+                    TvFocus(
+                      child: TextButton(
+                        autofocus: true,
+                        onPressed: () => Navigator.of(context).pop(),
+                        child: const Text('OK'),
+                      ),
+                    ),
+                  ],
+                ),
+              _ => _BusyDialog(
+                  label: _busyLabel,
+                  title: _heading,
+                  onCancel: _phase == _phaseStarting
+                      ? null
+                      : () => Navigator.of(context).pop(),
+                ),
+            },
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class _BusyDialog extends StatelessWidget {
@@ -509,12 +911,15 @@ class _ResultsDialog extends StatefulWidget {
     required this.languageLabel,
     required this.title,
     required this.onRefresh,
+    this.onSelected,
   });
 
   final List<StreamSource> sources;
   final String languageLabel;
   final String title;
   final Future<List<StreamSource>> Function() onRefresh;
+  /// When set (TV single-page flow), call instead of [Navigator.pop].
+  final Future<void> Function(StreamSource source)? onSelected;
 
   @override
   State<_ResultsDialog> createState() => _ResultsDialogState();
@@ -559,33 +964,35 @@ class _ResultsDialogState extends State<_ResultsDialog> {
     final scheme = Theme.of(context).colorScheme;
     final maxH = MediaQuery.sizeOf(context).height * 0.72;
     final heading = widget.title.trim();
-    return AlertDialog(
-      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
-      title: Row(
-        children: [
-          const Expanded(child: Text('Choose a stream')),
-          TvFocus(
-            child: IconButton(
-              tooltip: 'Refresh from Jackett',
-              onPressed: _refreshing ? null : _refresh,
-              icon: _refreshing
-                  ? const SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.refresh_rounded),
+    // Fixed height + Expanded ListView (no shrinkWrap). Flexible+shrinkWrap
+    // inside a min-sized Column lays out every tile up-front and ANRs on TV.
+    return FocusScope(
+      autofocus: true,
+      child: AlertDialog(
+        backgroundColor: Theme.of(context).scaffoldBackgroundColor,
+        title: Row(
+          children: [
+            const Expanded(child: Text('Choose a stream')),
+            TvFocus(
+              child: IconButton(
+                tooltip: 'Refresh from Jackett',
+                onPressed: _refreshing ? null : _refresh,
+                icon: _refreshing
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.refresh_rounded),
+              ),
             ),
-          ),
-        ],
-      ),
-      contentPadding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
-      content: SizedBox(
-        width: 560,
-        child: ConstrainedBox(
-          constraints: BoxConstraints(maxHeight: maxH),
+          ],
+        ),
+        contentPadding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
+        content: SizedBox(
+          width: 560,
+          height: maxH,
           child: Column(
-            mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               if (heading.isNotEmpty) ...[
@@ -611,9 +1018,8 @@ class _ResultsDialogState extends State<_ResultsDialog> {
                 ),
               ],
               const SizedBox(height: 12),
-              Flexible(
+              Expanded(
                 child: ListView.separated(
-                  shrinkWrap: true,
                   itemCount: _sources.length,
                   separatorBuilder: (_, i) => i == 0 && _sources.length > 1
                       ? Padding(
@@ -633,6 +1039,7 @@ class _ResultsDialogState extends State<_ResultsDialog> {
                       source: _sources[i],
                       best: i == 0,
                       autofocus: i == 0,
+                      onSelected: widget.onSelected,
                     );
                   },
                 ),
@@ -650,11 +1057,13 @@ class _TorrentTile extends StatelessWidget {
     required this.source,
     required this.best,
     required this.autofocus,
+    this.onSelected,
   });
 
   final StreamSource source;
   final bool best;
   final bool autofocus;
+  final Future<void> Function(StreamSource source)? onSelected;
 
   @override
   Widget build(BuildContext context) {
@@ -669,7 +1078,18 @@ class _TorrentTile extends StatelessWidget {
         child: InkWell(
           autofocus: autofocus,
           borderRadius: radius,
-          onTap: () => Navigator.pop(context, source),
+          onTap: () {
+            final cb = onSelected;
+            if (cb != null) {
+              // Finish the KeyEvent first — starting GraphQL/setState in the
+              // same turn as ActivateIntent ANRs Android TV.
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                unawaited(cb(source));
+              });
+            } else {
+              Navigator.pop(context, source);
+            }
+          },
           child: Container(
             padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
             decoration: BoxDecoration(
@@ -785,23 +1205,24 @@ String _healthLabel(String health) {
 }
 
 class _FilePickerDialog extends StatelessWidget {
-  const _FilePickerDialog({required this.files});
+  const _FilePickerDialog({required this.files, this.onSelected});
   final List<TorrentFileOption> files;
+  final Future<void> Function(TorrentFileOption file)? onSelected;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final maxH = MediaQuery.sizeOf(context).height * 0.72;
-    return AlertDialog(
-      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
-      title: const Text('Choose a file'),
-      contentPadding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
-      content: SizedBox(
-        width: 560,
-        child: ConstrainedBox(
-          constraints: BoxConstraints(maxHeight: maxH),
+    return FocusScope(
+      autofocus: true,
+      child: AlertDialog(
+        backgroundColor: Theme.of(context).scaffoldBackgroundColor,
+        title: const Text('Choose a file'),
+        contentPadding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
+        content: SizedBox(
+          width: 560,
+          height: maxH,
           child: Column(
-            mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
@@ -809,9 +1230,8 @@ class _FilePickerDialog extends StatelessWidget {
                 style: TextStyle(color: scheme.onSurfaceVariant, height: 1.35, fontSize: 13),
               ),
               const SizedBox(height: 12),
-              Flexible(
+              Expanded(
                 child: ListView.separated(
-                  shrinkWrap: true,
                   itemCount: files.length,
                   separatorBuilder: (_, __) => const SizedBox(height: 8),
                   itemBuilder: (context, i) {
@@ -826,7 +1246,16 @@ class _FilePickerDialog extends StatelessWidget {
                         child: InkWell(
                           autofocus: i == 0,
                           borderRadius: radius,
-                          onTap: () => Navigator.pop(context, file),
+                          onTap: () {
+                            final cb = onSelected;
+                            if (cb != null) {
+                              WidgetsBinding.instance.addPostFrameCallback((_) {
+                                unawaited(cb(file));
+                              });
+                            } else {
+                              Navigator.pop(context, file);
+                            }
+                          },
                           child: Container(
                             padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
                             decoration: BoxDecoration(

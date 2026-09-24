@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:io' show Platform;
-import 'dart:ui' show AppExitResponse;
+import 'dart:ui' show AppExitResponse, PlatformDispatcher;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -35,8 +35,22 @@ import 'local_torrent.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  debugPrint('PeanutButter main() start Uri.base=${Uri.base}');
+
+  FlutterError.onError = (details) {
+    FlutterError.presentError(details);
+    debugPrint('PeanutButter FlutterError: ${details.exceptionAsString()}');
+    debugPrint('${details.stack}');
+  };
+  PlatformDispatcher.instance.onError = (error, stack) {
+    debugPrint('PeanutButter platform error: $error');
+    debugPrint('$stack');
+    return true;
+  };
+
   // Surface build failures instead of a silent black window.
   ErrorWidget.builder = (details) {
+    debugPrint('PeanutButter ErrorWidget: ${details.exceptionAsString()}');
     return Material(
       color: const Color(0xFF0E0E12),
       child: SafeArea(
@@ -61,7 +75,17 @@ Future<void> main() async {
   // Do NOT init MediaKit / libtorrent here — on Windows/macOS that can leave a
   // blank black surface before any UI mounts. Player / LocalTorrentEngine init
   // themselves when streaming actually starts.
-  final prefs = await SharedPreferences.getInstance();
+  debugPrint('PeanutButter loading SharedPreferences…');
+  SharedPreferences prefs;
+  try {
+    prefs = await SharedPreferences.getInstance().timeout(const Duration(seconds: 5));
+  } catch (e) {
+    debugPrint('PeanutButter SharedPreferences failed: $e — continuing with empty prefs');
+    // Last-resort empty store so UI can still mount on flaky emulators.
+    SharedPreferences.setMockInitialValues(const {});
+    prefs = await SharedPreferences.getInstance();
+  }
+  debugPrint('PeanutButter runApp');
   runApp(
     ProviderScope(
       overrides: [
@@ -176,8 +200,10 @@ class _PeanutButterAppState extends ConsumerState<PeanutButterApp> with WidgetsB
     super.initState();
     _router = _buildRouter(() => ref.read(settingsProvider));
     WidgetsBinding.instance.addObserver(this);
+    debugPrint('PeanutButterApp initState');
     // Paint boot route first, then discover/health.
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      debugPrint('PeanutButterApp first frame');
       if (!mounted) return;
       unawaited(_bootstrapSession());
     });
@@ -274,7 +300,7 @@ class _PeanutButterAppState extends ConsumerState<PeanutButterApp> with WidgetsB
     final settings = ref.read(settingsProvider);
     if (settings.apiToken.isEmpty || settings.serverUrl.isEmpty) return;
     // While watching, ignore API blips — local/torrent streams keep playing.
-    if (ref.read(playbackActiveProvider) || playbackSessionActive) return;
+    if (playbackSessionActive) return;
     try {
       final result = await ref.read(graphQLClientProvider).query(
             QueryOptions(
@@ -284,7 +310,7 @@ class _PeanutButterAppState extends ConsumerState<PeanutButterApp> with WidgetsB
           );
       if (result.hasException) {
         final err = result.exception!;
-        if (ref.read(playbackActiveProvider) || playbackSessionActive) return;
+        if (playbackSessionActive) return;
         if (isUnauthorizedError(err)) {
           await ref.read(settingsProvider.notifier).forgetPairing(
                 message: 'This pairing code is no longer valid. Create a new code in the server console.',
@@ -298,7 +324,7 @@ class _PeanutButterAppState extends ConsumerState<PeanutButterApp> with WidgetsB
         await ref.read(settingsProvider.notifier).markConnected();
       }
     } catch (e) {
-      if (ref.read(playbackActiveProvider) || playbackSessionActive) return;
+      if (playbackSessionActive) return;
       if (isUnauthorizedError(e)) {
         await ref.read(settingsProvider.notifier).forgetPairing(
               message: 'This pairing code is no longer valid. Create a new code in the server console.',

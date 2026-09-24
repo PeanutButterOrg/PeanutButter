@@ -19,6 +19,9 @@ dependencies:
   media_kit: ^1.1.11
   media_kit_video: ^1.2.5
   media_kit_libs_video: ^1.0.5
+  # Local fork: load libmpv on a background thread (TV emulator ANR fix).
+  media_kit_libs_android_video:
+    path: packages/media_kit_libs_android_video
   libtorrent_flutter: ^2.0.0
   webview_flutter: ^4.10.0
   linux_embedded_webview:
@@ -41,6 +44,11 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^4.0.0
+
+dependency_overrides:
+  # Defer libmpv load until playback so Flutter can attach a surface on Android TV emulators.
+  media_kit_libs_android_video:
+    path: packages/media_kit_libs_android_video
 
 flutter:
   uses-material-design: true

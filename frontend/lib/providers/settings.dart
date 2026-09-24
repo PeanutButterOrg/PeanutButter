@@ -19,9 +19,7 @@ final discoveryServiceProvider = Provider<DiscoveryService>((ref) {
 });
 
 /// True while PlayerScreen is open — keep playback going if the API blips.
-final playbackActiveProvider = StateProvider<bool>((ref) => false);
-
-/// Non-Riverpod mirror so SettingsNotifier can ignore auth blips mid-playback.
+/// Non-Riverpod so SettingsNotifier / go_router can read it without build races.
 bool playbackSessionActive = false;
 
 class SettingsState {

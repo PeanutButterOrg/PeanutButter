@@ -4,7 +4,10 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 
-bool get isAndroidTv => !kIsWeb && Platform.isAndroid;
+/// Test-only override. Set in widget tests; leave null in production.
+bool? debugIsAndroidTvOverride;
+
+bool get isAndroidTv => debugIsAndroidTvOverride ?? (!kIsWeb && Platform.isAndroid);
 
 /// Optional Back interceptor used when a modal overlay is open.
 class TvPreviewLock {

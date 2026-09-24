@@ -141,16 +141,11 @@ EOF
 
 install_tv() {
   echo "==> Building Android TV APK"
-  flutter build apk --release
-  local apk="build/app/outputs/flutter-apk/app-release.apk"
-  if [[ ! -f "$apk" ]]; then
-    echo "APK missing at $apk" >&2
-    exit 1
-  fi
-  cp -f "$apk" "$DIST/PeanutButter-tv.apk"
-  ls -lh "$DIST/PeanutButter-tv.apk"
-
   if ! command -v adb >/dev/null 2>&1; then
+    flutter build apk --release
+    local apk="build/app/outputs/flutter-apk/app-release.apk"
+    [[ -f "$apk" ]] || { echo "APK missing at $apk" >&2; exit 1; }
+    cp -f "$apk" "$DIST/PeanutButter-tv.apk"
     echo "adb not found — APK saved to dist/ only" >&2
     return 0
   fi
@@ -160,19 +155,52 @@ install_tv() {
   local dev
   dev="$(adb devices | awk -v t="$target" '$1==t && $2=="device"{print $1; exit}')"
   if [[ -z "$dev" ]]; then
-    # Fall back to any connected :5555 device.
+    # Prefer physical / network TV over Studio emulator when both are present.
     dev="$(adb devices | awk '/:5555[[:space:]]+device/{print $1; exit}')"
+  fi
+  if [[ -z "$dev" ]]; then
+    # Fall back to any already-connected device (USB / emulator).
+    # Prefer emulator when that is the only target (Android Studio TV).
+    dev="$(adb devices | awk '/^emulator-.*device$/{print $1; exit}')"
+  fi
+  if [[ -z "$dev" ]]; then
+    dev="$(adb devices | awk '/[[:space:]]device$/{print $1; exit}')"
+  fi
+
+  local apk="build/app/outputs/flutter-apk/app-release.apk"
+  local abi=""
+  if [[ -n "$dev" ]]; then
+    abi="$(adb -s "$dev" shell getprop ro.product.cpu.abi 2>/dev/null | tr -d '\r')"
+  fi
+
+  # Flutter no longer ships release AOT for 32-bit x86. Android Studio's
+  # Television_* x86 AVD needs a debug x86 APK (JIT).
+  if [[ "$abi" == "x86" ]]; then
+    echo "==> Device $dev is x86 — building debug APK for emulator"
+    flutter build apk --debug --target-platform android-x86
+    apk="build/app/outputs/flutter-apk/app-debug.apk"
+    cp -f "$apk" "$DIST/PeanutButter-tv-emulator-x86-debug.apk"
+  else
+    flutter build apk --release
+    cp -f "$apk" "$DIST/PeanutButter-tv.apk"
+    ls -lh "$DIST/PeanutButter-tv.apk"
+  fi
+
+  if [[ ! -f "$apk" ]]; then
+    echo "APK missing at $apk" >&2
+    exit 1
   fi
   if [[ -z "$dev" ]]; then
     echo "No Android TV found via adb (tried $target). APK is in dist/." >&2
     return 0
   fi
 
-  echo "==> Installing on $dev"
+  echo "==> Installing on $dev (abi=${abi:-unknown})"
   adb -s "$dev" install -r "$apk"
   adb -s "$dev" shell am force-stop "$PKG" >/dev/null 2>&1 || true
   if [[ "$do_launch" -eq 1 ]]; then
     adb -s "$dev" shell am start -n "${PKG}/.MainActivity" >/dev/null 2>&1 \
+      || adb -s "$dev" shell monkey -p "$PKG" -c android.intent.category.LEANBACK_LAUNCHER 1 >/dev/null 2>&1 \
       || adb -s "$dev" shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 >/dev/null
     echo "TV launched on $dev"
   else

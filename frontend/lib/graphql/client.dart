@@ -112,11 +112,24 @@ bool isLocalServer(String serverUrl) {
   return host == '127.0.0.1' || host == 'localhost' || host == '::1';
 }
 
+/// Flutter mobile/TV uses `Uri.base` = `file:///`; reading `.origin` throws.
+String? _httpUriBaseOrigin() {
+  final base = Uri.base;
+  if (base.scheme != 'http' && base.scheme != 'https') return null;
+  if (base.host.isEmpty) return null;
+  try {
+    return base.origin;
+  } catch (_) {
+    return null;
+  }
+}
+
 String _normalizeGraphqlUri(String serverUrl) {
   var value = serverUrl.trim();
   if (value.isEmpty) {
-    if (Uri.base.hasScheme && Uri.base.host.isNotEmpty && !isLocalServer(Uri.base.origin)) {
-      return Uri.base.resolve('graphql').toString();
+    final origin = _httpUriBaseOrigin();
+    if (origin != null && !isLocalServer(origin)) {
+      return Uri.parse(origin).resolve('graphql').toString();
     }
     // No invented loopback — callers must discover a LAN host first.
     return '';
@@ -134,8 +147,8 @@ String _normalizeGraphqlUri(String serverUrl) {
 String normalizeServerBase(String serverUrl) {
   var value = serverUrl.trim();
   if (value.isEmpty) {
-    final origin = Uri.base.origin;
-    if (origin.isNotEmpty && !isLocalServer(origin)) return origin;
+    final origin = _httpUriBaseOrigin();
+    if (origin != null && !isLocalServer(origin)) return origin;
     return '';
   }
   if (!value.startsWith('http://') && !value.startsWith('https://')) {

@@ -8,6 +8,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:graphql_flutter/graphql_flutter.dart';
 import 'package:media_kit/media_kit.dart';
+import 'package:media_kit_libs_android_video/media_kit_libs_android_video.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:media_kit_video/media_kit_video_controls/media_kit_video_controls.dart';
 import 'package:video_player/video_player.dart';
@@ -209,17 +210,78 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   @override
   void initState() {
     super.initState();
+    // Prefer the non-Riverpod flag — writing StateProviders from initState
+    // races go_router rebuilds on Android TV (red "UI error" screen).
     playbackSessionActive = true;
-    ref.read(playbackActiveProvider.notifier).state = true;
     _client = ref.read(graphQLClientProvider);
     _url = widget.playbackUrl;
     _fileId = widget.fileId;
     if (!_useExo) {
+      // Android: paint chrome first, await background libmpv load, then create
+      // Player. Sync System.loadLibrary / DynamicLibrary.open ANRs TV emulators.
+      // Linux/desktop keep sync init so buffering stays responsive.
+      if (!kIsWeb && Platform.isAndroid) {
+        // First paint player chrome / poster; delay native Player() until after
+        // the stream-picker route has popped (otherwise UI sticks on Starting…).
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          unawaited(() async {
+            // Long delay: Player() FFI still blocks the UI isolate for seconds on
+            // the x86 TV emulator even after libmpv is loaded. Wait until the
+            // select KeyEvent is fully done and chrome has painted.
+            await Future<void>.delayed(const Duration(milliseconds: 1200));
+            if (!mounted) return;
+            await _initMediaKitPlayerAndroid();
+          }());
+        });
+      } else {
+        _initMediaKitPlayer();
+        _kickOffPlayback();
+      }
+    } else {
+      _kickOffPlayback();
+    }
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+    // Register hardware key handler AFTER everything is set up.
+    HardwareKeyboard.instance.addHandler(_onHardwareKey);
+    // Desktop: show controls briefly, then auto-hide.
+    if (!isAndroidTv) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _bumpChrome());
+    }
+  }
+
+  Future<void> _initMediaKitPlayerAndroid() async {
+    if (!mounted || _player != null) return;
+    setState(() => _buffering = true);
+    await MediaKitAndroidVideo.preload();
+    if (!mounted) return;
+    // Yield so input/vsync can run between native steps.
+    await Future<void>.delayed(Duration.zero);
+    if (!mounted) return;
+    try {
       MediaKit.ensureInitialized();
+    } catch (e, st) {
+      debugPrint('PeanutButter MediaKit.ensureInitialized failed: $e\n$st');
+    }
+    await Future<void>.delayed(Duration.zero);
+    if (!mounted) return;
+    _initMediaKitPlayer();
+    if (mounted) setState(() {});
+    _kickOffPlayback();
+  }
+
+  void _initMediaKitPlayer() {
+    if (_player != null) return;
+    try {
+      if (kIsWeb || !Platform.isAndroid) {
+        MediaKit.ensureInitialized();
+      }
+      // Tiny demuxer RAM on Android — large sync alloc freezes TV emulators.
+      final bufferBytes = (!kIsWeb && Platform.isAndroid)
+          ? 4 * 1024 * 1024
+          : (widget.isStream ? 64 * 1024 * 1024 : 48 * 1024 * 1024);
       _player = Player(
         configuration: PlayerConfiguration(
-          // Larger demuxer RAM so pause→resume stays smooth.
-          bufferSize: widget.isStream ? 64 * 1024 * 1024 : 48 * 1024 * 1024,
+          bufferSize: bufferBytes,
           ready: _onPlayerReady,
         ),
       );
@@ -268,30 +330,31 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
           unawaited(_loadMediaSegments(durationMs: d.inMilliseconds));
         }
       });
+    } catch (e, st) {
+      debugPrint('PeanutButter player init failed: $e\n$st');
+      _streamError = 'Couldn’t start the video player on this device.\n$e';
     }
-    if (widget.isStream) {
+  }
+
+  void _kickOffPlayback() {
+    if (widget.isStream && _streamPoll == null) {
       _streamPoll = Timer.periodic(const Duration(seconds: 1), (_) => unawaited(_pollStream()));
     }
-    if (_isTrailer) {
-      _buffering = true;
-      unawaited(_openTrailer());
-    } else if (widget.isStream) {
-      unawaited(_prepareStream());
-    } else {
-      _open(_url, fileId: _fileId);
-    }
-    if (!_isTrailer) {
-      unawaited(_loadMediaSegments());
-      if (widget.titleId != null) {
-        unawaited(_resolveNextEpisode());
+    if (_player != null || _useExo) {
+      if (_isTrailer) {
+        _buffering = true;
+        unawaited(_openTrailer());
+      } else if (widget.isStream) {
+        unawaited(_prepareStream());
+      } else {
+        unawaited(_open(_url, fileId: _fileId));
       }
-    }
-    SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
-    // Register hardware key handler AFTER everything is set up.
-    HardwareKeyboard.instance.addHandler(_onHardwareKey);
-    // Desktop: show controls briefly, then auto-hide.
-    if (!isAndroidTv) {
-      WidgetsBinding.instance.addPostFrameCallback((_) => _bumpChrome());
+      if (!_isTrailer) {
+        unawaited(_loadMediaSegments());
+        if (widget.titleId != null) {
+          unawaited(_resolveNextEpisode());
+        }
+      }
     }
   }
 
@@ -712,7 +775,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   @override
   void deactivate() {
     playbackSessionActive = false;
-    ref.read(playbackActiveProvider.notifier).state = false;
     super.deactivate();
   }
 
@@ -1164,6 +1226,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       } catch (_) {}
 
       final previousSession = widget.sessionId;
+      var opened = false;
       final started = await showStreamingPicker(
         context: context,
         client: ref.read(graphQLClientProvider),
@@ -1176,9 +1239,40 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
             ref.read(settingsProvider).preferredLanguages,
         resumePlayback: false,
         stopPreviousSessionId: previousSession,
+        onReadyToPlay: (s) {
+          if (!mounted) return;
+          opened = true;
+          setState(() => _playNextDismissed = true);
+          if (widget.localTorrent || LocalTorrentEngine.instance.isActive) {
+            unawaited(LocalTorrentEngine.instance.stop());
+          }
+          context.pushReplacement(
+            '/player/${s.session.id}',
+            extra: {
+              'url': s.session.streamUrl,
+              'title': next.label,
+              'catalogTitle': next.catalogTitle,
+              'kind': next.kind,
+              'titleId': widget.titleId,
+              'episodeId': next.episodeId,
+              'season': next.season,
+              'episode': next.episode,
+              'startMs': 0,
+              'isStream': true,
+              'sessionId': s.session.id,
+              'magnet': s.magnet,
+              'localTorrent': s.localTorrent,
+              'listedSeeders': s.session.seeders,
+              'listedPeers': s.session.peers,
+              'streamFileIndex': s.fileIndex,
+              'posterUrl': widget.posterUrl,
+              'backdropUrl': widget.backdropUrl,
+            },
+          );
+        },
       );
       if (started == null || !mounted) {
-        if (mounted) {
+        if (mounted && !opened) {
           setState(() {
             _playNextBusy = false;
             // Keep the prompt available if the user cancelled the picker.
@@ -1188,6 +1282,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
         }
         return;
       }
+      if (opened) return;
 
       setState(() => _playNextDismissed = true);
       if (widget.localTorrent || LocalTorrentEngine.instance.isActive) {

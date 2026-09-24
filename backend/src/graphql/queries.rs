@@ -500,10 +500,15 @@ impl Query {
             if let Ok(Some(cached)) =
                 crate::db::stream_search_cache_get(&state.pool, &cache_key, CACHE_TTL).await
             {
-                if let Ok(sources) =
+                if let Ok(mut sources) =
                     serde_json::from_value::<Vec<StreamSource>>(cached)
                 {
                     if !sources.is_empty() {
+                        // Older cache rows may predate the 24-cap — trim so the
+                        // TV picker never builds a huge dialog.
+                        if sources.len() > 24 {
+                            sources.truncate(24);
+                        }
                         return Ok(sources);
                     }
                 }

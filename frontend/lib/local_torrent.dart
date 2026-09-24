@@ -11,51 +11,60 @@ class LocalTorrentEngine {
   static final LocalTorrentEngine instance = LocalTorrentEngine._();
 
   bool _ready = false;
+  bool _nativeUnavailable = false;
   int? _torrentId;
   int? _streamId;
   String? _savePath;
 
   bool get supported =>
-      !kIsWeb && (Platform.isAndroid || Platform.isLinux || Platform.isWindows || Platform.isMacOS);
+      !_nativeUnavailable &&
+      !kIsWeb &&
+      (Platform.isAndroid || Platform.isLinux || Platform.isWindows || Platform.isMacOS);
   bool get isActive => _torrentId != null;
 
   Future<void> ensureInit() async {
     if (!supported || _ready) return;
-    final tmp = await getTemporaryDirectory();
-    _savePath = '${tmp.path}/peanutbutter-streams';
-    await Directory(_savePath!).create(recursive: true);
-    await LibtorrentFlutter.init(
-      uploadLimit: 0,
-      downloadLimit: 0,
-      defaultSavePath: _savePath,
-      fetchTrackers: true,
-      pollInterval: const Duration(milliseconds: 400),
-    );
-    final engine = LibtorrentFlutter.instance;
-    engine.configureSession(
-      const BtConfig(
-        cacheSize: 256 * 1024 * 1024,
-        readerReadAhead: 95,
-        preloadCache: 80,
-        connectionsLimit: 80,
-        // Without an HTTP reader, the plugin pauses the torrent after 30s.
-        torrentDisconnectTimeout: 86400,
-        disableTcp: false,
-        disableUtp: false,
-        disableUpload: false,
-        disableDht: false,
-        disableUpnp: false,
-        downloadRateLimit: 0,
-        uploadRateLimit: 0,
-        responsiveMode: true,
-      ),
-    );
-    engine.setDownloadLimit(0);
-    engine.setUploadLimit(0);
     try {
-      await TrackerManager.fetchBestTrackers().timeout(const Duration(seconds: 5));
-    } catch (_) {}
-    _ready = true;
+      final tmp = await getTemporaryDirectory();
+      _savePath = '${tmp.path}/peanutbutter-streams';
+      await Directory(_savePath!).create(recursive: true);
+      await LibtorrentFlutter.init(
+        uploadLimit: 0,
+        downloadLimit: 0,
+        defaultSavePath: _savePath,
+        fetchTrackers: true,
+        pollInterval: const Duration(milliseconds: 400),
+      );
+      final engine = LibtorrentFlutter.instance;
+      engine.configureSession(
+        const BtConfig(
+          cacheSize: 256 * 1024 * 1024,
+          readerReadAhead: 95,
+          preloadCache: 80,
+          connectionsLimit: 80,
+          // Without an HTTP reader, the plugin pauses the torrent after 30s.
+          torrentDisconnectTimeout: 86400,
+          disableTcp: false,
+          disableUtp: false,
+          disableUpload: false,
+          disableDht: false,
+          disableUpnp: false,
+          downloadRateLimit: 0,
+          uploadRateLimit: 0,
+          responsiveMode: true,
+        ),
+      );
+      engine.setDownloadLimit(0);
+      engine.setUploadLimit(0);
+      try {
+        await TrackerManager.fetchBestTrackers().timeout(const Duration(seconds: 5));
+      } catch (_) {}
+      _ready = true;
+    } catch (e, st) {
+      // Android Studio TV x86 emulator has no libtorrent x86 .so — keep app usable.
+      _nativeUnavailable = true;
+      debugPrint('LocalTorrentEngine unavailable: $e\n$st');
+    }
   }
 
   Future<LocalStreamHandle> start({

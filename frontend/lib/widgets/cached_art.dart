@@ -1,11 +1,112 @@
 import 'dart:io' show Platform;
 
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 
 import '../models.dart';
+
+bool _looksLikeImage(List<int> bytes) {
+  if (bytes.length < 12) return false;
+  // JPEG / PNG / GIF / WEBP — reject HTML/JSON error bodies that confuse ImageDecoder.
+  if (bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF) return true;
+  if (bytes[0] == 0x89 && bytes[1] == 0x50 && bytes[2] == 0x4E && bytes[3] == 0x47) {
+    return true;
+  }
+  if (bytes[0] == 0x47 && bytes[1] == 0x49 && bytes[2] == 0x46) return true;
+  if (bytes[0] == 0x52 &&
+      bytes[1] == 0x49 &&
+      bytes[2] == 0x46 &&
+      bytes[3] == 0x46 &&
+      bytes[8] == 0x57 &&
+      bytes[9] == 0x45 &&
+      bytes[10] == 0x42 &&
+      bytes[11] == 0x50) {
+    return true;
+  }
+  return false;
+}
+
+class _BytesResponse implements FileServiceResponse {
+  _BytesResponse(this._bytes, this.statusCode, {String? contentType})
+      : _contentType = contentType,
+        _received = DateTime.now();
+
+  final List<int> _bytes;
+  final String? _contentType;
+  final DateTime _received;
+
+  @override
+  Stream<List<int>> get content => Stream<List<int>>.value(_bytes);
+
+  @override
+  int? get contentLength => _bytes.length;
+
+  @override
+  final int statusCode;
+
+  @override
+  DateTime get validTill => _received.add(const Duration(days: 30));
+
+  @override
+  String? get eTag => null;
+
+  @override
+  String get fileExtension {
+    final type = (_contentType ?? '').split(';').first.trim().toLowerCase();
+    if (type.contains('png')) return '.png';
+    if (type.contains('webp')) return '.webp';
+    if (type.contains('gif')) return '.gif';
+    if (_bytes.length >= 8 &&
+        _bytes[0] == 0x89 &&
+        _bytes[1] == 0x50 &&
+        _bytes[2] == 0x4E &&
+        _bytes[3] == 0x47) {
+      return '.png';
+    }
+    if (_bytes.length >= 12 &&
+        _bytes[0] == 0x52 &&
+        _bytes[8] == 0x57 &&
+        _bytes[9] == 0x45) {
+      return '.webp';
+    }
+    return '.jpg';
+  }
+}
+
+/// Rejects non-image HTTP bodies before they hit FlutterJNI ImageDecoder.
+class _ArtFileService extends FileService {
+  final Dio _dio = Dio(
+    BaseOptions(
+      connectTimeout: const Duration(seconds: 8),
+      receiveTimeout: const Duration(seconds: 12),
+      responseType: ResponseType.bytes,
+      followRedirects: true,
+      validateStatus: (s) => s != null && s < 500,
+    ),
+  );
+
+  @override
+  Future<FileServiceResponse> get(String url, {Map<String, String>? headers}) async {
+    final response = await _dio.get<List<int>>(
+      url,
+      options: Options(headers: headers),
+    );
+    final status = response.statusCode ?? 0;
+    final body = response.data ?? const <int>[];
+    if (status < 200 || status >= 300 || !_looksLikeImage(body)) {
+      throw HttpExceptionWithStatus(
+        status == 200 ? 415 : status,
+        'Not a decodable image',
+        uri: Uri.tryParse(url),
+      );
+    }
+    final contentType = response.headers.value('content-type');
+    return _BytesResponse(body, status, contentType: contentType);
+  }
+}
 
 /// Disk cache for posters and backdrops so scrolling does not re-download art.
 class ArtCache {
@@ -14,6 +115,7 @@ class ArtCache {
       'catalog_art',
       stalePeriod: const Duration(days: 45),
       maxNrOfCacheObjects: 8000,
+      fileService: _ArtFileService(),
     ),
   );
 
@@ -45,6 +147,7 @@ class ArtCache {
     PaintingBinding.instance.imageCache.clearLiveImages();
   }
 }
+
 
 class CachedArt extends StatelessWidget {
   const CachedArt({

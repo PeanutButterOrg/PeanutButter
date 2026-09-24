@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../friendly_error.dart';
 import '../graphql/client.dart';
 import '../providers/catalog.dart';
 import '../providers/settings.dart';
+import '../services/discovery.dart';
 import '../theme.dart';
 import '../tv.dart';
 import '../widgets/tv_chrome.dart';
@@ -20,6 +22,10 @@ class PairingScreen extends ConsumerStatefulWidget {
 class _PairingScreenState extends ConsumerState<PairingScreen> {
   late final TextEditingController _url;
   late final TextEditingController _token;
+  // Chrome nodes = D-pad highlight without opening the soft keyboard.
+  // Input nodes = typing only after Select (TvTextField).
+  final FocusNode _urlChrome = FocusNode(debugLabel: 'pair-url-chrome');
+  final FocusNode _tokenChrome = FocusNode(debugLabel: 'pair-token-chrome');
   final FocusNode _urlFocus = FocusNode(debugLabel: 'pair-url');
   final FocusNode _tokenFocus = FocusNode(debugLabel: 'pair-token');
   final FocusNode _connectFocus = FocusNode(debugLabel: 'pair-connect');
@@ -30,6 +36,11 @@ class _PairingScreenState extends ConsumerState<PairingScreen> {
   bool _showUrlField = false;
   String? _foundLabel;
 
+  void _focusFieldChrome(FocusNode chrome) {
+    if (!mounted) return;
+    if (chrome.canRequestFocus) chrome.requestFocus();
+  }
+
   @override
   void initState() {
     super.initState();
@@ -39,12 +50,35 @@ class _PairingScreenState extends ConsumerState<PairingScreen> {
     _url = TextEditingController(text: hasUsableUrl ? savedUrl : '');
     _token = TextEditingController();
     _showUrlField = hasUsableUrl;
+
+    // Button focus nodes must handle arrows themselves — Material buttons
+    // don't bubble D-pad to a parent Focus(onKeyEvent: …).
+    _connectFocus.onKeyEvent = (node, event) {
+      if (event is! KeyDownEvent) return KeyEventResult.ignored;
+      if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
+        _focusFieldChrome(_tokenChrome);
+        return KeyEventResult.handled;
+      }
+      if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
+        _findFocus.requestFocus();
+        return KeyEventResult.handled;
+      }
+      return KeyEventResult.ignored;
+    };
+    _findFocus.onKeyEvent = (node, event) {
+      if (event is! KeyDownEvent) return KeyEventResult.ignored;
+      if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
+        _connectFocus.requestFocus();
+        return KeyEventResult.handled;
+      }
+      return KeyEventResult.ignored;
+    };
+
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (!mounted) return;
       if (hasUsableUrl) {
-        if (isAndroidTv && _tokenFocus.canRequestFocus) {
-          _tokenFocus.requestFocus();
-        }
+        // Highlight code field chrome — do NOT open soft keyboard (covers TV UI).
+        if (isAndroidTv) _focusFieldChrome(_tokenChrome);
         return;
       }
       await _autoFindServer();
@@ -55,6 +89,8 @@ class _PairingScreenState extends ConsumerState<PairingScreen> {
   void dispose() {
     _url.dispose();
     _token.dispose();
+    _urlChrome.dispose();
+    _tokenChrome.dispose();
     _urlFocus.dispose();
     _tokenFocus.dispose();
     _connectFocus.dispose();
@@ -94,9 +130,7 @@ class _PairingScreenState extends ConsumerState<PairingScreen> {
         _showUrlField = false;
         _foundLabel = found;
       });
-      if (isAndroidTv && _tokenFocus.canRequestFocus) {
-        _tokenFocus.requestFocus();
-      }
+      if (isAndroidTv) _focusFieldChrome(_tokenChrome);
       return;
     }
     setState(() {
@@ -104,9 +138,7 @@ class _PairingScreenState extends ConsumerState<PairingScreen> {
       _showUrlField = true;
       _foundLabel = null;
     });
-    if (isAndroidTv && _urlFocus.canRequestFocus) {
-      _urlFocus.requestFocus();
-    }
+    if (isAndroidTv) _focusFieldChrome(_urlChrome);
   }
 
   Future<void> _connect() async {
@@ -121,7 +153,22 @@ class _PairingScreenState extends ConsumerState<PairingScreen> {
         );
         return;
       }
-      await notifier.setServerUrl(typed);
+      // Prefer an explicit URL; if /health fails without a port, try :3001.
+      final resolved = await DiscoveryService().resolveReachableBase(typed);
+      if (resolved == null) {
+        await notifier.setServerUrl(typed);
+        await notifier.clearPairingAttempt(
+          'Cannot reach $typed. Use the console URL with port, e.g. http://10.0.0.110:3001/',
+        );
+        if (mounted) {
+          setState(() => _showUrlField = true);
+        }
+        return;
+      }
+      if (mounted && resolved != normalizeServerBase(typed)) {
+        _url.text = '$resolved/';
+      }
+      await notifier.setServerUrl(resolved);
       await notifier.setApiToken(_token.text);
       if (mounted) _token.text = ref.read(settingsProvider).apiToken;
       final reachable = await notifier.probeCurrent();
@@ -231,16 +278,17 @@ class _PairingScreenState extends ConsumerState<PairingScreen> {
           ],
           if (_showUrlField) ...[
             TvTextField(
-              chromeFocus: _urlFocus,
+              chromeFocus: _urlChrome,
+              focusNode: _urlFocus,
               controller: _url,
-              autofocus: isAndroidTv && _foundLabel == null,
+              autofocus: false,
               keyboardType: TextInputType.url,
               textInputAction: TextInputAction.next,
-              decoration: _field('Server address'),
-              onMoveDown: () => _tokenFocus.requestFocus(),
+              decoration: _field('Server address (e.g. http://10.0.0.110:3001)'),
+              onMoveDown: () => _focusFieldChrome(_tokenChrome),
               onSubmitted: (_) {
                 if (isAndroidTv) {
-                  _tokenFocus.requestFocus();
+                  _focusFieldChrome(_tokenChrome);
                 } else {
                   _connect();
                 }
@@ -249,11 +297,17 @@ class _PairingScreenState extends ConsumerState<PairingScreen> {
             const SizedBox(height: 12),
           ],
           TvTextField(
-            chromeFocus: _tokenFocus,
+            chromeFocus: _tokenChrome,
+            focusNode: _tokenFocus,
             controller: _token,
             keyboardType: const TextInputType.numberWithOptions(decimal: false, signed: false),
             textInputAction: TextInputAction.done,
             decoration: _field('6-digit pairing code'),
+            onMoveUp: () {
+              if (_showUrlField) {
+                _focusFieldChrome(_urlChrome);
+              }
+            },
             onMoveDown: () => _connectFocus.requestFocus(),
             onSubmitted: (_) => _connect(),
           ),
