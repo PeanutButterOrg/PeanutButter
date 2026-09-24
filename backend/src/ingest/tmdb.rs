@@ -17,7 +17,8 @@ const TMDB: &str = "https://api.themoviedb.org/3";
 /// Hard cap: 30 TMDB HTTP calls per second (list + detail + search).
 const TMDB_PER_SEC: f64 = 30.0;
 /// How many detail upserts may run at once (still paced by the token bucket).
-const TMDB_CONCURRENCY: usize = 12;
+/// Keep below the ingest pool size so GraphQL/API retain DB capacity during sync.
+const TMDB_CONCURRENCY: usize = 6;
 /// Max TMDB list pages fetched during a full/cron sync (trending / popular / fresh).
 const TMDB_LIST_INITIAL_PAGES: i32 = 5;
 /// Hard ceiling for on-demand scroll fetches (and TMDB's own total_pages clamp).

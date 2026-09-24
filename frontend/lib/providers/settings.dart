@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:graphql_flutter/graphql_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../android_playback.dart';
 import '../graphql/client.dart';
 import '../graphql/queries.dart';
 import '../models.dart';
@@ -40,6 +41,7 @@ class SettingsState {
     this.jackettUrl = '',
     this.jackettConfigured = false,
     this.jackettStreamingResolution = '1080p',
+    this.androidPlaybackBackend = AndroidPlaybackBackend.vlc,
   });
 
   final String serverUrl;
@@ -60,6 +62,8 @@ class SettingsState {
   final String jackettUrl;
   final bool jackettConfigured;
   final String jackettStreamingResolution;
+  /// Android-only: external Intent player vs in-app Flutter decoder.
+  final AndroidPlaybackBackend androidPlaybackBackend;
 
   SettingsState copyWith({
     String? serverUrl,
@@ -78,6 +82,7 @@ class SettingsState {
     String? jackettUrl,
     bool? jackettConfigured,
     String? jackettStreamingResolution,
+    AndroidPlaybackBackend? androidPlaybackBackend,
     bool clearError = false,
   }) {
     return SettingsState(
@@ -97,6 +102,7 @@ class SettingsState {
       jackettUrl: jackettUrl ?? this.jackettUrl,
       jackettConfigured: jackettConfigured ?? this.jackettConfigured,
       jackettStreamingResolution: jackettStreamingResolution ?? this.jackettStreamingResolution,
+      androidPlaybackBackend: androidPlaybackBackend ?? this.androidPlaybackBackend,
     );
   }
 }
@@ -150,6 +156,9 @@ class SettingsNotifier extends StateNotifier<SettingsState> {
       jackettUrl: _prefs.getString(_kJackettUrl) ?? '',
       jackettConfigured: _prefs.getBool(_kJackettConfigured) ?? false,
       jackettStreamingResolution: _prefs.getString(_kJackettRes) ?? '1080p',
+      androidPlaybackBackend: AndroidPlayback.fromPrefs(
+        _prefs.getString(AndroidPlayback.prefsKey),
+      ),
     );
   }
 
@@ -222,6 +231,11 @@ class SettingsNotifier extends StateNotifier<SettingsState> {
   Future<void> setDefaultQuality(String quality) async {
     await _prefs.setString(_kQuality, quality);
     state = state.copyWith(defaultQuality: quality);
+  }
+
+  Future<void> setAndroidPlaybackBackend(AndroidPlaybackBackend backend) async {
+    await _prefs.setString(AndroidPlayback.prefsKey, AndroidPlayback.toPrefs(backend));
+    state = state.copyWith(androidPlaybackBackend: backend);
   }
 
   Future<void> setPreferredLanguages(List<String> codes) async {

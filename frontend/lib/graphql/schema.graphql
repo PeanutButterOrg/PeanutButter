@@ -57,6 +57,7 @@ type Query {
   torrentFiles(magnet: String!, season: Int, episode: Int): [TorrentFile!]!
   torrentProbe(magnet: String!): TorrentProbe!
   streamStatus(sessionId: String!): StreamSession
+  streamBookmark(titleId: UUID!, season: Int, episode: Int): StreamBookmark
   jackettCatalog: JackettCatalogStatus!
   mediaSegments(titleId: UUID!, season: Int, episode: Int, durationMs: Int): MediaSegments!
 }
@@ -98,6 +99,9 @@ type Mutation {
     titleId: UUID
     title: String
     magnet: String
+    season: Int
+    episode: Int
+    fileIndex: Int
   ): Boolean!
   stopStream(sessionId: String!): Boolean!
 }
@@ -333,6 +337,14 @@ type StreamSession {
   resumePosition: Int!
   status: String!
   streamUrl: String!
+}
+
+type StreamBookmark {
+  magnet: String!
+  resumePosition: Int!
+  season: Int
+  episode: Int
+  fileIndex: Int
 }
 
 type MutationResult {

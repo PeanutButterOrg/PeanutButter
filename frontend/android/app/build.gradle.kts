@@ -35,6 +35,22 @@ android {
             // TODO: Add your own signing config for the release build.
             // Signing with the debug keys for now, so `flutter run --release` works.
             signingConfig = signingConfigs.getByName("debug")
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
+        }
+    }
+
+    // flutter_vlc_player + media_kit both ship native libs — keep first.
+    packaging {
+        jniLibs {
+            pickFirsts += listOf(
+                "lib/**/libc++_shared.so",
+                "lib/**/libvlc.so",
+                "lib/**/libvlcjni.so",
+                "lib/**/libmla.so",
+            )
         }
     }
 }
@@ -42,3 +58,11 @@ android {
 flutter {
     source = "../.."
 }
+
+dependencies {
+    // Same LibVLC as flutter_vlc_player — used by NativeVlcPlayer (SurfaceView
+    // behind Flutter). PlatformViews from the Dart plugin do not attach on
+    // Realtek rtd285o boxes.
+    implementation("org.videolan.android:libvlc-all:3.6.3")
+}
+

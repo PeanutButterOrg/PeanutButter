@@ -211,14 +211,14 @@ pub struct Episode {
     pub progress: Option<EpisodeUserState>,
 }
 
-impl From<EpisodeRow> for Episode {
-    fn from(row: EpisodeRow) -> Self {
+impl Episode {
+    pub fn from_row(row: EpisodeRow, public_url: &str) -> Self {
         Self {
             id: row.id,
             episode_number: row.episode_number,
             name: row.name,
             overview: row.overview,
-            still_path: still_url(&row.still_path),
+            still_path: still_url(public_url, &row.still_path),
             air_date: row.air_date,
             runtime: row.runtime,
             progress: None,
@@ -254,14 +254,14 @@ pub struct Season {
     pub episode_count: Option<i32>,
 }
 
-impl From<SeasonRow> for Season {
-    fn from(row: SeasonRow) -> Self {
+impl Season {
+    pub fn from_row(row: SeasonRow, public_url: &str) -> Self {
         Self {
             id: row.id,
             season_number: row.season_number,
             name: row.name,
             overview: row.overview,
-            poster_path: absolute_image_url(&row.poster_path),
+            poster_path: absolute_image_url(public_url, &row.poster_path),
             air_date: row.air_date,
             episode_count: row.episode_count,
         }
@@ -339,10 +339,11 @@ impl Season {
             }
         }
 
+        let public_url = state.config.public_url.as_str();
         Ok(rows
             .into_iter()
             .map(|row| {
-                let mut ep = Episode::from(row);
+                let mut ep = Episode::from_row(row, public_url);
                 ep.progress = progress_map.remove(&ep.id);
                 ep
             })
@@ -360,15 +361,15 @@ pub struct Person {
     pub profile_url: Option<String>,
 }
 
-impl From<TitlePersonRow> for Person {
-    fn from(row: TitlePersonRow) -> Self {
+impl Person {
+    pub fn from_row(row: TitlePersonRow, public_url: &str) -> Self {
         Self {
             id: row.id,
             name: row.name,
             character: row.character,
             job: row.job,
             department: row.department,
-            profile_url: profile_url(&row.profile_path),
+            profile_url: profile_url(public_url, &row.profile_path),
         }
     }
 }
@@ -420,7 +421,7 @@ pub struct Title {
 }
 
 impl Title {
-    pub fn from_row(row: TitleRow) -> Self {
+    pub fn from_row(row: TitleRow, public_url: &str) -> Self {
         Self {
             id: row.id,
             kind: TitleKind::from_db(&row.kind),
@@ -430,10 +431,10 @@ impl Title {
             description: row.description,
             year: row.year,
             runtime_minutes: row.runtime_minutes,
-            poster_url: absolute_image_url(&row.poster_path),
-            backdrop_url: backdrop_url(&row.backdrop_path),
-            logo_url: logo_url(&row.logo_path),
-            thumb_url: backdrop_url(&row.thumb_path),
+            poster_url: absolute_image_url(public_url, &row.poster_path),
+            backdrop_url: backdrop_url(public_url, &row.backdrop_path),
+            logo_url: logo_url(public_url, &row.logo_path),
+            thumb_url: backdrop_url(public_url, &row.thumb_path),
             content_rating: row.content_rating,
             tmdb_id: row.tmdb_id,
             imdb_id: row.imdb_id,
@@ -550,11 +551,17 @@ impl Title {
                     .fetch_all(&state.pool)
                     .await
                     .map_err(AppError::Database)?;
-                    return Ok(rows.into_iter().map(Season::from).collect());
+                    return Ok(rows
+                        .into_iter()
+                        .map(|r| Season::from_row(r, &state.config.public_url))
+                        .collect());
                 }
             }
         }
-        Ok(rows.into_iter().map(Season::from).collect())
+        Ok(rows
+            .into_iter()
+            .map(|r| Season::from_row(r, &state.config.public_url))
+            .collect())
     }
 
     async fn trailer_youtube_key(&self, ctx: &Context<'_>) -> async_graphql::Result<Option<String>> {
@@ -618,7 +625,10 @@ impl Title {
         .fetch_all(&state.pool)
         .await
         .map_err(AppError::Database)?;
-        Ok(rows.into_iter().map(Person::from).collect())
+        Ok(rows
+            .into_iter()
+            .map(|r| Person::from_row(r, &state.config.public_url))
+            .collect())
     }
 
     async fn user_state(&self, ctx: &Context<'_>) -> async_graphql::Result<Option<UserState>> {
@@ -736,6 +746,16 @@ pub struct StreamSession {
     pub resume_position: i32,
     pub status: String,
     pub stream_url: String,
+}
+
+/// Saved torrent for Resume — same magnet/file as last time (no picker).
+#[derive(SimpleObject, Clone, Debug)]
+pub struct StreamBookmark {
+    pub magnet: String,
+    pub resume_position: i32,
+    pub season: Option<i32>,
+    pub episode: Option<i32>,
+    pub file_index: Option<i32>,
 }
 
 /// One playable file inside a multi-file torrent / season pack.

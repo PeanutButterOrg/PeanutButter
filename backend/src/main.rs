@@ -44,6 +44,8 @@ use crate::search::SearchClient;
 #[derive(Clone)]
 pub struct AppState {
     pub pool: sqlx::PgPool,
+    /// Separate connections for catalog sync so TMDB ingest cannot exhaust the API pool.
+    pub ingest_pool: sqlx::PgPool,
     pub search: SearchClient,
     pub config: Config,
     pub syncing: Arc<AtomicBool>,
@@ -57,7 +59,7 @@ pub struct AppState {
 impl From<&AppState> for IngestContext {
     fn from(state: &AppState) -> Self {
         IngestContext::new(
-            state.pool.clone(),
+            state.ingest_pool.clone(),
             state.search.clone(),
             state.config.clone(),
             state.syncing.clone(),
@@ -86,7 +88,8 @@ async fn main() -> Result<()> {
     let config = Config::from_env()?;
     info!(version = config.version, "starting PeanutButter API");
 
-    let pool = db::connect(&config.database_url).await?;
+    let pool = db::connect_api(&config.database_url).await?;
+    let ingest_pool = db::connect_ingest(&config.database_url).await?;
     let migrations_dir = std::env::var("MIGRATIONS_DIR")
         .ok()
         .map(std::path::PathBuf::from);
@@ -106,6 +109,7 @@ async fn main() -> Result<()> {
 
     let app_state = AppState {
         pool: pool.clone(),
+        ingest_pool: ingest_pool.clone(),
         search: search.clone(),
         config: config.clone(),
         syncing: syncing.clone(),
@@ -198,6 +202,8 @@ async fn main() -> Result<()> {
         .route("/graphql", get(graphiql).post(graphql_handler))
         .route("/files/{id}", get(media::serve_file).head(media::serve_file))
         .route("/stream/{id}", get(stream::serve_stream).head(stream::serve_stream))
+        .route("/art/tmdb/{size}/{*path}", get(media::proxy_tmdb).head(media::proxy_tmdb))
+        .route("/art/youtube/{key}", get(media::proxy_youtube).head(media::proxy_youtube))
         .with_state(http_state.clone())
         .layer(middleware::from_fn_with_state(http_state, auth::gate))
         .layer(cors)

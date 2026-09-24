@@ -81,13 +81,32 @@ abstract class TvNavStrategy {
 /// Central D-pad graph for one view (screen / dialog / overlay).
 class TvNavController extends ChangeNotifier {
   TvNavController({List<TvNavStrategy>? strategies})
-      : strategies = List<TvNavStrategy>.unmodifiable(strategies ?? const []);
+      : strategies = List<TvNavStrategy>.unmodifiable(strategies ?? const []) {
+    _live.add(this);
+  }
+
+  static final List<TvNavController> _live = <TvNavController>[];
+
+  /// Controller that currently owns focus, else the most recently created one.
+  static TvNavController? get active {
+    for (var i = _live.length - 1; i >= 0; i--) {
+      final c = _live[i];
+      if (c._byId.values.any((n) => n.hasFocus)) return c;
+    }
+    return _live.isEmpty ? null : _live.last;
+  }
 
   final List<TvNavStrategy> strategies;
   final Map<String, FocusNode> _byId = {};
   final Map<FocusNode, String> _idByNode = {};
   final Map<String, TvNavLinks> _links = {};
   final Map<String, VoidCallback> _onFocus = {};
+
+  @override
+  void dispose() {
+    _live.remove(this);
+    super.dispose();
+  }
 
   /// Register (or rebind) a focusable target.
   void register(
@@ -184,8 +203,10 @@ class TvNavController extends ChangeNotifier {
     for (final strategy in strategies) {
       if (strategy.handle(this, current, dir)) return true;
     }
-    // Consume the key so scrollables never steal D-pad.
-    return true;
+    // Unhandled — let the hardware handler fall through to FocusTraversal.
+    // Always-true here swallowed D-pad on physical TVs when focus labels or
+    // layout geometry didn't match (emulator still looked fine).
+    return false;
   }
 
   bool _applyEdge(TvNavEdge edge) {
@@ -332,6 +353,13 @@ class TvNavSurface extends StatelessWidget {
         SingleActivator(LogicalKeyboardKey.arrowDown): _TvNavMoveIntent(TvNavDir.down),
         SingleActivator(LogicalKeyboardKey.arrowLeft): _TvNavMoveIntent(TvNavDir.left),
         SingleActivator(LogicalKeyboardKey.arrowRight): _TvNavMoveIntent(TvNavDir.right),
+        // Cheap boxes / IR remotes often emit these instead of arrow keys.
+        SingleActivator(LogicalKeyboardKey.channelUp): _TvNavMoveIntent(TvNavDir.up),
+        SingleActivator(LogicalKeyboardKey.channelDown): _TvNavMoveIntent(TvNavDir.down),
+        SingleActivator(LogicalKeyboardKey.pageUp): _TvNavMoveIntent(TvNavDir.up),
+        SingleActivator(LogicalKeyboardKey.pageDown): _TvNavMoveIntent(TvNavDir.down),
+        SingleActivator(LogicalKeyboardKey.mediaRewind): _TvNavMoveIntent(TvNavDir.left),
+        SingleActivator(LogicalKeyboardKey.mediaFastForward): _TvNavMoveIntent(TvNavDir.right),
       },
       child: Actions(
         actions: {
@@ -589,7 +617,7 @@ class TvNavBarStrategy extends TvNavStrategy {
   }
 }
 
-/// Home zigzag: banner → see-all ↔ posters ↔ next rail.
+/// Home zigzag: banner → see-all ↔ posters ↔ next rail (preserve column).
 class TvNavHomeStrategy extends TvNavStrategy {
   @override
   bool handle(TvNavController nav, FocusNode current, TvNavDir dir) {
@@ -610,18 +638,35 @@ class TvNavHomeStrategy extends TvNavStrategy {
     }
 
     if (label == 'poster' && horizontal) {
+      final rail = TvHomeRails.byPoster(current);
+      final row = tvNavRowStream(current, 'poster');
+      final at = row.indexWhere((n) => identical(n, current));
+      if (at >= 0) TvHomeRails.rememberColumn(at);
       final next = tvNavStreamNeighbor(current, 'poster', right: right);
-      if (next != null) tvNavFocusRow(next);
+      if (next != null) {
+        final ni = row.indexWhere((n) => identical(n, next));
+        if (ni >= 0) TvHomeRails.rememberColumn(ni);
+        tvNavFocusRow(next);
+      } else if (!right && rail != null) {
+        // Leftmost poster → See all for this rail.
+        _focusSeeAll(rail);
+      }
       return true;
     }
     if (label == 'poster' && dir == TvNavDir.down) {
       final rail = TvHomeRails.byPoster(current);
+      final row = tvNavRowStream(current, 'poster');
+      final at = row.indexWhere((n) => identical(n, current));
+      if (at >= 0) TvHomeRails.rememberColumn(at);
       final next = rail == null ? null : TvHomeRails.after(rail);
       if (next != null) _focusSeeAll(next);
       return true;
     }
     if (label == 'poster' && dir == TvNavDir.up) {
       final rail = TvHomeRails.byPoster(current);
+      final row = tvNavRowStream(current, 'poster');
+      final at = row.indexWhere((n) => identical(n, current));
+      if (at >= 0) TvHomeRails.rememberColumn(at);
       if (rail != null) {
         _focusSeeAll(rail);
       } else {
@@ -632,19 +677,19 @@ class TvNavHomeStrategy extends TvNavStrategy {
 
     if (label == 'see-all' && horizontal) {
       final rail = TvHomeRails.bySeeAll(current);
-      if (rail != null) _focusPosters(rail);
+      if (rail != null) _focusPosters(rail, column: TvHomeRails.preferredColumn);
       return true;
     }
     if (label == 'see-all' && dir == TvNavDir.down) {
       final rail = TvHomeRails.bySeeAll(current);
-      if (rail != null) _focusPosters(rail);
+      if (rail != null) _focusPosters(rail, column: TvHomeRails.preferredColumn);
       return true;
     }
     if (label == 'see-all' && dir == TvNavDir.up) {
       final rail = TvHomeRails.bySeeAll(current);
       final prev = rail == null ? null : TvHomeRails.before(rail);
       if (prev != null) {
-        _focusPosters(prev);
+        _focusPosters(prev, column: TvHomeRails.preferredColumn);
       } else {
         _focusBanner();
       }
@@ -654,10 +699,30 @@ class TvNavHomeStrategy extends TvNavStrategy {
     return false;
   }
 
-  void _focusPosters(TvHomeRail rail) {
-    rail.prepareFirst();
+  void _focusPosters(TvHomeRail rail, {int? column}) {
+    final count = rail.itemCount();
+    if (count <= 0) return;
+    final col = column ?? TvHomeRails.preferredColumn;
+    TvHomeRails.rememberColumn(col < 0 ? 0 : col);
     rail.reveal();
-    if (rail.firstPoster.canRequestFocus) rail.firstPoster.requestFocus();
+
+    // Pick among posters already laid out in this rail — never jump/scroll the
+    // strip to an absolute index (that mis-aligned selection).
+    final anchor = rail.firstPoster.canRequestFocus ? rail.firstPoster : rail.seeAll;
+    final visible = tvNavRowStream(anchor, 'poster', band: 220);
+    if (visible.isEmpty) {
+      if (rail.firstPoster.canRequestFocus) rail.firstPoster.requestFocus();
+      return;
+    }
+    final i = TvHomeRails.preferredColumn.clamp(0, visible.length - 1);
+    final node = visible[i];
+    // Focus without horizontal ensureVisible — otherwise the strip animates
+    // from the left (or fights a reverse scroll) into place.
+    TvHomeRails.suppressHorizontalEnsureVisible = true;
+    node.requestFocus();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      TvHomeRails.suppressHorizontalEnsureVisible = false;
+    });
   }
 
   void _focusSeeAll(TvHomeRail rail) {
@@ -683,7 +748,7 @@ class TvNavGridStrategy extends TvNavStrategy {
     if (current.debugLabel != 'poster') return false;
 
     final posters = tvNavLabeled(current, (n) => n.debugLabel == 'poster');
-    if (posters.isEmpty) return true;
+    if (posters.isEmpty) return false;
 
     posters.sort((a, b) {
       final ay = tvNavOrigin(a)?.dy ?? 0;
@@ -694,7 +759,8 @@ class TvNavGridStrategy extends TvNavStrategy {
     });
 
     final origin = tvNavOrigin(current);
-    if (origin == null) return true;
+    // No layout yet — don't eat the key; FocusTraversal can still move.
+    if (origin == null) return false;
 
     FocusNode? pick;
     if (dir == TvNavDir.left || dir == TvNavDir.right) {
@@ -777,7 +843,8 @@ class TvNavDetailStrategy extends TvNavStrategy {
     if (label == 'detail-back' && horizontal) return true;
 
     if (_kDetailActions.contains(label) && dir == TvNavDir.down) {
-      return _focusFirstOf(current, const ['cast', 'season', 'episode']);
+      _focusFirstOf(current, const ['cast', 'trailer', 'season', 'episode']);
+      return true;
     }
 
     if (label == 'cast' && horizontal) {
@@ -789,7 +856,22 @@ class TvNavDetailStrategy extends TvNavStrategy {
       return _focusAction(current);
     }
     if (label == 'cast' && dir == TvNavDir.down) {
-      return _focusFirstOf(current, const ['season', 'episode']);
+      _focusFirstOf(current, const ['trailer', 'season', 'episode']);
+      return true;
+    }
+
+    if (label == 'trailer' && horizontal) {
+      final next = tvNavStreamNeighbor(current, 'trailer', right: right);
+      if (next != null) tvNavFocusRow(next);
+      return true;
+    }
+    if (label == 'trailer' && dir == TvNavDir.up) {
+      if (_focusFirstOf(current, const ['cast'])) return true;
+      return _focusAction(current);
+    }
+    if (label == 'trailer' && dir == TvNavDir.down) {
+      _focusFirstOf(current, const ['season', 'episode']);
+      return true;
     }
 
     if (label == 'season' && horizontal) {
@@ -798,11 +880,12 @@ class TvNavDetailStrategy extends TvNavStrategy {
       return true;
     }
     if (label == 'season' && dir == TvNavDir.up) {
-      if (_focusFirstOf(current, const ['cast'])) return true;
+      if (_focusFirstOf(current, const ['trailer', 'cast'])) return true;
       return _focusAction(current);
     }
     if (label == 'season' && dir == TvNavDir.down) {
-      return _focusFirstOf(current, const ['episode']);
+      _focusFirstOf(current, const ['episode']);
+      return true;
     }
 
     if (label == 'episode' && horizontal) return true;
@@ -823,7 +906,27 @@ class TvNavDetailStrategy extends TvNavStrategy {
         tvNavFocus(prev, alignment: 0.2);
         return true;
       }
-      if (_focusFirstOf(current, const ['season', 'cast'])) return true;
+      if (_focusFirstOf(current, const ['season', 'trailer', 'cast'])) return true;
+      return _focusAction(current);
+    }
+    if (label == 'episode' && dir == TvNavDir.down) {
+      final origin = tvNavOrigin(current);
+      final episodes = tvNavLabeled(current, (n) => n.debugLabel == 'episode');
+      FocusNode? next;
+      var bestY = double.infinity;
+      for (final node in episodes) {
+        final y = tvNavOrigin(node)?.dy;
+        if (y == null || origin == null || y <= origin.dy + 8) continue;
+        if (y <= bestY) {
+          bestY = y;
+          next = node;
+        }
+      }
+      if (next != null) {
+        tvNavFocus(next, alignment: 0.2);
+        return true;
+      }
+      return true;
     }
 
     return false;
@@ -842,13 +945,13 @@ class TvNavDetailStrategy extends TvNavStrategy {
     for (final label in labels) {
       final nodes = tvNavLabeled(current, (n) => n.debugLabel == label);
       if (nodes.isEmpty) continue;
-      if (label == 'cast' || label == 'season') {
+      if (label == 'cast' || label == 'trailer' || label == 'season') {
         nodes.sort((a, b) => (tvNavOrigin(a)?.dx ?? 0).compareTo(tvNavOrigin(b)?.dx ?? 0));
       }
       tvNavFocus(nodes.first, alignment: 0.2);
       return true;
     }
-    return true;
+    return false;
   }
 
   FocusNode? _actionNeighbor(FocusNode current, {required bool right}) {

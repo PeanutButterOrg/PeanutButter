@@ -1,13 +1,20 @@
-import 'dart:io' show Platform;
-
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+
+import 'platform/device_profile.dart';
 
 /// Test-only override. Set in widget tests; leave null in production.
 bool? debugIsAndroidTvOverride;
 
-bool get isAndroidTv => debugIsAndroidTvOverride ?? (!kIsWeb && Platform.isAndroid);
+/// True when D-pad / Leanback TV UX should be active.
+///
+/// Prefer [DeviceProfile.current.prefersDpad] in new code. This getter stays
+/// for existing call sites and resolves through [DeviceProfile] after
+/// [TvDevice.init].
+bool get isAndroidTv {
+  if (debugIsAndroidTvOverride != null) return debugIsAndroidTvOverride!;
+  return DeviceProfile.current.prefersDpad;
+}
 
 /// Optional Back interceptor used when a modal overlay is open.
 class TvPreviewLock {
@@ -91,21 +98,41 @@ class TvHomeRail {
     required this.firstPoster,
     required this.reveal,
     required this.prepareFirst,
+    required this.prepareAt,
+    required this.posterAt,
+    required this.itemCount,
   });
 
   final int index;
   final FocusNode seeAll;
   final FocusNode firstPoster;
   final VoidCallback reveal;
+  /// Scroll so index 0 is built (legacy).
   final VoidCallback prepareFirst;
+  /// Scroll so [column] is on-screen before focusing.
+  final void Function(int column) prepareAt;
+  /// Focus node for poster at [column], or null if out of range.
+  final FocusNode? Function(int column) posterAt;
+  final int Function() itemCount;
 }
 
 class TvHomeRails {
   static final List<TvHomeRail> _rails = [];
 
+  /// Last focused poster column (0-based) — preserved when moving between rails.
+  static int preferredColumn = 0;
+
+  /// When true, poster focus must not animate the horizontal strip (cross-rail landing).
+  static bool suppressHorizontalEnsureVisible = false;
+
   static List<TvHomeRail> get all {
     final copy = [..._rails]..sort((a, b) => a.index.compareTo(b.index));
     return copy;
+  }
+
+  static void rememberColumn(int column) {
+    if (column < 0) return;
+    preferredColumn = column;
   }
 
   static void attach(TvHomeRail rail) {
@@ -132,8 +159,21 @@ class TvHomeRails {
     }
     for (final rail in all) {
       if (identical(rail.firstPoster, node)) return rail;
+      // Match any pooled poster node for this rail.
+      final count = rail.itemCount();
+      for (var i = 0; i < count; i++) {
+        if (identical(rail.posterAt(i), node)) return rail;
+      }
     }
     return null;
+  }
+
+  static int columnOf(FocusNode node, TvHomeRail rail) {
+    final count = rail.itemCount();
+    for (var i = 0; i < count; i++) {
+      if (identical(rail.posterAt(i), node)) return i;
+    }
+    return preferredColumn;
   }
 
   static TvHomeRail? after(TvHomeRail rail) {

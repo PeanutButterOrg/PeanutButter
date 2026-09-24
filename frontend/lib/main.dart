@@ -19,6 +19,7 @@ import 'providers/settings.dart';
 import 'screens/catalog.dart';
 import 'screens/detail.dart';
 import 'screens/edit_title.dart';
+import 'screens/external_streaming.dart';
 import 'screens/favourites.dart';
 import 'screens/watched.dart';
 import 'screens/home.dart';
@@ -29,12 +30,16 @@ import 'screens/settings.dart';
 import 'screens/unreachable.dart';
 import 'theme.dart';
 import 'tv.dart';
+import 'tv_device.dart';
+import 'tv_remote.dart';
 import 'widgets/cached_art.dart';
 import 'player_cache.dart';
 import 'local_torrent.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  installTvRemoteHandler();
+  await TvDevice.init();
   debugPrint('PeanutButter main() start Uri.base=${Uri.base}');
 
   FlutterError.onError = (details) {
@@ -109,7 +114,9 @@ GoRouter _buildRouter(SettingsState Function() readSettings) {
     redirect: (context, state) {
       final settings = readSettings();
       final path = state.uri.path;
-      final onPlayer = path.startsWith('/player');
+      final onPlayer = path.startsWith('/player') ||
+          path.startsWith('/external-stream') ||
+          path.startsWith('/vlc-player');
       final playing = playbackSessionActive;
 
       // Never yank the user off the player while a stream is active —
@@ -176,6 +183,48 @@ GoRouter _buildRouter(SettingsState Function() readSettings) {
             kind: extra['kind'] as String?,
             posterUrl: extra['posterUrl'] as String?,
             backdropUrl: extra['backdropUrl'] as String?,
+          );
+        },
+      ),
+      GoRoute(
+        path: '/vlc-player/:sessionId',
+        builder: (_, state) {
+          // Legacy route — all playback goes through PlayerScreen + PlaybackBackend.
+          final extra = state.extra as Map<String, dynamic>? ?? const {};
+          return PlayerScreen(
+            fileId: extra['fileId'] as String? ?? 'stream',
+            playbackUrl: extra['url'] as String? ?? '',
+            title: extra['title'] as String? ?? 'Playback',
+            titleId: extra['titleId'] as String?,
+            startMs: extra['startMs'] as int? ?? 0,
+            isStream: true,
+            sessionId: state.pathParameters['sessionId'],
+            magnet: extra['magnet'] as String?,
+            localTorrent: extra['localTorrent'] as bool? ?? false,
+            listedSeeders: extra['listedSeeders'] as int? ?? 0,
+            listedPeers: extra['listedPeers'] as int? ?? 0,
+            catalogTitle: extra['catalogTitle'] as String?,
+            kind: extra['kind'] as String?,
+            posterUrl: extra['posterUrl'] as String?,
+            backdropUrl: extra['backdropUrl'] as String?,
+          );
+        },
+      ),
+      GoRoute(
+        path: '/external-stream/:sessionId',
+        builder: (_, state) {
+          final extra = state.extra as Map<String, dynamic>? ?? const {};
+          return ExternalStreamingScreen(
+            sessionId: state.pathParameters['sessionId']!,
+            streamUrl: extra['url'] as String? ?? '',
+            title: extra['title'] as String? ?? 'Playback',
+            titleId: extra['titleId'] as String?,
+            posterUrl: extra['posterUrl'] as String?,
+            backdropUrl: extra['backdropUrl'] as String?,
+            magnet: extra['magnet'] as String?,
+            localTorrent: extra['localTorrent'] as bool? ?? false,
+            listedSeeders: extra['listedSeeders'] as int? ?? 0,
+            listedPeers: extra['listedPeers'] as int? ?? 0,
           );
         },
       ),
@@ -395,7 +444,11 @@ class _PeanutButterAppState extends ConsumerState<PeanutButterApp> with WidgetsB
         ...WidgetsApp.defaultShortcuts,
         const SingleActivator(LogicalKeyboardKey.select): const ActivateIntent(),
         const SingleActivator(LogicalKeyboardKey.enter): const ActivateIntent(),
+        const SingleActivator(LogicalKeyboardKey.numpadEnter): const ActivateIntent(),
         const SingleActivator(LogicalKeyboardKey.gameButtonA): const ActivateIntent(),
+        const SingleActivator(LogicalKeyboardKey.gameButtonStart): const ActivateIntent(),
+        const SingleActivator(LogicalKeyboardKey.accept): const ActivateIntent(),
+        const SingleActivator(LogicalKeyboardKey.space): const ActivateIntent(),
       },
       builder: (context, child) {
         final mq = MediaQuery.maybeOf(context);

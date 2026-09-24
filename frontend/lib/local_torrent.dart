@@ -309,10 +309,11 @@ class LocalTorrentEngine {
     } catch (_) {}
   }
 
-  /// After a player seek, refresh sequential read-ahead from the new time.
-  /// Byte-range requests from the player retarget piece deadlines; we also
-  /// resume + preload so bandwidth follows the new window immediately.
-  void seekTo({required int positionMs}) {
+  /// After a player seek, move the HTTP reader window to [positionMs].
+  ///
+  /// libtorrent's stream server follows Range requests; we probe the estimated
+  /// byte offset so piece deadlines jump instead of reading sequentially.
+  void seekTo({required int positionMs, int? durationMs}) {
     final id = _torrentId;
     if (id == null || !_ready) return;
     try {
@@ -322,17 +323,40 @@ class LocalTorrentEngine {
         engine.resumeTorrent(id);
       }
       final sid = _streamId;
-      if (sid != null) {
-        // Drop stale readahead and pull a fresh window at the seek target.
-        engine.setCacheSettings(
-          sid,
-          capacity: 256 * 1024 * 1024,
-          readAheadPct: 95,
-          connectionsLimit: 80,
-        );
-        engine.preloadStream(sid, preloadBytes: 24 * 1024 * 1024);
+      if (sid == null) return;
+      final stream = engine.getStreamInfo(sid);
+      engine.setCacheSettings(
+        sid,
+        capacity: 256 * 1024 * 1024,
+        readAheadPct: 95,
+        connectionsLimit: 80,
+      );
+      final fileSize = stream?.fileSize ?? 0;
+      final url = stream?.url ?? '';
+      final dur = durationMs ?? 0;
+      if (url.isNotEmpty && fileSize > 0 && dur > 0 && positionMs > 0) {
+        final ratio = (positionMs / dur).clamp(0.0, 0.98);
+        final offset = (fileSize * ratio).floor();
+        unawaited(_probeRange(url, offset));
       }
+      engine.preloadStream(sid, preloadBytes: 24 * 1024 * 1024);
     } catch (_) {}
+  }
+
+  /// Nudge the stream HTTP server to the seek byte offset via Range.
+  Future<void> _probeRange(String url, int offset) async {
+    HttpClient? client;
+    try {
+      client = HttpClient()..connectionTimeout = const Duration(seconds: 4);
+      final req = await client.getUrl(Uri.parse(url));
+      req.headers.set(HttpHeaders.rangeHeader, 'bytes=$offset-${offset + (512 * 1024) - 1}');
+      final res = await req.close().timeout(const Duration(seconds: 6));
+      // Drain a little so the reader advances, then abort.
+      await res.take(4).drain<void>().timeout(const Duration(seconds: 4));
+    } catch (_) {
+    } finally {
+      client?.close(force: true);
+    }
   }
 
   int? _pickFile(List<FileInfo> files, {int? season, int? episode}) {

@@ -5,8 +5,8 @@ use crate::db::models::{SyncStateRow, TitleRow};
 use crate::error::AppError;
 use crate::graphql::types::{
     HomeFeed, JackettCatalogStatus, MediaSegment, MediaSegments, SearchResult, ServerInfo, SortDir,
-    SortField, StreamSession, StreamSource, SyncStatus, Title, TitleConnection, TitleFilter,
-    TitleKind, TorrentFile, TorrentProbe,
+    SortField, StreamBookmark, StreamSession, StreamSource, SyncStatus, Title, TitleConnection,
+    TitleFilter, TitleKind, TorrentFile, TorrentProbe,
 };
 use crate::AppState;
 
@@ -39,10 +39,10 @@ impl Query {
         let per_page = per_page.unwrap_or(24).clamp(1, 100);
         let offset = (page - 1) * per_page;
 
-        // Lazy TMDB pagination: wait for shelf pages covering this request so
-        // scroll/sort return real rows (fire-and-forget left the client on empty
-        // "next" pages). First catalog page also warms 3 pages ahead.
+        // Lazy TMDB pagination for empty shelves. Never wait on this while a full
+        // sync owns the ingest pool — serve whatever is already in Postgres.
         let mut remote_has_more = false;
+        let syncing = state.syncing.load(std::sync::atomic::Ordering::Relaxed);
         if let Some(shelf) = match sort {
             SortField::Trending => Some("trending"),
             SortField::Popularity => Some("popular"),
@@ -55,42 +55,47 @@ impl Query {
                 TitleKind::Anime => "anime",
             });
             let ingest = crate::ingest::IngestContext::from(state);
-            let ensure_depth = if page <= 1 { 3 } else { page };
-            remote_has_more = match tokio::time::timeout(
-                std::time::Duration::from_secs(25),
-                crate::ingest::tmdb::ensure_shelf_pages_for_catalog(
-                    &ingest,
-                    shelf,
-                    kind,
-                    ensure_depth,
-                    per_page,
-                ),
-            )
-            .await
-            {
-                Ok(Ok(more)) => more,
-                Ok(Err(e)) => {
-                    tracing::warn!(error = %e, shelf, page, "TMDB shelf ensure failed");
-                    crate::ingest::tmdb::shelf_has_more_for_catalog(&ingest, shelf, kind)
-                        .await
-                        .unwrap_or(true)
-                }
-                Err(_) => {
-                    tracing::warn!(shelf, page, "TMDB shelf ensure timed out");
-                    // Keep hasNextPage true so the client can retry on scroll.
-                    true
-                }
-            };
-            // Warm the next page in the background after we've served this one.
-            let warm_page = ensure_depth + 1;
-            let per_bg = per_page;
-            let ingest_bg = crate::ingest::IngestContext::from(state);
-            tokio::spawn(async move {
-                let _ = crate::ingest::tmdb::ensure_shelf_pages_for_catalog(
-                    &ingest_bg, shelf, kind, warm_page, per_bg,
+            if syncing {
+                remote_has_more = crate::ingest::tmdb::shelf_has_more_for_catalog(&ingest, shelf, kind)
+                    .await
+                    .unwrap_or(true);
+            } else {
+                let ensure_depth = if page <= 1 { 3 } else { page };
+                remote_has_more = match tokio::time::timeout(
+                    std::time::Duration::from_secs(4),
+                    crate::ingest::tmdb::ensure_shelf_pages_for_catalog(
+                        &ingest,
+                        shelf,
+                        kind,
+                        ensure_depth,
+                        per_page,
+                    ),
                 )
-                .await;
-            });
+                .await
+                {
+                    Ok(Ok(more)) => more,
+                    Ok(Err(e)) => {
+                        tracing::warn!(error = %e, shelf, page, "TMDB shelf ensure failed");
+                        crate::ingest::tmdb::shelf_has_more_for_catalog(&ingest, shelf, kind)
+                            .await
+                            .unwrap_or(true)
+                    }
+                    Err(_) => {
+                        tracing::warn!(shelf, page, "TMDB shelf ensure timed out");
+                        true
+                    }
+                };
+                // Warm the next page in the background after we've served this one.
+                let warm_page = ensure_depth + 1;
+                let per_bg = per_page;
+                let ingest_bg = crate::ingest::IngestContext::from(state);
+                tokio::spawn(async move {
+                    let _ = crate::ingest::tmdb::ensure_shelf_pages_for_catalog(
+                        &ingest_bg, shelf, kind, warm_page, per_bg,
+                    )
+                    .await;
+                });
+            }
         }
 
         let continue_watching = sort == SortField::ContinueWatching;
@@ -151,7 +156,7 @@ impl Query {
         // Keep scrolling enabled while TMDB still has deeper shelf pages to cache.
         let has_next_page = db_has_next || remote_has_more;
         Ok(TitleConnection {
-            items: rows.into_iter().map(Title::from_row).collect(),
+            items: rows.into_iter().map(|r| Title::from_row(r, &state.config.public_url)).collect(),
             total_count,
             has_next_page,
             page,
@@ -193,35 +198,16 @@ impl Query {
             return Ok(None);
         };
 
-        // Legacy catalog rows often lack seasons/trailers — pull from TMDB on open.
-        // During a full sync, do this in the background so GraphQL stays responsive.
+        // Never block GraphQL on TMDB enrich — return catalog row immediately and
+        // fill seasons/art in the background (critical while a full sync is running).
         let ingest = crate::ingest::IngestContext::from(state);
-        let syncing = state.syncing.load(std::sync::atomic::Ordering::Relaxed);
-        if syncing {
-            let title_id = row.id;
-            tokio::spawn(async move {
-                if let Err(e) = crate::ingest::tmdb::ensure_title_enriched(&ingest, title_id).await {
-                    tracing::warn!(title_id = %title_id, error = %e, "background TMDB enrich failed");
-                }
-            });
-            return Ok(Some(Title::from_row(row)));
-        }
-
-        match crate::ingest::tmdb::ensure_title_enriched(&ingest, row.id).await {
-            Ok(true) => {
-                let refreshed: Option<TitleRow> = sqlx::query_as(&format!(
-                    "SELECT {TITLE_COLUMNS} FROM titles t WHERE t.id = $1"
-                ))
-                .bind(row.id)
-                .fetch_optional(&state.pool)
-                .await?;
-                return Ok(refreshed.map(Title::from_row));
+        let title_id = row.id;
+        tokio::spawn(async move {
+            if let Err(e) = crate::ingest::tmdb::ensure_title_enriched(&ingest, title_id).await {
+                tracing::warn!(title_id = %title_id, error = %e, "background TMDB enrich failed");
             }
-            Ok(false) => {}
-            Err(e) => tracing::warn!(title_id = %row.id, error = %e, "on-demand TMDB enrich failed"),
-        }
-
-        Ok(Some(Title::from_row(row)))
+        });
+        Ok(Some(Title::from_row(row, &state.config.public_url)))
     }
 
     async fn search(
@@ -317,7 +303,7 @@ impl Query {
             rows.into_iter().map(|r| (r.id, r)).collect();
         let items: Vec<Title> = ids
             .into_iter()
-            .filter_map(|id| by_id.remove(&id).map(Title::from_row))
+            .filter_map(|id| by_id.remove(&id).map(|r| Title::from_row(r, &state.config.public_url)))
             .take(per_page)
             .collect();
 
@@ -667,6 +653,26 @@ impl Query {
         Ok(state.streams.status(&session_id).await)
     }
 
+    /// Magnet + file used last time for this title/episode — Resume skips the picker.
+    async fn stream_bookmark(
+        &self,
+        ctx: &Context<'_>,
+        title_id: Uuid,
+        season: Option<i32>,
+        episode: Option<i32>,
+    ) -> async_graphql::Result<Option<StreamBookmark>> {
+        let state = ctx.data::<AppState>()?;
+        let row =
+            crate::db::load_stream_bookmark(&state.pool, title_id, season, episode).await?;
+        Ok(row.map(|r| StreamBookmark {
+            magnet: r.magnet,
+            resume_position: r.resume_position.clamp(0, i32::MAX as i64) as i32,
+            season: r.season,
+            episode: r.episode,
+            file_index: r.file_index,
+        }))
+    }
+
     /// Butter-style home rows: trending, popular, and last added, with no repeated titles.
     async fn home_feed(
         &self,
@@ -676,18 +682,47 @@ impl Query {
         let state = ctx.data::<AppState>()?;
         let auth = ctx.data::<crate::auth::AuthSession>()?;
         let langs = state.config.live.preferred_language_codes();
-        let trending =
-            fetch_home_row(&state.pool, kind, SortField::Trending, &[], 18, &langs).await?;
+        let trending = fetch_home_row(
+            &state.pool,
+            &state.config.public_url,
+            kind,
+            SortField::Trending,
+            &[],
+            18,
+            &langs,
+        )
+        .await?;
         let exclude: Vec<Uuid> = trending.iter().map(|t| t.id).collect();
-        let popular =
-            fetch_home_row(&state.pool, kind, SortField::Popularity, &exclude, 18, &langs).await?;
+        let popular = fetch_home_row(
+            &state.pool,
+            &state.config.public_url,
+            kind,
+            SortField::Popularity,
+            &exclude,
+            18,
+            &langs,
+        )
+        .await?;
         let mut exclude_recent = exclude;
         exclude_recent.extend(popular.iter().map(|t| t.id));
-        let recent =
-            fetch_home_row(&state.pool, kind, SortField::DateAdded, &exclude_recent, 18, &langs)
-                .await?;
-        let continue_watching =
-            fetch_continue_watching(&state.pool, 24, auth.token_id, &langs).await?;
+        let recent = fetch_home_row(
+            &state.pool,
+            &state.config.public_url,
+            kind,
+            SortField::DateAdded,
+            &exclude_recent,
+            18,
+            &langs,
+        )
+        .await?;
+        let continue_watching = fetch_continue_watching(
+            &state.pool,
+            &state.config.public_url,
+            24,
+            auth.token_id,
+            &langs,
+        )
+        .await?;
         Ok(HomeFeed {
             trending,
             popular,
@@ -751,6 +786,7 @@ async fn jackett_catalog_status(_state: &AppState) -> crate::error::Result<Jacke
 
 async fn fetch_home_row(
     pool: &sqlx::PgPool,
+    public_url: &str,
     kind: TitleKind,
     sort: SortField,
     exclude: &[Uuid],
@@ -774,11 +810,15 @@ async fn fetch_home_row(
     qb.push(" LIMIT ");
     qb.push_bind(limit);
     let rows: Vec<TitleRow> = qb.build_query_as().fetch_all(pool).await?;
-    Ok(rows.into_iter().map(Title::from_row).collect())
+    Ok(rows
+        .into_iter()
+        .map(|r| Title::from_row(r, public_url))
+        .collect())
 }
 
 async fn fetch_continue_watching(
     pool: &sqlx::PgPool,
+    public_url: &str,
     limit: i64,
     token_id: Uuid,
     langs: &[String],
@@ -797,7 +837,10 @@ async fn fetch_continue_watching(
     qb.push(" ORDER BY p.updated_at DESC LIMIT ");
     qb.push_bind(limit);
     let rows: Vec<TitleRow> = qb.build_query_as().fetch_all(pool).await?;
-    Ok(rows.into_iter().map(Title::from_row).collect())
+    Ok(rows
+        .into_iter()
+        .map(|r| Title::from_row(r, public_url))
+        .collect())
 }
 
 fn apply_adult_block<'a>(qb: &mut sqlx::QueryBuilder<'a, sqlx::Postgres>) {

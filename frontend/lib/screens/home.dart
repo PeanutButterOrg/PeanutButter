@@ -188,7 +188,8 @@ class _HomeBodyState extends ConsumerState<_HomeBody> {
     TvHomeScroll.toTop = _toTop;
     TvHomeScroll.toBanner = _toBanner;
     if (isAndroidTv) {
-      // Warm libmpv on a Java worker long before Play — avoids first-select ANR.
+      // libmpv preload still helps trailers/cache; Player warm skipped — Android
+      // playback uses ExoPlayer to avoid TV emulator ANRs on Player().
       unawaited(MediaKitAndroidVideo.preload());
       TvHeaderFocus.bannerDetails.addListener(_onBannerFocus);
     }
@@ -511,16 +512,26 @@ class _HomeRow extends StatefulWidget {
 
 class _HomeRowState extends State<_HomeRow> {
   final FocusNode _seeAll = FocusNode(debugLabel: 'see-all');
-  final FocusNode _first = FocusNode(debugLabel: 'poster');
+  final Map<int, FocusNode> _posterFocus = {};
   final GlobalKey _rowKey = GlobalKey();
   final ScrollController _horizontal = ScrollController();
   late final TvHomeRail _rail = TvHomeRail(
     index: widget.railIndex,
     seeAll: _seeAll,
-    firstPoster: _first,
+    firstPoster: _posterAt(0),
     reveal: _revealRow,
-    prepareFirst: _prepareFirst,
+    prepareFirst: () => _prepareAt(0),
+    prepareAt: _prepareAt,
+    posterAt: _posterAt,
+    itemCount: () => widget.items.length,
   );
+
+  FocusNode _posterAt(int index) {
+    return _posterFocus.putIfAbsent(
+      index,
+      () => FocusNode(debugLabel: 'poster'),
+    );
+  }
 
   @override
   void initState() {
@@ -532,7 +543,10 @@ class _HomeRowState extends State<_HomeRow> {
   void dispose() {
     TvHomeRails.detach(_rail);
     _seeAll.dispose();
-    _first.dispose();
+    for (final node in _posterFocus.values) {
+      node.dispose();
+    }
+    _posterFocus.clear();
     _horizontal.dispose();
     super.dispose();
   }
@@ -543,10 +557,9 @@ class _HomeRowState extends State<_HomeRow> {
     tvEnsureVisible(ctx, centerRow: true);
   }
 
-  void _prepareFirst() {
-    if (_horizontal.hasClients && _horizontal.offset > 1) {
-      _horizontal.jumpTo(0);
-    }
+  void _prepareAt(int column) {
+    // Intentionally no-op: cross-rail focus must not jump the horizontal strip.
+    // Selection is by FocusNode index; ensureVisible runs after focus if needed.
   }
 
   @override
@@ -586,32 +599,49 @@ class _HomeRowState extends State<_HomeRow> {
           ),
           SizedBox(
             height: tv ? TvPosterDim.rowHeight : 248,
-            child: ListView.builder(
-              controller: _horizontal,
-              clipBehavior: Clip.none,
-              cacheExtent: tv ? 800 : 600,
-              addAutomaticKeepAlives: true,
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 6),
-              scrollDirection: Axis.horizontal,
-              physics: const ClampingScrollPhysics(),
-              itemExtent: tv ? TvPosterDim.extent : 168,
-              itemCount: widget.items.length,
-              itemBuilder: (context, i) {
-                final item = widget.items[i];
-                return Padding(
-                  padding: EdgeInsets.only(right: tv ? TvPosterDim.gap : 12),
-                  child: SizedBox(
-                    width: tv ? TvPosterDim.width : 156,
-                    child: PosterCard(item: item, focusNode: i == 0 ? _first : null),
+            // TV: eager children so column-N FocusNodes stay attached without
+            // jumpTo-scrolling the strip before selection.
+            child: tv
+                ? ListView.builder(
+                    controller: _horizontal,
+                    clipBehavior: Clip.none,
+                    cacheExtent: 8000,
+                    addAutomaticKeepAlives: true,
+                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 6),
+                    scrollDirection: Axis.horizontal,
+                    physics: const ClampingScrollPhysics(),
+                    itemExtent: TvPosterDim.extent,
+                    itemCount: widget.items.length,
+                    itemBuilder: (context, i) => _posterTile(tv: true, i: i),
+                  )
+                : ListView.builder(
+                    controller: _horizontal,
+                    clipBehavior: Clip.none,
+                    cacheExtent: 600,
+                    addAutomaticKeepAlives: true,
+                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 6),
+                    scrollDirection: Axis.horizontal,
+                    physics: const ClampingScrollPhysics(),
+                    itemExtent: 168,
+                    itemCount: widget.items.length,
+                    itemBuilder: (context, i) => _posterTile(tv: false, i: i),
                   ),
-                );
-              },
-            ),
           ),
         ],
       ),
       ),
     ),
+    );
+  }
+
+  Widget _posterTile({required bool tv, required int i}) {
+    final item = widget.items[i];
+    return Padding(
+      padding: EdgeInsets.only(right: tv ? TvPosterDim.gap : 12),
+      child: SizedBox(
+        width: tv ? TvPosterDim.width : 156,
+        child: PosterCard(item: item, focusNode: _posterAt(i)),
+      ),
     );
   }
 }

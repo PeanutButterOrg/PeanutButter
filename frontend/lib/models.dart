@@ -431,6 +431,34 @@ class StreamSession {
   }
 }
 
+class StreamBookmark {
+  const StreamBookmark({
+    required this.magnet,
+    this.resumePosition = 0,
+    this.season,
+    this.episode,
+    this.fileIndex,
+  });
+
+  final String magnet;
+  final int resumePosition;
+  final int? season;
+  final int? episode;
+  final int? fileIndex;
+
+  bool get hasMagnet => magnet.trim().isNotEmpty;
+
+  factory StreamBookmark.fromJson(Map<String, dynamic> json) {
+    return StreamBookmark(
+      magnet: json['magnet'] as String? ?? '',
+      resumePosition: json['resumePosition'] as int? ?? 0,
+      season: json['season'] as int?,
+      episode: json['episode'] as int?,
+      fileIndex: json['fileIndex'] as int?,
+    );
+  }
+}
+
 class TorrentFileOption {
   const TorrentFileOption({
     required this.index,

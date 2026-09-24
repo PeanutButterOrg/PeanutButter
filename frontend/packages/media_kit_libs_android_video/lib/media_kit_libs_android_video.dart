@@ -27,9 +27,11 @@ class MediaKitAndroidVideo {
 
   static Future<bool> _load() async {
     try {
+      // Hard cap — Realtek/BeyondTV has been observed to never return from
+      // System.loadLibrary("mpv"), which previously blocked stream start.
       final ok = await _channel
           .invokeMethod<bool>('loadNativeLibraries')
-          .timeout(const Duration(seconds: 30), onTimeout: () => false);
+          .timeout(const Duration(seconds: 12), onTimeout: () => false);
       _ready = ok == true;
       return _ready;
     } catch (e, st) {

@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:graphql_flutter/graphql_flutter.dart';
 
+import '../android_playback.dart';
 import '../graphql/queries.dart';
 import '../models.dart';
 import '../providers/catalog.dart';
@@ -100,7 +101,14 @@ class _DetailBodyState extends ConsumerState<_DetailBody> {
 
   void _pinTop() {
     if (!isAndroidTv || !_scroll.hasClients) return;
-    _scroll.jumpTo(0);
+    final current = _scroll.offset;
+    if (current < 1.5) return;
+    final ms = (280 + current * 0.45).clamp(320, 560).round();
+    _scroll.animateTo(
+      0,
+      duration: Duration(milliseconds: ms),
+      curve: Curves.easeInOutCubic,
+    );
   }
 
   void _leave() {
@@ -218,7 +226,16 @@ class _DetailBodyState extends ConsumerState<_DetailBody> {
       String? episodeId,
       String? episodeLabel,
       int? startMs,
+      bool fromBeginning = false,
+      bool? preferResume,
     }) async {
+      // Resume → reuse last magnet. From-beginning / first play → torrent picker.
+      final forceBeginning = fromBeginning;
+      final wantResume = forceBeginning
+          ? false
+          : (preferResume ?? (startMs == null ? resume : startMs > 0));
+      final showPicker = forceBeginning || !wantResume;
+
       void openPlayer(StreamStart started) {
         if (!context.mounted) return;
         final queryTitle = (season != null && episode != null)
@@ -227,34 +244,40 @@ class _DetailBodyState extends ConsumerState<_DetailBody> {
         final sameEpisode = episodeId == null || episodeId == item.userState?.episodeId;
         final userResume = sameEpisode ? (item.userState?.positionMs ?? 0) : 0;
         final streamResume = sameEpisode ? started.session.resumePosition : 0;
-        final seek = startMs ?? (userResume > 2000 ? userResume : (streamResume > 2000 ? streamResume : 0));
-        context.push(
-          '/player/${started.session.id}',
-          extra: {
-            'url': started.session.streamUrl,
-            'title': episodeLabel ?? queryTitle,
-            'titleId': item.id,
-            'episodeId': episodeId ?? item.userState?.episodeId,
-            'season': season,
-            'episode': episode,
-            'startMs': seek,
-            'isStream': true,
-            'sessionId': started.session.id,
-            'magnet': started.magnet,
-            'localTorrent': started.localTorrent,
-            'listedSeeders': started.session.seeders,
-            'listedPeers': started.session.peers,
-            'streamFileIndex': started.fileIndex,
-            'catalogTitle': item.title,
-            'kind': item.kind,
-            'posterUrl': item.posterUrl,
-            'backdropUrl': item.backdropUrl,
-          },
-        );
+        final seek = showPicker || startMs == 0
+            ? 0
+            : (startMs ?? (userResume > 2000 ? userResume : (streamResume > 2000 ? streamResume : 0)));
+        final extra = <String, dynamic>{
+          'url': started.session.streamUrl,
+          'title': episodeLabel ?? queryTitle,
+          'titleId': item.id,
+          'episodeId': episodeId ?? item.userState?.episodeId,
+          'season': season,
+          'episode': episode,
+          'startMs': seek,
+          'isStream': true,
+          'sessionId': started.session.id,
+          'magnet': started.magnet,
+          'localTorrent': started.localTorrent,
+          'listedSeeders': started.session.seeders,
+          'listedPeers': started.session.peers,
+          'streamFileIndex': started.fileIndex,
+          'catalogTitle': item.title,
+          'kind': item.kind,
+          'posterUrl': item.posterUrl,
+          'backdropUrl': item.backdropUrl,
+        };
+        final backend = ref.read(settingsProvider).androidPlaybackBackend;
+        // Always use shared PlayerScreen chrome. VLC is the in-app decoder on
+        // Android TV — never hand off to an external player app.
+        if (AndroidPlayback.usesExternal(backend)) {
+          // Legacy prefs value: fall through to in-app PlayerScreen.
+        }
+        context.push('/player/${started.session.id}', extra: extra);
       }
 
       var opened = false;
-      final started = await showStreamingPicker(
+      final started = await beginStreaming(
         context: context,
         client: ref.read(graphQLClientProvider),
         title: item.title,
@@ -264,7 +287,9 @@ class _DetailBodyState extends ConsumerState<_DetailBody> {
         episode: episode,
         preferredLanguages: ref.read(serverInfoProvider).valueOrNull?.preferredLanguages ??
             ref.read(settingsProvider).preferredLanguages,
-        resumePlayback: startMs == null || startMs > 0,
+        preferResume: wantResume,
+        fromBeginning: showPicker,
+        resumePlayback: wantResume && !showPicker,
         onReadyToPlay: (s) {
           opened = true;
           openPlayer(s);
@@ -311,6 +336,8 @@ class _DetailBodyState extends ConsumerState<_DetailBody> {
           episodeId: episode.id,
           episodeLabel: label,
           startMs: startMs,
+          preferResume: resumeHere,
+          fromBeginning: !resumeHere,
         );
         return;
       }
@@ -333,6 +360,8 @@ class _DetailBodyState extends ConsumerState<_DetailBody> {
         episodeId: episode.id,
         episodeLabel: label,
         startMs: startMs,
+        preferResume: resumeHere,
+        fromBeginning: !resumeHere,
       );
     }
 
@@ -374,16 +403,20 @@ class _DetailBodyState extends ConsumerState<_DetailBody> {
                               season: target.season.seasonNumber,
                               episode: target.episode.episodeNumber,
                               episodeId: target.episode.id,
-                              startMs: 0,
+                              fromBeginning: true,
                             );
                           } else {
-                            playStream(startMs: 0);
+                            playStream(fromBeginning: true);
                           }
                         }
                       },
                       onStream: () {
                         if (item.kind == 'MOVIE') {
-                          playStream();
+                          // Resume → last magnet; first Play → torrent picker.
+                          playStream(
+                            preferResume: resume,
+                            fromBeginning: !resume,
+                          );
                           return;
                         }
                         final target = seriesPlayTarget();
@@ -392,7 +425,12 @@ class _DetailBodyState extends ConsumerState<_DetailBody> {
                           return;
                         }
                         // Last resort — still pass S01E01 so Skip Intro can resolve.
-                        playStream(season: 1, episode: 1);
+                        playStream(
+                          season: 1,
+                          episode: 1,
+                          preferResume: resume,
+                          fromBeginning: !resume,
+                        );
                       },
                       onHeroFocus: _pinTop,
                       onToggleWatched: () async {
@@ -452,7 +490,9 @@ class _DetailBodyState extends ConsumerState<_DetailBody> {
                   ],
                 );
                 if (!isAndroidTv) return list;
-                return list;
+                // Block Flutter's instant showOnScreen so D-pad up/down both use our
+                // leisurely tvEnsureVisible (up used to jump; down looked smooth).
+                return TvNoJumpScroll(child: list);
               },
             ),
             Positioned(
@@ -872,55 +912,64 @@ class _TrailerCardState extends State<_TrailerCard> {
   @override
   Widget build(BuildContext context) {
     final t = widget.trailer;
+    final tv = isAndroidTv;
     return MouseRegion(
       onEnter: (_) => setState(() => _highlighted = true),
       onExit: (_) => setState(() => _highlighted = false),
       child: GestureDetector(
         onTap: _play,
-        child: AnimatedScale(
-          scale: _highlighted ? 1.08 : 1,
-          alignment: Alignment.center,
-          duration: const Duration(milliseconds: 180),
-          curve: Curves.easeOut,
-          child: SizedBox(
-            width: 220,
-            child: Material(
-              elevation: _highlighted ? 18 : 2,
-              shadowColor: Colors.black,
-              color: Colors.transparent,
-              surfaceTintColor: Colors.transparent,
-              borderRadius: BorderRadius.circular(12),
-              clipBehavior: Clip.antiAlias,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Expanded(
-                    child: Stack(
-                      fit: StackFit.expand,
-                      children: [
-                        CachedArt(url: t.thumbnailUrl, memCacheWidth: 440),
-                        const ColoredBox(color: Color(0x59000000)),
-                        Center(
-                          child: _loading
-                              ? const SizedBox(
-                                  width: 36,
-                                  height: 36,
-                                  child: CircularProgressIndicator(strokeWidth: 3, color: Colors.white),
-                                )
-                              : const Icon(
-                                  Icons.play_circle_fill_rounded,
-                                  size: 52,
-                                  color: Colors.white,
-                                ),
-                        ),
-                      ],
+        child: _LabeledFocus(
+          label: 'trailer',
+          onActivate: _play,
+          onFocus: (focused) {
+            if (_highlighted == focused) return;
+            setState(() => _highlighted = focused);
+          },
+          child: AnimatedScale(
+            scale: _highlighted ? 1.08 : 1,
+            alignment: Alignment.center,
+            duration: const Duration(milliseconds: 180),
+            curve: Curves.easeOut,
+            child: SizedBox(
+              width: tv ? 240 : 220,
+              child: Material(
+                elevation: _highlighted ? (tv ? 28 : 18) : (tv ? 4 : 2),
+                shadowColor: Colors.black,
+                color: Colors.transparent,
+                surfaceTintColor: Colors.transparent,
+                borderRadius: BorderRadius.circular(12),
+                clipBehavior: Clip.antiAlias,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          CachedArt(url: t.thumbnailUrl, memCacheWidth: 440),
+                          const ColoredBox(color: Color(0x59000000)),
+                          Center(
+                            child: _loading
+                                ? const SizedBox(
+                                    width: 36,
+                                    height: 36,
+                                    child: CircularProgressIndicator(strokeWidth: 3, color: Colors.white),
+                                  )
+                                : const Icon(
+                                    Icons.play_circle_fill_rounded,
+                                    size: 52,
+                                    color: Colors.white,
+                                  ),
+                          ),
+                        ],
+                      ),
                     ),
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(8, 6, 8, 8),
-                    child: Text(t.name, maxLines: 1, overflow: TextOverflow.ellipsis),
-                  ),
-                ],
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(8, 6, 8, 8),
+                      child: Text(t.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
@@ -937,19 +986,22 @@ class _TrailerRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final tv = isAndroidTv;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
+      padding: EdgeInsets.fromLTRB(20, tv ? 12 : 8, 20, 0),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text('Trailer', style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700)),
           const SizedBox(height: 12),
           SizedBox(
-            height: 140,
+            height: tv ? 156 : 140,
             child: ListView.separated(
+              clipBehavior: Clip.none,
               scrollDirection: Axis.horizontal,
+              physics: const ClampingScrollPhysics(),
               itemCount: item.playableTrailers.length,
-              separatorBuilder: (_, __) => const SizedBox(width: 12),
+              separatorBuilder: (_, __) => SizedBox(width: tv ? 18 : 12),
               itemBuilder: (context, i) {
                 final t = item.playableTrailers[i];
                 return _TrailerCard(trailer: t);

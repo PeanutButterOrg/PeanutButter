@@ -8,6 +8,7 @@ import '../providers/catalog.dart';
 import '../providers/settings.dart';
 import '../theme.dart';
 import '../tv.dart';
+import '../tv_nav.dart';
 import '../widgets/empty_state.dart';
 import '../widgets/filter_bar.dart';
 import '../widgets/local_overlay.dart';
@@ -196,11 +197,21 @@ class _CatalogScreenState extends ConsumerState<CatalogScreen> {
     );
 
     return Scaffold(
-      body: TvBackScope(
-        headerLive: true,
-        headerFocus: _year,
-        header: homeHeader,
-        body: grid,
+      body: TvNavHost(
+        strategies: [
+          TvNavBarStrategy(
+            nodes: [_year, _rating, _genre, _favourites, _watched, _search, _settings],
+            onMoveDown: () {
+              // Drop into the first poster when leaving the filter bar.
+            },
+          ),
+        ],
+        child: TvBackScope(
+          headerLive: true,
+          headerFocus: _year,
+          header: homeHeader,
+          body: grid,
+        ),
       ),
     );
   }

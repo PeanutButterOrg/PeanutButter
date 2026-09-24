@@ -40,6 +40,24 @@ pub fn extract_token(headers: &HeaderMap) -> Option<&str> {
         })
 }
 
+/// Also accept `?key=` / `?token=` so external Android players (VLC, mpv)
+/// can open `/stream/{id}` without custom HTTP headers.
+pub fn extract_token_from_query(query: Option<&str>) -> Option<&str> {
+    let q = query?;
+    for pair in q.split('&') {
+        let mut parts = pair.splitn(2, '=');
+        let name = parts.next()?.to_ascii_lowercase();
+        if name != "key" && name != "token" {
+            continue;
+        }
+        let value = parts.next().unwrap_or("").trim();
+        if !value.is_empty() {
+            return Some(value);
+        }
+    }
+    None
+}
+
 pub fn authorize_headers(headers: &HeaderMap, expected: &str) -> Result<(), AppError> {
     let Some(provided) = extract_token(headers) else {
         return Err(AppError::Unauthorized("missing API token".into()));
@@ -106,6 +124,19 @@ pub async fn gate(
     if method == axum::http::Method::OPTIONS || path == "/health" {
         return Ok(next.run(req).await);
     }
+    // Public art proxy — TVs often lack DNS for image.tmdb.org / YouTube.
+    if (path.starts_with("/art/")
+        && (method == axum::http::Method::GET || method == axum::http::Method::HEAD))
+    {
+        return Ok(next.run(req).await);
+    }
+    // Opaque stream session IDs are the capability token — external Android
+    // players (VLC/mpv) cannot set X-Api-Key headers. Optional ?key= still works.
+    if path.starts_with("/stream/")
+        && (method == axum::http::Method::GET || method == axum::http::Method::HEAD)
+    {
+        return Ok(next.run(req).await);
+    }
     if path == "/" || path == "/tokens" {
         return Ok(next.run(req).await);
     }
@@ -122,8 +153,40 @@ pub async fn gate(
         }
         return Ok(Redirect::to("/").into_response());
     }
-    let _ = resolve_session(&state, req.headers()).await?;
+    let _ = resolve_session_with_query(&state, req.headers(), req.uri().query()).await?;
     Ok(next.run(req).await)
+}
+
+async fn resolve_session_with_query(
+    state: &HttpState,
+    headers: &HeaderMap,
+    query: Option<&str>,
+) -> Result<AuthSession, AppError> {
+    if let Ok(session) = resolve_session(state, headers).await {
+        return Ok(session);
+    }
+    // Fallback: query key for external players on /stream/*.
+    let Some(provided) = extract_token_from_query(query) else {
+        return Err(AppError::Unauthorized("missing API token".into()));
+    };
+    let admin = state.app.config.app_token();
+    if crate::pin::codes_equal(provided, &admin) {
+        let (id, name) = crate::db::default_device_token(&state.app.pool).await?;
+        return Ok(AuthSession {
+            token_id: id,
+            is_admin: true,
+            name,
+        });
+    }
+    // Re-run resolve via a synthetic header so DB lookup stays in one place.
+    let mut synthetic = HeaderMap::new();
+    synthetic.insert(
+        "x-api-key",
+        provided
+            .parse()
+            .map_err(|_| AppError::Unauthorized("invalid API token".into()))?,
+    );
+    resolve_session(state, &synthetic).await
 }
 
 #[cfg(test)]

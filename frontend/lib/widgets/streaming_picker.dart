@@ -9,6 +9,7 @@ import '../graphql/client.dart';
 import '../graphql/queries.dart';
 import '../friendly_error.dart';
 import '../models.dart';
+import '../stream_resume_policy.dart';
 import '../theme.dart';
 import '../tv.dart';
 import 'tv_chrome.dart';
@@ -147,6 +148,197 @@ Future<T?> _showPickerOverlay<T>({
         );
       },
     ),
+  );
+}
+
+Future<StreamBookmark?> fetchStreamBookmark({
+  required GraphQLClient client,
+  required String titleId,
+  int? season,
+  int? episode,
+}) async {
+  try {
+    final result = await client.query(
+      QueryOptions(
+        document: gql(STREAM_BOOKMARK),
+        fetchPolicy: FetchPolicy.networkOnly,
+        variables: {
+          'titleId': titleId,
+          'season': season,
+          'episode': episode,
+        },
+      ),
+    );
+    if (result.hasException) return null;
+    final json = result.data?['streamBookmark'] as Map<String, dynamic>?;
+    if (json == null) return null;
+    final bookmark = StreamBookmark.fromJson(json);
+    return bookmark.hasMagnet ? bookmark : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+Future<StreamStart?> startStreamDirect({
+  required GraphQLClient client,
+  required String magnet,
+  required String title,
+  String? titleId,
+  bool resumePlayback = true,
+  int seeders = 0,
+  int peers = 0,
+  int? season,
+  int? episode,
+  int? fileIndex,
+  String? stopPreviousSessionId,
+}) async {
+  final previous = stopPreviousSessionId?.trim();
+  if (previous != null && previous.isNotEmpty && !previous.startsWith('local-')) {
+    try {
+      await client.mutate(
+        MutationOptions(
+          document: gql(STOP_STREAM),
+          fetchPolicy: FetchPolicy.networkOnly,
+          variables: {'sessionId': previous},
+        ),
+      );
+    } catch (_) {}
+  }
+  final started = await client.mutate(
+    MutationOptions(
+      document: gql(START_STREAM),
+      fetchPolicy: FetchPolicy.networkOnly,
+      queryRequestTimeout: const Duration(seconds: 45),
+      variables: {
+        'magnet': magnet,
+        'title': title,
+        'titleId': titleId,
+        'resume': resumePlayback,
+        'seeders': seeders,
+        'peers': peers,
+        'season': season,
+        'episode': episode,
+        'fileIndex': fileIndex,
+      },
+    ),
+  );
+  if (started.hasException) {
+    throw graphqlMessage(started);
+  }
+  final session = StreamSession.fromJson(
+    started.data?['startStream'] as Map<String, dynamic>? ?? const {},
+  );
+  if (session.id.isEmpty) {
+    throw 'Couldn’t start this stream. Try another result.';
+  }
+  return StreamStart(
+    session: session,
+    magnet: magnet,
+    fileIndex: fileIndex,
+  );
+}
+
+/// Core entry: Resume reuses the saved magnet (no picker); new / from-beginning
+/// opens the torrent list so the user picks a clean source.
+Future<StreamStart?> beginStreaming({
+  required BuildContext context,
+  required GraphQLClient client,
+  required String title,
+  required String kind,
+  String? titleId,
+  int? season,
+  int? episode,
+  List<String>? preferredLanguages,
+  /// True when the user tapped Resume (or episode mid-watch).
+  bool preferResume = false,
+  /// True when the user chose Play from beginning — always show the picker.
+  bool fromBeginning = false,
+  bool resumePlayback = true,
+  String? stopPreviousSessionId,
+  void Function(StreamStart started)? onReadyToPlay,
+}) async {
+  final tryResume = preferResume && !fromBeginning && titleId != null && titleId.isNotEmpty;
+  StreamBookmark? bookmark;
+  if (tryResume) {
+    bookmark = await fetchStreamBookmark(
+      client: client,
+      titleId: titleId,
+      season: season,
+      episode: episode,
+    );
+  }
+
+  final showPicker = shouldShowStreamPicker(
+    fromBeginning: fromBeginning,
+    preferResume: preferResume,
+    hasSavedMagnet: bookmark?.hasMagnet == true,
+  );
+
+  if (!showPicker && bookmark != null && bookmark.hasMagnet) {
+    if (!context.mounted) return null;
+    final nav = Navigator.of(context, rootNavigator: true);
+    // Brief opaque cover while the previous torrent restarts (no source list).
+    final loading = _showPickerOverlay<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => const PopScope(
+        canPop: false,
+        child: Padding(
+          padding: EdgeInsets.all(28),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              CircularProgressIndicator(),
+              SizedBox(height: 16),
+              Text('Resuming previous stream…'),
+            ],
+          ),
+        ),
+      ),
+    );
+    try {
+      await Future<void>.delayed(const Duration(milliseconds: 40));
+      final started = await startStreamDirect(
+        client: client,
+        magnet: bookmark.magnet,
+        title: title,
+        titleId: titleId,
+        resumePlayback: true,
+        season: season,
+        episode: episode,
+        fileIndex: bookmark.fileIndex,
+        stopPreviousSessionId: stopPreviousSessionId,
+      );
+      if (nav.canPop()) nav.pop();
+      await loading;
+      if (started != null) {
+        onReadyToPlay?.call(started);
+      }
+      return started;
+    } catch (e) {
+      if (nav.canPop()) nav.pop();
+      try {
+        await loading;
+      } catch (_) {}
+      if (context.mounted) {
+        await _alert(context, friendlyRequestError(e));
+      }
+      // Fall through to picker if the saved magnet failed.
+    }
+  }
+
+  return showStreamingPicker(
+    context: context,
+    client: client,
+    title: title,
+    kind: kind,
+    titleId: titleId,
+    season: season,
+    episode: episode,
+    preferredLanguages: preferredLanguages,
+    resumePlayback: fromBeginning ? false : resumePlayback,
+    stopPreviousSessionId: stopPreviousSessionId,
+    onReadyToPlay: onReadyToPlay,
   );
 }
 
@@ -699,7 +891,10 @@ class _TvStreamingPickerPageState extends State<_TvStreamingPickerPage> {
     await Future<void>.delayed(const Duration(milliseconds: 50));
     if (!mounted) return;
     try {
-      final nativeReady = MediaKitAndroidVideo.preload();
+      // Never await libmpv here — System.loadLibrary can hang indefinitely on
+      // some Realtek boxes and left the UI stuck on "Starting stream…".
+      // Player init awaits preload with its own timeout.
+      unawaited(MediaKitAndroidVideo.preload());
       final previous = widget.stopPreviousSessionId?.trim();
       if (previous != null && previous.isNotEmpty && !previous.startsWith('local-')) {
         try {
@@ -709,29 +904,35 @@ class _TvStreamingPickerPageState extends State<_TvStreamingPickerPage> {
               fetchPolicy: FetchPolicy.networkOnly,
               variables: {'sessionId': previous},
             ),
-          );
+          ).timeout(const Duration(seconds: 8));
         } catch (_) {}
       }
       if (!mounted) return;
-      final started = await widget.client.mutate(
-        MutationOptions(
-          document: gql(START_STREAM),
-          fetchPolicy: FetchPolicy.networkOnly,
-          queryRequestTimeout: const Duration(seconds: 45),
-          variables: {
-            'magnet': source.magnet,
-            'title': widget.title,
-            'titleId': widget.titleId,
-            'resume': widget.resumePlayback,
-            'seeders': source.seeders,
-            'peers': source.peers,
-            'season': widget.season,
-            'episode': widget.episode,
-            'fileIndex': fileIndex,
-          },
-        ),
-      );
-      await nativeReady;
+      final started = await widget.client
+          .mutate(
+            MutationOptions(
+              document: gql(START_STREAM),
+              fetchPolicy: FetchPolicy.networkOnly,
+              queryRequestTimeout: const Duration(seconds: 45),
+              variables: {
+                'magnet': source.magnet,
+                'title': widget.title,
+                'titleId': widget.titleId,
+                'resume': widget.resumePlayback,
+                'seeders': source.seeders,
+                'peers': source.peers,
+                'season': widget.season,
+                'episode': widget.episode,
+                'fileIndex': fileIndex,
+              },
+            ),
+          )
+          .timeout(
+            const Duration(seconds: 50),
+            onTimeout: () => throw TimeoutException(
+              'Stream start timed out — check the server and try another source.',
+            ),
+          );
       if (!mounted) return;
       if (started.hasException) throw graphqlMessage(started);
       final session = StreamSession.fromJson(

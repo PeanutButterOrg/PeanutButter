@@ -1,13 +1,16 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../platform/device_profile.dart';
+import '../platform/input_policy.dart';
 import '../tv.dart';
 import 'tv_chrome.dart';
 
 /// Text field that D-pad can highlight. On Android TV:
-/// - Arrows move between fields (no soft keyboard).
-/// - Select enters edit mode using a real [TextField] with the soft keyboard
-///   hidden so `adb shell input text` / hardware keys still work for tests.
+/// - Arrows move between fields.
+/// - Select opens a fullscreen soft-keyboard screen (full IME, no stroke).
 class TvTextField extends StatefulWidget {
   const TvTextField({
     super.key,
@@ -101,6 +104,10 @@ class TvTextFieldState extends State<TvTextField> {
   }
 
   void _beginEdit() {
+    if (DeviceProfile.current.usesSoftKeyboardOverlay) {
+      unawaited(_beginFullscreenEdit());
+      return;
+    }
     setState(() => _editing = true);
     _input.canRequestFocus = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -111,6 +118,29 @@ class TvTextFieldState extends State<TvTextField> {
         if (mounted && _editing) _hideIme();
       });
     });
+  }
+
+  Future<void> _beginFullscreenEdit() async {
+    final title = widget.decoration?.labelText ??
+        widget.decoration?.hintText ??
+        widget.debugLabel ??
+        'Enter text';
+    final result = await InputPolicy.forProfile(DeviceProfile.current).editText(
+      context,
+      title: title,
+      initial: widget.controller?.text ?? '',
+      hint: widget.decoration?.hintText,
+      obscureText: widget.obscureText,
+      keyboardType: widget.keyboardType ?? TextInputType.text,
+      textInputAction: widget.textInputAction ?? TextInputAction.done,
+    );
+    if (!mounted || result == null) return;
+    widget.controller?.value = TextEditingValue(
+      text: result,
+      selection: TextSelection.collapsed(offset: result.length),
+    );
+    widget.onChanged?.call(result);
+    widget.onSubmitted?.call(result);
   }
 
   void focusChrome() {
@@ -300,12 +330,8 @@ class TvTextFieldState extends State<TvTextField> {
       width: double.infinity,
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
       decoration: BoxDecoration(
-        color: const Color(0xFF121218),
+        color: highlighted ? const Color(0xFF1E2430) : const Color(0xFF121218),
         borderRadius: BorderRadius.circular(radius),
-        border: Border.all(
-          color: highlighted ? seed : const Color(0x22FFFFFF),
-          width: highlighted ? 2 : 1,
-        ),
       ),
       child: inner,
     );

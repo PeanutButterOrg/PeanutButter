@@ -55,7 +55,7 @@ impl Mutation {
         .await?;
         state.gql_cache.invalidate();
         let full = fetch_title(&state.pool, row.0).await?;
-        Ok(Title::from_row(full))
+        Ok(Title::from_row(full, &state.config.public_url))
     }
 
     async fn update_title(
@@ -95,7 +95,7 @@ impl Mutation {
         .await?;
         state.gql_cache.invalidate();
         let full = fetch_title(&state.pool, id).await?;
-        Ok(Title::from_row(full))
+        Ok(Title::from_row(full, &state.config.public_url))
     }
 
     /// Pull fresh metadata, episodes, and drop cached stream listings for one title.
@@ -105,7 +105,7 @@ impl Mutation {
         crate::ingest::refresh_title(&ingest, id).await?;
         state.gql_cache.invalidate();
         let full = fetch_title(&state.pool, id).await?;
-        Ok(Title::from_row(full))
+        Ok(Title::from_row(full, &state.config.public_url))
     }
 
     async fn delete_title(&self, ctx: &Context<'_>, id: Uuid) -> async_graphql::Result<MutationResult> {
@@ -447,7 +447,7 @@ impl Mutation {
         let session = state
             .streams
             .start(
-                magnet,
+                magnet.clone(),
                 title.clone(),
                 resume_pos,
                 state.config.live.streaming_resolution(),
@@ -465,6 +465,10 @@ impl Mutation {
                 Some(title_id),
                 &title,
                 resume_pos,
+                Some(magnet.as_str()),
+                season,
+                episode,
+                file_index,
             )
             .await;
         }
@@ -479,6 +483,9 @@ impl Mutation {
         title_id: Option<Uuid>,
         title: Option<String>,
         magnet: Option<String>,
+        season: Option<i32>,
+        episode: Option<i32>,
+        file_index: Option<i32>,
     ) -> async_graphql::Result<bool> {
         let state = ctx.data::<AppState>()?;
         let ok = state.streams.set_resume(&session_id, position as i64).await;
@@ -490,6 +497,10 @@ impl Mutation {
                 title_id,
                 title.as_deref().unwrap_or(""),
                 position as i64,
+                Some(magnet.as_str()),
+                season,
+                episode,
+                file_index,
             )
             .await?;
         }

@@ -34,12 +34,32 @@ const EMBEDDED_MIGRATION_021: &str = include_str!("migrations/021_popcorn_sort_f
 const EMBEDDED_MIGRATION_022: &str = include_str!("migrations/022_hide_unreleased.sql");
 const EMBEDDED_MIGRATION_023: &str = include_str!("migrations/023_episode_progress.sql");
 const EMBEDDED_MIGRATION_024: &str = include_str!("migrations/024_stream_search_cache.sql");
+const EMBEDDED_MIGRATION_025: &str = include_str!("migrations/025_stream_bookmark.sql");
 
 pub async fn connect(database_url: &str) -> Result<PgPool> {
+    connect_with(database_url, 40, 4, Duration::from_secs(15)).await
+}
+
+/// Pool for GraphQL / playback — fail fast so sync never starves clients.
+pub async fn connect_api(database_url: &str) -> Result<PgPool> {
+    connect_with(database_url, 24, 4, Duration::from_secs(5)).await
+}
+
+/// Dedicated pool for catalog sync / TMDB ingest so user queries keep capacity.
+pub async fn connect_ingest(database_url: &str) -> Result<PgPool> {
+    connect_with(database_url, 12, 1, Duration::from_secs(30)).await
+}
+
+async fn connect_with(
+    database_url: &str,
+    max: u32,
+    min: u32,
+    acquire: Duration,
+) -> Result<PgPool> {
     let pool = PgPoolOptions::new()
-        .max_connections(40)
-        .min_connections(4)
-        .acquire_timeout(Duration::from_secs(15))
+        .max_connections(max)
+        .min_connections(min)
+        .acquire_timeout(acquire)
         .idle_timeout(Duration::from_secs(300))
         .max_lifetime(Duration::from_secs(1800))
         .connect(database_url)
@@ -84,6 +104,7 @@ pub async fn run_migrations(pool: &PgPool, extra_dir: Option<&Path>) -> Result<(
     apply_one(pool, "022_hide_unreleased", EMBEDDED_MIGRATION_022).await?;
     apply_one(pool, "023_episode_progress", EMBEDDED_MIGRATION_023).await?;
     apply_one(pool, "024_stream_search_cache", EMBEDDED_MIGRATION_024).await?;
+    apply_one(pool, "025_stream_bookmark", EMBEDDED_MIGRATION_025).await?;
 
     if let Some(dir) = extra_dir {
         if dir.is_dir() {
@@ -125,6 +146,7 @@ pub async fn run_migrations(pool: &PgPool, extra_dir: Option<&Path>) -> Result<(
                     || version == "022_hide_unreleased"
                     || version == "023_episode_progress"
                     || version == "024_stream_search_cache"
+                    || version == "025_stream_bookmark"
                 {
                     continue;
                 }
@@ -973,25 +995,104 @@ pub async fn save_stream_resume(
     title_id: Option<Uuid>,
     title: &str,
     position: i64,
+    magnet: Option<&str>,
+    season: Option<i32>,
+    episode: Option<i32>,
+    file_index: Option<i32>,
 ) -> Result<()> {
+    let magnet_uri = magnet.unwrap_or("").trim();
     sqlx::query(
         r#"
-        INSERT INTO stream_progress (magnet_key, title_id, title, resume_position, updated_at)
-        VALUES ($1, $2, $3, $4, now())
+        INSERT INTO stream_progress (
+            magnet_key, title_id, title, resume_position, updated_at,
+            magnet, season, episode, file_index
+        )
+        VALUES ($1, $2, $3, $4, now(), $5, $6, $7, $8)
         ON CONFLICT (magnet_key) DO UPDATE SET
             title_id = COALESCE(EXCLUDED.title_id, stream_progress.title_id),
             title = EXCLUDED.title,
             resume_position = EXCLUDED.resume_position,
-            updated_at = now()
+            updated_at = now(),
+            magnet = CASE
+                WHEN EXCLUDED.magnet <> '' THEN EXCLUDED.magnet
+                ELSE stream_progress.magnet
+            END,
+            season = COALESCE(EXCLUDED.season, stream_progress.season),
+            episode = COALESCE(EXCLUDED.episode, stream_progress.episode),
+            file_index = COALESCE(EXCLUDED.file_index, stream_progress.file_index)
         "#,
     )
     .bind(magnet_key)
     .bind(title_id)
     .bind(title)
     .bind(position.max(0))
+    .bind(magnet_uri)
+    .bind(season)
+    .bind(episode)
+    .bind(file_index)
     .execute(pool)
     .await?;
     Ok(())
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct StreamBookmarkRow {
+    pub magnet: String,
+    pub resume_position: i64,
+    pub season: Option<i32>,
+    pub episode: Option<i32>,
+    pub file_index: Option<i32>,
+}
+
+/// Last torrent used for this title (and optional SxxExx). Empty magnet = none.
+pub async fn load_stream_bookmark(
+    pool: &PgPool,
+    title_id: Uuid,
+    season: Option<i32>,
+    episode: Option<i32>,
+) -> Result<Option<StreamBookmarkRow>> {
+    // Prefer an exact season/episode match (series resume).
+    let exact: Option<StreamBookmarkRow> = sqlx::query_as(
+        r#"
+        SELECT magnet, resume_position, season, episode, file_index
+        FROM stream_progress
+        WHERE title_id = $1
+          AND COALESCE(magnet, '') <> ''
+          AND season IS NOT DISTINCT FROM $2
+          AND episode IS NOT DISTINCT FROM $3
+        ORDER BY updated_at DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(title_id)
+    .bind(season)
+    .bind(episode)
+    .fetch_optional(pool)
+    .await?;
+    if exact.is_some() {
+        return Ok(exact);
+    }
+
+    // Movies (and legacy rows): accept the newest magnet for this title when the
+    // client omitted S/E or an older session stored S01E01 by mistake.
+    if season.is_none() && episode.is_none() {
+        let any: Option<StreamBookmarkRow> = sqlx::query_as(
+            r#"
+            SELECT magnet, resume_position, season, episode, file_index
+            FROM stream_progress
+            WHERE title_id = $1
+              AND COALESCE(magnet, '') <> ''
+            ORDER BY updated_at DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(title_id)
+        .fetch_optional(pool)
+        .await?;
+        return Ok(any);
+    }
+
+    Ok(None)
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]

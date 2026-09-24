@@ -254,68 +254,62 @@ impl Config {
     }
 
     pub fn poster_url(&self, path: &Option<String>) -> Option<String> {
-        absolute_image_url(path)
+        absolute_image_url(&self.public_url, path)
     }
 }
 
-pub fn absolute_image_url(path: &Option<String>) -> Option<String> {
+/// Build a LAN-proxied TMDB image URL (`{PUBLIC_URL}/art/tmdb/{size}/…`).
+/// Clients without working DNS (many Android TVs) can still load art via the catalog host.
+pub fn tmdb_proxy_url(public_url: &str, size: &str, path: &Option<String>) -> Option<String> {
     let p = path.as_ref()?.trim();
     if p.is_empty() {
         return None;
     }
+    let base = public_url.trim_end_matches('/');
     if p.starts_with("http://") || p.starts_with("https://") {
+        if let Some(rest) = p
+            .strip_prefix("https://image.tmdb.org/t/p/")
+            .or_else(|| p.strip_prefix("http://image.tmdb.org/t/p/"))
+        {
+            if let Some((sz, file)) = rest.split_once('/') {
+                if !sz.is_empty() && !file.is_empty() {
+                    return Some(format!("{base}/art/tmdb/{sz}/{file}"));
+                }
+            }
+        }
         return Some(p.to_string());
     }
     let trimmed = p.trim_start_matches('/');
-    Some(format!("https://image.tmdb.org/t/p/w780/{trimmed}"))
+    Some(format!("{base}/art/tmdb/{size}/{trimmed}"))
 }
 
-pub fn still_url(path: &Option<String>) -> Option<String> {
-    let p = path.as_ref()?.trim();
-    if p.is_empty() {
-        return None;
-    }
-    if p.starts_with("http://") || p.starts_with("https://") {
-        return Some(p.to_string());
-    }
-    let trimmed = p.trim_start_matches('/');
-    Some(format!("https://image.tmdb.org/t/p/w500/{trimmed}"))
+pub fn absolute_image_url(public_url: &str, path: &Option<String>) -> Option<String> {
+    tmdb_proxy_url(public_url, "w780", path)
 }
 
-pub fn profile_url(path: &Option<String>) -> Option<String> {
-    let p = path.as_ref()?.trim();
-    if p.is_empty() {
-        return None;
-    }
-    if p.starts_with("http://") || p.starts_with("https://") {
-        return Some(p.to_string());
-    }
-    let trimmed = p.trim_start_matches('/');
-    Some(format!("https://image.tmdb.org/t/p/w185/{trimmed}"))
+pub fn still_url(public_url: &str, path: &Option<String>) -> Option<String> {
+    tmdb_proxy_url(public_url, "w500", path)
 }
 
-pub fn logo_url(path: &Option<String>) -> Option<String> {
-    let p = path.as_ref()?.trim();
-    if p.is_empty() {
-        return None;
-    }
-    if p.starts_with("http://") || p.starts_with("https://") {
-        return Some(p.to_string());
-    }
-    let trimmed = p.trim_start_matches('/');
-    Some(format!("https://image.tmdb.org/t/p/w500/{trimmed}"))
+pub fn profile_url(public_url: &str, path: &Option<String>) -> Option<String> {
+    tmdb_proxy_url(public_url, "w185", path)
 }
 
-pub fn backdrop_url(path: &Option<String>) -> Option<String> {
-    let p = path.as_ref()?.trim();
-    if p.is_empty() {
+pub fn logo_url(public_url: &str, path: &Option<String>) -> Option<String> {
+    tmdb_proxy_url(public_url, "w500", path)
+}
+
+pub fn backdrop_url(public_url: &str, path: &Option<String>) -> Option<String> {
+    tmdb_proxy_url(public_url, "w1280", path)
+}
+
+pub fn youtube_thumb_url(public_url: &str, youtube_key: &str) -> Option<String> {
+    let key = youtube_key.trim();
+    if key.is_empty() {
         return None;
     }
-    if p.starts_with("http://") || p.starts_with("https://") {
-        return Some(p.to_string());
-    }
-    let trimmed = p.trim_start_matches('/');
-    Some(format!("https://image.tmdb.org/t/p/w1280/{trimmed}"))
+    let base = public_url.trim_end_matches('/');
+    Some(format!("{base}/art/youtube/{key}"))
 }
 
 fn required(key: &str) -> Result<String> {

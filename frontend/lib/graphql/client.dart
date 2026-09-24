@@ -160,3 +160,76 @@ String normalizeServerBase(String serverUrl) {
   }
   return value;
 }
+
+bool _isLoopbackHost(String host) {
+  final h = host.toLowerCase();
+  return h == '127.0.0.1' || h == 'localhost' || h == '::1';
+}
+
+/// Rewrite catalog/stream URLs so phones/TVs hit the paired server, not the
+/// server's loopback `PUBLIC_URL` (or a stale LAN IP/port).
+String resolveServerResourceUrl(String url, String serverUrl) {
+  final raw = url.trim();
+  if (raw.isEmpty) return raw;
+  final base = normalizeServerBase(serverUrl);
+  if (base.isEmpty) return raw;
+
+  final parsed = Uri.tryParse(raw);
+  final server = Uri.tryParse(base);
+  if (parsed == null || server == null || server.host.isEmpty) return raw;
+
+  // Relative paths from GraphQL — resolve against the paired origin.
+  if (!parsed.hasScheme || parsed.host.isEmpty) {
+    return server.resolve(raw).toString();
+  }
+
+  final path = parsed.path;
+  final isAppMedia =
+      path.startsWith('/stream/') || path.startsWith('/media/') || path.startsWith('/art/');
+  final loopback = _isLoopbackHost(parsed.host);
+  if (!isAppMedia && !loopback) return raw;
+
+  return parsed
+      .replace(
+        scheme: server.scheme.isEmpty ? parsed.scheme : server.scheme,
+        host: server.host,
+        port: server.hasPort ? server.port : null,
+      )
+      .toString();
+}
+
+/// Route TMDB / YouTube thumbs through the catalog host so Android TVs without
+/// working DNS still get art (and avoid multi-second DNS timeouts per poster).
+String resolveArtUrl(String url, String serverUrl) {
+  final raw = url.trim();
+  if (raw.isEmpty) return raw;
+  final base = normalizeServerBase(serverUrl);
+  if (base.isEmpty) return raw;
+
+  final uri = Uri.tryParse(raw);
+  if (uri == null) return raw;
+  final host = uri.host.toLowerCase();
+
+  if (host == 'image.tmdb.org') {
+    final segs = uri.pathSegments;
+    // /t/p/{size}/{file…}
+    if (segs.length >= 4 && segs[0] == 't' && segs[1] == 'p') {
+      final size = segs[2];
+      final file = segs.sublist(3).join('/');
+      return resolveServerResourceUrl('$base/art/tmdb/$size/$file', serverUrl);
+    }
+  }
+
+  if (host == 'img.youtube.com' || host == 'i.ytimg.com') {
+    // /vi/{key}/hqdefault.jpg
+    final segs = uri.pathSegments;
+    if (segs.length >= 2 && segs[0] == 'vi') {
+      final key = segs[1];
+      if (key.isNotEmpty) {
+        return resolveServerResourceUrl('$base/art/youtube/$key', serverUrl);
+      }
+    }
+  }
+
+  return resolveServerResourceUrl(raw, serverUrl);
+}

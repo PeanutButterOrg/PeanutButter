@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io' show Platform;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -7,9 +6,13 @@ import 'package:linux_embedded_webview/linux_embedded_webview.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
+import '../platform/device_profile.dart';
 import '../youtube.dart';
 
-bool get linuxDesktop => !kIsWeb && Platform.isLinux;
+bool get linuxDesktop => DeviceProfile.current.isDesktop && !kIsWeb;
+
+/// True on Linux, Windows, and macOS (media_kit / desktop webview path).
+bool get isDesktopPlatform => DeviceProfile.current.isDesktop;
 
 Future<void> openYoutubeTrailer(String videoId) async {
   final uri = Uri.parse('https://www.youtube.com/watch?v=$videoId');

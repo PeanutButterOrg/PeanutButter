@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:peanutbutter/platform/device_profile.dart';
 import 'package:peanutbutter/tv.dart';
 import 'package:peanutbutter/widgets/tv_text_field.dart';
 
@@ -9,10 +10,13 @@ void main() {
 
   setUp(() {
     debugIsAndroidTvOverride = true;
+    // Use phone profile so tests keep the in-place edit path (no route push).
+    DeviceProfile.debugOverride = const AndroidPhoneProfile();
   });
 
   tearDown(() {
     debugIsAndroidTvOverride = null;
+    DeviceProfile.debugOverride = null;
   });
 
   Future<void> pumpField(

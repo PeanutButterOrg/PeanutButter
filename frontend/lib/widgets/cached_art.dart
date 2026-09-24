@@ -5,8 +5,12 @@ import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../graphql/client.dart';
 import '../models.dart';
+import '../providers/settings.dart';
+import '../tv.dart';
 
 bool _looksLikeImage(List<int> bytes) {
   if (bytes.length < 12) return false;
@@ -78,10 +82,16 @@ class _BytesResponse implements FileServiceResponse {
 
 /// Rejects non-image HTTP bodies before they hit FlutterJNI ImageDecoder.
 class _ArtFileService extends FileService {
-  final Dio _dio = Dio(
+  // Android TV with broken DNS used to burn 8–12s per poster; fail fast.
+  static Duration get _connect =>
+      (!kIsWeb && Platform.isAndroid) ? const Duration(seconds: 3) : const Duration(seconds: 8);
+  static Duration get _receive =>
+      (!kIsWeb && Platform.isAndroid) ? const Duration(seconds: 6) : const Duration(seconds: 12);
+
+  late final Dio _dio = Dio(
     BaseOptions(
-      connectTimeout: const Duration(seconds: 8),
-      receiveTimeout: const Duration(seconds: 12),
+      connectTimeout: _connect,
+      receiveTimeout: _receive,
       responseType: ResponseType.bytes,
       followRedirects: true,
       validateStatus: (s) => s != null && s < 500,
@@ -148,8 +158,7 @@ class ArtCache {
   }
 }
 
-
-class CachedArt extends StatelessWidget {
+class CachedArt extends ConsumerWidget {
   const CachedArt({
     super.key,
     required this.url,
@@ -166,14 +175,23 @@ class CachedArt extends StatelessWidget {
   final int? memCacheWidth;
 
   @override
-  Widget build(BuildContext context) {
-    final src = (url != null && url!.isNotEmpty) ? url : fallbackUrl;
+  Widget build(BuildContext context, WidgetRef ref) {
+    final server = ref.watch(settingsProvider.select((s) => s.serverUrl));
+    String? resolve(String? raw) {
+      if (raw == null || raw.isEmpty) return null;
+      return resolveArtUrl(raw, server);
+    }
+
+    final src = resolve(url) ?? resolve(fallbackUrl);
+    final fallback = resolve(fallbackUrl);
     if (src == null || src.isEmpty) {
       return ColoredBox(
         color: Theme.of(context).colorScheme.surfaceContainerHighest,
         child: const Center(child: Icon(Icons.movie_outlined, color: Colors.white24)),
       );
     }
+    // TV: decode smaller bitmaps to keep home rails responsive.
+    final decodeWidth = memCacheWidth ?? (isAndroidTv ? 360 : null);
     return CachedNetworkImage(
       imageUrl: src,
       cacheManager: ArtCache.posters,
@@ -182,23 +200,23 @@ class CachedArt extends StatelessWidget {
       alignment: alignment,
       width: double.infinity,
       height: double.infinity,
-      memCacheWidth: memCacheWidth,
+      memCacheWidth: decodeWidth,
       fadeInDuration: Duration.zero,
       fadeOutDuration: Duration.zero,
       placeholder: (_, __) => ColoredBox(
         color: Theme.of(context).colorScheme.surfaceContainerHighest,
       ),
       errorWidget: (_, __, ___) {
-        if (fallbackUrl != null && fallbackUrl != src && fallbackUrl!.isNotEmpty) {
+        if (fallback != null && fallback != src && fallback.isNotEmpty) {
           return CachedNetworkImage(
-            imageUrl: fallbackUrl!,
+            imageUrl: fallback,
             cacheManager: ArtCache.posters,
-            cacheKey: fallbackUrl,
+            cacheKey: fallback,
             fit: fit,
             alignment: alignment,
             width: double.infinity,
             height: double.infinity,
-            memCacheWidth: memCacheWidth,
+            memCacheWidth: decodeWidth,
             fadeInDuration: Duration.zero,
             errorWidget: (_, __, ___) => const ColoredBox(
               color: Color(0xFF1C1C24),
@@ -244,6 +262,8 @@ class _KenBurnsArtState extends State<KenBurnsArt> with SingleTickerProviderStat
   @override
   void initState() {
     super.initState();
+    // Ken Burns is expensive on Android TV SoCs — keep the banner static.
+    if (isAndroidTv) return;
     _controller = AnimationController(vsync: this, duration: widget.duration)..repeat(reverse: true);
   }
 
@@ -305,7 +325,7 @@ class BannerArt extends StatelessWidget {
           fallbackUrl: fallbackUrl,
           fit: BoxFit.cover,
           alignment: Alignment.center,
-          memCacheWidth: !kIsWeb && Platform.isAndroid ? 720 : 1920,
+          memCacheWidth: isAndroidTv ? 960 : (!kIsWeb && Platform.isAndroid ? 720 : 1920),
         ),
         const DecoratedBox(
           decoration: BoxDecoration(
@@ -334,7 +354,7 @@ class BannerArt extends StatelessWidget {
               url: logoUrl,
               fit: BoxFit.contain,
               alignment: Alignment.centerLeft,
-              memCacheWidth: 700,
+              memCacheWidth: isAndroidTv ? 420 : 700,
             ),
           ),
       ],

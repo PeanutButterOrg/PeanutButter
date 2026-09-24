@@ -41,6 +41,7 @@ class _PosterCardState extends ConsumerState<PosterCard> {
     if (mounted) setState(() {});
     if (!focused || !isAndroidTv) return;
     TvFocusReveal.maybeOf(context)?.call();
+    if (TvHomeRails.suppressHorizontalEnsureVisible) return;
     final horizontal = Scrollable.maybeOf(context, axis: Axis.horizontal);
     if (horizontal != null) {
       tvEnsureVisibleAxis(context, axis: Axis.horizontal, alignment: 0.42);
@@ -62,10 +63,14 @@ class _PosterCardState extends ConsumerState<PosterCard> {
         mouseCursor: SystemMouseCursors.click,
         onShowFocusHighlight: (_) {},
         onFocusChange: _onFocus,
-        shortcuts: const {
+        shortcuts: {
           SingleActivator(LogicalKeyboardKey.enter): ActivateIntent(),
           SingleActivator(LogicalKeyboardKey.select): ActivateIntent(),
           SingleActivator(LogicalKeyboardKey.space): ActivateIntent(),
+          SingleActivator(LogicalKeyboardKey.numpadEnter): ActivateIntent(),
+          SingleActivator(LogicalKeyboardKey.gameButtonA): ActivateIntent(),
+          SingleActivator(LogicalKeyboardKey.gameButtonStart): ActivateIntent(),
+          SingleActivator(LogicalKeyboardKey.accept): ActivateIntent(),
         },
         actions: {
           ActivateIntent: CallbackAction<ActivateIntent>(
@@ -86,7 +91,7 @@ class _PosterCardState extends ConsumerState<PosterCard> {
               curve: Curves.easeOut,
               child: tv
                   ? Material(
-                      elevation: highlighted ? 36 : 2,
+                      elevation: highlighted ? 12 : 2,
                       shadowColor: Colors.black,
                       color: Colors.transparent,
                       surfaceTintColor: Colors.transparent,

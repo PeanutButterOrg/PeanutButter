@@ -472,8 +472,38 @@ mutation StartStream($magnet: String!, $title: String!, $titleId: UUID, $resume:
 ''';
 
 const String STREAM_RESUME = r'''
-mutation StreamResume($sessionId: String!, $position: Int!, $titleId: UUID, $title: String, $magnet: String) {
-  streamResume(sessionId: $sessionId, position: $position, titleId: $titleId, title: $title, magnet: $magnet)
+mutation StreamResume(
+  $sessionId: String!
+  $position: Int!
+  $titleId: UUID
+  $title: String
+  $magnet: String
+  $season: Int
+  $episode: Int
+  $fileIndex: Int
+) {
+  streamResume(
+    sessionId: $sessionId
+    position: $position
+    titleId: $titleId
+    title: $title
+    magnet: $magnet
+    season: $season
+    episode: $episode
+    fileIndex: $fileIndex
+  )
+}
+''';
+
+const String STREAM_BOOKMARK = r'''
+query StreamBookmark($titleId: UUID!, $season: Int, $episode: Int) {
+  streamBookmark(titleId: $titleId, season: $season, episode: $episode) {
+    magnet
+    resumePosition
+    season
+    episode
+    fileIndex
+  }
 }
 ''';
 

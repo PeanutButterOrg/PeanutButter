@@ -21,20 +21,19 @@ pub mod tvmaze;
 pub mod yts;
 
 /// Concurrent page workers per catalog pipeline (movies + series run in parallel).
-/// Override with `SYNC_WORKERS` env (e.g. `24`). Default: 2× CPU cores, clamped 8–32.
+/// Override with `SYNC_WORKERS` env (e.g. `8`). Keep modest so GraphQL stays responsive.
 pub fn sync_workers() -> usize {
     if let Ok(raw) = std::env::var("SYNC_WORKERS") {
         let trimmed = raw.trim();
         if !trimmed.is_empty() {
             if let Ok(n) = trimmed.parse::<usize>() {
-                return n.clamp(1, 64);
+                return n.clamp(1, 24);
             }
         }
     }
-    // Push hard by default — Meili waits are gone, so higher concurrency is safe.
     std::thread::available_parallelism()
-        .map(|n| (n.get().saturating_mul(4)).clamp(16, 48))
-        .unwrap_or(24)
+        .map(|n| (n.get()).clamp(4, 10))
+        .unwrap_or(6)
 }
 
 /// Back-compat name used by YTS / TVMaze / AniList modules.
