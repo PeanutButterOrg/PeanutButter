@@ -1,0 +1,63 @@
+# Android TV APK (native Leanback app in android-native/).
+#
+# Artifact:
+#   PeanutButter-android-tv.apk
+#
+# Sideload: adb install -r PeanutButter-android-tv.apk
+# Local:    cd android-native && ./gradlew :tv:assembleRelease
+
+name: Android TV
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+    paths:
+      - "android-native/**"
+      - ".github/workflows/android-tv.yml"
+  pull_request:
+    paths:
+      - "android-native/**"
+      - ".github/workflows/android-tv.yml"
+
+concurrency:
+  group: android-tv-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tv:
+    name: Android TV APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK 36
+        run: |
+          sdkmanager --install "platforms;android-36" "build-tools;35.0.0"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Build TV release APK
+        working-directory: android-native
+        run: |
+          chmod +x ./gradlew
+          ./gradlew :tv:assembleRelease --stacktrace
+          cp -f tv/build/outputs/apk/release/tv-release.apk \
+            "$GITHUB_WORKSPACE/PeanutButter-android-tv.apk"
+          ls -lh "$GITHUB_WORKSPACE/PeanutButter-android-tv.apk"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PeanutButter-android-tv
+          path: PeanutButter-android-tv.apk
+          if-no-files-found: error

@@ -206,6 +206,10 @@ class CatalogActivity : androidx.fragment.app.FragmentActivity() {
 
 class CatalogFragment : VerticalGridSupportFragment() {
     private lateinit var gridAdapter: ArrayObjectAdapter
+    private val loaded = ArrayList<TitleItem>()
+    private var columns = 0
+    private var cardWidth = 0
+    private var cardHeight = 0
     private var kind: String? = null
     private var sort: String = "TRENDING"
     private var year: Int? = null
@@ -223,16 +227,21 @@ class CatalogFragment : VerticalGridSupportFragment() {
         kind = intent.getStringExtra(CatalogActivity.EXTRA_KIND)?.takeIf { it.isNotBlank() }
         sort = intent.getStringExtra(CatalogActivity.EXTRA_SORT)?.takeIf { it.isNotBlank() } ?: "TRENDING"
 
-        GridMetrics.ensure(requireContext())
-        val grid = VerticalGridPresenter(FocusHighlight.ZOOM_FACTOR_NONE, false).apply {
-            numberOfColumns = GridMetrics.columns
-            shadowEnabled = false
-        }
-        gridPresenter = grid
-        gridAdapter = ArrayObjectAdapter(
-            PosterCardPresenter(GridMetrics.cardWidthPx, GridMetrics.cardHeightPx),
+        val dm = resources.displayMetrics
+        val density = dm.density
+        val padH = resources.getDimensionPixelSize(R.dimen.shelf_inset)
+        val padV = (8 * density).toInt()
+        val gap = (8 * density).toInt()
+        val chrome = (52 * density).toInt()
+        applyFit(
+            GridMetrics.fit(
+                dm.widthPixels,
+                (dm.heightPixels - chrome).coerceAtLeast(1),
+                padH,
+                padV,
+                gap,
+            ),
         )
-        adapter = gridAdapter
 
         setOnItemViewClickedListener { _, item, _, _ ->
             if (item is TitleItem) {
@@ -284,21 +293,36 @@ class CatalogFragment : VerticalGridSupportFragment() {
         hasNext = true
         loadGen++
         loading = false
+        loaded.clear()
         gridAdapter.clear()
         loadMore()
     }
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
+        view.post { refit(view) }
+    }
+
+    private fun refit(view: View) {
+        if (view.width <= 0 || view.height <= 0) {
+            view.post { refit(view) }
+            return
+        }
+        val density = resources.displayMetrics.density
+        val padH = resources.getDimensionPixelSize(R.dimen.shelf_inset)
+        val padV = (8 * density).toInt()
+        val gap = (8 * density).toInt()
+        val fit = GridMetrics.fit(view.width, view.height, padH, padV, gap)
+        if (fit.columns != columns || fit.width != cardWidth || fit.height != cardHeight) {
+            applyFit(fit)
+        }
         view.post {
-            val grid = view.findViewById<VerticalGridView>(
-                androidx.leanback.R.id.browse_grid,
-            ) ?: return@post
+            val grid = view.findViewById<VerticalGridView>(androidx.leanback.R.id.browse_grid) ?: return@post
+            grid.setNumColumns(columns)
             grid.pinPosterGrid()
             grid.setOnKeyInterceptListener { event ->
                 if (event.action == KeyEvent.ACTION_DOWN && event.keyCode == KeyEvent.KEYCODE_DPAD_UP) {
-                    val cols = GridMetrics.columns.coerceAtLeast(1)
-                    if (grid.selectedPosition < cols) {
+                    if (grid.selectedPosition < columns.coerceAtLeast(1)) {
                         val sort = activity?.findViewById<View>(R.id.filter_sort)
                         if (sort != null && sort.isVisible) {
                             sort.requestFocus()
@@ -309,6 +333,25 @@ class CatalogFragment : VerticalGridSupportFragment() {
                 false
             }
         }
+    }
+
+    private fun applyFit(fit: PosterGridFit) {
+        columns = fit.columns
+        cardWidth = fit.width
+        cardHeight = fit.height
+        val live = view?.findViewById<VerticalGridView>(androidx.leanback.R.id.browse_grid)
+        if (live == null) {
+            gridPresenter = VerticalGridPresenter(FocusHighlight.ZOOM_FACTOR_NONE, false).apply {
+                numberOfColumns = columns
+                shadowEnabled = false
+            }
+        } else {
+            (gridPresenter as? VerticalGridPresenter)?.numberOfColumns = columns
+            live.setNumColumns(columns)
+        }
+        gridAdapter = ArrayObjectAdapter(PosterCardPresenter(cardWidth, cardHeight))
+        adapter = gridAdapter
+        loaded.forEach { gridAdapter.add(it) }
     }
 
     private fun loadMore() {
@@ -334,7 +377,10 @@ class CatalogFragment : VerticalGridSupportFragment() {
                     ratingMin = ratingMin,
                 )
                 if (gen != loadGen) return@launch
-                result.items.forEach { gridAdapter.add(it) }
+                result.items.forEach {
+                    loaded.add(it)
+                    gridAdapter.add(it)
+                }
                 hasNext = result.hasNextPage
                 page = pageToLoad + 1
             } catch (e: Exception) {

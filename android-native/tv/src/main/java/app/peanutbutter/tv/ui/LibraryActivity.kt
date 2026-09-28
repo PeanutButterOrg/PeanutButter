@@ -10,6 +10,7 @@ import androidx.leanback.app.VerticalGridSupportFragment
 import androidx.leanback.widget.ArrayObjectAdapter
 import androidx.leanback.widget.FocusHighlight
 import androidx.leanback.widget.VerticalGridPresenter
+import androidx.leanback.widget.VerticalGridView
 import androidx.lifecycle.lifecycleScope
 import app.peanutbutter.core.TitleItem
 import app.peanutbutter.tv.R
@@ -47,6 +48,10 @@ class LibraryActivity : androidx.fragment.app.FragmentActivity() {
 
 class LibraryFragment : VerticalGridSupportFragment() {
     private lateinit var gridAdapter: ArrayObjectAdapter
+    private val loaded = ArrayList<TitleItem>()
+    private var columns = 0
+    private var cardWidth = 0
+    private var cardHeight = 0
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -66,15 +71,21 @@ class LibraryFragment : VerticalGridSupportFragment() {
         host?.findViewById<View>(R.id.filter_rating)?.isVisible = false
         host?.findViewById<View>(R.id.filter_genre)?.isVisible = false
 
-        GridMetrics.ensure(requireContext())
-        gridPresenter = VerticalGridPresenter(FocusHighlight.ZOOM_FACTOR_NONE, false).apply {
-            numberOfColumns = GridMetrics.columns
-            shadowEnabled = false
-        }
-        gridAdapter = ArrayObjectAdapter(
-            PosterCardPresenter(GridMetrics.cardWidthPx, GridMetrics.cardHeightPx),
+        val dm = resources.displayMetrics
+        val density = dm.density
+        val padH = resources.getDimensionPixelSize(R.dimen.shelf_inset)
+        val padV = (8 * density).toInt()
+        val gap = (8 * density).toInt()
+        val chrome = (52 * density).toInt()
+        applyFit(
+            GridMetrics.fit(
+                dm.widthPixels,
+                (dm.heightPixels - chrome).coerceAtLeast(1),
+                padH,
+                padV,
+                gap,
+            ),
         )
-        adapter = gridAdapter
 
         setOnItemViewClickedListener { _, item, _, _ ->
             if (item is TitleItem) {
@@ -92,12 +103,11 @@ class LibraryFragment : VerticalGridSupportFragment() {
             try {
                 val movies = async { app.api.catalog(kind = "MOVIE", sort = sort, perPage = 48) }
                 val series = async { app.api.catalog(kind = "SERIES", sort = sort, perPage = 48) }
-                (movies.await().items + series.await().items).forEach { gridAdapter.add(it) }
-                view?.post {
-                    view?.findViewById<androidx.leanback.widget.VerticalGridView>(
-                        androidx.leanback.R.id.browse_grid,
-                    )?.pinPosterGrid()
+                (movies.await().items + series.await().items).forEach {
+                    loaded.add(it)
+                    gridAdapter.add(it)
                 }
+                view?.post { view?.let { refit(it) } }
             } catch (e: Exception) {
                 Toast.makeText(requireContext(), e.message, Toast.LENGTH_LONG).show()
             } finally {
@@ -108,10 +118,45 @@ class LibraryFragment : VerticalGridSupportFragment() {
 
     override fun onViewCreated(view: android.view.View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
-        view.post {
-            view.findViewById<androidx.leanback.widget.VerticalGridView>(
-                androidx.leanback.R.id.browse_grid,
-            )?.pinPosterGrid()
+        view.post { refit(view) }
+    }
+
+    private fun refit(view: View) {
+        if (view.width <= 0 || view.height <= 0) {
+            view.post { refit(view) }
+            return
         }
+        val density = resources.displayMetrics.density
+        val padH = resources.getDimensionPixelSize(R.dimen.shelf_inset)
+        val padV = (8 * density).toInt()
+        val gap = (8 * density).toInt()
+        val fit = GridMetrics.fit(view.width, view.height, padH, padV, gap)
+        if (fit.columns != columns || fit.width != cardWidth || fit.height != cardHeight) {
+            applyFit(fit)
+        }
+        view.post {
+            val grid = view.findViewById<VerticalGridView>(androidx.leanback.R.id.browse_grid) ?: return@post
+            grid.setNumColumns(columns)
+            grid.pinPosterGrid()
+        }
+    }
+
+    private fun applyFit(fit: PosterGridFit) {
+        columns = fit.columns
+        cardWidth = fit.width
+        cardHeight = fit.height
+        val live = view?.findViewById<VerticalGridView>(androidx.leanback.R.id.browse_grid)
+        if (live == null) {
+            gridPresenter = VerticalGridPresenter(FocusHighlight.ZOOM_FACTOR_NONE, false).apply {
+                numberOfColumns = columns
+                shadowEnabled = false
+            }
+        } else {
+            (gridPresenter as? VerticalGridPresenter)?.numberOfColumns = columns
+            live.setNumColumns(columns)
+        }
+        gridAdapter = ArrayObjectAdapter(PosterCardPresenter(cardWidth, cardHeight))
+        adapter = gridAdapter
+        loaded.forEach { gridAdapter.add(it) }
     }
 }

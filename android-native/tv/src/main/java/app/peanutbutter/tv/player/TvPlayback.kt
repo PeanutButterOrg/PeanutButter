@@ -2,11 +2,9 @@ package app.peanutbutter.tv.player
 
 import android.content.Context
 import android.net.Uri
-import android.view.Gravity
 import android.view.Surface
 import android.view.SurfaceHolder
-import android.view.ViewGroup
-import android.widget.FrameLayout
+import android.view.View
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
@@ -38,9 +36,13 @@ class TvPlayback(
     private var subtitles: SubtitleView? = null
     private var frame: AspectRatioFrameLayout? = null
     private var aspectMode = "fit"
-    private var videoRatio = 16f / 9f
     private var videoWidth = 0
     private var videoHeight = 0
+    private var placedW = 0
+    private var placedH = 0
+    private var placedMode = ""
+    private var lastViewW = 0
+    private var lastViewH = 0
 
     override val length: Long
         get() {
@@ -59,55 +61,46 @@ class TvPlayback(
 
     fun attachFrame(layout: AspectRatioFrameLayout?) {
         frame = layout
+        val parent = layout?.parent as? View
+        parent?.addOnLayoutChangeListener { _, left, top, right, bottom, _, _, _, _ ->
+            val w = right - left
+            val h = bottom - top
+            if (w == lastViewW && h == lastViewH) return@addOnLayoutChangeListener
+            lastViewW = w
+            lastViewH = h
+            placedW = 0
+            placedH = 0
+            applyAspect()
+        }
         applyAspect()
     }
 
     override fun setAspectMode(mode: String) {
         aspectMode = mode
+        placedW = 0
+        placedH = 0
         applyAspect()
     }
 
     private fun applyAspect() {
         val layout = frame ?: return
-        if (aspectMode == "original" && videoWidth > 0 && videoHeight > 0) {
-            val dm = layout.resources.displayMetrics
-            val scale = minOf(
-                dm.widthPixels.toFloat() / videoWidth,
-                dm.heightPixels.toFloat() / videoHeight,
-            ).coerceAtMost(1f)
-            sizeFrame((videoWidth * scale).toInt().coerceAtLeast(1), (videoHeight * scale).toInt().coerceAtLeast(1))
-            layout.setAspectRatio(videoWidth.toFloat() / videoHeight)
-            layout.resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
-            runCatching { exo.videoScalingMode = C.VIDEO_SCALING_MODE_SCALE_TO_FIT }
-            return
-        }
-        sizeFrame(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
-        val ratio = when (aspectMode) {
-            "16:9" -> 16f / 9f
-            "4:3" -> 4f / 3f
-            else -> videoRatio
-        }
-        layout.setAspectRatio(ratio)
-        layout.resizeMode = when (aspectMode) {
-            "fill" -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-            "stretch" -> AspectRatioFrameLayout.RESIZE_MODE_FILL
-            else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
-        }
-        val scaling = if (aspectMode == "fill" || aspectMode == "stretch") {
+        val (viewW, viewH) = VideoAspect.viewport(layout)
+        val box = VideoAspect.target(aspectMode, viewW, viewH, videoWidth, videoHeight)
+        if (box.width == placedW && box.height == placedH && aspectMode == placedMode) return
+        placedW = box.width
+        placedH = box.height
+        placedMode = aspectMode
+        VideoAspect.place(layout, box)
+        subtitles?.let { VideoAspect.place(it, box) }
+        (layout.getChildAt(0) as? android.view.SurfaceView)?.holder?.setFixedSize(box.width, box.height)
+        layout.setAspectRatio(box.width.toFloat() / box.height)
+        layout.resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FILL
+        val scaling = if (aspectMode == "fill") {
             C.VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING
         } else {
             C.VIDEO_SCALING_MODE_SCALE_TO_FIT
         }
         runCatching { exo.videoScalingMode = scaling }
-    }
-
-    private fun sizeFrame(width: Int, height: Int) {
-        val layout = frame ?: return
-        val lp = layout.layoutParams ?: return
-        lp.width = width
-        lp.height = height
-        if (lp is FrameLayout.LayoutParams) lp.gravity = Gravity.CENTER
-        layout.layoutParams = lp
     }
 
     override fun bindSubtitles(view: SubtitleView?) {
@@ -263,12 +256,17 @@ class TvPlayback(
                     }
 
                     override fun onVideoSizeChanged(videoSize: androidx.media3.common.VideoSize) {
-                        if (videoSize.height > 0) {
-                            videoWidth = (videoSize.width * videoSize.pixelWidthHeightRatio).toInt().coerceAtLeast(1)
-                            videoHeight = videoSize.height
-                            videoRatio = videoWidth.toFloat() / videoHeight
-                            applyAspect()
-                        }
+                        if (videoSize.width <= 0 || videoSize.height <= 0) return
+                        val swap = videoSize.unappliedRotationDegrees == 90 ||
+                            videoSize.unappliedRotationDegrees == 270
+                        val codedW = if (swap) videoSize.height else videoSize.width
+                        val codedH = if (swap) videoSize.width else videoSize.height
+                        val pixel = videoSize.pixelWidthHeightRatio.takeIf { it > 0f } ?: 1f
+                        videoWidth = (codedW * pixel).toInt().coerceAtLeast(1)
+                        videoHeight = codedH.coerceAtLeast(1)
+                        placedW = 0
+                        placedH = 0
+                        applyAspect()
                     }
 
                     override fun onCues(cueGroup: CueGroup) {

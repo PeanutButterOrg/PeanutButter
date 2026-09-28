@@ -3,6 +3,7 @@ package app.peanutbutter.tv.player
 import android.content.Context
 import android.net.Uri
 import android.view.SurfaceHolder
+import android.view.View
 import androidx.media3.ui.SubtitleView
 import org.videolan.libvlc.LibVLC
 import org.videolan.libvlc.Media
@@ -24,6 +25,12 @@ class VlcPlayback(
     private var holder: SurfaceHolder? = null
     private var software = false
     private var aspectMode = "fit"
+    private var frame: View? = null
+    private var placedW = 0
+    private var placedH = 0
+    private var placedMode = ""
+    private var lastViewW = 0
+    private var lastViewH = 0
 
     override val length: Long
         get() = (mp?.length ?: 0L).coerceAtLeast(0L)
@@ -100,20 +107,58 @@ class VlcPlayback(
         mp?.spuTrack = id?.toIntOrNull() ?: -1
     }
 
-    override fun setAspectMode(mode: String) {
-        aspectMode = mode
+    fun attachFrame(layout: View?) {
+        frame = layout
+        val parent = layout?.parent as? View
+        parent?.addOnLayoutChangeListener { _, left, top, right, bottom, _, _, _, _ ->
+            val w = right - left
+            val h = bottom - top
+            if (w == lastViewW && h == lastViewH) return@addOnLayoutChangeListener
+            lastViewW = w
+            lastViewH = h
+            placedW = 0
+            placedH = 0
+            applyAspect()
+        }
         applyAspect()
     }
 
+    override fun setAspectMode(mode: String) {
+        aspectMode = mode
+        placedW = 0
+        placedH = 0
+        applyAspect()
+    }
+
+    private fun videoSize(): Pair<Int, Int> {
+        val track = mp?.currentVideoTrack ?: return 0 to 0
+        if (track.width <= 0 || track.height <= 0) return 0 to 0
+        val sar = if (track.sarNum > 0 && track.sarDen > 0) {
+            track.sarNum.toFloat() / track.sarDen
+        } else {
+            1f
+        }
+        return (track.width * sar).toInt().coerceAtLeast(1) to track.height
+    }
+
     private fun applyAspect() {
-        val player = mp ?: return
-        val dm = appContext.resources.displayMetrics
-        when (aspectMode) {
-            "fill" -> {
-                player.aspectRatio = null
-                player.scale = 0f
+        val layout = frame
+        val (videoW, videoH) = videoSize()
+        if (layout != null) {
+            val (viewW, viewH) = VideoAspect.viewport(layout)
+            val box = VideoAspect.target(aspectMode, viewW, viewH, videoW, videoH)
+            if (box.width != placedW || box.height != placedH || aspectMode != placedMode) {
+                placedW = box.width
+                placedH = box.height
+                placedMode = aspectMode
+                VideoAspect.place(layout, box)
             }
+            mp?.vlcVout?.setWindowSize(box.width, box.height)
+        }
+        val player = mp ?: return
+        when (aspectMode) {
             "stretch" -> {
+                val dm = appContext.resources.displayMetrics
                 player.scale = 0f
                 player.aspectRatio = "${dm.widthPixels}:${dm.heightPixels}"
             }
@@ -125,20 +170,8 @@ class VlcPlayback(
                 player.scale = 0f
                 player.aspectRatio = "4:3"
             }
-            "original" -> {
-                val track = player.currentVideoTrack
-                val dm = appContext.resources.displayMetrics
-                player.aspectRatio = null
-                player.scale = if (track != null && track.width > 0 && track.height > 0) {
-                    minOf(
-                        dm.widthPixels.toFloat() / track.width,
-                        dm.heightPixels.toFloat() / track.height,
-                    ).coerceAtMost(1f)
-                } else {
-                    1f
-                }
-            }
             else -> {
+                // Surface is already the right shape, so fill it without a second letterbox.
                 player.aspectRatio = null
                 player.scale = 0f
             }
@@ -178,6 +211,11 @@ class VlcPlayback(
                 MediaPlayer.Event.TimeChanged -> listener.onTime(event.timeChanged.coerceAtLeast(0L))
                 MediaPlayer.Event.LengthChanged -> {
                     if (event.lengthChanged > 0) listener.onDuration(event.lengthChanged)
+                }
+                MediaPlayer.Event.Vout, MediaPlayer.Event.ESSelected -> {
+                    placedW = 0
+                    placedH = 0
+                    applyAspect()
                 }
                 else -> Unit
             }

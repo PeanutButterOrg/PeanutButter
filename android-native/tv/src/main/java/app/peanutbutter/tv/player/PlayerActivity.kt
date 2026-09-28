@@ -1,6 +1,7 @@
 package app.peanutbutter.tv.player
 
 import android.app.AlertDialog
+import android.content.Intent
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -9,15 +10,19 @@ import android.view.KeyEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
+import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.ProgressBar
 import android.widget.SeekBar
 import android.widget.TextView
+import android.widget.Toast
 import androidx.core.view.isVisible
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.lifecycleScope
 import app.peanutbutter.core.MediaSegment
 import app.peanutbutter.core.SessionStore
+import app.peanutbutter.core.StreamQuality
+import app.peanutbutter.core.TitleItem
 import app.peanutbutter.core.StreamSession
 import app.peanutbutter.tv.PbGlide
 import app.peanutbutter.tv.R
@@ -69,6 +74,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
     private var btnPlay: ImageButton? = null
     private var btnRew: ImageButton? = null
     private var btnFf: ImageButton? = null
+    private var overlayActions: View? = null
     private var btnSkip: TextView? = null
     private var btnNext: TextView? = null
     private var btnSubs: TextView? = null
@@ -79,6 +85,10 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
     private var activeSegment: MediaSegment? = null
     private var playNextVisible = false
     private var segmentsLoaded = false
+    private var segmentDurationMs = -1
+    private var nextEpisode: NextEpisode? = null
+    private var nextLoaded = false
+    private var nextBusy = false
 
     /** User is scrubbing — don't overwrite seek from playback ticks. */
     private var userSeeking = false
@@ -115,8 +125,10 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         btnPlay = findViewById(R.id.btn_play)
         btnRew = findViewById(R.id.btn_rew)
         btnFf = findViewById(R.id.btn_ff)
+        overlayActions = findViewById(R.id.overlay_actions)
         btnSkip = findViewById(R.id.btn_skip)
         btnNext = findViewById(R.id.btn_next)
+        overlayActions?.bringToFront()
         btnSubs = findViewById(R.id.btn_subs)
         btnAspect = findViewById(R.id.btn_aspect)
 
@@ -159,7 +171,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         btnFf?.setOnClickListener { seekBy(10_000); showChrome() }
         btnPlay?.setOnClickListener { togglePlay() }
         btnSkip?.setOnClickListener { skipActiveSegment() }
-        btnNext?.setOnClickListener { finish() }
+        btnNext?.setOnClickListener { playNextEpisode() }
         btnSubs?.setOnClickListener { openSubtitles() }
         btnAspect?.setOnClickListener { openAspect() }
 
@@ -354,7 +366,9 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             TvPlayback(this, playbackListener())
         }
         player?.bindSubtitles(findViewById(R.id.subtitles))
-        (player as? TvPlayback)?.attachFrame(findViewById(R.id.video_frame))
+        val frame = findViewById<androidx.media3.ui.AspectRatioFrameLayout>(R.id.video_frame)
+        (player as? TvPlayback)?.attachFrame(frame)
+        (player as? VlcPlayback)?.attachFrame(frame)
         player?.setAspectMode(application.asTv().session.aspectRatio)
     }
 
@@ -458,7 +472,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             return
         }
         statusView?.text = "Ended"
-        showPlayNext(true)
+        showPlayNext(nextEpisode != null)
         saveWatchProgress(force = true, complete = true)
     }
 
@@ -537,11 +551,16 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
     }
 
     private fun maybeLoadSegments() {
-        if (segmentsLoaded) return
         val tid = titleId ?: return
+        val dur = player?.length?.toInt()?.coerceAtLeast(0) ?: 0
+        val haveDuration = dur > 30_000
+        if (segmentsLoaded) {
+            val durationChanged = haveDuration &&
+                (segmentDurationMs <= 0 || kotlin.math.abs(dur - segmentDurationMs) >= 5_000)
+            if (!durationChanged) return
+        }
         segmentsLoaded = true
-        val mp = player ?: return
-        val dur = mp.length.toInt().coerceAtLeast(0)
+        segmentDurationMs = if (haveDuration) dur else 0
         val isSeries = kind.equals("SERIES", true) || kind.equals("ANIME", true) || kind.equals("TV", true)
         lifecycleScope.launch {
             try {
@@ -550,39 +569,163 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                         titleId = tid,
                         season = seasonNum ?: if (isSeries) 1 else null,
                         episode = episodeNum ?: if (isSeries) 1 else null,
-                        durationMs = if (dur > 0) dur else null,
+                        durationMs = if (haveDuration) dur else null,
                     )
                 }
                 segments = segs
+                if (segs.isEmpty() && !haveDuration) segmentsLoaded = false
             } catch (e: Exception) {
                 Log.w(TAG, "mediaSegments failed", e)
+                if (!haveDuration) segmentsLoaded = false
             }
         }
     }
 
+    private fun loadNextEpisode() {
+        if (nextLoaded || nextEpisode != null) return
+        val tid = titleId ?: return
+        val season = seasonNum ?: return
+        val episode = episodeNum ?: return
+        if (season < 1 || episode < 1) return
+        nextLoaded = true
+        lifecycleScope.launch {
+            try {
+                val item = withContext(Dispatchers.IO) { application.asTv().api.title(tid) }
+                nextEpisode = findNextEpisode(item, season, episode)
+            } catch (e: Exception) {
+                nextLoaded = false
+                Log.w(TAG, "next episode lookup failed", e)
+            }
+        }
+    }
+
+    private fun findNextEpisode(item: TitleItem, season: Int, episode: Int): NextEpisode? {
+        val seasons = item.seasons.filter { it.seasonNumber > 0 }.sortedBy { it.seasonNumber }
+        val current = seasons.firstOrNull { it.seasonNumber == season }
+        val later = current?.episodes
+            ?.filter { it.episodeNumber > episode }
+            ?.minByOrNull { it.episodeNumber }
+        if (later != null) {
+            return NextEpisode(season, later.episodeNumber, later.id, item.title, item.kind, item.posterUrl, item.backdropUrl)
+        }
+        for (s in seasons) {
+            if (s.seasonNumber <= season) continue
+            val first = s.episodes.filter { it.episodeNumber > 0 }.minByOrNull { it.episodeNumber } ?: continue
+            return NextEpisode(s.seasonNumber, first.episodeNumber, first.id, item.title, item.kind, item.posterUrl, item.backdropUrl)
+        }
+        return null
+    }
+
     private fun updateSkipNext() {
+        if (!streamOpened) return
+        maybeLoadSegments()
+        loadNextEpisode()
         val mp = player ?: return
         val pos = mp.time.toInt()
         val dur = mp.length.toInt()
         val opening = segments.firstOrNull {
-            (it.kind == "INTRO" || it.kind == "RECAP") && it.contains(pos, dur)
+            (it.kind.equals("INTRO", true) || it.kind.equals("RECAP", true)) && it.contains(pos, dur)
         }
         activeSegment = opening
-        btnSkip?.isVisible = opening != null && streamOpened
-        if (opening != null) {
-            btnSkip?.text = opening.label.ifBlank { getString(R.string.skip_intro) }
+        val showSkip = opening != null
+        val wasSkip = btnSkip?.isVisible == true
+        btnSkip?.isVisible = showSkip
+        if (showSkip) {
+            btnSkip?.text = opening?.label?.ifBlank { null } ?: getString(R.string.skip_intro)
+            raiseSkipButtons()
+            if (!wasSkip) btnSkip?.requestFocus()
         }
         val nearEnd = dur > 60_000 && (pos >= dur - 45_000 || pos.toDouble() / dur >= 0.97)
-        val inCredits = segments.any { it.kind == "CREDITS" && it.contains(pos, dur) }
-        if ((nearEnd || inCredits) && streamOpened) showPlayNext(true)
+        val inCredits = segments.any { it.kind.equals("CREDITS", true) && it.contains(pos, dur) }
+        showPlayNext(!showSkip && (nearEnd || inCredits) && nextEpisode != null)
     }
 
     private fun showPlayNext(show: Boolean) {
-        playNextVisible = show
-        btnNext?.isVisible = show
-        if (show) {
+        if (!show) {
+            playNextVisible = false
+            btnNext?.isVisible = false
+            return
+        }
+        val was = playNextVisible
+        playNextVisible = true
+        btnNext?.isVisible = true
+        raiseSkipButtons()
+        if (!was) {
             showChrome()
             btnNext?.requestFocus()
+        }
+    }
+
+    private fun raiseSkipButtons() {
+        overlayActions?.bringToFront()
+    }
+
+    private fun placeSkipButtons(chromeUp: Boolean) {
+        val overlay = overlayActions ?: return
+        val lp = overlay.layoutParams as? FrameLayout.LayoutParams ?: return
+        val d = resources.displayMetrics.density
+        lp.gravity = android.view.Gravity.BOTTOM or android.view.Gravity.START
+        lp.bottomMargin = ((if (chromeUp) 200 else 48) * d).toInt()
+        lp.marginStart = (48 * d).toInt()
+        overlay.layoutParams = lp
+        overlay.bringToFront()
+    }
+
+    private fun playNextEpisode() {
+        val next = nextEpisode ?: return
+        val tid = titleId ?: return
+        if (nextBusy) return
+        nextBusy = true
+        btnNext?.isEnabled = false
+        statusView?.text = getString(R.string.looking_up_sources)
+        showChrome()
+        lifecycleScope.launch {
+            try {
+                saveWatchProgress(force = true)
+                val api = application.asTv().api
+                val label = String.format("%s S%02dE%02d", next.catalogTitle, next.season, next.episode)
+                val raw = api.lookupSources(label, next.kind, tid, next.season, next.episode)
+                val source = StreamQuality.rankSources(raw, application.asTv().session.preferredQuality).firstOrNull()
+                if (source == null) {
+                    Toast.makeText(this@PlayerActivity, R.string.no_sources, Toast.LENGTH_LONG).show()
+                    return@launch
+                }
+                val started = api.startStream(
+                    magnet = source.magnet,
+                    title = label,
+                    titleId = tid,
+                    seeders = source.seeders,
+                    peers = source.peers,
+                    season = next.season,
+                    episode = next.episode,
+                    resume = false,
+                )
+                if (started.sessionId.isBlank()) {
+                    Toast.makeText(this@PlayerActivity, R.string.stream_start_failed, Toast.LENGTH_LONG).show()
+                    return@launch
+                }
+                startActivity(
+                    Intent(this@PlayerActivity, PlayerActivity::class.java)
+                        .putExtra(EXTRA_TITLE, label)
+                        .putExtra(EXTRA_SESSION, started.sessionId)
+                        .putExtra(EXTRA_URL, api.playableStreamUrl(started.streamUrl))
+                        .putExtra(EXTRA_POSTER, next.posterUrl)
+                        .putExtra(EXTRA_BACKDROP, next.backdropUrl)
+                        .putExtra(EXTRA_TITLE_ID, tid)
+                        .putExtra(EXTRA_EPISODE_ID, next.episodeId)
+                        .putExtra(EXTRA_KIND, next.kind)
+                        .putExtra(EXTRA_SEASON, next.season)
+                        .putExtra(EXTRA_EPISODE, next.episode)
+                        .putExtra(EXTRA_RESUME_MS, 0L),
+                )
+                finish()
+            } catch (e: Exception) {
+                Log.e(TAG, "play next failed", e)
+                Toast.makeText(this@PlayerActivity, e.message, Toast.LENGTH_LONG).show()
+            } finally {
+                nextBusy = false
+                btnNext?.isEnabled = true
+            }
         }
     }
 
@@ -686,6 +829,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         chromeTop?.animate()?.alpha(1f)?.setDuration(200)?.start()
         if (streamOpened) chromeBottom?.isVisible = true
         chromeBottom?.animate()?.alpha(1f)?.setDuration(200)?.start()
+        placeSkipButtons(true)
         scheduleHideChrome()
     }
 
@@ -694,6 +838,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         if (!visible && streamOpened && !userSeeking) {
             chromeTop?.animate()?.alpha(0f)?.setDuration(280)?.start()
             chromeBottom?.animate()?.alpha(0f)?.setDuration(280)?.start()
+            placeSkipButtons(false)
         }
     }
 
@@ -852,6 +997,16 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         player = null
         super.onDestroy()
     }
+
+    private data class NextEpisode(
+        val season: Int,
+        val episode: Int,
+        val episodeId: String,
+        val catalogTitle: String,
+        val kind: String,
+        val posterUrl: String?,
+        val backdropUrl: String?,
+    )
 
     companion object {
         private const val TAG = "PlayerActivity"
