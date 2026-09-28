@@ -8,6 +8,7 @@ import '../content_languages.dart';
 import '../graphql/client.dart';
 import '../graphql/queries.dart';
 import '../friendly_error.dart';
+import '../local_torrent.dart';
 import '../models.dart';
 import '../stream_resume_policy.dart';
 import '../theme.dart';
@@ -179,6 +180,7 @@ Future<StreamBookmark?> fetchStreamBookmark({
   }
 }
 
+/// Start playback on this device (libtorrent). Server never downloads pieces.
 Future<StreamStart?> startStreamDirect({
   required GraphQLClient client,
   required String magnet,
@@ -192,8 +194,11 @@ Future<StreamStart?> startStreamDirect({
   int? fileIndex,
   String? stopPreviousSessionId,
 }) async {
+  // Ignore legacy server session ids — downloads are on-device only now.
   final previous = stopPreviousSessionId?.trim();
-  if (previous != null && previous.isNotEmpty && !previous.startsWith('local-')) {
+  if (previous != null &&
+      previous.isNotEmpty &&
+      !previous.startsWith('local-')) {
     try {
       await client.mutate(
         MutationOptions(
@@ -204,36 +209,39 @@ Future<StreamStart?> startStreamDirect({
       );
     } catch (_) {}
   }
-  final started = await client.mutate(
-    MutationOptions(
-      document: gql(START_STREAM),
-      fetchPolicy: FetchPolicy.networkOnly,
-      queryRequestTimeout: const Duration(seconds: 45),
-      variables: {
-        'magnet': magnet,
-        'title': title,
-        'titleId': titleId,
-        'resume': resumePlayback,
-        'seeders': seeders,
-        'peers': peers,
-        'season': season,
-        'episode': episode,
-        'fileIndex': fileIndex,
-      },
-    ),
-  );
-  if (started.hasException) {
-    throw graphqlMessage(started);
-  }
-  final session = StreamSession.fromJson(
-    started.data?['startStream'] as Map<String, dynamic>? ?? const {},
-  );
-  if (session.id.isEmpty) {
-    throw 'Couldn’t start this stream. Try another result.';
-  }
-  return StreamStart(
-    session: session,
+  return prepareLocalStreamStart(
     magnet: magnet,
+    title: title,
+    fileIndex: fileIndex,
+  );
+}
+
+/// Synthetic session the player uses with [LocalTorrentEngine].
+Future<StreamStart> prepareLocalStreamStart({
+  required String magnet,
+  required String title,
+  int? fileIndex,
+}) async {
+  await LocalTorrentEngine.instance.ensureInit();
+  if (!LocalTorrentEngine.instance.supported) {
+    throw 'On-device torrent streaming isn’t available on this device.';
+  }
+  final id = 'local-${DateTime.now().millisecondsSinceEpoch}';
+  return StreamStart(
+    session: StreamSession(
+      id: id,
+      title: title,
+      progress: 0,
+      bufferProgress: 0,
+      downloadMbps: 0,
+      seeders: 0,
+      peers: 0,
+      resumePosition: 0,
+      status: 'starting',
+      streamUrl: '',
+    ),
+    magnet: magnet,
+    localTorrent: true,
     fileIndex: fileIndex,
   );
 }
@@ -643,7 +651,9 @@ Future<StreamStart?> _showStreamingPickerDialogs({
   );
   try {
     final previous = stopPreviousSessionId?.trim();
-    if (previous != null && previous.isNotEmpty && !previous.startsWith('local-')) {
+    if (previous != null &&
+        previous.isNotEmpty &&
+        !previous.startsWith('local-')) {
       try {
         await client.mutate(
           MutationOptions(
@@ -654,42 +664,16 @@ Future<StreamStart?> _showStreamingPickerDialogs({
         );
       } catch (_) {}
     }
-    final started = await client.mutate(
-      MutationOptions(
-        document: gql(START_STREAM),
-        fetchPolicy: FetchPolicy.networkOnly,
-        queryRequestTimeout: const Duration(seconds: 45),
-        variables: {
-          'magnet': picked.magnet,
-          'title': title,
-          'titleId': titleId,
-          'resume': resumePlayback,
-          'seeders': picked.seeders,
-          'peers': picked.peers,
-          'season': season,
-          'episode': episode,
-          'fileIndex': fileIndex,
-        },
-      ),
+    final started = await prepareLocalStreamStart(
+      magnet: picked.magnet,
+      title: title,
+      fileIndex: fileIndex,
     );
     if (context.mounted) {
       final nav = Navigator.of(context, rootNavigator: true);
       if (nav.canPop()) nav.pop();
     }
-    if (started.hasException) {
-      throw graphqlMessage(started);
-    }
-    final session = StreamSession.fromJson(
-      started.data?['startStream'] as Map<String, dynamic>? ?? const {},
-    );
-    if (session.id.isEmpty) {
-      throw 'Couldn’t start this stream. Try another result.';
-    }
-    return StreamStart(
-      session: session,
-      magnet: picked.magnet,
-      fileIndex: fileIndex,
-    );
+    return started;
   } catch (e) {
     if (context.mounted) {
       final nav = Navigator.of(context, rootNavigator: true);
@@ -917,56 +901,33 @@ class _TvStreamingPickerPageState extends State<_TvStreamingPickerPage> {
       // Player init awaits preload with its own timeout.
       unawaited(MediaKitAndroidVideo.preload());
       final previous = widget.stopPreviousSessionId?.trim();
-      if (previous != null && previous.isNotEmpty && !previous.startsWith('local-')) {
+      if (previous != null &&
+          previous.isNotEmpty &&
+          !previous.startsWith('local-')) {
         try {
-          await widget.client.mutate(
-            MutationOptions(
-              document: gql(STOP_STREAM),
-              fetchPolicy: FetchPolicy.networkOnly,
-              variables: {'sessionId': previous},
-            ),
-          ).timeout(const Duration(seconds: 8));
+          await widget.client
+              .mutate(
+                MutationOptions(
+                  document: gql(STOP_STREAM),
+                  fetchPolicy: FetchPolicy.networkOnly,
+                  variables: {'sessionId': previous},
+                ),
+              )
+              .timeout(const Duration(seconds: 8));
         } catch (_) {}
       }
       if (!mounted) return;
-      final started = await widget.client
-          .mutate(
-            MutationOptions(
-              document: gql(START_STREAM),
-              fetchPolicy: FetchPolicy.networkOnly,
-              queryRequestTimeout: const Duration(seconds: 45),
-              variables: {
-                'magnet': source.magnet,
-                'title': widget.title,
-                'titleId': widget.titleId,
-                'resume': widget.resumePlayback,
-                'seeders': source.seeders,
-                'peers': source.peers,
-                'season': widget.season,
-                'episode': widget.episode,
-                'fileIndex': fileIndex,
-              },
-            ),
-          )
-          .timeout(
-            const Duration(seconds: 50),
-            onTimeout: () => throw TimeoutException(
-              'Stream start timed out — check the server and try another source.',
-            ),
-          );
-      if (!mounted) return;
-      if (started.hasException) throw graphqlMessage(started);
-      final session = StreamSession.fromJson(
-        started.data?['startStream'] as Map<String, dynamic>? ?? const {},
-      );
-      if (session.id.isEmpty) {
-        throw 'Couldn’t start this stream. Try another result.';
-      }
-      final result = StreamStart(
-        session: session,
+      final result = await prepareLocalStreamStart(
         magnet: source.magnet,
+        title: widget.title,
         fileIndex: fileIndex,
+      ).timeout(
+        const Duration(seconds: 30),
+        onTimeout: () => throw TimeoutException(
+          'Stream start timed out — try another source.',
+        ),
       );
+      if (!mounted) return;
       // Push player under this opaque cover, then pop immediately so Player()
       // init (next frames) does not run while we still owe a Navigator.pop —
       // that ordering left the UI stuck on "Starting stream…" and ANR'd.

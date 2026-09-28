@@ -29,6 +29,8 @@
     <string name="find_sources">Find sources</string>
     <string name="sources">Sources</string>
     <string name="sources_subtitle">Pick a torrent for %1$s</string>
+    <string name="refresh_sources">Refresh from Jackett</string>
+    <string name="refreshing_sources">Refreshing live results…</string>
     <string name="looking_up_sources">Looking up sources…</string>
     <string name="resuming_stream">Resuming previous stream…</string>
     <string name="no_sources">No healthy sources found</string>
@@ -140,7 +142,7 @@
     <string name="aspect_16_9">16:9</string>
     <string name="aspect_4_3">4:3</string>
     <string name="clear_cache_on_exit">Clear cache on exit</string>
-    <string name="clear_cache_on_exit_hint">Delete streamed downloads when the app closes</string>
+    <string name="clear_cache_on_exit_hint">When on, delete streamed downloads when leaving the app. When off, downloads stay after the player closes and across reboots</string>
     <string name="results_count">%1$d results</string>
     <string name="rewind">Rewind 10 seconds</string>
     <string name="forward">Forward 10 seconds</string>

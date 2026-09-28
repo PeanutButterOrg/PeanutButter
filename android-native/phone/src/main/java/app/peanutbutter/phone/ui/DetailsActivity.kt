@@ -12,6 +12,7 @@ import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import app.peanutbutter.core.LocalTorrentEngine
 import app.peanutbutter.core.StreamSource
 import app.peanutbutter.core.TitleItem
 import app.peanutbutter.core.seriesPlayTarget
@@ -147,16 +148,13 @@ class DetailsActivity : AppCompatActivity() {
         Toast.makeText(this, "Starting stream…", Toast.LENGTH_SHORT).show()
         scope.launch {
             try {
-                val started = app.api.startStream(
+                val started = LocalTorrentEngine.start(
+                    context = this@DetailsActivity,
                     magnet = source.magnet,
-                    title = lookup.query,
-                    titleId = item.id,
-                    seeders = source.seeders,
-                    peers = source.peers,
                     season = lookup.season,
                     episode = lookup.episode,
                 )
-                if (started.sessionId.isBlank()) {
+                if (started.sessionId.isBlank() || started.url.isBlank()) {
                     Toast.makeText(this@DetailsActivity, "Couldn't start stream", Toast.LENGTH_LONG).show()
                     return@launch
                 }
@@ -164,7 +162,8 @@ class DetailsActivity : AppCompatActivity() {
                     Intent(this@DetailsActivity, PlayerActivity::class.java)
                         .putExtra(PlayerActivity.EXTRA_TITLE, item.title)
                         .putExtra(PlayerActivity.EXTRA_SESSION, started.sessionId)
-                        .putExtra(PlayerActivity.EXTRA_URL, started.streamUrl),
+                        .putExtra(PlayerActivity.EXTRA_URL, started.url)
+                        .putExtra(PlayerActivity.EXTRA_LOCAL, true),
                 )
             } catch (e: Exception) {
                 Toast.makeText(this@DetailsActivity, e.message, Toast.LENGTH_LONG).show()

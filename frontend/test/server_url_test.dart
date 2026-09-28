@@ -77,5 +77,26 @@ void main() {
         '100%  ·  downloaded  ·  5 seeds',
       );
     });
+
+    test('does not claim complete while still downloading', () {
+      expect(
+        streamStatsLine(pct: 100, speed: 1.2, seeders: 5, peers: 5, hasVideo: true, playing: true),
+        '99%  ·  1.2 MB/s  ·  5 seeds',
+      );
+    });
+
+    test('ignores fake 100% with empty swarm before playback', () {
+      expect(
+        streamStatsLine(pct: 100, speed: 0, seeders: 0, peers: 0),
+        '0%  ·  finding peers…',
+      );
+    });
+
+    test('keeps real 100% when peers exist even before video', () {
+      expect(
+        streamStatsLine(pct: 100, speed: 0, seeders: 0, peers: 3),
+        '100%  ·  downloaded  ·  3 peers',
+      );
+    });
   });
 }

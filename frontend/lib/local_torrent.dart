@@ -38,10 +38,10 @@ class LocalTorrentEngine {
       final engine = LibtorrentFlutter.instance;
       engine.configureSession(
         const BtConfig(
-          cacheSize: 256 * 1024 * 1024,
-          readerReadAhead: 95,
-          preloadCache: 80,
-          connectionsLimit: 80,
+          cacheSize: 512 * 1024 * 1024,
+          readerReadAhead: 98,
+          preloadCache: 90,
+          connectionsLimit: 200,
           // Without an HTTP reader, the plugin pauses the torrent after 30s.
           torrentDisconnectTimeout: 86400,
           disableTcp: false,
@@ -139,16 +139,16 @@ class LocalTorrentEngine {
       final stream = engine.startStream(
         id,
         fileIndex: chosen,
-        maxCacheBytes: 256 * 1024 * 1024,
+        maxCacheBytes: 512 * 1024 * 1024,
       );
       _streamId = stream.id;
       engine.setCacheSettings(
         stream.id,
-        capacity: 256 * 1024 * 1024,
-        readAheadPct: 90,
-        connectionsLimit: 80,
+        capacity: 512 * 1024 * 1024,
+        readAheadPct: 95,
+        connectionsLimit: 200,
       );
-      engine.preloadStream(stream.id, preloadBytes: 16 * 1024 * 1024);
+      engine.preloadStream(stream.id, preloadBytes: 32 * 1024 * 1024);
 
       // Wait until the HTTP stream URL exists AND we have a little head data
       // (or live download), so the player doesn't open an empty pipe.
@@ -167,23 +167,26 @@ class LocalTorrentEngine {
         throw 'Couldn’t start this stream. Try another result.';
       }
 
-      final headDeadline = DateTime.now().add(const Duration(seconds: 75));
+      final headDeadline = DateTime.now().add(const Duration(seconds: 90));
       while (DateTime.now().isBefore(headDeadline)) {
         final live = engine.torrents[id];
         if (live != null && live.isPaused) engine.resumeTorrent(id);
         final info = engine.getStreamInfo(stream.id);
         if (live != null) onStats?.call(_statsFrom(live, info));
-        final ready = info?.isReady == true;
+        final complete = (live?.progress ?? 0) >= 0.99;
+        final ready = info?.isReady == true || complete;
         final buffered = (info?.bufferPct ?? live?.progress ?? 0) > 0.002;
-        final downloading = (live?.downloadRate ?? 0) > 32 * 1024;
-        if (ready || buffered || downloading) break;
+        final downloading = (live?.downloadRate ?? 0) > 16 * 1024;
+        // Open as soon as the HTTP pipe exists and we have any head data,
+        // or the whole file is already on disk (100% complete case).
+        if (ready || buffered || downloading || complete) break;
         if (live?.state == TorrentState.error) {
           await stop();
           throw live!.errorMsg.isNotEmpty
               ? live.errorMsg
               : 'Couldn’t start this stream. Try another result.';
         }
-        await Future<void>.delayed(const Duration(milliseconds: 300));
+        await Future<void>.delayed(const Duration(milliseconds: 250));
       }
 
       return LocalStreamHandle(
@@ -214,20 +217,30 @@ class LocalTorrentEngine {
 
   LocalStreamStats _statsFrom(TorrentInfo t, StreamInfo? s) {
     // Prefer torrent file progress for the HUD % (user-facing "downloaded").
-    // Fall back to stream readahead window when metadata is thin.
+    // Fall back to stream readahead window when metadata is thin — but never
+    // let a full readahead window report as 100% of the torrent.
     final torrentPct = (t.progress * 100).clamp(0.0, 100.0);
     final windowPct = ((s?.bufferPct ?? 0) * 100).clamp(0.0, 100.0);
-    final bufferPct = torrentPct >= 1.0
-        ? torrentPct
-        : (windowPct > torrentPct ? windowPct : torrentPct);
+    final complete = t.progress >= 0.99;
+    double bufferPct;
+    if (complete) {
+      bufferPct = 100.0;
+    } else if (torrentPct >= 1.0) {
+      bufferPct = torrentPct.clamp(0.0, 99.0);
+    } else if (windowPct > torrentPct) {
+      // Window fill is useful early on; cap so it can't look finished.
+      bufferPct = windowPct.clamp(0.0, 95.0);
+    } else {
+      bufferPct = torrentPct.clamp(0.0, 99.0);
+    }
     return LocalStreamStats(
       bufferPct: bufferPct,
       downloadMbps: t.downloadRate / (1024 * 1024),
       seeders: t.numSeeds < 0 ? 0 : t.numSeeds,
       peers: t.numPeers < 0 ? 0 : t.numPeers,
-      ready: s?.isReady == true || t.progress >= 0.02,
+      ready: s?.isReady == true || t.progress >= 0.01 || complete,
       stateLabel: s?.streamState.name ?? (t.isPaused ? 'Paused' : t.state.label),
-      torrentComplete: t.progress >= 0.99,
+      torrentComplete: complete,
     );
   }
 
@@ -341,9 +354,9 @@ class LocalTorrentEngine {
       final stream = engine.getStreamInfo(sid);
       engine.setCacheSettings(
         sid,
-        capacity: 256 * 1024 * 1024,
+        capacity: 512 * 1024 * 1024,
         readAheadPct: 95,
-        connectionsLimit: 80,
+        connectionsLimit: 200,
       );
       final fileSize = stream?.fileSize ?? 0;
       final url = stream?.url ?? '';
@@ -423,7 +436,15 @@ const _publicTrackers = [
   'udp://tracker.moeking.me:6969/announce',
   'udp://tracker.tiny-vps.com:6969/announce',
   'udp://tracker.dler.org:6969/announce',
+  'udp://tracker1.bt.moack.co.kr:80/announce',
+  'udp://tracker.theoks.net:6969/announce',
+  'udp://tracker.bittor.pw:1337/announce',
+  'udp://tracker.filemail.com:6969/announce',
+  'udp://tracker.bitsearch.to:1337/announce',
+  'udp://bt1.archive.org:6969/announce',
+  'udp://bt2.archive.org:6969/announce',
   'http://tracker.openbittorrent.com:80/announce',
+  'http://tracker.opentrackr.org:1337/announce',
   'wss://tracker.openwebtorrent.com',
 ];
 

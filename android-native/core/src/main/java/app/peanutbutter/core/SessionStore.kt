@@ -32,9 +32,10 @@ class SessionStore(context: Context) {
         get() = normalizeAspect(prefs.getString(KEY_ASPECT, ASPECT_FIT))
         set(value) = prefs.edit().putString(KEY_ASPECT, normalizeAspect(value)).apply()
 
-    /** Delete streamed downloads when the app leaves the foreground. */
+    /** Delete streamed downloads when the app leaves the foreground. Default off so
+     *  unfinished torrents survive player close and device reboot. */
     var clearCacheOnExit: Boolean
-        get() = prefs.getBoolean(KEY_CLEAR_CACHE, true)
+        get() = prefs.getBoolean(KEY_CLEAR_CACHE, false)
         set(value) = prefs.edit().putBoolean(KEY_CLEAR_CACHE, value).apply()
 
     /** Empty set means every language (same as the other apps). */

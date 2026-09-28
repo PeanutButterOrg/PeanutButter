@@ -29,6 +29,14 @@ interface PlaybackEngine {
     fun stop()
     fun release()
 
+    /**
+     * Seek to [positionMs]. For progressive HTTP torrents, large jumps should
+     * reopen the media item so Exo issues a fresh Range request.
+     */
+    fun seekTo(positionMs: Long) {
+        time = positionMs
+    }
+
     /** Embedded caption tracks. Id is engine-specific. */
     fun listTextTracks(): List<Pair<String, String>>
 

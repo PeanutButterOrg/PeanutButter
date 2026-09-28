@@ -1,15 +1,13 @@
 # Build PeanutButter client platforms (Linux / Windows / macOS / Android TV)
 #
-# Each artifact is a real .zip we create (zip/Compress-Archive/ditto), containing
-# the deliverable — never rename .exe/.deb/.AppImage to .zip.
-#
-# After Actions download (one outer unwrap from GitHub), you get:
-#   PeanutButter-linux-x64-portable.zip
-#   PeanutButter-linux-amd64-deb.zip          → contains .deb
-#   PeanutButter-linux-x86_64-AppImage.zip    → contains .AppImage
-#   PeanutButter-windows-x64-portable.zip
-#   PeanutButter-windows-x64-setup.zip        → contains .exe
-#   PeanutButter-macos-universal.zip          → contains .app
+# Artifacts are the real deliverables — not zips of zips. upload-artifact already
+# wraps each upload once; after you download/unzip from Actions you get:
+#   PeanutButter/                          (Linux portable folder)
+#   PeanutButter-linux-amd64.deb
+#   PeanutButter-linux-x86_64.AppImage
+#   PeanutButter/                          (Windows portable folder)
+#   PeanutButter-windows-x64-setup.exe
+#   PeanutButter.app/                      (macOS universal)
 #   PeanutButter-android-tv.apk
 #
 # Server / API images are built separately: .github/workflows/backend-docker.yml
@@ -31,7 +29,7 @@ on:
         type: boolean
         default: true
       macos:
-        description: Build macOS (universal zip)
+        description: Build macOS (universal app)
         type: boolean
         default: true
       android_tv:
@@ -88,7 +86,7 @@ jobs:
       - run: flutter pub get
       - run: flutter build linux --release
 
-      - name: Package portable / deb / AppImage as real zips
+      - name: Package portable / deb / AppImage
         working-directory: .
         run: |
           chmod +x scripts/package-linux.sh
@@ -99,31 +97,25 @@ jobs:
             'exec ./peanutbutter "$@"' > frontend/dist/PeanutButter/run.sh
           chmod +x frontend/dist/PeanutButter/run.sh frontend/dist/PeanutButter/peanutbutter
           ./scripts/package-linux.sh frontend/build/linux/x64/release/bundle
+          ls -lh frontend/dist/PeanutButter frontend/dist/*.deb frontend/dist/*.AppImage
 
-          cd frontend/dist
-          # Real zip archives (do not rename .deb / .AppImage to .zip).
-          zip -qr PeanutButter-linux-x64-portable.zip PeanutButter
-          zip -qj PeanutButter-linux-amd64-deb.zip PeanutButter-linux-amd64.deb
-          zip -qj PeanutButter-linux-x86_64-AppImage.zip PeanutButter-linux-x86_64.AppImage
-          ls -lh PeanutButter-linux-*.zip
-          file PeanutButter-linux-*.zip
-
+      # Upload raw files/folders — Actions wraps once; no zip-in-zip.
       - uses: actions/upload-artifact@v4
         with:
           name: PeanutButter-linux-portable
-          path: frontend/dist/PeanutButter-linux-x64-portable.zip
+          path: frontend/dist/PeanutButter/
           if-no-files-found: error
 
       - uses: actions/upload-artifact@v4
         with:
           name: PeanutButter-linux-deb
-          path: frontend/dist/PeanutButter-linux-amd64-deb.zip
+          path: frontend/dist/PeanutButter-linux-amd64.deb
           if-no-files-found: error
 
       - uses: actions/upload-artifact@v4
         with:
           name: PeanutButter-linux-appimage
-          path: frontend/dist/PeanutButter-linux-x86_64-AppImage.zip
+          path: frontend/dist/PeanutButter-linux-x86_64.AppImage
           if-no-files-found: error
 
   windows:
@@ -214,20 +206,16 @@ jobs:
           }
           ./scripts/bundle-windows-runtime.ps1 -ReleaseDir $src
 
-      - name: Package portable zip
+      - name: Stage portable folder
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           $src = "${{ steps.winout.outputs.dir }}"
-          $stage = Join-Path $env:RUNNER_TEMP "PeanutButter-portable"
+          $stage = "dist\PeanutButter"
           if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
           Copy-Item -Recurse -Force "$src\*" $stage
-          $zip = "dist\PeanutButter-windows-x64-portable.zip"
-          if (Test-Path $zip) { Remove-Item -Force $zip }
-          # Real zip of the app folder contents (not a renamed exe).
-          Compress-Archive -Path "$stage\*" -DestinationPath $zip -Force
-          Get-Item $zip | Format-List Name, Length
+          Get-ChildItem $stage | Format-Table Name, Length
 
       - name: Install Inno Setup
         shell: pwsh
@@ -235,7 +223,7 @@ jobs:
           choco install innosetup -y --no-progress
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /? | Select-Object -First 3
 
-      - name: Build setup exe and wrap in zip
+      - name: Build setup exe
         shell: pwsh
         working-directory: .
         run: |
@@ -262,22 +250,18 @@ jobs:
           if (-not (Test-Path $setup)) {
             throw "setup exe was not produced"
           }
-          $zip = "frontend\dist\PeanutButter-windows-x64-setup.zip"
-          if (Test-Path $zip) { Remove-Item -Force $zip }
-          # Zip the .exe — do not rename .exe to .zip.
-          Compress-Archive -Path $setup -DestinationPath $zip -Force
           Get-ChildItem frontend\dist | Format-Table Name, Length
 
       - uses: actions/upload-artifact@v4
         with:
           name: PeanutButter-windows-portable
-          path: frontend/dist/PeanutButter-windows-x64-portable.zip
+          path: frontend/dist/PeanutButter/
           if-no-files-found: error
 
       - uses: actions/upload-artifact@v4
         with:
           name: PeanutButter-windows-setup
-          path: frontend/dist/PeanutButter-windows-x64-setup.zip
+          path: frontend/dist/PeanutButter-windows-x64-setup.exe
           if-no-files-found: error
 
   macos:
@@ -334,15 +318,15 @@ jobs:
             lipo -info "$BIN" || true
           fi
           mkdir -p dist
-          # Real zip containing PeanutButter.app (ditto), not a renamed folder.
-          ditto -c -k --sequesterRsrc --keepParent "$APP" dist/PeanutButter-macos-universal.zip
-          ls -lh dist/PeanutButter-macos-universal.zip
-          file dist/PeanutButter-macos-universal.zip
+          rm -rf dist/PeanutButter.app
+          # Stable name for the artifact (Flutter may emit peanutbutter.app).
+          ditto "$APP" dist/PeanutButter.app
+          ls -la dist/PeanutButter.app/Contents/MacOS
 
       - uses: actions/upload-artifact@v4
         with:
           name: PeanutButter-macos-universal
-          path: frontend/dist/PeanutButter-macos-universal.zip
+          path: frontend/dist/PeanutButter.app
           if-no-files-found: error
 
   android-tv:

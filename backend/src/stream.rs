@@ -27,7 +27,8 @@ use crate::HttpState;
 
 const VIDEO_EXT: &[&str] = &["mkv", "mp4", "avi", "webm", "mov", "m4v"];
 const HEAD_BYTES: u64 = 2 * 1024 * 1024; // soft pre-buffer target once peers connect
-const MIN_HEAD_BYTES: u64 = 256 * 1024; // declare ready after ~256 KB so playback can start sooner
+const MIN_HEAD_BYTES: u64 = 96 * 1024; // enough for most containers to open
+const ABSOLUTE_MIN_HEAD_BYTES: u64 = 24 * 1024; // last-resort floor when the swarm is live
 const MIN_PLAYABLE_BYTES: u64 = 80 * 1024 * 1024;
 const STREAM_CHUNK: usize = 256 * 1024;        // 256 KB read chunks for smooth HTTP streaming
 const UPLOAD_BPS: u32 = 20 * 1024; // cap upload at 20 KB/s
@@ -548,18 +549,40 @@ impl StreamService {
                 .as_ref()
                 .map(|s| s.download_speed.mbps)
                 .unwrap_or(0.0);
-            let buffer_progress = if let Some(file_id) = live.file_id {
-                let got = stats.file_progress.get(file_id).copied().unwrap_or(0);
-                let total = handle
-                    .with_metadata(|m| m.file_infos.get(file_id).map(|f| f.len).unwrap_or(0))
-                    .unwrap_or(0);
-                if total == 0 {
-                    0.0
+            // HUD % = selected-file download (have / selected).
+            // librqbit sets finished=true whenever needed_bytes==0, including when
+            // nothing is selected yet (total_bytes==0) — that used to flash 100%.
+            let buffer_progress = {
+                let file_frac = if let Some(file_id) = live.file_id {
+                    let got = stats.file_progress.get(file_id).copied().unwrap_or(0);
+                    let total = handle
+                        .with_metadata(|m| m.file_infos.get(file_id).map(|f| f.len).unwrap_or(0))
+                        .unwrap_or(0);
+                    if total == 0 {
+                        0.0f32
+                    } else {
+                        (got as f64 / total as f64).clamp(0.0, 1.0) as f32
+                    }
                 } else {
-                    (got as f64 / total as f64) as f32
+                    progress
+                };
+                let selected_frac = if stats.total_bytes == 0 {
+                    0.0f32
+                } else {
+                    (stats.progress_bytes as f64 / stats.total_bytes as f64).clamp(0.0, 1.0) as f32
+                };
+                // Prefer the more conservative of the two so a sliding window can't
+                // report "complete" while the rest of the file is still needed.
+                let frac = file_frac.min(selected_frac);
+                let complete = stats.finished
+                    && stats.total_bytes > 0
+                    && stats.progress_bytes > 0
+                    && progress >= 0.999;
+                if complete {
+                    1.0
+                } else {
+                    frac.clamp(0.0, 0.99)
                 }
-            } else {
-                progress
             };
             // Live swarm only — never Jackett listed counts (those looked "connected"
             // while the player was still waiting on the first bytes).
@@ -795,15 +818,21 @@ async fn warm_file_head(handle: &Arc<ManagedTorrent>, file_id: usize) -> Result<
     let len = stream.len().max(1);
     let need = MIN_HEAD_BYTES.min(len);
     let soft = HEAD_BYTES.min(len);
+    let absolute_min = ABSOLUTE_MIN_HEAD_BYTES.min(need);
     let mut buf = vec![0u8; 128 * 1024];
     let mut got = 0u64;
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(180);
     let _ = stream.seek(SeekFrom::Start(0)).await;
 
     while got < need && tokio::time::Instant::now() < deadline {
-        match tokio::time::timeout(Duration::from_secs(3), stream.read(&mut buf)).await {
+        // Torrent engine may already have head pieces on disk even when this
+        // sequential read is still catching up — don't fail a healthy swarm.
+        if file_downloaded_bytes(handle, file_id) >= need {
+            return Ok(());
+        }
+        match tokio::time::timeout(Duration::from_secs(4), stream.read(&mut buf)).await {
             Ok(Ok(0)) => {
-                tokio::time::sleep(Duration::from_millis(300)).await;
+                tokio::time::sleep(Duration::from_millis(250)).await;
             }
             Ok(Ok(n)) => {
                 got = got.saturating_add(n as u64);
@@ -814,7 +843,7 @@ async fn warm_file_head(handle: &Arc<ManagedTorrent>, file_id: usize) -> Result<
                 }
                 if got >= need {
                     // One more short attempt for a fatter buffer, then start.
-                    let soft_deadline = tokio::time::Instant::now() + Duration::from_secs(4);
+                    let soft_deadline = tokio::time::Instant::now() + Duration::from_secs(3);
                     while got < soft && tokio::time::Instant::now() < soft_deadline {
                         match tokio::time::timeout(Duration::from_secs(1), stream.read(&mut buf))
                             .await
@@ -829,22 +858,54 @@ async fn warm_file_head(handle: &Arc<ManagedTorrent>, file_id: usize) -> Result<
             }
             Ok(Err(_)) => {
                 tokio::time::sleep(Duration::from_millis(200)).await;
-                let _ = stream.seek(SeekFrom::Start(got.min(len.saturating_sub(1)))).await;
+                let _ = stream
+                    .seek(SeekFrom::Start(got.min(len.saturating_sub(1))))
+                    .await;
             }
             Err(_) => {
                 // Timed out waiting for pieces — stay on the head window.
-                let _ = stream.seek(SeekFrom::Start(got.min(len.saturating_sub(1)))).await;
+                let _ = stream
+                    .seek(SeekFrom::Start(got.min(len.saturating_sub(1))))
+                    .await;
             }
         }
     }
 
-    if got < need {
-        return Err(
-            "Connected to peers but couldn’t download enough video data to start. Try another result."
-                .into(),
-        );
+    if got >= need || file_downloaded_bytes(handle, file_id) >= need {
+        return Ok(());
     }
-    Ok(())
+    // Healthy swarm with a usable header: start playback and keep filling.
+    let live_peers = handle
+        .stats()
+        .live
+        .as_ref()
+        .map(|l| l.snapshot.peer_stats.live)
+        .unwrap_or(0);
+    let file_got = file_downloaded_bytes(handle, file_id);
+    if live_peers > 0 && (got.max(file_got) >= absolute_min) {
+        tracing::info!(
+            got,
+            file_got,
+            live_peers,
+            need,
+            "warm_file_head accepting partial head with live peers"
+        );
+        return Ok(());
+    }
+
+    Err(
+        "Connected to peers but couldn’t download enough video data to start. Try another result."
+            .into(),
+    )
+}
+
+fn file_downloaded_bytes(handle: &Arc<ManagedTorrent>, file_id: usize) -> u64 {
+    handle
+        .stats()
+        .file_progress
+        .get(file_id)
+        .copied()
+        .unwrap_or(0)
 }
 
 /// Keep one FileStream alive so piece priority follows playback.

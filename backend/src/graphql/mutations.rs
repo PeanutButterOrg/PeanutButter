@@ -422,57 +422,16 @@ impl Mutation {
         episode: Option<i32>,
         file_index: Option<i32>,
     ) -> async_graphql::Result<StreamSession> {
-        let state = ctx.data::<AppState>()?;
-        if !state.config.live.jackett_enabled() {
-            return Err(crate::error::AppError::BadRequest(
-                "Jackett streaming is turned off. Enable it in Settings.".into(),
-            )
-            .into());
-        }
-        let magnet_key = crate::stream::StreamService::magnet_key(&magnet);
-        let resume_pos = if resume.unwrap_or(true) {
-            if let Some(tid) = title_id {
-                let token_id = ctx
-                    .data::<crate::auth::AuthSession>()
-                    .ok()
-                    .map(|a| a.token_id);
-                crate::db::load_title_resume_for_token(&state.pool, tid, token_id).await?
-            } else {
-                crate::db::load_stream_resume(&state.pool, &magnet_key).await?
-            }
-        } else {
-            0
-        };
-        let preferred_file = file_index.filter(|i| *i >= 0).map(|i| i as usize);
-        let session = state
-            .streams
-            .start(
-                magnet.clone(),
-                title.clone(),
-                resume_pos,
-                state.config.live.streaming_resolution(),
-                seeders.unwrap_or(0),
-                peers.unwrap_or(0),
-                season,
-                episode,
-                preferred_file,
-            )
-            .await?;
-        if let Some(title_id) = title_id {
-            let _ = crate::db::save_stream_resume(
-                &state.pool,
-                &magnet_key,
-                Some(title_id),
-                &title,
-                resume_pos,
-                Some(magnet.as_str()),
-                season,
-                episode,
-                file_index,
-            )
-            .await;
-        }
-        Ok(session)
+        let _ = (
+            ctx, magnet, title, title_id, resume, seeders, peers, season, episode, file_index,
+        );
+        // Piece downloads moved to each client (libtorrent). The API only
+        // supplies Jackett magnets / bookmarks — never caches torrents on disk.
+        Err(crate::error::AppError::BadRequest(
+            "Torrent streaming runs on each device now. Update the app to the latest version."
+                .into(),
+        )
+        .into())
     }
 
     async fn stream_resume(

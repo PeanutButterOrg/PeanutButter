@@ -3,6 +3,7 @@ package app.peanutbutter.phone
 import android.app.Application
 import app.peanutbutter.core.ApiClient
 import app.peanutbutter.core.AppExitCleanup
+import app.peanutbutter.core.LocalTorrentEngine
 import app.peanutbutter.core.SessionStore
 
 class PhoneApp : Application() {
@@ -18,14 +19,10 @@ class PhoneApp : Application() {
         super.onCreate()
         session = SessionStore(this)
         api = ApiClient(session)
-        AppExitCleanup.install(this) {
-            val sid = activeStreamSession
+        LocalTorrentEngine.ensureInit(this)
+        AppExitCleanup.install(this, shouldWipe = { session.clearCacheOnExit }) { deleteFiles ->
             activeStreamSession = null
-            if (!sid.isNullOrBlank()) {
-                Thread {
-                    runCatching { kotlinx.coroutines.runBlocking { api.stopStream(sid) } }
-                }.start()
-            }
+            runCatching { LocalTorrentEngine.stop(deleteFiles = deleteFiles) }
         }
     }
 }

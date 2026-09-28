@@ -27,4 +27,9 @@ dependencies {
     api("com.google.code.gson:gson:2.11.0")
     implementation("androidx.preference:preference-ktx:1.2.1")
     implementation("androidx.lifecycle:lifecycle-process:2.8.7")
+    // On-device torrent streaming (Flutter LocalTorrentEngine parity).
+    api("org.libtorrent4j:libtorrent4j:2.1.0-39")
+    api("org.libtorrent4j:libtorrent4j-android-arm64:2.1.0-39")
+    api("org.libtorrent4j:libtorrent4j-android-arm:2.1.0-39")
+    api("org.libtorrent4j:libtorrent4j-android-x86_64:2.1.0-39")
 }

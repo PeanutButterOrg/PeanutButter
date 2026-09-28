@@ -2011,16 +2011,27 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                 seeders: local.seeders,
                 peers: local.peers,
                 resumePosition: widget.startMs,
-                status: local.ready ? 'ready' : 'buffering',
+                status: local.ready || local.torrentComplete ? 'ready' : 'buffering',
                 streamUrl: _url,
               );
             });
+            if (!_streamOpened &&
+                _url.isNotEmpty &&
+                (local.ready || local.torrentComplete)) {
+              _streamReady = true;
+              unawaited(_tryOpenPreparedStream());
+            }
           },
         );
         if (!mounted) return;
         _url = handle.url;
         _streamReady = true;
-        await _tryOpenPreparedStream();
+        // Retry a few times — native player may still be attaching.
+        for (var i = 0; i < 8 && mounted && !_streamOpened; i++) {
+          await _tryOpenPreparedStream();
+          if (_streamOpened) break;
+          await Future<void>.delayed(const Duration(milliseconds: 250));
+        }
       } catch (e) {
         if (!mounted) return;
         setState(() {
@@ -2053,7 +2064,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       });
     }
 
-    final deadline = DateTime.now().add(const Duration(seconds: 150));
+    final deadline = DateTime.now().add(const Duration(seconds: 210));
     var session = StreamSession(
       id: sessionId,
       title: widget.title,
@@ -2130,10 +2141,18 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
           seeders: local.seeders,
           peers: local.peers,
           resumePosition: widget.startMs,
-          status: local.ready ? 'ready' : 'buffering',
+          status: local.ready || local.torrentComplete ? 'ready' : 'buffering',
           streamUrl: _url,
         );
       });
+      // Fully buffered / ready but player never opened (common when the
+      // download finishes before MediaKit/Exo attaches) — open now.
+      if (!_streamOpened &&
+          _url.isNotEmpty &&
+          (local.ready || local.torrentComplete || local.bufferPct >= 1.0)) {
+        _streamReady = true;
+        unawaited(_tryOpenPreparedStream());
+      }
       return;
     }
 
@@ -2212,6 +2231,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
 
   bool get _showStreamHud {
     if (!widget.isStream || _streamError != null) return false;
+    // Keep the poster / peer HUD until real playback starts — media_kit can
+    // report a size (and look "has video") while still painting a black box.
+    if (!_streamOpened && !_playing) return true;
     if (!_hasVideo) return true;
     // Always show while seeking / settling so the user sees download move.
     if (_buffering || _seeking || _seekSettling) return true;
@@ -2955,11 +2977,22 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   Widget _bufferOverlay() {
     final info = _streamInfo;
     final local = LocalTorrentEngine.instance.currentStats();
-    final pct = ((info?.bufferProgress ?? 0) * 100).clamp(0, 100);
     final speed = info?.downloadMbps ?? local?.downloadMbps ?? 0;
     // Live swarm only — never Jackett listed counts.
     final seeders = info?.seeders ?? local?.seeders ?? 0;
     final peers = info?.peers ?? local?.peers ?? 0;
+    final rawFrac = () {
+      final b = info?.bufferProgress ?? 0;
+      final p = info?.progress ?? 0;
+      if (b > 0.001 && b < 0.999) return b;
+      if (b >= 0.999 && p >= 0.999) return 1.0;
+      if (p > 0.001 && p < 0.999) return p;
+      return 0.0;
+    }();
+    final rawPct = (rawFrac * 100).clamp(0.0, 100.0);
+    // Keep the bar honest while the swarm is still transferring.
+    final pct = (rawPct >= 99.5 && speed >= 0.05) ? 99.0 : rawPct;
+    final barValue = pct > 0 ? (pct / 100).clamp(0.0, 1.0) : null;
     final line = streamStatsLine(
       pct: pct,
       speed: speed,
@@ -3020,7 +3053,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                   ),
                   const SizedBox(height: 4),
                   LinearProgressIndicator(
-                    value: (info?.bufferProgress ?? 0) > 0 ? info!.bufferProgress.clamp(0.0, 1.0) : null,
+                    value: barValue,
                     minHeight: 3,
                     backgroundColor: Colors.white24,
                     color: AppTheme.seed,
@@ -3449,10 +3482,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   Widget _streamStatsChip() {
     final info = _streamInfo;
     final local = LocalTorrentEngine.instance.currentStats();
-    final pct = ((info?.bufferProgress ?? 0) * 100).clamp(0, 100);
     final speed = info?.downloadMbps ?? local?.downloadMbps ?? 0;
     final seeders = info?.seeders ?? local?.seeders ?? 0;
     final peers = info?.peers ?? local?.peers ?? 0;
+    final rawPct = ((info?.bufferProgress ?? 0) * 100).clamp(0.0, 100.0);
+    final pct = (rawPct >= 99.5 && speed >= 0.05) ? 99.0 : rawPct;
     final line = streamStatsLine(
       pct: pct,
       speed: speed,
@@ -3811,6 +3845,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
         ),
       ),
     );
+    // Keep the Video widget mounted so media_kit can decode, but hide the empty
+    // black surface until the stream has really opened / started playing.
+    final hideEmpty = !_playing && !_streamOpened && widget.isStream;
+    if (hideEmpty) {
+      return Opacity(opacity: 0, child: IgnorePointer(child: video));
+    }
     return video;
   }
 }

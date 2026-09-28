@@ -22,6 +22,7 @@ import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import app.peanutbutter.core.AppLog
 import app.peanutbutter.core.Episode
 import app.peanutbutter.core.Season
 import app.peanutbutter.core.StreamQuality
@@ -574,6 +575,20 @@ class DetailsActivity : FragmentActivity() {
                     supportFragmentManager,
                     query,
                     sources,
+                    onRefresh = {
+                        val live = api.streamingSearch(
+                            query = query,
+                            kind = t.kind.ifBlank { "MOVIE" },
+                            titleId = t.id,
+                            season = season,
+                            episode = episode,
+                            live = true,
+                        )
+                        StreamQuality.rankSources(
+                            live,
+                            application.asTv().session.preferredQuality,
+                        )
+                    },
                 ) { source ->
                     setBusy(true)
                     lifecycleScope.launch {
@@ -592,8 +607,13 @@ class DetailsActivity : FragmentActivity() {
                         }
                     }
                 }
-            } catch (e: Exception) {
-                Toast.makeText(this@DetailsActivity, e.message, Toast.LENGTH_LONG).show()
+            } catch (t: Throwable) {
+                Log.e(TAG, "openSources failed", t)
+                Toast.makeText(
+                    this@DetailsActivity,
+                    t.message?.takeIf { it.isNotBlank() } ?: getString(R.string.stream_start_failed),
+                    Toast.LENGTH_LONG,
+                ).show()
             } finally {
                 searching = false
                 setBusy(false)
@@ -617,22 +637,10 @@ class DetailsActivity : FragmentActivity() {
             String.format("%s S%02dE%02d", t.title, season, episode)
         } else t.title
         try {
-            val started = api.startStream(
-                magnet = magnet,
-                title = label,
-                titleId = t.id,
-                seeders = seeders,
-                peers = peers,
-                season = season,
-                episode = episode,
-                fileIndex = fileIndex,
-                resume = resume,
-            )
-            Log.i(TAG, "startStream id=${started.sessionId} status=${started.status} url=${started.streamUrl.take(80)}")
-            if (started.sessionId.isBlank()) {
-                Toast.makeText(this, R.string.stream_start_failed, Toast.LENGTH_LONG).show()
-                return
-            }
+            // Flutter parity: open the player immediately; torrent starts there.
+            // Waiting for peers on DetailsActivity was killing this screen on TV.
+            val session = "local-${System.currentTimeMillis()}"
+            AppLog.i(TAG, "launch player magnet=${magnet.take(48)}… session=$session")
             val seek = when {
                 !resume -> 0L
                 resumeMs != null && resumeMs > 0 -> resumeMs
@@ -641,8 +649,11 @@ class DetailsActivity : FragmentActivity() {
             startActivity(
                 Intent(this, PlayerActivity::class.java)
                     .putExtra(PlayerActivity.EXTRA_TITLE, label)
-                    .putExtra(PlayerActivity.EXTRA_SESSION, started.sessionId)
-                    .putExtra(PlayerActivity.EXTRA_URL, api.playableStreamUrl(started.streamUrl))
+                    .putExtra(PlayerActivity.EXTRA_SESSION, session)
+                    .putExtra(PlayerActivity.EXTRA_URL, "")
+                    .putExtra(PlayerActivity.EXTRA_MAGNET, magnet)
+                    .putExtra(PlayerActivity.EXTRA_LOCAL, true)
+                    .putExtra(PlayerActivity.EXTRA_FILE_INDEX, fileIndex ?: -1)
                     .putExtra(PlayerActivity.EXTRA_POSTER, t.posterUrl)
                     .putExtra(PlayerActivity.EXTRA_BACKDROP, t.backdropUrl)
                     .putExtra(PlayerActivity.EXTRA_TITLE_ID, t.id)
@@ -652,9 +663,13 @@ class DetailsActivity : FragmentActivity() {
                     .putExtra(PlayerActivity.EXTRA_EPISODE, episode ?: -1)
                     .putExtra(PlayerActivity.EXTRA_RESUME_MS, seek),
             )
-        } catch (e: Exception) {
-            Log.e(TAG, "playSource failed", e)
-            Toast.makeText(this, e.message, Toast.LENGTH_LONG).show()
+        } catch (t: Throwable) {
+            AppLog.e(TAG, "playSource failed", t)
+            Toast.makeText(
+                this,
+                t.message?.takeIf { it.isNotBlank() } ?: getString(R.string.stream_start_failed),
+                Toast.LENGTH_LONG,
+            ).show()
         }
     }
 

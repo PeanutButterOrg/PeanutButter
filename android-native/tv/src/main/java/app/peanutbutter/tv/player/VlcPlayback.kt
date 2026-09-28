@@ -98,6 +98,13 @@ class VlcPlayback(
         mp?.play()
     }
 
+    override fun seekTo(positionMs: Long) {
+        val player = mp ?: return
+        player.time = positionMs.coerceAtLeast(0L)
+        // Scrubbing must resume — VLC can sit paused after a time jump.
+        player.play()
+    }
+
     override fun pause() {
         mp?.pause()
     }

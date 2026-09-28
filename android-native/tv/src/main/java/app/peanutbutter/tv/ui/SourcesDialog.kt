@@ -12,15 +12,20 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.isVisible
 import androidx.fragment.app.DialogFragment
 import androidx.fragment.app.FragmentManager
+import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import app.peanutbutter.core.StreamHealth
 import app.peanutbutter.core.StreamSource
 import app.peanutbutter.tv.R
+import kotlinx.coroutines.launch
 
 /** Flutter-style Choose a stream dialog (560dp, not full-screen). */
 class SourcesDialog : DialogFragment() {
     private var onPicked: ((StreamSource) -> Unit)? = null
+    private var onRefresh: (suspend () -> List<StreamSource>)? = null
+    private var adapter: Adapter? = null
+    private var refreshing = false
 
     override fun onCreateDialog(savedInstanceState: Bundle?): Dialog {
         return Dialog(requireContext(), R.style.Theme_PeanutButter_Dialog).apply {
@@ -41,21 +46,55 @@ class SourcesDialog : DialogFragment() {
         view.findViewById<TextView>(R.id.subtitle).text =
             getString(R.string.sources_subtitle, title)
         view.findViewById<ImageButton>(R.id.btn_close).setOnClickListener { dismiss() }
+        view.findViewById<ImageButton>(R.id.btn_refresh).setOnClickListener { refresh() }
 
         val list = view.findViewById<RecyclerView>(R.id.list)
         list.layoutManager = LinearLayoutManager(requireContext())
-        list.adapter = Adapter(sources.map { it.toSource() }) { src ->
+        adapter = Adapter(sources.map { it.toSource() }.toMutableList()) { src ->
             dismiss()
             onPicked?.invoke(src)
         }
+        list.adapter = adapter
         list.post { list.getChildAt(0)?.requestFocus() }
     }
 
+    private fun refresh() {
+        val refreshFn = onRefresh ?: return
+        if (refreshing) return
+        refreshing = true
+        val btn = view?.findViewById<ImageButton>(R.id.btn_refresh)
+        btn?.isEnabled = false
+        view?.findViewById<TextView>(R.id.subtitle)?.text = getString(R.string.refreshing_sources)
+        lifecycleScope.launch {
+            try {
+                val next = refreshFn()
+                adapter?.replaceAll(next)
+                view?.findViewById<TextView>(R.id.subtitle)?.text =
+                    getString(R.string.sources_subtitle, requireArguments().getString(ARG_TITLE).orEmpty())
+                if (next.isEmpty()) {
+                    view?.findViewById<TextView>(R.id.subtitle)?.text = getString(R.string.no_sources)
+                }
+            } catch (e: Exception) {
+                view?.findViewById<TextView>(R.id.subtitle)?.text =
+                    e.message ?: getString(R.string.no_sources)
+            } finally {
+                refreshing = false
+                btn?.isEnabled = true
+            }
+        }
+    }
+
     private class Adapter(
-        private val items: List<StreamSource>,
+        private val items: MutableList<StreamSource>,
         private val onClick: (StreamSource) -> Unit,
     ) : RecyclerView.Adapter<Adapter.VH>() {
         class VH(val root: View) : RecyclerView.ViewHolder(root)
+
+        fun replaceAll(next: List<StreamSource>) {
+            items.clear()
+            items.addAll(next)
+            notifyDataSetChanged()
+        }
 
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VH {
             val v = LayoutInflater.from(parent.context)
@@ -124,6 +163,7 @@ class SourcesDialog : DialogFragment() {
             fm: FragmentManager,
             title: String,
             sources: List<StreamSource>,
+            onRefresh: (suspend () -> List<StreamSource>)? = null,
             onPicked: (StreamSource) -> Unit,
         ) {
             val dlg = SourcesDialog()
@@ -132,6 +172,7 @@ class SourcesDialog : DialogFragment() {
                 putSerializable(ARG_SOURCES, ArrayList(sources.map { SourceParcel.from(it) }))
             }
             dlg.onPicked = onPicked
+            dlg.onRefresh = onRefresh
             dlg.show(fm, "sources")
         }
     }

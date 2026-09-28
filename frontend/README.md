@@ -56,11 +56,12 @@ Discovery probes saved URL, localhost / emulator gateway, LAN subnets, and optio
 
 ## Desktop CI packages
 
-Produced by [Platform Builds](../.github/workflows/desktop-builds.yml):
+Produced by [Platform Builds](../.github/workflows/desktop-builds.yml)
+(raw deliverables after one Actions download unwrap — not nested zips):
 
-- Linux: portable zip, `.deb` zip, AppImage zip
-- Windows: portable zip, Inno Setup zip
-- macOS: universal `.app` zip
+- Linux: portable `PeanutButter/` folder, `.deb`, AppImage
+- Windows: portable `PeanutButter/` folder, Inno Setup `.exe`
+- macOS: universal `PeanutButter.app`
 
 Local Linux packaging helper: `../scripts/package-linux.sh` / `../scripts/build-desktop-docker.sh`.
 

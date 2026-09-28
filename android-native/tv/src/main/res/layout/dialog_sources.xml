@@ -23,6 +23,17 @@
             android:textStyle="bold" />
 
         <ImageButton
+            android:id="@+id/btn_refresh"
+            android:layout_width="36dp"
+            android:layout_height="36dp"
+            android:layout_marginEnd="8dp"
+            android:background="@drawable/header_icon_bg"
+            android:contentDescription="@string/refresh_sources"
+            android:padding="6dp"
+            android:src="@android:drawable/ic_popup_sync"
+            android:tint="@color/pb_white" />
+
+        <ImageButton
             android:id="@+id/btn_close"
             android:layout_width="36dp"
             android:layout_height="36dp"

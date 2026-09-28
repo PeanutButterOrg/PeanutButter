@@ -93,6 +93,13 @@ Future<void> main() async {
     prefs = await SharedPreferences.getInstance();
   }
   debugPrint('PeanutButter runApp');
+  // Fresh torrent pieces + player cache every launch.
+  try {
+    await LocalTorrentEngine.instance.purgeDownloads();
+  } catch (_) {}
+  try {
+    await PlayerCache.clear();
+  } catch (_) {}
   runApp(
     ProviderScope(
       overrides: [
@@ -447,14 +454,15 @@ class _PeanutButterAppState extends ConsumerState<PeanutButterApp> with WidgetsB
   }
 
   Future<void> _clearCachesOnExit() async {
-    final settings = ref.read(settingsProvider);
-    if (!settings.clearCacheOnExit && !isAndroidTv) return;
+    // Always stop torrents + wipe stream pieces when leaving the app.
     try {
       await LocalTorrentEngine.instance.purgeDownloads();
     } catch (_) {}
     try {
       await PlayerCache.clear();
     } catch (_) {}
+    final settings = ref.read(settingsProvider);
+    if (!settings.clearCacheOnExit && !isAndroidTv) return;
     try {
       await ArtCache.clear();
     } catch (_) {}

@@ -5,6 +5,8 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <uses-feature android:name="android.software.leanback" android:required="true" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
@@ -75,5 +77,11 @@
             android:configChanges="keyboard|keyboardHidden|navigation"
             android:exported="false"
             android:screenOrientation="landscape" />
+
+        <!-- Isolate libtorrent native crashes from the UI process -->
+        <service
+            android:name="app.peanutbutter.core.TorrentService"
+            android:exported="false"
+            android:process=":torrent" />
     </application>
 </manifest>

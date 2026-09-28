@@ -10,7 +10,9 @@ import com.bumptech.glide.load.engine.cache.LruResourceCache
 import com.bumptech.glide.load.engine.cache.MemorySizeCalculator
 import app.peanutbutter.core.ApiClient
 import app.peanutbutter.core.AppExitCleanup
+import app.peanutbutter.core.AppLog
 import app.peanutbutter.core.SessionStore
+import app.peanutbutter.core.TorrentClient
 
 class TvApp : Application() {
     lateinit var session: SessionStore
@@ -26,14 +28,17 @@ class TvApp : Application() {
         session = SessionStore(this)
         api = ApiClient(session)
         configureGlide()
-        AppExitCleanup.install(this, shouldWipe = { session.clearCacheOnExit }) {
-            val sid = activeStreamSession
+        // Torrents run in :torrent via TorrentService so a native crash can't kill UI.
+        AppLog.init(this)
+        AppLog.i("TvApp", "onCreate")
+        val prev = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { t, e ->
+            AppLog.e("Crash", "uncaught in ${t.name}", e)
+            prev?.uncaughtException(t, e)
+        }
+        AppExitCleanup.install(this, shouldWipe = { session.clearCacheOnExit }) { deleteFiles ->
             activeStreamSession = null
-            if (!sid.isNullOrBlank()) {
-                Thread {
-                    runCatching { kotlinx.coroutines.runBlocking { api.stopStream(sid) } }
-                }.start()
-            }
+            runCatching { TorrentClient.stop(this, deleteFiles = deleteFiles) }
         }
     }
 

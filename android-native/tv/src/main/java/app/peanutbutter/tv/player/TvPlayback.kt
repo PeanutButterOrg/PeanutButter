@@ -52,11 +52,29 @@ class TvPlayback(
     override var time: Long
         get() = exo.currentPosition.coerceAtLeast(0L)
         set(value) {
-            exo.seekTo(value.coerceAtLeast(0L))
+            seekTo(value)
         }
 
     override val isPlaying: Boolean
         get() = exo.isPlaying
+
+    override fun seekTo(positionMs: Long) {
+        val target = positionMs.coerceAtLeast(0L)
+        val cur = exo.currentPosition.coerceAtLeast(0L)
+        val jump = kotlin.math.abs(target - cur)
+        val uri = exo.currentMediaItem?.localConfiguration?.uri
+        // Large scrub on a growing HTTP torrent: pause+seekTo often snaps to 0.
+        // Re-open the same URL at the new position so Exo issues a fresh Range.
+        if (jump > 12_000L && uri != null) {
+            val play = exo.playWhenReady || exo.isPlaying
+            exo.setMediaItem(MediaItem.fromUri(uri), target)
+            exo.prepare()
+            exo.playWhenReady = play
+            if (play) exo.play()
+        } else {
+            exo.seekTo(target)
+        }
+    }
 
     fun attachFrame(layout: AspectRatioFrameLayout?) {
         frame = layout
@@ -222,7 +240,14 @@ class TvPlayback(
             .setEnableDecoderFallback(true)
             .setExtensionRendererMode(mode)
         val load = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(8_000, 50_000, 1_500, 3_000)
+            // After an underrun, resume with a smaller requirement so playback
+            // restarts as soon as the next torrent pieces arrive.
+            .setBufferDurationsMs(
+                /* minBufferMs */ 15_000,
+                /* maxBufferMs */ 60_000,
+                /* bufferForPlaybackMs */ 1_200,
+                /* bufferForPlaybackAfterRebufferMs */ 1_500,
+            )
             .build()
         return ExoPlayer.Builder(appContext)
             .setRenderersFactory(renderers)
