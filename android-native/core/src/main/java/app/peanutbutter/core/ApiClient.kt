@@ -235,6 +235,33 @@ class ApiClient(
         )
     }
 
+    /** Last magnet used for this title/episode. Resume replays it without the picker. */
+    suspend fun streamBookmark(
+        titleId: String,
+        season: Int? = null,
+        episode: Int? = null,
+    ): StreamBookmark? = withContext(Dispatchers.IO) {
+        val data = gql(
+            Gql.STREAM_BOOKMARK,
+            mapOf(
+                "titleId" to titleId,
+                "season" to season,
+                "episode" to episode,
+            ),
+        )
+        val el = data.get("streamBookmark")?.takeUnless { it.isJsonNull } ?: return@withContext null
+        val o = el.asJsonObject
+        val magnet = o.getStringOr("magnet", "")
+        if (magnet.isBlank()) return@withContext null
+        StreamBookmark(
+            magnet = magnet,
+            resumePosition = o.getIntOr("resumePosition", 0),
+            season = o.get("season")?.takeUnless { it.isJsonNull }?.asInt,
+            episode = o.get("episode")?.takeUnless { it.isJsonNull }?.asInt,
+            fileIndex = o.get("fileIndex")?.takeUnless { it.isJsonNull }?.asInt,
+        )
+    }
+
     suspend fun startStream(
         magnet: String,
         title: String,

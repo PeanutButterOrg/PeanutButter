@@ -2,7 +2,8 @@ package app.peanutbutter.tv.player
 
 import android.content.Context
 import android.net.Uri
-import android.view.SurfaceHolder
+import android.view.Surface
+import android.view.TextureView
 import android.view.View
 import androidx.media3.ui.SubtitleView
 import org.videolan.libvlc.LibVLC
@@ -22,7 +23,8 @@ class VlcPlayback(
     private val appContext = context.applicationContext
     private var libVLC: LibVLC? = null
     private var mp: MediaPlayer? = null
-    private var holder: SurfaceHolder? = null
+    private var texture: TextureView? = null
+    private var surface: Surface? = null
     private var software = false
     private var aspectMode = "fit"
     private var frame: View? = null
@@ -48,28 +50,34 @@ class VlcPlayback(
         view?.setCues(emptyList())
     }
 
-    override fun attachDisplay(holder: SurfaceHolder?) {
-        this.holder = holder
-        val vout = mp?.vlcVout ?: return
-        if (holder == null) {
-            if (vout.areViewsAttached()) vout.detachViews()
+    override fun attachTexture(view: TextureView?) {
+        texture = view
+        val vout = mp?.vlcVout
+        val tex = view?.surfaceTexture
+        if (view == null || tex == null) {
+            if (vout != null && vout.areViewsAttached()) vout.detachViews()
+            surface?.release()
+            surface = null
             return
         }
-        if (!vout.areViewsAttached()) {
-            vout.setVideoSurface(holder.surface, holder)
-            vout.attachViews()
-        }
-        val frame = holder.surfaceFrame
-        vout.setWindowSize(frame.width().coerceAtLeast(1280), frame.height().coerceAtLeast(720))
+        val next = Surface(tex)
+        surface?.release()
+        surface = next
+        if (vout == null) return
+        vout.setVideoSurface(next, null)
+        if (!vout.areViewsAttached()) vout.attachViews()
+        val w = view.width.takeIf { it > 0 } ?: appContext.resources.displayMetrics.widthPixels
+        val h = view.height.takeIf { it > 0 } ?: appContext.resources.displayMetrics.heightPixels
+        vout.setWindowSize(w, h)
     }
 
     override fun open(url: String, resumeMs: Long, preferSoftware: Boolean) {
         if (mp == null || preferSoftware != software) {
-            val keep = holder
+            val keep = texture
             releasePlayerOnly()
             software = preferSoftware
             build()
-            attachDisplay(keep)
+            attachTexture(keep)
         }
         val lib = libVLC ?: return
         val player = mp ?: return
@@ -228,6 +236,8 @@ class VlcPlayback(
             mp?.stop()
             mp?.release()
         }
+        surface?.release()
+        surface = null
         mp = null
         runCatching { libVLC?.release() }
         libVLC = null

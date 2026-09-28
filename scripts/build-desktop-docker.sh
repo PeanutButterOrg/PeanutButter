@@ -119,7 +119,7 @@ trigger_ci() {
   [[ "$do_ci_linux" -eq 1 ]] && linux=true
   [[ "$do_ci_windows" -eq 1 ]] && windows=true
   [[ "$do_ci_macos" -eq 1 ]] && macos=true
-  echo "==> Triggering Desktop builds (linux=$linux windows=$windows macos=$macos)"
+  echo "==> Triggering Platform Builds (linux=$linux windows=$windows macos=$macos)"
   gh workflow run desktop-builds.yml \
     --ref "$(git -C "$ROOT" rev-parse --abbrev-ref HEAD)" \
     -f linux="$linux" \

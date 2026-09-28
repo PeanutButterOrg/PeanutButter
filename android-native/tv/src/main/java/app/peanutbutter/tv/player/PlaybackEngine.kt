@@ -1,6 +1,6 @@
 package app.peanutbutter.tv.player
 
-import android.view.SurfaceHolder
+import android.view.TextureView
 import androidx.media3.ui.SubtitleView
 import java.io.File
 
@@ -22,7 +22,7 @@ interface PlaybackEngine {
     val isPlaying: Boolean
 
     fun bindSubtitles(view: SubtitleView?)
-    fun attachDisplay(holder: SurfaceHolder?)
+    fun attachTexture(view: TextureView?)
     fun open(url: String, resumeMs: Long, preferSoftware: Boolean)
     fun play()
     fun pause()

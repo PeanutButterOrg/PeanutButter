@@ -2,8 +2,7 @@ package app.peanutbutter.tv.player
 
 import android.content.Context
 import android.net.Uri
-import android.view.Surface
-import android.view.SurfaceHolder
+import android.view.TextureView
 import android.view.View
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -32,7 +31,7 @@ class TvPlayback(
     private val appContext = context.applicationContext
     private var exo: ExoPlayer = buildPlayer(preferSoftware = false)
     private var software = false
-    private var videoSurface: Surface? = null
+    private var textureView: TextureView? = null
     private var subtitles: SubtitleView? = null
     private var frame: AspectRatioFrameLayout? = null
     private var aspectMode = "fit"
@@ -92,7 +91,6 @@ class TvPlayback(
         placedMode = aspectMode
         VideoAspect.place(layout, box)
         subtitles?.let { VideoAspect.place(it, box) }
-        (layout.getChildAt(0) as? android.view.SurfaceView)?.holder?.setFixedSize(box.width, box.height)
         layout.setAspectRatio(box.width.toFloat() / box.height)
         layout.resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FILL
         val scaling = if (aspectMode == "fill") {
@@ -109,18 +107,18 @@ class TvPlayback(
         view?.setBottomPaddingFraction(0.08f)
     }
 
-    override fun attachDisplay(holder: SurfaceHolder?) {
-        videoSurface = holder?.surface
-        exo.setVideoSurface(videoSurface)
+    override fun attachTexture(view: TextureView?) {
+        textureView = view
+        exo.setVideoTextureView(view)
     }
 
     override fun open(url: String, resumeMs: Long, preferSoftware: Boolean) {
         if (preferSoftware != software) {
-            val keep = videoSurface
+            val keep = textureView
             releasePlayerOnly()
             software = preferSoftware
             exo = buildPlayer(preferSoftware)
-            exo.setVideoSurface(keep)
+            exo.setVideoTextureView(keep)
         }
         listener.onOpening()
         val item = MediaItem.fromUri(url)
@@ -208,7 +206,7 @@ class TvPlayback(
 
     private fun releasePlayerOnly() {
         runCatching {
-            exo.setVideoSurface(null)
+            exo.setVideoTextureView(null)
             exo.release()
         }
     }

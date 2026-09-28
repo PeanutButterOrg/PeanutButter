@@ -56,7 +56,7 @@ Discovery probes saved URL, localhost / emulator gateway, LAN subnets, and optio
 
 ## Desktop CI packages
 
-Produced by [`.github/workflows/desktop-builds.yml`](../.github/workflows/desktop-builds.yml):
+Produced by [Platform Builds](../.github/workflows/desktop-builds.yml):
 
 - Linux: portable zip, `.deb` zip, AppImage zip
 - Windows: portable zip, Inno Setup zip

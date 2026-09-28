@@ -90,6 +90,18 @@ query StreamingSearch(
 }
 """
 
+    const val STREAM_BOOKMARK = """
+query StreamBookmark(${'$'}titleId: UUID!, ${'$'}season: Int, ${'$'}episode: Int) {
+  streamBookmark(titleId: ${'$'}titleId, season: ${'$'}season, episode: ${'$'}episode) {
+    magnet
+    resumePosition
+    season
+    episode
+    fileIndex
+  }
+}
+"""
+
     const val START_STREAM = """
 mutation StartStream(
   ${'$'}magnet: String!, ${'$'}title: String!, ${'$'}titleId: UUID,

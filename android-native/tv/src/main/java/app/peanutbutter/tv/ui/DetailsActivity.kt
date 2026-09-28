@@ -409,7 +409,9 @@ class DetailsActivity : FragmentActivity() {
             playSeason = season.seasonNumber
             playEpisode = ep.episodeNumber
             playEpisodeId = ep.id
-            openSources(fromBeginning = true)
+            val resumeHere = !ep.watched &&
+                (ep.positionMs > 2000 || (item?.episodeId == ep.id && item?.canResume == true))
+            openSources(fromBeginning = !resumeHere)
         }
     }
 
@@ -526,11 +528,34 @@ class DetailsActivity : FragmentActivity() {
         } else {
             t.title
         }
-        Log.i(TAG, "openSources query=$query season=$season episode=$episode kind=${t.kind}")
+        val wantResume = !fromBeginning && t.canResume &&
+            (playEpisodeId == null || playEpisodeId == t.episodeId)
+        Log.i(TAG, "openSources query=$query season=$season episode=$episode kind=${t.kind} resume=$wantResume")
 
         lifecycleScope.launch {
             try {
-                val raw = application.asTv().api.lookupSources(
+                val api = application.asTv().api
+                if (wantResume) {
+                    val bookmark = runCatching {
+                        api.streamBookmark(t.id, season, episode)
+                    }.getOrNull()
+                    if (bookmark != null && bookmark.magnet.isNotBlank()) {
+                        Toast.makeText(this@DetailsActivity, R.string.resuming_stream, Toast.LENGTH_SHORT).show()
+                        startSavedStream(
+                            t = t,
+                            magnet = bookmark.magnet,
+                            seeders = 0,
+                            peers = 0,
+                            resume = true,
+                            season = season,
+                            episode = episode,
+                            fileIndex = bookmark.fileIndex,
+                            resumeMs = t.positionMs.coerceAtLeast(bookmark.resumePosition.toLong()),
+                        )
+                        return@launch
+                    }
+                }
+                val raw = api.lookupSources(
                     query = query,
                     kind = t.kind.ifBlank { "MOVIE" },
                     titleId = t.id,
@@ -550,14 +575,22 @@ class DetailsActivity : FragmentActivity() {
                     query,
                     sources,
                 ) { source ->
-                    playSource(
-                        t,
-                        source,
-                        resume = !fromBeginning && t.canResume &&
-                            (playEpisodeId == null || playEpisodeId == t.episodeId),
-                        season = season,
-                        episode = episode,
-                    )
+                    setBusy(true)
+                    lifecycleScope.launch {
+                        try {
+                            startSavedStream(
+                                t = t,
+                                magnet = source.magnet,
+                                seeders = source.seeders,
+                                peers = source.peers,
+                                resume = wantResume,
+                                season = season,
+                                episode = episode,
+                            )
+                        } finally {
+                            setBusy(false)
+                        }
+                    }
                 }
             } catch (e: Exception) {
                 Toast.makeText(this@DetailsActivity, e.message, Toast.LENGTH_LONG).show()
@@ -568,58 +601,60 @@ class DetailsActivity : FragmentActivity() {
         }
     }
 
-    private fun playSource(
+    private suspend fun startSavedStream(
         t: TitleItem,
-        source: StreamSource,
+        magnet: String,
+        seeders: Int,
+        peers: Int,
         resume: Boolean,
         season: Int?,
         episode: Int?,
+        fileIndex: Int? = null,
+        resumeMs: Long? = null,
     ) {
-        setBusy(true)
-        lifecycleScope.launch {
-            try {
-                val api = application.asTv().api
-                val label = if (season != null && episode != null) {
-                    String.format("%s S%02dE%02d", t.title, season, episode)
-                } else t.title
-                val started = api.startStream(
-                    magnet = source.magnet,
-                    title = label,
-                    titleId = t.id,
-                    seeders = source.seeders,
-                    peers = source.peers,
-                    season = season,
-                    episode = episode,
-                    resume = resume,
-                )
-                Log.i(TAG, "startStream id=${started.sessionId} status=${started.status} url=${started.streamUrl.take(80)}")
-                if (started.sessionId.isBlank()) {
-                    Toast.makeText(this@DetailsActivity, R.string.stream_start_failed, Toast.LENGTH_LONG).show()
-                    return@launch
-                }
-                startActivity(
-                    Intent(this@DetailsActivity, PlayerActivity::class.java)
-                        .putExtra(PlayerActivity.EXTRA_TITLE, label)
-                        .putExtra(PlayerActivity.EXTRA_SESSION, started.sessionId)
-                        .putExtra(PlayerActivity.EXTRA_URL, api.playableStreamUrl(started.streamUrl))
-                        .putExtra(PlayerActivity.EXTRA_POSTER, t.posterUrl)
-                        .putExtra(PlayerActivity.EXTRA_BACKDROP, t.backdropUrl)
-                        .putExtra(PlayerActivity.EXTRA_TITLE_ID, t.id)
-                        .putExtra(PlayerActivity.EXTRA_EPISODE_ID, playEpisodeId)
-                        .putExtra(PlayerActivity.EXTRA_KIND, t.kind)
-                        .putExtra(PlayerActivity.EXTRA_SEASON, season ?: -1)
-                        .putExtra(PlayerActivity.EXTRA_EPISODE, episode ?: -1)
-                        .putExtra(
-                            PlayerActivity.EXTRA_RESUME_MS,
-                            if (resume) t.positionMs.coerceAtLeast(0) else 0L,
-                        ),
-                )
-            } catch (e: Exception) {
-                Log.e(TAG, "playSource failed", e)
-                Toast.makeText(this@DetailsActivity, e.message, Toast.LENGTH_LONG).show()
-            } finally {
-                setBusy(false)
+        val api = application.asTv().api
+        val label = if (season != null && episode != null) {
+            String.format("%s S%02dE%02d", t.title, season, episode)
+        } else t.title
+        try {
+            val started = api.startStream(
+                magnet = magnet,
+                title = label,
+                titleId = t.id,
+                seeders = seeders,
+                peers = peers,
+                season = season,
+                episode = episode,
+                fileIndex = fileIndex,
+                resume = resume,
+            )
+            Log.i(TAG, "startStream id=${started.sessionId} status=${started.status} url=${started.streamUrl.take(80)}")
+            if (started.sessionId.isBlank()) {
+                Toast.makeText(this, R.string.stream_start_failed, Toast.LENGTH_LONG).show()
+                return
             }
+            val seek = when {
+                !resume -> 0L
+                resumeMs != null && resumeMs > 0 -> resumeMs
+                else -> t.positionMs.coerceAtLeast(0)
+            }
+            startActivity(
+                Intent(this, PlayerActivity::class.java)
+                    .putExtra(PlayerActivity.EXTRA_TITLE, label)
+                    .putExtra(PlayerActivity.EXTRA_SESSION, started.sessionId)
+                    .putExtra(PlayerActivity.EXTRA_URL, api.playableStreamUrl(started.streamUrl))
+                    .putExtra(PlayerActivity.EXTRA_POSTER, t.posterUrl)
+                    .putExtra(PlayerActivity.EXTRA_BACKDROP, t.backdropUrl)
+                    .putExtra(PlayerActivity.EXTRA_TITLE_ID, t.id)
+                    .putExtra(PlayerActivity.EXTRA_EPISODE_ID, playEpisodeId)
+                    .putExtra(PlayerActivity.EXTRA_KIND, t.kind)
+                    .putExtra(PlayerActivity.EXTRA_SEASON, season ?: -1)
+                    .putExtra(PlayerActivity.EXTRA_EPISODE, episode ?: -1)
+                    .putExtra(PlayerActivity.EXTRA_RESUME_MS, seek),
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "playSource failed", e)
+            Toast.makeText(this, e.message, Toast.LENGTH_LONG).show()
         }
     }
 

@@ -1,4 +1,4 @@
-# Build PeanutButter desktop clients (Windows / macOS / Linux)
+# Build PeanutButter client platforms (Linux / Windows / macOS / Android TV)
 #
 # Each artifact is a real .zip we create (zip/Compress-Archive/ditto), containing
 # the deliverable — never rename .exe/.deb/.AppImage to .zip.
@@ -17,7 +17,7 @@
 # Local Linux (fast, Docker): ./scripts/build-desktop-docker.sh
 # Selective CI: ./scripts/build-desktop-docker.sh --ci-windows --ci-macos --watch --download
 
-name: Desktop builds
+name: Platform Builds
 
 on:
   workflow_dispatch:
@@ -358,6 +358,10 @@ jobs:
           java-version: 17
 
       - uses: android-actions/setup-android@v3
+        with:
+          # The legacy `tools` package is no longer in the SDK repository.
+          # Command-line tools come from this action; install only platform-tools here.
+          packages: platform-tools
 
       - name: Install Android SDK 36
         run: sdkmanager --install "platforms;android-36" "build-tools;35.0.0"

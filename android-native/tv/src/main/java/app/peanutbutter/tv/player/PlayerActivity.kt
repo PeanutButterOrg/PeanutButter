@@ -6,9 +6,9 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import android.graphics.SurfaceTexture
 import android.view.KeyEvent
-import android.view.SurfaceHolder
-import android.view.SurfaceView
+import android.view.TextureView
 import android.view.View
 import android.widget.FrameLayout
 import android.widget.ImageButton
@@ -40,7 +40,7 @@ import kotlinx.coroutines.withContext
  * MediaCodec hardware decode, FFmpeg when that fails, Surface video.
  * Debounced seek retargets the swarm; false-EOF recovery stays.
  */
-class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
+class PlayerActivity : FragmentActivity(), TextureView.SurfaceTextureListener {
     private val main = Handler(Looper.getMainLooper())
     private var player: PlaybackEngine? = null
     private var surfaceReady = false
@@ -132,11 +132,12 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         btnSubs = findViewById(R.id.btn_subs)
         btnAspect = findViewById(R.id.btn_aspect)
 
-        val surface = findViewById<SurfaceView>(R.id.surface)
-        surface.holder.addCallback(this)
-        surface.setZOrderMediaOverlay(false)
+        val surface = findViewById<TextureView>(R.id.surface)
+        surface.surfaceTextureListener = this
         ensurePlayer()
+        player?.attachTexture(surface)
         player?.bindSubtitles(findViewById(R.id.subtitles))
+        surfaceReady = surface.isAvailable
 
         val title = intent.getStringExtra(EXTRA_TITLE).orEmpty()
         val rawUrl = intent.getStringExtra(EXTRA_URL)?.takeIf { it.isNotBlank() }
@@ -159,6 +160,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         pendingUrl = rawUrl?.let { application.asTv().api.playableStreamUrl(it) }
             ?.takeIf { it.isNotBlank() && it != "null" }
         Log.i(TAG, "onCreate session=$sessionId resume=$resumeMs pending=${pendingUrl?.take(100)}")
+        if (surfaceReady) attachAndPlay()
 
         val art = intent.getStringExtra(EXTRA_BACKDROP)?.takeIf { it.isNotBlank() }
             ?: intent.getStringExtra(EXTRA_POSTER)
@@ -339,23 +341,23 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         busy?.isVisible = (!session.isReady || !streamOpened) && !userSeeking
     }
 
-    override fun surfaceCreated(holder: SurfaceHolder) {
+    override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) {
         surfaceReady = true
         ensurePlayer()
-        player?.attachDisplay(holder)
+        player?.attachTexture(findViewById(R.id.surface))
+        player?.setAspectMode(application.asTv().session.aspectRatio)
         attachAndPlay()
     }
 
-    override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
-        if (width > 0 && height > 0 && surfaceReady) {
-            player?.attachDisplay(holder)
-        }
+    override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, width: Int, height: Int) = Unit
+
+    override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean {
+        surfaceReady = false
+        player?.attachTexture(null)
+        return true
     }
 
-    override fun surfaceDestroyed(holder: SurfaceHolder) {
-        surfaceReady = false
-        player?.attachDisplay(null)
-    }
+    override fun onSurfaceTextureUpdated(surface: SurfaceTexture) = Unit
 
     private fun ensurePlayer() {
         if (player != null) return
@@ -480,7 +482,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         val url = pendingUrl?.takeIf { it.isNotBlank() } ?: return
         if (mediaAttached) {
             if (surfaceReady) {
-                player?.attachDisplay(findViewById<SurfaceView>(R.id.surface).holder)
+                player?.attachTexture(findViewById(R.id.surface))
             }
             return
         }
@@ -492,7 +494,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         val mp = player ?: return
         try {
             Log.i(TAG, "attachAndPlay hw=$hwDecode $url")
-            mp.attachDisplay(findViewById<SurfaceView>(R.id.surface).holder)
+            mp.attachTexture(findViewById(R.id.surface))
             val start = resumeMs
             resumeMs = 0
             mediaAttached = true

@@ -30,6 +30,7 @@
     <string name="sources">Sources</string>
     <string name="sources_subtitle">Pick a torrent for %1$s</string>
     <string name="looking_up_sources">Looking up sources…</string>
+    <string name="resuming_stream">Resuming previous stream…</string>
     <string name="no_sources">No healthy sources found</string>
     <string name="favourites">Favourites</string>
     <string name="watched">Watched</string>

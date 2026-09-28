@@ -229,6 +229,14 @@ data class StreamSource(
     val language: String = "",
 )
 
+data class StreamBookmark(
+    val magnet: String,
+    val resumePosition: Int = 0,
+    val season: Int? = null,
+    val episode: Int? = null,
+    val fileIndex: Int? = null,
+)
+
 data class StreamStart(
     val sessionId: String,
     val streamUrl: String,
