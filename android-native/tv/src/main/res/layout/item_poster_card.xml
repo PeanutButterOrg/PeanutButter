@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Flutter PosterCard: 152×228, star chip, title+year, progress bar -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="168dp"
+    android:layout_height="252dp"
+    android:clipChildren="false"
+    android:clipToPadding="false"
+    android:focusable="true"
+    android:focusableInTouchMode="true"
+    android:paddingStart="0dp"
+    android:paddingTop="4dp"
+    android:paddingEnd="16dp"
+    android:paddingBottom="4dp">
+
+    <FrameLayout
+        android:id="@+id/poster_frame"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@drawable/poster_card_bg"
+        android:foreground="@drawable/poster_focus_ring">
+
+        <ImageView
+            android:id="@+id/poster"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:contentDescription="@null"
+            android:scaleType="centerCrop" />
+
+        <LinearLayout
+            android:id="@+id/score_chip"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top|start"
+            android:layout_margin="6dp"
+            android:background="@drawable/badge_score"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="5dp"
+            android:paddingTop="2dp"
+            android:paddingEnd="6dp"
+            android:paddingBottom="2dp"
+            android:visibility="gone">
+
+            <ImageView
+                android:id="@+id/score_star"
+                android:layout_width="13dp"
+                android:layout_height="13dp"
+                android:contentDescription="@null"
+                android:src="@drawable/ic_star" />
+
+            <TextView
+                android:id="@+id/score_value"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="3dp"
+                android:textColor="@color/pb_white"
+                android:textSize="11sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/score_source"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="3dp"
+                android:textColor="@color/pb_white54"
+                android:textSize="9sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom"
+            android:orientation="vertical"
+            android:paddingHorizontal="6dp"
+            android:paddingBottom="8dp">
+
+            <TextView
+                android:id="@+id/title"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:ellipsize="end"
+                android:maxLines="2"
+                android:shadowColor="#E6000000"
+                android:shadowDx="0"
+                android:shadowDy="1"
+                android:shadowRadius="4"
+                android:textColor="@color/pb_white"
+                android:textSize="11sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/meta"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="1dp"
+                android:ellipsize="end"
+                android:maxLines="1"
+                android:textColor="@color/pb_white54"
+                android:textSize="10sp" />
+        </LinearLayout>
+
+        <ProgressBar
+            android:id="@+id/progress"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="match_parent"
+            android:layout_height="3dp"
+            android:layout_gravity="bottom"
+            android:max="100"
+            android:progressBackgroundTint="#3DFFFFFF"
+            android:progressTint="@color/pb_seed"
+            android:visibility="gone" />
+    </FrameLayout>
+</FrameLayout>

@@ -4,19 +4,23 @@ import '../local_torrent.dart';
 
 /// Debounces stream seeks so torrent readahead and the player settle together.
 ///
-/// UI may update the scrubber immediately; [onCommit] runs only after [settle]
-/// without further seek requests (default 3s).
+/// On [request], the torrent download window is retargeted **immediately** so
+/// pieces start arriving at the seek point. The player seek ([onCommit]) runs
+/// after [settle] without further scrubbing (default 800ms).
 class StreamSeekController {
   StreamSeekController({
-    this.settle = const Duration(seconds: 3),
+    this.settle = const Duration(milliseconds: 800),
     required this.onCommit,
     this.onSettlingChanged,
+    this.onRetarget,
     this.durationMs,
   });
 
   final Duration settle;
   final Future<void> Function(Duration target) onCommit;
   final void Function(bool settling)? onSettlingChanged;
+  /// Fired immediately on each scrub so libtorrent Range/piece window moves now.
+  final void Function(Duration target)? onRetarget;
 
   /// Optional live duration for torrent byte-offset estimation.
   int Function()? durationMs;
@@ -33,6 +37,7 @@ class StreamSeekController {
     _pending = target;
     _token++;
     final token = _token;
+    onRetarget?.call(target);
     if (!_settling) {
       _settling = true;
       onSettlingChanged?.call(true);
@@ -54,6 +59,7 @@ class StreamSeekController {
     _timer?.cancel();
     _pending = target;
     final token = ++_token;
+    onRetarget?.call(target);
     if (!_settling) {
       _settling = true;
       onSettlingChanged?.call(true);

@@ -44,6 +44,14 @@
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER"/>
             </intent-filter>
         </activity>
+        <!-- Phase 0: native SurfaceView LibVLC lab (no Flutter Texture). -->
+        <activity
+            android:name=".tvlab.TvLabPlayerActivity"
+            android:exported="true"
+            android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|screenLayout|density|uiMode"
+            android:hardwareAccelerated="true"
+            android:launchMode="singleTop" />
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />

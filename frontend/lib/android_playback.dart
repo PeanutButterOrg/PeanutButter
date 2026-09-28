@@ -225,4 +225,22 @@ class AndroidPlayback {
       return false;
     }
   }
+
+  /// Phase‑0 lab: native LibVLC [SurfaceView] Activity (no Flutter Texture).
+  static Future<bool> openTvLab({
+    required String url,
+    required String title,
+  }) async {
+    if (!isAndroid) return false;
+    try {
+      final ok = await _channel.invokeMethod<bool>('openTvLab', {
+        'url': url,
+        'title': title,
+      });
+      return ok == true;
+    } catch (e, st) {
+      debugPrint('AndroidPlayback.openTvLab failed: $e\n$st');
+      return false;
+    }
+  }
 }

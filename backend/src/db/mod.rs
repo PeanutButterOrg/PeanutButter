@@ -1419,6 +1419,21 @@ pub async fn stream_search_cache_get(
     cache_key: &str,
     max_age: Duration,
 ) -> Result<Option<serde_json::Value>> {
+    let row = stream_search_cache_get_row(pool, cache_key).await?;
+    let Some((sources, age)) = row else {
+        return Ok(None);
+    };
+    if age > max_age {
+        return Ok(None);
+    }
+    Ok(Some(sources))
+}
+
+/// Cache row + age since `updated_at` (no TTL filter).
+pub async fn stream_search_cache_get_row(
+    pool: &PgPool,
+    cache_key: &str,
+) -> Result<Option<(serde_json::Value, Duration)>> {
     let row: Option<StreamSearchCacheRow> = sqlx::query_as(
         r#"
         SELECT sources, updated_at
@@ -1436,10 +1451,7 @@ pub async fn stream_search_cache_get(
         .signed_duration_since(row.updated_at)
         .to_std()
         .unwrap_or(Duration::from_secs(u64::MAX));
-    if age > max_age {
-        return Ok(None);
-    }
-    Ok(Some(row.sources))
+    Ok(Some((row.sources, age)))
 }
 
 pub async fn stream_search_cache_upsert(

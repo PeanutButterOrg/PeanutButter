@@ -301,11 +301,29 @@ impl Query {
 
         let mut by_id: std::collections::HashMap<Uuid, TitleRow> =
             rows.into_iter().map(|r| (r.id, r)).collect();
-        let items: Vec<Title> = ids
+        let mut items: Vec<Title> = ids
             .into_iter()
             .filter_map(|id| by_id.remove(&id).map(|r| Title::from_row(r, &state.config.public_url)))
-            .take(per_page)
             .collect();
+        // Meili ranks synopsis hits highly, and TMDB ids are appended after that.
+        // Re-rank by the title itself so the closest name (and year, when typed)
+        // stays first. sort_by is stable, so equal scores keep Meili's order.
+        items.sort_by(|a, b| {
+            let sa = crate::search::search_relevance(
+                q,
+                &a.title,
+                a.original_title.as_deref().unwrap_or(""),
+                a.year,
+            );
+            let sb = crate::search::search_relevance(
+                q,
+                &b.title,
+                b.original_title.as_deref().unwrap_or(""),
+                b.year,
+            );
+            sb.cmp(&sa)
+        });
+        items.truncate(per_page);
 
         let loaded = items.len();
         Ok(SearchResult {
@@ -479,28 +497,35 @@ impl Query {
             season,
             episode,
         );
-        const CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(3 * 24 * 60 * 60);
+        // Strong swarm caches keep longer; weak/unknown seeders refresh often so
+        // dead magnets are not served as "healthy" for days.
+        const STRONG_TTL: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+        const WEAK_TTL: std::time::Duration = std::time::Duration::from_secs(2 * 60 * 60);
+        let preferred_res = state.config.live.streaming_resolution();
 
-        // Serve fresh cache (< 3 days) unless the client forces a refresh.
-        if !force_live {
-            if let Ok(Some(cached)) =
-                crate::db::stream_search_cache_get(&state.pool, &cache_key, CACHE_TTL).await
-            {
-                if let Ok(mut sources) =
-                    serde_json::from_value::<Vec<StreamSource>>(cached)
-                {
-                    if !sources.is_empty() {
-                        // Older cache rows may predate the 24-cap — trim so the
-                        // TV picker never builds a huge dialog.
+        let mut stale_fallback: Option<Vec<StreamSource>> = None;
+
+        // Fresh cache is returned immediately. A live refresh keeps the previous
+        // rows as fallback and only replaces them after Jackett actually returns
+        // hits — deleting first left Android (which always asked for live) with
+        // an empty picker whenever an indexer timed out.
+        if let Ok(Some((cached, age))) =
+            crate::db::stream_search_cache_get_row(&state.pool, &cache_key).await
+        {
+            if let Ok(mut sources) = serde_json::from_value::<Vec<StreamSource>>(cached) {
+                sources.retain(|s| s.health != "dead");
+                if !sources.is_empty() {
+                    let strong = crate::jackett::cache_is_strong(&sources, &preferred_res);
+                    let ttl = if strong { STRONG_TTL } else { WEAK_TTL };
+                    if !force_live && age <= ttl {
                         if sources.len() > 24 {
                             sources.truncate(24);
                         }
                         return Ok(sources);
                     }
+                    stale_fallback = Some(sources);
                 }
             }
-        } else {
-            let _ = crate::db::stream_search_cache_delete_key(&state.pool, &cache_key).await;
         }
 
         let client = crate::jackett::JackettClient::from_live(&state.http, &state.config.live)?;
@@ -535,7 +560,7 @@ impl Query {
                 season,
                 episode,
                 None,
-                &state.config.live.streaming_resolution(),
+                &preferred_res,
                 &preferred,
                 imdb_id.as_deref(),
             )
@@ -569,18 +594,32 @@ impl Query {
             }
         };
 
-        if !found.is_empty() {
-            if let Ok(value) = serde_json::to_value(&found) {
-                let _ = crate::db::stream_search_cache_upsert(
-                    &state.pool,
-                    &cache_key,
-                    title_id,
-                    season,
-                    episode,
-                    &value,
-                )
-                .await;
+        let found: Vec<_> = found
+            .into_iter()
+            .filter(|s| s.health != "dead")
+            .collect();
+
+        if found.is_empty() {
+            // Live Jackett flaked — last resort: filtered expired cache.
+            if let Some(mut cached) = stale_fallback {
+                if cached.len() > 24 {
+                    cached.truncate(24);
+                }
+                return Ok(cached);
             }
+            return Ok(vec![]);
+        }
+
+        if let Ok(value) = serde_json::to_value(&found) {
+            let _ = crate::db::stream_search_cache_upsert(
+                &state.pool,
+                &cache_key,
+                title_id,
+                season,
+                episode,
+                &value,
+            )
+            .await;
         }
         Ok(found)
     }

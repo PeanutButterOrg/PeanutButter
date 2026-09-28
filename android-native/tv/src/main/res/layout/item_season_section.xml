@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/season_header"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:clickable="false"
+    android:focusable="false"
+    android:focusableInTouchMode="false"
+    android:orientation="vertical"
+    android:paddingStart="@dimen/shelf_inset"
+    android:paddingTop="4dp"
+    android:paddingEnd="@dimen/shelf_inset"
+    android:paddingBottom="2dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <TextView
+            android:id="@+id/season_title"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:textColor="@color/pb_white"
+            android:textSize="18sp"
+            android:textStyle="bold" />
+
+        <ImageView
+            android:id="@+id/season_check"
+            android:layout_width="22dp"
+            android:layout_height="22dp"
+            android:contentDescription="@string/watched"
+            android:src="@drawable/ic_check"
+            android:tint="@color/pb_completed"
+            android:visibility="gone" />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/season_meta"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="2dp"
+        android:textColor="@color/pb_muted"
+        android:textSize="13sp" />
+
+    <ProgressBar
+        android:id="@+id/season_progress"
+        style="?android:attr/progressBarStyleHorizontal"
+        android:layout_width="match_parent"
+        android:layout_height="4dp"
+        android:layout_marginTop="8dp"
+        android:max="1000"
+        android:progressBackgroundTint="#33FFFFFF"
+        android:progressTint="@color/pb_seed"
+        android:visibility="gone" />
+</LinearLayout>

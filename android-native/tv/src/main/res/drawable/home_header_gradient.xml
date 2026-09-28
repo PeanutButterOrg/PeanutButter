@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Flutter home header fade: 0xB30E0E12 → transparent -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android">
+    <gradient
+        android:angle="270"
+        android:centerColor="#660E0E12"
+        android:endColor="#000E0E12"
+        android:startColor="#B30E0E12"
+        android:type="linear" />
+</shape>

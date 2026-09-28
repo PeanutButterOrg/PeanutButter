@@ -11,6 +11,8 @@
 #   PeanutButter-windows-x64-setup.zip        → contains .exe
 #   PeanutButter-macos-universal.zip          → contains .app
 #
+# Server / API images are built separately: .github/workflows/backend-docker.yml
+#
 # Local Linux (fast, Docker): ./scripts/build-desktop-docker.sh
 # Selective CI: ./scripts/build-desktop-docker.sh --ci-windows --ci-macos --watch --download
 
@@ -195,6 +197,16 @@ jobs:
           }
           Write-Host "Release dir: $src"
           "dir=$src" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Bundle VC++ runtime and verify DLLs
+        shell: pwsh
+        working-directory: .
+        run: |
+          $src = "${{ steps.winout.outputs.dir }}"
+          if (-not [System.IO.Path]::IsPathRooted($src)) {
+            $src = Join-Path "frontend" $src
+          }
+          ./scripts/bundle-windows-runtime.ps1 -ReleaseDir $src
 
       - name: Package portable zip
         shell: pwsh

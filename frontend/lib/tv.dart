@@ -234,7 +234,7 @@ class TvPosterDim {
   static const gap = 16.0;
   static const extent = 168.0;
   static const rowHeight = 252.0;
-  static const scale = 1.12;
+  static const scale = 1.08;
   static const streamHeight = 310.0;
 }
 
@@ -324,12 +324,12 @@ void tvAnimateReveal(
   final delta = (target - current).abs();
   if (delta < 1.5) return;
   final ms = leisurely
-      ? (280 + delta * 0.45).clamp(320, 560).round()
-      : (120 + delta * 0.28).clamp(160, 320).round();
+      ? (200 + delta * 0.35).clamp(220, 420).round()
+      : (90 + delta * 0.22).clamp(120, 260).round();
   scrollable.position.animateTo(
     target,
     duration: Duration(milliseconds: ms),
-    curve: Curves.easeInOutCubic,
+    curve: Curves.easeOutCubic,
   );
 }
 

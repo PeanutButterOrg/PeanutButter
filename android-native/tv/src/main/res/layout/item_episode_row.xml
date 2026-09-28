@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Flutter _episodeTile: still + title + status + play -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="@drawable/kind_tab_bg"
+    android:clickable="true"
+    android:focusable="true"
+    android:focusableInTouchMode="true"
+    android:gravity="center_vertical"
+    android:orientation="horizontal"
+    android:paddingHorizontal="8dp"
+    android:paddingVertical="8dp">
+
+    <FrameLayout
+        android:layout_width="80dp"
+        android:layout_height="45dp"
+        android:background="@drawable/poster_card_bg">
+
+        <ImageView
+            android:id="@+id/episode_still"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:contentDescription="@null"
+            android:scaleType="centerCrop" />
+
+        <ProgressBar
+            android:id="@+id/episode_progress"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="match_parent"
+            android:layout_height="3dp"
+            android:layout_gravity="bottom"
+            android:max="100"
+            android:progressBackgroundTint="#73000000"
+            android:progressTint="@color/pb_seed"
+            android:visibility="gone" />
+    </FrameLayout>
+
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="10dp"
+        android:layout_weight="1"
+        android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/episode_name"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:textColor="@color/pb_white"
+            android:textSize="13sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/episode_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:textColor="@color/pb_muted"
+            android:textSize="11sp" />
+
+        <TextView
+            android:id="@+id/episode_overview"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:textColor="#61FFFFFF"
+            android:textSize="10sp"
+            android:visibility="gone" />
+    </LinearLayout>
+
+    <ImageView
+        android:layout_width="22dp"
+        android:layout_height="22dp"
+        android:contentDescription="@null"
+        android:src="@drawable/ic_play_arrow"
+        android:tint="@color/pb_muted" />
+</LinearLayout>

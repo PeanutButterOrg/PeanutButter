@@ -213,13 +213,21 @@ class LocalTorrentEngine {
   }
 
   LocalStreamStats _statsFrom(TorrentInfo t, StreamInfo? s) {
+    // Prefer torrent file progress for the HUD % (user-facing "downloaded").
+    // Fall back to stream readahead window when metadata is thin.
+    final torrentPct = (t.progress * 100).clamp(0.0, 100.0);
+    final windowPct = ((s?.bufferPct ?? 0) * 100).clamp(0.0, 100.0);
+    final bufferPct = torrentPct >= 1.0
+        ? torrentPct
+        : (windowPct > torrentPct ? windowPct : torrentPct);
     return LocalStreamStats(
-      bufferPct: (s?.bufferPct ?? t.progress) * 100,
+      bufferPct: bufferPct,
       downloadMbps: t.downloadRate / (1024 * 1024),
       seeders: t.numSeeds < 0 ? 0 : t.numSeeds,
       peers: t.numPeers < 0 ? 0 : t.numPeers,
-      ready: s?.isReady ?? false,
-      stateLabel: t.isPaused ? 'Paused' : t.state.label,
+      ready: s?.isReady == true || t.progress >= 0.02,
+      stateLabel: s?.streamState.name ?? (t.isPaused ? 'Paused' : t.state.label),
+      torrentComplete: t.progress >= 0.99,
     );
   }
 
@@ -311,8 +319,10 @@ class LocalTorrentEngine {
 
   /// After a player seek, move the HTTP reader window to [positionMs].
   ///
-  /// libtorrent's stream server follows Range requests; we probe the estimated
-  /// byte offset so piece deadlines jump instead of reading sequentially.
+  /// libtorrent's stream server follows Range requests — we probe the estimated
+  /// byte offset so piece deadlines jump to that point and download sequentially
+  /// from there (not from t=0). Do **not** call [preloadStream] here — that
+  /// re-prioritizes head+tail and undoes the seek window.
   void seekTo({required int positionMs, int? durationMs}) {
     final id = _torrentId;
     if (id == null || !_ready) return;
@@ -321,6 +331,10 @@ class LocalTorrentEngine {
       final info = engine.torrents[id];
       if (info != null && info.isPaused) {
         engine.resumeTorrent(id);
+      }
+      // Fully downloaded — nothing to retarget; player seek alone is enough.
+      if (info != null && info.progress >= 0.99) {
+        return;
       }
       final sid = _streamId;
       if (sid == null) return;
@@ -337,22 +351,28 @@ class LocalTorrentEngine {
       if (url.isNotEmpty && fileSize > 0 && dur > 0 && positionMs > 0) {
         final ratio = (positionMs / dur).clamp(0.0, 0.98);
         final offset = (fileSize * ratio).floor();
-        unawaited(_probeRange(url, offset));
+        // Keep reading ahead from the seek point so pieces fill sequentially.
+        unawaited(_pullFromOffset(url, offset, fileSize));
       }
-      engine.preloadStream(sid, preloadBytes: 24 * 1024 * 1024);
     } catch (_) {}
   }
 
-  /// Nudge the stream HTTP server to the seek byte offset via Range.
-  Future<void> _probeRange(String url, int offset) async {
+  /// Open a lasting Range reader at [offset] so libtorrent's piece window
+  /// follows playback instead of buffering the whole file from byte 0.
+  Future<void> _pullFromOffset(String url, int offset, int fileSize) async {
     HttpClient? client;
     try {
       client = HttpClient()..connectionTimeout = const Duration(seconds: 4);
+      final end = (offset + (4 * 1024 * 1024) - 1).clamp(offset, fileSize - 1);
       final req = await client.getUrl(Uri.parse(url));
-      req.headers.set(HttpHeaders.rangeHeader, 'bytes=$offset-${offset + (512 * 1024) - 1}');
-      final res = await req.close().timeout(const Duration(seconds: 6));
-      // Drain a little so the reader advances, then abort.
-      await res.take(4).drain<void>().timeout(const Duration(seconds: 4));
+      req.headers.set(HttpHeaders.rangeHeader, 'bytes=$offset-$end');
+      final res = await req.close().timeout(const Duration(seconds: 8));
+      // Drain up to ~2 MB so the reader advances and peers send those pieces.
+      var got = 0;
+      await for (final chunk in res.timeout(const Duration(seconds: 12))) {
+        got += chunk.length;
+        if (got >= 2 * 1024 * 1024) break;
+      }
     } catch (_) {
     } finally {
       client?.close(force: true);
@@ -441,6 +461,7 @@ class LocalStreamStats {
     required this.peers,
     required this.ready,
     this.stateLabel = '',
+    this.torrentComplete = false,
   });
 
   final double bufferPct;
@@ -449,4 +470,5 @@ class LocalStreamStats {
   final int peers;
   final bool ready;
   final String stateLabel;
+  final bool torrentComplete;
 }

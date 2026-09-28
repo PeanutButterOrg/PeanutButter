@@ -14,6 +14,7 @@ flutter pub get
 flutter build windows --release
 
 $src = Join-Path $Front "build\windows\x64\runner\Release"
+& (Join-Path $Root "scripts\bundle-windows-runtime.ps1") -ReleaseDir $src
 $zip = Join-Path $Dist "PeanutButter-windows-x64.zip"
 if (Test-Path $zip) { Remove-Item $zip -Force }
 Compress-Archive -Path (Join-Path $src "*") -DestinationPath $zip -Force

@@ -20,6 +20,7 @@ import '../graphql/queries.dart';
 import '../local_torrent.dart';
 import '../models.dart';
 import '../platform/device_profile.dart';
+import '../platform/input_policy.dart';
 import '../platform/playback_backend.dart';
 import '../platform/stream_seek_controller.dart';
 import '../providers/catalog.dart';
@@ -170,6 +171,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   StreamSubscription<Duration>? _bufferSub;
   Timer? _streamPoll;
   Timer? _pauseBufferTimer;
+  Timer? _bufferStallTimer;
   bool _pauseBufferBoosted = false;
   bool _seeking = false;
   int _seekToken = 0;
@@ -273,8 +275,19 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     _url = _rewriteMediaUrl(widget.playbackUrl);
     _fileId = widget.fileId;
     _seekCtl = StreamSeekController(
-      settle: const Duration(seconds: 3),
+      settle: const Duration(milliseconds: 800),
       durationMs: () => _currentDurationMs,
+      onRetarget: (target) {
+        // Move torrent piece window immediately — don't wait for settle.
+        unawaited(_retargetStreamBuffer(target));
+        if (mounted) {
+          setState(() {
+            _lastSeekTarget = target;
+            _buffering = true;
+            _seeking = true;
+          });
+        }
+      },
       onSettlingChanged: (settling) {
         if (!mounted) return;
         setState(() {
@@ -359,6 +372,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     _bufferingSub = player.stream.buffering.listen((value) {
       if (!mounted) return;
       setState(() => _buffering = value);
+      if (value) {
+        _bumpChrome();
+        _armBufferStallWatch();
+      } else {
+        _bufferStallTimer?.cancel();
+      }
     });
     _bufferSub = player.stream.buffer.listen((value) {
       if (mounted) setState(() => _buffered = value);
@@ -426,6 +445,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   /// controls cannot swallow D-pad / media keys.
   bool _onHardwareKey(KeyEvent event) {
     if (event is! KeyDownEvent && event is! KeyRepeatEvent) return false;
+    // Another route (Settings / dialogs) is on top — do not steal keys or
+    // thrash chrome (causes full-screen blink on Back).
+    if (!_playerRouteIsCurrent) return false;
     // While the leave-confirm dialog is up, don't steal Select/OK from its buttons.
     if (_confirmExitOpen) {
       if (tvIsBackKey(event.logicalKey)) {
@@ -696,9 +718,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     native.setProperty('demuxer-thread', 'yes');
     native.setProperty('demuxer-max-bytes', widget.isStream ? '512MiB' : '256MiB');
     native.setProperty('demuxer-max-back-bytes', '64MiB');
-    // Large readahead: while paused the demuxer fills toward this window.
-    native.setProperty('demuxer-readahead-secs', widget.isStream ? '300' : '120');
-    native.setProperty('cache-secs', widget.isStream ? '300' : '120');
+    // Keep readahead modest for streams so seeks don't wait for a huge demuxer fill.
+    native.setProperty('demuxer-readahead-secs', widget.isStream ? '20' : '120');
+    native.setProperty('cache-secs', widget.isStream ? '30' : '120');
     // Don't auto-pause on underrun for torrents — that looked like random
     // pause/resume and fought with our old stall-recovery loop.
     native.setProperty('cache-pause', widget.isStream ? 'no' : 'yes');
@@ -717,6 +739,35 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       native.setProperty('keep-open-pause', 'no');
       native.setProperty('stream-lavf-o', 'reconnect_streamed=1,reconnect_delay_max=5');
     }
+  }
+
+  /// Linux/desktop streams: if buffering hangs with a known position, seek back
+  /// to [_lastGoodPos] and resume instead of staying frozen until the user hits
+  /// play (which often restarts at t=0 after keep-open EOF).
+  void _armBufferStallWatch() {
+    _bufferStallTimer?.cancel();
+    if (!widget.isStream || _useVlc || _useExo) return;
+    _bufferStallTimer = Timer(const Duration(seconds: 12), () {
+      if (!mounted || !_buffering) return;
+      final player = _player;
+      if (player == null || _seeking) return;
+      final recover = _lastGoodPos;
+      if (recover.inMilliseconds < 2000) return;
+      unawaited(() async {
+        try {
+          _seekIgnoreUntil = DateTime.now().add(const Duration(milliseconds: 2500));
+          await player.seek(recover);
+          await player.play();
+          if (mounted) {
+            setState(() {
+              _buffering = true;
+              _playing = true;
+            });
+            _bumpChrome();
+          }
+        } catch (_) {}
+      }());
+    });
   }
 
   /// False EOF on progressive torrents used to call bare [play], which restarts
@@ -776,9 +827,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     if (_useVlc) {
       if (!_vlcStarted) return;
       if (_playing) {
+        setState(() => _playing = false);
         unawaited(AndroidPlayback.nativeVlcPause());
         _onPausedKeepBuffering();
+        _bumpChrome();
       } else {
+        setState(() => _playing = true);
         unawaited(AndroidPlayback.nativeVlcPlay());
       }
       return;
@@ -787,9 +841,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       final exo = _exo;
       if (exo == null || !exo.value.isInitialized) return;
       if (exo.value.isPlaying) {
+        setState(() => _playing = false);
         exo.pause();
         _onPausedKeepBuffering();
+        _bumpChrome();
       } else {
+        setState(() => _playing = true);
         exo.play();
       }
       return;
@@ -797,9 +854,14 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     final player = _player;
     if (player == null) return;
     if (player.state.playing) {
-      unawaited(player.playOrPause().then((_) => _onPausedKeepBuffering()));
+      setState(() => _playing = false);
+      unawaited(player.playOrPause().then((_) {
+        _onPausedKeepBuffering();
+        _bumpChrome();
+      }));
       return;
     }
+    setState(() => _playing = true);
     unawaited(player.play());
   }
 
@@ -924,17 +986,20 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     final token = ++_seekToken;
     _lastSeekTarget = target;
     _lastGoodPos = target;
-    _seekIgnoreUntil = DateTime.now().add(const Duration(milliseconds: 3000));
+    _seekIgnoreUntil = DateTime.now().add(const Duration(milliseconds: 2500));
     if (mounted) {
       setState(() {
         _buffering = true;
         _seeking = true;
       });
+      _bumpChrome();
     }
 
+    // Retarget again at commit (in case settle scrub moved further).
     await _retargetStreamBuffer(target);
     if (token != _seekToken) return;
 
+    // Instant play from the new position — do not wait for a full file buffer.
     if (_useVlc) {
       try {
         await AndroidPlayback.nativeVlcSeek(target.inMilliseconds);
@@ -952,13 +1017,22 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       final player = _player;
       if (player == null) return;
       try {
+        // Stream: prefer accurate keyframe seek without demuxer-filling forever.
+        if (widget.isStream) {
+          final native = player.platform;
+          if (native is NativePlayer) {
+            unawaited(native.setProperty('hr-seek', 'yes'));
+            unawaited(native.setProperty('demuxer-readahead-secs', '15'));
+            unawaited(native.setProperty('cache-secs', '20'));
+          }
+        }
         await player.seek(target);
         if (token != _seekToken) return;
         await player.play();
       } catch (_) {}
     }
 
-    Future<void>.delayed(const Duration(milliseconds: 3000), () {
+    Future<void>.delayed(const Duration(milliseconds: 2000), () {
       if (!mounted || token != _seekToken) return;
       if (_seeking) setState(() => _seeking = false);
     });
@@ -1003,6 +1077,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     _streamPoll?.cancel();
     _playNextTick?.cancel();
     _pauseBufferTimer?.cancel();
+    _bufferStallTimer?.cancel();
     _chromeHideTimer?.cancel();
     _exoFrameWatch?.cancel();
     _overlayEpoch.dispose();
@@ -1226,6 +1301,15 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       if (mounted) {
         setState(() => _activeSegment = hit);
         _notifyOverlays();
+        if (hit != null &&
+            (hit.kind == 'INTRO' || hit.kind == 'RECAP') &&
+            DeviceProfile.current.prefersDpad) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted && _skipFocus.canRequestFocus) {
+              _skipFocus.requestFocus();
+            }
+          });
+        }
       }
     }
   }
@@ -1326,22 +1410,40 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
 
   bool get _showChrome => _chromeVisible;
 
+  /// True when this player route is the top route (no Settings / overlays).
+  bool get _playerRouteIsCurrent {
+    if (!mounted) return false;
+    final route = ModalRoute.of(context);
+    return route?.isCurrent ?? true;
+  }
+
   /// Reveal seek / audio / subtitle chrome; restart the auto-hide timer.
   void _bumpChrome() {
+    if (!_playerRouteIsCurrent) return;
     _chromeHideTimer?.cancel();
     if (!_chromeVisible) {
       if (mounted) setState(() => _chromeVisible = true);
     }
+    _armChromeHideTimer();
+  }
+
+  void _armChromeHideTimer() {
+    _chromeHideTimer?.cancel();
     _chromeHideTimer = Timer(const Duration(seconds: _chromeHideSecs), () {
-      if (!mounted) return;
-      // Keep chrome while a control is focused so D-pad menus stay usable.
+      if (!mounted || !_playerRouteIsCurrent) return;
+      // Keep chrome while a control is focused — reschedule silently (no setState).
       if (_chromeControlFocused) {
-        _bumpChrome();
+        _armChromeHideTimer();
         return;
       }
       setState(() => _chromeVisible = false);
       if (!_rootFocus.hasFocus) _rootFocus.requestFocus();
     });
+  }
+
+  void _pauseChromeForOverlay() {
+    _chromeHideTimer?.cancel();
+    _chromeHideTimer = null;
   }
 
   Widget _chromeLayer({
@@ -1398,6 +1500,13 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       _playNextSecondsLeft = _playNextAutoHideSecs;
     });
     _notifyOverlays();
+    if (DeviceProfile.current.prefersDpad) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _playNextFocus.canRequestFocus) {
+          _playNextFocus.requestFocus();
+        }
+      });
+    }
   }
 
   void _updatePlayNextPrompt(Duration position) {
@@ -2104,15 +2213,99 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   bool get _showStreamHud {
     if (!widget.isStream || _streamError != null) return false;
     if (!_hasVideo) return true;
-    return _buffering || _seeking || _seekSettling;
+    // Always show while seeking / settling so the user sees download move.
+    if (_buffering || _seeking || _seekSettling) return true;
+    return false;
   }
 
-  /// Compact seed/speed chip — only while buffering / seeking (not steady play).
+  /// Compact seed/speed chip while streaming with video — also during mid-play rebuffers
+  /// (full HUD still shows poster-less stats via [_bufferOverlay]).
   bool get _showStreamChip =>
       widget.isStream &&
       _streamError == null &&
-      (_buffering || _seeking || _seekSettling) &&
-      (_hasVideo || _streamOpened);
+      (_hasVideo || _streamOpened) &&
+      (_buffering || _seeking || _seekSettling || !_playing);
+
+  /// Movie / series name + episode line shown while paused.
+  String get _pauseTitleMain {
+    final catalog = widget.catalogTitle?.trim();
+    if (catalog != null && catalog.isNotEmpty) return catalog;
+    return widget.title;
+  }
+
+  String? get _pauseTitleEpisode {
+    if (widget.season == null || widget.episode == null) return null;
+    final code =
+        'S${widget.season!.toString().padLeft(2, '0')}E${widget.episode!.toString().padLeft(2, '0')}';
+    final raw = widget.title.trim();
+    final main = _pauseTitleMain;
+    if (raw.isNotEmpty && raw != main && !raw.startsWith(main)) {
+      return '$code  ·  $raw';
+    }
+    return code;
+  }
+
+  Widget _pauseTitleOverlay() {
+    final episode = _pauseTitleEpisode;
+    return Positioned(
+      left: 24,
+      right: 24,
+      top: 72,
+      child: IgnorePointer(
+        child: AnimatedOpacity(
+          opacity: 1,
+          duration: _chromeAnim,
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [
+                  Colors.black.withValues(alpha: 0.55),
+                  Colors.black.withValues(alpha: 0.0),
+                ],
+              ),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(8, 8, 8, 48),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    _pauseTitleMain,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 28,
+                      fontWeight: FontWeight.w700,
+                      height: 1.2,
+                      shadows: [Shadow(blurRadius: 12, color: Colors.black87)],
+                    ),
+                  ),
+                  if (episode != null) ...[
+                    const SizedBox(height: 6),
+                    Text(
+                      episode,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: Colors.white.withValues(alpha: 0.88),
+                        fontSize: 18,
+                        fontWeight: FontWeight.w500,
+                        shadows: const [Shadow(blurRadius: 10, color: Colors.black87)],
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 
   Future<void> _open(String url, {String? fileId, bool youtube = false}) async {
     if (fileId != null) _fileId = fileId;
@@ -2220,20 +2413,34 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
           if (w is num && w.toInt() > 0) _vlcVideoW = w.toInt();
           if (h is num && h.toInt() > 0) _vlcVideoH = h.toInt();
         });
+        final durMs = _vlcDuration.inMilliseconds;
+        if (durMs > 30000 &&
+            (!_segmentsFetched ||
+                (_lastSegmentFetchDuration >= 0 &&
+                    (durMs - _lastSegmentFetchDuration).abs() > 5000))) {
+          unawaited(_loadMediaSegments(durationMs: durMs));
+        }
       case 'paused':
         setState(() => _playing = false);
       case 'buffering':
         final b = event['buffering'];
         setState(() {
-          _buffering = b is num ? b.toDouble() < 100.0 : true;
+          _buffering = b is num ? b.toDouble() < 99.5 : true;
           if (event['playing'] == true) _playing = true;
+          if (event['playing'] == false) _playing = false;
         });
+        if (_buffering) _bumpChrome();
       case 'timeChanged':
         setState(() {
-          _playing = event['playing'] == true || _playing;
+          // Prefer the native flag — `|| _playing` kept pause stuck as "playing"
+          // so the title overlay never appeared.
+          if (event.containsKey('playing')) {
+            _playing = event['playing'] == true;
+          }
           if (_playing) {
             _vlcReady = true;
-            _buffering = false;
+            // Buffering flag is owned by Buffering events — clearing it here
+            // hid the download stats HUD during mid-play rebuffers.
             _seeking = false;
           }
         });
@@ -2618,6 +2825,79 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     if (mounted) setState(() => _activeSubId = null);
   }
 
+  /// Collect OpenSubtitles API key without leaving the player (avoids chrome blink).
+  Future<void> _promptOpenSubtitlesKey() async {
+    _pauseChromeForOverlay();
+    String? key;
+    try {
+      if (DeviceProfile.current.usesSoftKeyboardOverlay) {
+        key = await InputPolicy.forProfile(DeviceProfile.current).editText(
+          context,
+          title: 'OpenSubtitles API key',
+          hint: 'Paste your API key',
+          obscureText: true,
+          keyboardType: TextInputType.visiblePassword,
+          textInputAction: TextInputAction.done,
+        );
+      } else {
+        final controller = TextEditingController();
+        key = await showDialog<String>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            backgroundColor: PtTheme.panel,
+            title: const Text('OpenSubtitles API key'),
+            content: TextField(
+              controller: controller,
+              obscureText: true,
+              autofocus: true,
+              decoration: const InputDecoration(
+                hintText: 'Paste your API key',
+                border: InputBorder.none,
+                enabledBorder: InputBorder.none,
+                focusedBorder: InputBorder.none,
+              ),
+              onSubmitted: (v) => Navigator.of(ctx).pop(v.trim()),
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('Cancel')),
+              FilledButton(
+                onPressed: () => Navigator.of(ctx).pop(controller.text.trim()),
+                child: const Text('Save'),
+              ),
+            ],
+          ),
+        );
+        controller.dispose();
+      }
+      if (key == null || key.trim().isEmpty || !mounted) return;
+      final client = ref.read(graphQLClientProvider);
+      final result = await client.mutate(
+        MutationOptions(
+          document: gql(UPDATE_SETTINGS),
+          variables: {
+            'input': {
+              'opensubtitlesEnabled': true,
+              'opensubtitlesApiKey': key.trim(),
+            },
+          },
+        ),
+      );
+      if (!mounted) return;
+      if (result.hasException) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(graphqlMessage(result))),
+        );
+        return;
+      }
+      ref.invalidate(serverInfoProvider);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('OpenSubtitles enabled')),
+      );
+    } finally {
+      if (mounted) _bumpChrome();
+    }
+  }
+
   String _audioLabel(AudioTrack track) {
     final lang = track.language?.trim();
     final title = track.title?.trim();
@@ -2809,6 +3089,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
               ),
             ),
           ),
+          // Title / episode while paused (always visible when paused, not only with chrome).
+          if (!_playing && !_isTrailer) _pauseTitleOverlay(),
           if (_showSeekControls)
             Positioned(
               left: 24,
@@ -2829,7 +3111,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
           // Windowed: align with the seeding chip on the scaffold. Fullscreen
           // copies live inside media_kit controls (native fullscreen route).
           if (!_inFullscreen) ..._skipAndPlayNextOverlays(),
-          if (_showStreamChip && !_showStreamHud)
+          // Stats + bar while buffering (chip when HUD is poster-less mid-play).
+          if (_showStreamChip)
             Positioned(
               right: _actionChipInset,
               bottom: _actionChipBottom,
@@ -3065,7 +3348,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
               if (value == null || !mounted) return;
               _bumpChrome();
               if (value == 'settings') {
-                context.push('/settings');
+                unawaited(_promptOpenSubtitlesKey());
                 return;
               }
               if (value == 'add_file') {

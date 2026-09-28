@@ -15,6 +15,7 @@ import 'friendly_error.dart';
 import 'graphql/client.dart';
 import 'graphql/queries.dart';
 import 'models.dart';
+import 'platform/device_profile.dart';
 import 'providers/settings.dart';
 import 'screens/catalog.dart';
 import 'screens/detail.dart';
@@ -27,6 +28,7 @@ import 'screens/pairing.dart';
 import 'screens/player.dart';
 import 'screens/search.dart';
 import 'screens/settings.dart';
+import 'screens/tv_lab.dart';
 import 'screens/unreachable.dart';
 import 'theme.dart';
 import 'tv.dart';
@@ -108,6 +110,13 @@ class _RouterRefresh extends ChangeNotifier {
 }
 
 GoRouter _buildRouter(SettingsState Function() readSettings) {
+  Page<void> pageFor(GoRouterState state, Widget child) {
+    if (DeviceProfile.current.prefersDpad) {
+      return NoTransitionPage<void>(key: state.pageKey, child: child);
+    }
+    return MaterialPage<void>(key: state.pageKey, child: child);
+  }
+
   return GoRouter(
     initialLocation: '/boot',
     refreshListenable: _routerRefresh,
@@ -138,97 +147,142 @@ GoRouter _buildRouter(SettingsState Function() readSettings) {
       return null;
     },
     routes: [
-      GoRoute(path: '/boot', builder: (_, __) => const _BootConnectingScreen()),
-      GoRoute(path: '/pair', builder: (_, __) => const PairingScreen()),
-      GoRoute(path: '/unreachable', builder: (_, __) => const UnreachableScreen()),
-      GoRoute(path: '/', builder: (_, __) => const HomeScreen()),
-      GoRoute(path: '/catalog', builder: (_, __) => const CatalogScreen()),
-      GoRoute(path: '/search', builder: (_, __) => const SearchScreen()),
-      GoRoute(path: '/favourites', builder: (_, __) => const FavouritesScreen()),
-      GoRoute(path: '/watched', builder: (_, __) => const WatchedScreen()),
+      GoRoute(
+        path: '/boot',
+        pageBuilder: (context, state) => pageFor(state, const _BootConnectingScreen()),
+      ),
+      GoRoute(
+        path: '/pair',
+        pageBuilder: (context, state) => pageFor(state, const PairingScreen()),
+      ),
+      GoRoute(
+        path: '/unreachable',
+        pageBuilder: (context, state) => pageFor(state, const UnreachableScreen()),
+      ),
+      GoRoute(
+        path: '/',
+        pageBuilder: (context, state) => pageFor(state, const HomeScreen()),
+      ),
+      GoRoute(
+        path: '/catalog',
+        pageBuilder: (context, state) => pageFor(state, const CatalogScreen()),
+      ),
+      GoRoute(
+        path: '/search',
+        pageBuilder: (context, state) => pageFor(state, const SearchScreen()),
+      ),
+      GoRoute(
+        path: '/favourites',
+        pageBuilder: (context, state) => pageFor(state, const FavouritesScreen()),
+      ),
+      GoRoute(
+        path: '/watched',
+        pageBuilder: (context, state) => pageFor(state, const WatchedScreen()),
+      ),
       GoRoute(
         path: '/title/:id',
-        builder: (_, state) => DetailScreen(titleId: state.pathParameters['id']!),
+        pageBuilder: (context, state) => pageFor(
+          state,
+          DetailScreen(titleId: state.pathParameters['id']!),
+        ),
       ),
       GoRoute(
         path: '/edit/:id',
-        builder: (_, state) => EditTitleScreen(titleId: state.pathParameters['id']!),
+        pageBuilder: (context, state) => pageFor(
+          state,
+          EditTitleScreen(titleId: state.pathParameters['id']!),
+        ),
       ),
       GoRoute(
         path: '/player/:fileId',
-        builder: (_, state) {
+        pageBuilder: (context, state) {
           final extra = state.extra as Map<String, dynamic>? ?? const {};
           final files = (extra['files'] as List<FileReference>?) ?? const <FileReference>[];
-          return PlayerScreen(
-            fileId: state.pathParameters['fileId']!,
-            playbackUrl: extra['url'] as String? ?? '',
-            youtubeKey: extra['youtubeKey'] as String?,
-            trailerPreferredQuality: extra['preferredQuality'] as String?,
-            trailerInitialHeight: extra['trailerHeight'] as int?,
-            titleId: extra['titleId'] as String?,
-            episodeId: extra['episodeId'] as String?,
-            season: extra['season'] as int?,
-            episode: extra['episode'] as int?,
-            title: extra['title'] as String? ?? 'Playback',
-            startMs: extra['startMs'] as int? ?? 0,
-            files: files,
-            isStream: extra['isStream'] as bool? ?? false,
-            sessionId: extra['sessionId'] as String?,
-            magnet: extra['magnet'] as String?,
-            localTorrent: extra['localTorrent'] as bool? ?? false,
-            streamFileIndex: extra['streamFileIndex'] as int?,
-            listedSeeders: extra['listedSeeders'] as int? ?? 0,
-            listedPeers: extra['listedPeers'] as int? ?? 0,
-            catalogTitle: extra['catalogTitle'] as String?,
-            kind: extra['kind'] as String?,
-            posterUrl: extra['posterUrl'] as String?,
-            backdropUrl: extra['backdropUrl'] as String?,
+          return pageFor(
+            state,
+            PlayerScreen(
+              fileId: state.pathParameters['fileId']!,
+              playbackUrl: extra['url'] as String? ?? '',
+              youtubeKey: extra['youtubeKey'] as String?,
+              trailerPreferredQuality: extra['preferredQuality'] as String?,
+              trailerInitialHeight: extra['trailerHeight'] as int?,
+              titleId: extra['titleId'] as String?,
+              episodeId: extra['episodeId'] as String?,
+              season: extra['season'] as int?,
+              episode: extra['episode'] as int?,
+              title: extra['title'] as String? ?? 'Playback',
+              startMs: extra['startMs'] as int? ?? 0,
+              files: files,
+              isStream: extra['isStream'] as bool? ?? false,
+              sessionId: extra['sessionId'] as String?,
+              magnet: extra['magnet'] as String?,
+              localTorrent: extra['localTorrent'] as bool? ?? false,
+              streamFileIndex: extra['streamFileIndex'] as int?,
+              listedSeeders: extra['listedSeeders'] as int? ?? 0,
+              listedPeers: extra['listedPeers'] as int? ?? 0,
+              catalogTitle: extra['catalogTitle'] as String?,
+              kind: extra['kind'] as String?,
+              posterUrl: extra['posterUrl'] as String?,
+              backdropUrl: extra['backdropUrl'] as String?,
+            ),
           );
         },
       ),
       GoRoute(
         path: '/vlc-player/:sessionId',
-        builder: (_, state) {
-          // Legacy route — all playback goes through PlayerScreen + PlaybackBackend.
+        pageBuilder: (context, state) {
           final extra = state.extra as Map<String, dynamic>? ?? const {};
-          return PlayerScreen(
-            fileId: extra['fileId'] as String? ?? 'stream',
-            playbackUrl: extra['url'] as String? ?? '',
-            title: extra['title'] as String? ?? 'Playback',
-            titleId: extra['titleId'] as String?,
-            startMs: extra['startMs'] as int? ?? 0,
-            isStream: true,
-            sessionId: state.pathParameters['sessionId'],
-            magnet: extra['magnet'] as String?,
-            localTorrent: extra['localTorrent'] as bool? ?? false,
-            listedSeeders: extra['listedSeeders'] as int? ?? 0,
-            listedPeers: extra['listedPeers'] as int? ?? 0,
-            catalogTitle: extra['catalogTitle'] as String?,
-            kind: extra['kind'] as String?,
-            posterUrl: extra['posterUrl'] as String?,
-            backdropUrl: extra['backdropUrl'] as String?,
+          return pageFor(
+            state,
+            PlayerScreen(
+              fileId: extra['fileId'] as String? ?? 'stream',
+              playbackUrl: extra['url'] as String? ?? '',
+              title: extra['title'] as String? ?? 'Playback',
+              titleId: extra['titleId'] as String?,
+              startMs: extra['startMs'] as int? ?? 0,
+              isStream: true,
+              sessionId: state.pathParameters['sessionId'],
+              magnet: extra['magnet'] as String?,
+              localTorrent: extra['localTorrent'] as bool? ?? false,
+              listedSeeders: extra['listedSeeders'] as int? ?? 0,
+              listedPeers: extra['listedPeers'] as int? ?? 0,
+              catalogTitle: extra['catalogTitle'] as String?,
+              kind: extra['kind'] as String?,
+              posterUrl: extra['posterUrl'] as String?,
+              backdropUrl: extra['backdropUrl'] as String?,
+            ),
           );
         },
       ),
       GoRoute(
         path: '/external-stream/:sessionId',
-        builder: (_, state) {
+        pageBuilder: (context, state) {
           final extra = state.extra as Map<String, dynamic>? ?? const {};
-          return ExternalStreamingScreen(
-            sessionId: state.pathParameters['sessionId']!,
-            streamUrl: extra['url'] as String? ?? '',
-            title: extra['title'] as String? ?? 'Playback',
-            titleId: extra['titleId'] as String?,
-            posterUrl: extra['posterUrl'] as String?,
-            backdropUrl: extra['backdropUrl'] as String?,
-            magnet: extra['magnet'] as String?,
-            localTorrent: extra['localTorrent'] as bool? ?? false,
-            listedSeeders: extra['listedSeeders'] as int? ?? 0,
-            listedPeers: extra['listedPeers'] as int? ?? 0,
+          return pageFor(
+            state,
+            ExternalStreamingScreen(
+              sessionId: state.pathParameters['sessionId']!,
+              streamUrl: extra['url'] as String? ?? '',
+              title: extra['title'] as String? ?? 'Playback',
+              titleId: extra['titleId'] as String?,
+              posterUrl: extra['posterUrl'] as String?,
+              backdropUrl: extra['backdropUrl'] as String?,
+              magnet: extra['magnet'] as String?,
+              localTorrent: extra['localTorrent'] as bool? ?? false,
+              listedSeeders: extra['listedSeeders'] as int? ?? 0,
+              listedPeers: extra['listedPeers'] as int? ?? 0,
+            ),
           );
         },
       ),
-      GoRoute(path: '/settings', builder: (_, __) => const SettingsScreen()),
+      GoRoute(
+        path: '/settings',
+        pageBuilder: (context, state) => pageFor(state, const SettingsScreen()),
+      ),
+      GoRoute(
+        path: '/tv-lab',
+        pageBuilder: (context, state) => pageFor(state, const TvLabScreen()),
+      ),
     ],
   );
 }

@@ -39,6 +39,26 @@ dist/*.apk
 dist/*.zip
 dist/*.tar.gz
 dist/*.tar
+*.apk
+*.aab
+
+# Native Android phone + TV (source stays; build output does not)
+android-native/.gradle/
+android-native/local.properties
+android-native/**/build/
+android-native/**/.cxx/
+android-native/captures/
+android-native/.idea/
+android-native/**/*.iml
+
+# Signing keys
+*.keystore
+*.jks
+key.properties
+
+# Local screenshots and UI dumps
+/pb_*.png
+/ui_dump*.xml
 
 # OS / editor
 .DS_Store

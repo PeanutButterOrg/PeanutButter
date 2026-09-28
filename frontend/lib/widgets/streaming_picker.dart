@@ -437,7 +437,7 @@ Future<StreamStart?> _showStreamingPickerDialogs({
 
   late List<StreamSource> found;
   try {
-    // Cache-first on the server (3-day TTL). Pass live:true only from Refresh.
+    // Cache-first on the server (strong=24h / weak=2h TTL). Pass live:true only from Refresh.
     final searchFuture = searchStreamingSources(
       client: client,
       title: title,
@@ -461,6 +461,27 @@ Future<StreamStart?> _showStreamingPickerDialogs({
       season: season,
       episode: episode,
     );
+    // Cache miss / empty Jackett flake: one forced live refresh before giving up.
+    if (found.isEmpty && !searchCancel.isCompleted) {
+      try {
+        final liveSources = await searchStreamingSources(
+          client: client,
+          title: title,
+          kind: kind,
+          titleId: titleId,
+          season: season,
+          episode: episode,
+          live: true,
+        );
+        if (!searchCancel.isCompleted) {
+          found = sourcesMatchingEpisode(
+            liveSources,
+            season: season,
+            episode: episode,
+          );
+        }
+      } catch (_) {}
+    }
   } catch (e) {
     if (searchCancel.isCompleted) return null;
     searchDone = true;

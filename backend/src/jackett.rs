@@ -78,6 +78,11 @@ struct JackettHit {
     indexer: Option<String>,
     #[serde(default, rename = "Guid")]
     guid: Option<String>,
+    /// Newznab category IDs (e.g. 2000 movie, 5000 TV, 6000 XXX).
+    #[serde(default, rename = "Category")]
+    category: Vec<i32>,
+    #[serde(default, rename = "CategoryDesc")]
+    category_desc: Option<String>,
 }
 
 impl JackettClient {
@@ -214,13 +219,16 @@ impl JackettClient {
         preferred_resolution: &str,
         preferred_language: &str,
     ) -> Result<Vec<StreamSource>> {
-        let cats = kind_categories(kind);
         let url = format!("{}/api/v2.0/indexers/all/results", self.base_url);
-        let req = self.http.get(&url).query(&[
+        // Jackett binds Category as int[] — comma-joined strings are ignored and
+        // the search falls back to every category (including XXX).
+        let mut req = self.http.get(&url).query(&[
             ("apikey", self.api_key.as_str()),
             ("Query", query),
-            ("Category", cats),
         ]);
+        for cat in kind_category_ids(kind) {
+            req = req.query(&[("Category", cat.to_string())]);
+        }
         let res = match tokio::time::timeout(Duration::from_secs(18), req.send()).await {
             Ok(Ok(res)) => res,
             Ok(Err(e)) => return Err(self.redact_err(e)),
@@ -394,7 +402,7 @@ impl JackettClient {
         Ok(self.transform_results(hits, preferred_resolution, preferred_language, kind))
     }
 
-    /// Single-indexer Torznab search with t=movie/tvsearch/search + structured params.
+    /// Single-indexer search with Jackett JSON API + Category[] filters.
     async fn search_torznab_one(
         &self,
         id: &str,
@@ -406,47 +414,39 @@ impl JackettClient {
         imdb_id: Option<&str>,
     ) -> std::result::Result<Vec<JackettHit>, String> {
         let url = format!("{}/api/v2.0/indexers/{id}/results", self.base_url);
-        let cats = kind_categories(kind);
 
-        // Build structured Torznab params
-        let t_type = match kind {
-            "movie" => "movie",
-            "series" | "anime" => "tvsearch",
-            _ => "search",
-        };
-
+        // Jackett JSON API: Category is int[] (repeat the key). Do NOT use Torznab
+        // `/results/torznab` here — that returns XML and ignores our JSON parser.
         let mut params: Vec<(&str, String)> = vec![
             ("apikey", self.api_key.clone()),
-            ("t", t_type.to_string()),
-            // Standard Newznab parent categories keep searches fast and on-topic.
-            ("cat", cats.to_string()),
+            ("Query", query.to_string()),
         ];
+        for cat in kind_category_ids(kind) {
+            params.push(("Category", cat.to_string()));
+        }
 
-        // Add IMDB ID for movies (highest precision)
         if kind == "movie" {
             if let Some(imdb) = imdb_id.filter(|s| !s.is_empty()) {
-                // Jackett expects plain numeric ID, strip "tt" prefix
                 let numeric = imdb.trim_start_matches("tt");
                 if !numeric.is_empty() {
-                    params.push(("imdbid", numeric.to_string()));
+                    params.push(("ImdbId", numeric.to_string()));
                 }
             }
         }
         let _ = year;
 
-        // Add season/ep for TV — much better than baking it into the query string
+        // Bake S/E into Query for the JSON API (no Torznab season/ep fields).
         if let (Some(s), Some(e)) = (season, episode) {
             if kind == "series" || kind == "anime" {
-                params.push(("season", s.to_string()));
-                params.push(("ep", e.to_string()));
+                let tag = format!(" S{s:02}E{e:02}");
+                if let Some((_, q)) = params.iter_mut().find(|(k, _)| *k == "Query") {
+                    if !q.to_ascii_uppercase().contains(&format!("S{s:02}E{e:02}")) {
+                        q.push_str(&tag);
+                    }
+                }
             }
         }
 
-        // Always include the text query so indexers that ignore structured params still work
-        params.push(("q", query.to_string()));
-
-        // One request per indexer — empty results fall through to the outer
-        // Query+Category pass instead of doubling Jackett load here.
         self.fetch_indexer_results(&url, &params).await
     }
 
@@ -493,17 +493,18 @@ impl JackettClient {
         kind: &str,
     ) -> Result<Vec<StreamSource>> {
         let url = format!("{}/api/v2.0/indexers/all/results", self.base_url);
-        let cats = kind_categories(kind);
         let res = match tokio::time::timeout(
             Duration::from_secs(10),
-            self.catalog_http
-                .get(&url)
-                .query(&[
+            {
+                let mut req = self.catalog_http.get(&url).query(&[
                     ("apikey", self.api_key.as_str()),
                     ("Query", query),
-                    ("Category", cats),
-                ])
-                .send(),
+                ]);
+                for cat in kind_category_ids(kind) {
+                    req = req.query(&[("Category", cat.to_string())]);
+                }
+                req.send()
+            },
         )
         .await
         {
@@ -631,28 +632,26 @@ impl JackettClient {
         categories: Option<&str>,
     ) -> std::result::Result<Vec<JackettHit>, String> {
         let url = format!("{}/api/v2.0/indexers/{id}/results", self.base_url);
-        let mut params = vec![
+        let mut req = http.get(&url).query(&[
             ("apikey", self.api_key.as_str()),
             ("Query", query),
-        ];
-        // Pass cat= only when categories are provided and non-empty so we don't
-        // break indexers that don't support Newznab category filtering.
-        let cats_str;
+        ]);
+        // Prefer explicit Category[] ints. Fall back to parsing a comma list.
         if let Some(cats) = categories.filter(|s| !s.is_empty()) {
-            cats_str = cats.to_string();
-            params.push(("cat", &cats_str));
+            for part in cats.split(',') {
+                let part = part.trim();
+                if !part.is_empty() {
+                    req = req.query(&[("Category", part)]);
+                }
+            }
         }
-        let res = http
-            .get(&url)
-            .query(&params)
+        let res = req
             .send()
             .await
             .map_err(|e| self.redact_text(&e.to_string()))?;
         let status = res.status();
         if !status.is_success() {
             let body = res.text().await.unwrap_or_default();
-            // Treat 429 as a rate-limit marker so the caller can skip this indexer
-            // for the rest of the session instead of hammering it further.
             if status.as_u16() == 429 {
                 return Err("rate_limited".to_string());
             }
@@ -757,6 +756,9 @@ impl JackettClient {
                     return None;
                 }
                 if looks_like_junk_release(&hit.title, kind) {
+                    return None;
+                }
+                if !hit_category_allowed(&hit, kind) {
                     return None;
                 }
                 let bytes = hit.size.unwrap_or(0).max(0) as u64;
@@ -1157,17 +1159,78 @@ fn torrent_is_season_pack(title: &str, season: i32) -> bool {
 
 fn looks_like_junk_release(title: &str, kind: &str) -> bool {
     let h = padded(title);
-    const JUNK: &[&str] = &["xxx", "porn", "erotic", "adult"];
-    if JUNK.iter().any(|t| has_token(&h, t)) {
+    const JUNK: &[&str] = &[
+        "xxx", "porn", "erotic", "adult", "hentai", "jav ", " jave ", "nsfw", "onlyfans",
+        "pussy", "blowjob", "anal", "fetish", "brazzers", "realitykings",
+    ];
+    if JUNK.iter().any(|t| has_token(&h, t.trim()) || h.contains(t)) {
         return true;
     }
     // Movies shouldn't come back as TV packs / episodes.
     if kind == "movie" {
-        let Ok(tv) = regex::Regex::new(r"(?i)(?:^|[^a-z0-9])(?:s\d{1,2}e\d{1,3}|\d{1,2}x\d{1,3}|season[ ._-]*\d+)(?:[^0-9]|$)")
-        else {
+        let Ok(tv) = regex::Regex::new(
+            r"(?i)(?:^|[^a-z0-9])(?:s\d{1,2}e\d{1,3}|\d{1,2}x\d{1,3}|season[ ._-]*\d+)(?:[^0-9]|$)",
+        ) else {
             return false;
         };
         if tv.is_match(title) {
+            return true;
+        }
+    }
+    // Series shouldn't come back as standalone movie rips (year + no SxxExx).
+    // Anime often ships film OVAs with a year and no episode tag — leave those.
+    if kind == "series" {
+        let has_ep = regex::Regex::new(
+            r"(?i)(?:^|[^a-z0-9])(?:s\d{1,2}e\d{1,3}|\d{1,2}x\d{1,3}|season[ ._-]*\d+|complete|pack)(?:[^0-9]|$)",
+        )
+        .map(|re| re.is_match(title))
+        .unwrap_or(false);
+        let has_year = regex::Regex::new(r"(?i)(?:^|[^a-z0-9])(?:19|20)\d{2}(?:[^0-9]|$)")
+            .map(|re| re.is_match(title))
+            .unwrap_or(false);
+        // Keep season packs / episodes; drop bare "Title.2024.1080p" movie dumps.
+        if has_year && !has_ep {
+            return true;
+        }
+    }
+    false
+}
+
+/// True when Jackett tagged the hit with an allowed Newznab category for [kind].
+/// Always reject XXX (6000–6999). Empty categories → keep (title filters apply).
+fn hit_category_allowed(hit: &JackettHit, kind: &str) -> bool {
+    let cats = &hit.category;
+    if cats.iter().any(|c| is_xxx_category(*c)) {
+        return false;
+    }
+    if let Some(desc) = hit.category_desc.as_deref() {
+        let d = desc.to_ascii_lowercase();
+        if d.contains("xxx") || d.contains("adult") || d.contains("porn") {
+            return false;
+        }
+    }
+    if cats.is_empty() {
+        return true;
+    }
+    let allowed = kind_category_ids(kind);
+    cats.iter().any(|c| category_matches_allowed(*c, &allowed))
+}
+
+fn is_xxx_category(c: i32) -> bool {
+    (6000..7000).contains(&c)
+}
+
+fn category_matches_allowed(c: i32, allowed: &[i32]) -> bool {
+    if allowed.contains(&c) {
+        return true;
+    }
+    // Parent bucket (e.g. 2000) covers children 2010–2099 when listed.
+    for &a in allowed {
+        if a % 1000 == 0 && c > a && c < a + 1000 {
+            return true;
+        }
+        // Child implies parent was requested.
+        if c % 1000 == 0 && a > c && a < c + 1000 {
             return true;
         }
     }
@@ -1197,17 +1260,24 @@ fn size_plausible(bytes: u64, kind: &str, title: &str) -> bool {
     }
 }
 
-/// Newznab/Torznab categories extracted from this Jackett install.
+/// Newznab/Torznab categories from the user's Jackett install (movies / TV only).
 fn kind_categories(kind: &str) -> &'static str {
     match kind {
-        // Movies: 2000 + HD/SD/UHD/3D/DVD children (no 2050/2080 — not present here)
+        // Movies: 2000 + HD/SD/UHD/3D/DVD children — never XXX (6000+)
         "movie" => "2000,2010,2020,2030,2040,2045,2060,2070",
-        // TV: 5000 + common children including anime-TV 5070 (no 5010 — not present here)
+        // TV only — never movies (2000) or XXX
         "series" => "5000,5020,5030,5040,5045,5050,5060,5070,5080",
-        // Anime: Torznab anime + overlapping TV cats from the same Jackett set
+        // Anime: Torznab anime + overlapping TV cats
         "anime" => "5070,5000,5040,5045,5080",
         _ => "",
     }
+}
+
+fn kind_category_ids(kind: &str) -> Vec<i32> {
+    kind_categories(kind)
+        .split(',')
+        .filter_map(|s| s.trim().parse::<i32>().ok())
+        .collect()
 }
 
 fn build_query(
@@ -1689,6 +1759,33 @@ mod tests {
         assert!(super::kind_categories("anime").contains("5070"));
         assert!(!super::kind_categories("movie").contains("2050"));
         assert!(!super::kind_categories("series").contains("5010"));
+        assert!(!super::kind_categories("movie").contains("6000"));
+        assert!(!super::kind_categories("series").contains("2000"));
+        assert_eq!(super::kind_category_ids("movie").len(), 8);
+    }
+
+    #[test]
+    fn rejects_xxx_and_cross_kind() {
+        assert!(super::is_xxx_category(6000));
+        assert!(super::is_xxx_category(6040));
+        assert!(!super::is_xxx_category(2000));
+        assert!(super::looks_like_junk_release("Show.S01E01.XXX.1080p", "series"));
+        assert!(super::looks_like_junk_release("Random.Movie.2024.1080p.BluRay", "series"));
+        assert!(!super::looks_like_junk_release("Show.S01E01.1080p.WEB", "series"));
+        assert!(super::looks_like_junk_release("Show.S01E01.1080p", "movie"));
+    }
+
+    #[test]
+    fn category_match_allows_parent_child() {
+        let movie = super::kind_category_ids("movie");
+        assert!(super::category_matches_allowed(2000, &movie));
+        assert!(super::category_matches_allowed(2040, &movie));
+        assert!(!super::category_matches_allowed(5000, &movie));
+        assert!(!super::category_matches_allowed(6000, &movie));
+        let tv = super::kind_category_ids("series");
+        assert!(super::category_matches_allowed(5000, &tv));
+        assert!(super::category_matches_allowed(5040, &tv));
+        assert!(!super::category_matches_allowed(2000, &tv));
     }
 
     #[test]

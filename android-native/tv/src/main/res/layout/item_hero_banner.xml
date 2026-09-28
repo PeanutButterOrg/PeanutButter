@@ -1,0 +1,123 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Full-bleed hero — scrolls with Leanback rows (Flutter FeaturedBanner) -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/hero_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/pb_canvas"
+    android:clipChildren="false"
+    android:clipToPadding="false"
+    android:focusable="false"
+    android:focusableInTouchMode="false">
+
+    <ImageView
+        android:id="@+id/backdrop"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:contentDescription="@null"
+        android:scaleType="centerCrop" />
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@drawable/hero_scrim_left" />
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@drawable/hero_scrim_bottom" />
+
+    <LinearLayout
+        android:layout_width="560dp"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|start"
+        android:layout_marginStart="@dimen/shelf_inset"
+        android:layout_marginBottom="28dp"
+        android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/hero_eyebrow"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:letterSpacing="0.1"
+            android:text="@string/trending_now"
+            android:textColor="@color/pb_white54"
+            android:textSize="13sp"
+            android:textStyle="bold" />
+
+        <ImageView
+            android:id="@+id/hero_logo"
+            android:layout_width="280dp"
+            android:layout_height="64dp"
+            android:layout_marginTop="10dp"
+            android:adjustViewBounds="true"
+            android:contentDescription="@null"
+            android:scaleType="fitStart"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/hero_title"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:ellipsize="end"
+            android:lineSpacingMultiplier="1.05"
+            android:maxLines="2"
+            android:textColor="@color/pb_white"
+            android:textSize="34sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/hero_meta"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:textColor="@color/pb_white54"
+            android:textSize="14sp" />
+
+        <TextView
+            android:id="@+id/hero_synopsis"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:ellipsize="end"
+            android:lineSpacingMultiplier="1.4"
+            android:maxLines="2"
+            android:textColor="@color/pb_white54"
+            android:textSize="15sp" />
+
+        <!-- Flutter FilledButton.icon Details (min 120×48, play icon) -->
+        <LinearLayout
+            android:id="@+id/hero_details"
+            android:layout_width="wrap_content"
+            android:layout_height="48dp"
+            android:layout_marginTop="12dp"
+            android:background="@drawable/bg_button_primary"
+            android:clickable="true"
+            android:focusable="true"
+            android:focusableInTouchMode="true"
+            android:gravity="center_vertical"
+            android:minWidth="120dp"
+            android:orientation="horizontal"
+            android:paddingHorizontal="20dp">
+
+            <ImageView
+                android:layout_width="22dp"
+                android:layout_height="22dp"
+                android:contentDescription="@null"
+                android:src="@drawable/ic_play_arrow"
+                android:tint="@color/pb_white" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="6dp"
+                android:text="@string/details"
+                android:textColor="@color/pb_white"
+                android:textSize="15sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+    </LinearLayout>
+</FrameLayout>

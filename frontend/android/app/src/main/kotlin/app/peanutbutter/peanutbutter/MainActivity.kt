@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.net.Uri
 import android.os.Build
+import app.peanutbutter.peanutbutter.tvlab.TvLabPlayerActivity
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -19,8 +20,6 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        // Pull in libmla.so early so LibVLC codec modules resolve on Realtek TV.
-        NativeVlcPlayer.preloadNativeLibs()
 
         nativeVlc = NativeVlcPlayer(
             this,
@@ -63,6 +62,16 @@ class MainActivity : FlutterActivity() {
                     result.success(openExternal(url, title, mime))
                 }
                 "hasExternalPlayers" -> result.success(hasExternalPlayers())
+                "openTvLab" -> {
+                    val url = call.argument<String>("url")
+                    val title = call.argument<String>("title") ?: "TV Lab"
+                    if (url.isNullOrBlank()) {
+                        result.error("bad_args", "url required", null)
+                        return@setMethodCallHandler
+                    }
+                    startActivity(TvLabPlayerActivity.intent(this, url, title))
+                    result.success(true)
+                }
                 else -> result.notImplemented()
             }
         }

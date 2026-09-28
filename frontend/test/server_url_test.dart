@@ -71,10 +71,10 @@ void main() {
       );
     });
 
-    test('shows download speed when transferring', () {
+    test('shows downloaded when progress is complete', () {
       expect(
-        streamStatsLine(pct: 7.4, speed: 3.1, seeders: 12, peers: 12),
-        '7%  ·  3.1 MB/s  ·  12 seeds',
+        streamStatsLine(pct: 100, speed: 0, seeders: 5, peers: 5, hasVideo: true, playing: true),
+        '100%  ·  downloaded  ·  5 seeds',
       );
     });
   });

@@ -6,124 +6,109 @@ Self-hosted media catalog for **your own legally owned files**. Metadata comes f
 - [OMDb](http://www.omdbapi.com/) — IMDb ratings only (IMDb is never scraped)
 - [AniList](https://anilist.co/) — anime metadata
 
-Playback is served from a directory you mount (`MEDIA_PATH`) for local files. Jackett magnets are resolved by the API; each app (desktop / TV) streams torrents itself.
+Local library files are served from a directory you mount (`MEDIA_PATH`). Jackett magnets are resolved by the API; **each client** (desktop / phone / Android TV) downloads and streams torrents itself via libtorrent.
 
 ## Architecture
 
-| Service | Role |
+| Piece | Role |
 | --- | --- |
-| `api` (Rust / Axum / async-graphql) | GraphQL catalog, ingest, Jackett magnets, pairing codes |
-| `postgres` (16) | Titles, progress, saved torrent listings |
-| `meilisearch` | Typo-tolerant search |
+| **API** (Rust / Axum / async-graphql) | Catalog, ingest, Jackett, pairing, local file Range serving |
+| **Postgres 16** | Titles, progress, torrent listings |
+| **Meilisearch** | Typo-tolerant search |
+| **Flutter clients** (`frontend/`) | Linux / Windows / macOS (and legacy Flutter Android) |
+| **Native Android** (`android-native/`) | Leanback TV + phone companion (recommended on Android) |
 
-Pair devices at <http://localhost:3001/> (password-protected console) with 6-digit codes. GraphiQL is at <http://localhost:3001/graphql> after you sign in.
+Clients pick a playback backend by device profile:
+
+| Device | Default player |
+| --- | --- |
+| Linux / Windows / macOS | media_kit (libmpv) |
+| Android phone (native companion) | ExoPlayer (`android-native/phone`) |
+| Android TV (native Leanback) | LibVLC SurfaceView (`android-native/tv`) |
+
+See [android-native/README.md](android-native/README.md) to build the Leanback TV and phone apps.
 
 ## Prerequisites
 
-- Docker and Docker Compose v2
-- For a native desktop/mobile client: [Flutter 3.24+](https://flutter.dev/docs/get-started/install)
-- API keys (free):
-  - **TMDB** — <https://www.themoviedb.org/settings/api>
-  - **OMDb** — <http://www.omdbapi.com/apikey.aspx>
-  - **AniList** — optional; public GraphQL works without a client id
+- Docker and Docker Compose v2 (server)
+- Optional native clients: [Flutter stable](https://flutter.dev/docs/get-started/install)
+- API keys (free): [TMDB](https://www.themoviedb.org/settings/api), [OMDb](http://www.omdbapi.com/apikey.aspx); AniList optional
 
-## Setup
+## Quick start (server)
 
 ```bash
-git clone <your-fork> peanutbutter
-cd peanutbutter
-cp .env.example .env
+git clone https://github.com/PeanutButterOrg/PeanutButter.git
+cd PeanutButter
+cp .env.example .env   # local full stack only; server compose needs no .env
 ```
 
-Edit `.env` and set at least `TMDB_API_KEY`. Point `MEDIA_PATH` at a folder of your own media:
+**Homelab / VPS (recommended):** see [docs/SERVER.md](docs/SERVER.md).
 
 ```bash
-# Expected filename pattern
-#   Title.Year.Quality.ext
-#   Title.Year.S01E01.Quality.ext
-# Example:
-#   The.Matrix.1999.1080p.mkv
-mkdir -p media
+# Edit PUBLIC_URL in docker-compose.server.yml to your LAN IP or domain
+docker compose -f docker-compose.server.yml up -d --build
+curl http://127.0.0.1:3001/health
 ```
 
-## Run (Docker)
-
-Local full stack (API + catalog web UI):
+**Local full stack** (API + optional web UI):
 
 ```bash
 docker compose up --build
 ```
 
-### Host the API on a server
+On first boot the API applies migrations, configures Meilisearch, scans `MEDIA_PATH`, and starts metadata sync. Sync also runs on a cron (popular ~every 6h, stale nightly).
 
-**Full install guide:** [docs/SERVER.md](docs/SERVER.md)  
-(Docker VPS, CasaOS/ZimaOS — **no `.env` required**, pairing, Jackett, firewall)
+| URL | Purpose |
+| --- | --- |
+| `http://SERVER:3001/` | Console (password) — pairing + Jackett |
+| `http://SERVER:3001/health` | Health |
+| `http://SERVER:3001/graphql` | GraphQL |
 
-Short version:
+## CI artifacts
+
+GitHub Actions publishes:
+
+| Workflow | Artifacts |
+| --- | --- |
+| [Desktop builds](.github/workflows/desktop-builds.yml) | Linux portable / deb / AppImage, Windows portable / setup, macOS universal zip |
+| [Backend & Docker](.github/workflows/backend-docker.yml) | Linux API binary (`.tar.gz`), Docker image `ghcr.io/peanutbutterorg/peanutbutter-api`, offline image `.tar.gz` |
+
+On version tags (`v*`), images are tagged with the semver and `latest`. Pull:
 
 ```bash
-# Optional: edit PUBLIC_URL in docker-compose.server.yml if IP ≠ 10.0.0.28
-docker compose -f docker-compose.server.yml up -d --build
+docker pull ghcr.io/peanutbutterorg/peanutbutter-api:latest
+# or pin: ghcr.io/peanutbutterorg/peanutbutter-api:0.2.0
 ```
 
-Pair TVs at `http://YOUR_SERVER_IP:3001/` after signing in. Point the app at that URL and type the 6-digit device code. Configure Jackett once in the console.
+Then point compose `image:` at the pulled tag (or keep `build:` for local builds).
 
-Health check: `http://YOUR_SERVER_IP:3001/health`.
-
-If Jackett runs on the host, set `JACKETT_URL` / `JACKETT_API_KEY` in the compose `environment` block (or in the web console).
-
-On first boot the API:
-
-1. Applies `backend/src/db/migrations/001_initial.sql`
-2. Configures the Meilisearch `titles` index
-3. Scans `MEDIA_PATH`
-4. Starts a metadata sync (popular/trending movies, TV, anime)
-
-Then open:
-
-- Pairing: <http://localhost:3001/>
-- GraphQL: <http://localhost:3001/graphql>
-- Health: <http://localhost:3001/health>
-
-Sync also runs every 6 hours (popular/trending) and nightly (titles older than 7 days). You can trigger it from **Settings → Trigger metadata sync**.
-
-## Native Flutter client
+## Native Flutter clients
 
 ```bash
 cd frontend
-flutter create . --project-name peanutbutter --org app.peanutbutter
 flutter pub get
-flutter run -d linux          # or macos / windows / chrome / android
+flutter run -d linux          # or macos / windows / android
 ```
 
-Set the server URL in Settings, or tap **Discover on LAN**. Discovery probes:
+Android TV: build/install an APK (`flutter build apk`) and launch from the Leanback row. Set the server URL in Settings (or **Discover on LAN**), then enter the 6-digit pairing code from the console.
 
-1. Saved URL in `shared_preferences`
-2. `http://127.0.0.1:3001` (and `10.0.2.2` on Android emulator)
-3. The local subnet (`192.168.x` / `10.0.0.x`)
-4. Optional mDNS `_peanutbutter._tcp`
-
-If nothing answers, the Settings screen stays available.
+More detail: [frontend/README.md](frontend/README.md) · [backend/README.md](backend/README.md) · [docs/DOCKER.md](docs/DOCKER.md)
 
 ## Environment variables
 
 | Variable | Purpose |
 | --- | --- |
-| `DATABASE_URL` | PostgreSQL connection string (host tools: port **5433**; Compose overrides this inside `api`) |
-| `MEILI_URL` / `MEILI_MASTER_KEY` | Search backend |
-| `TMDB_API_KEY` | TMDB metadata |
-| `OMDB_API_KEY` | IMDb ratings via OMDb |
-| `ANILIST_CLIENT_ID` | Optional AniList app id |
-| `MEDIA_PATH` | Host folder of your media (mounted into the API container) |
+| `DATABASE_URL` | PostgreSQL (host tools: port **5433**; Compose uses internal DNS) |
+| `MEILI_URL` / `MEILI_MASTER_KEY` | Search |
+| `TMDB_API_KEY` / `OMDB_API_KEY` / `ANILIST_CLIENT_ID` | Metadata |
+| `MEDIA_PATH` | Your media folder (mounted into the API) |
 | `STREAM_PATH` | Writable torrent cache (Docker default `/data/streams`) |
-| `TORRENT_LISTEN_PORT` | BitTorrent listen port (Docker default `6881`) |
-| `PUBLIC_URL` | Base URL used to build playback links |
-| `API_KEY` | Optional 6-digit server pairing code |
-| `ADMIN_PASSWORD` | Password for the web console at `/` |
-| `BIND_ADDR` | API listen address (`0.0.0.0:3001` on the host; Compose maps host 3001 → container 8080) |
+| `PUBLIC_URL` | Base URL clients use for playback links |
+| `API_KEY` | Optional fixed 6-digit pairing code |
+| `ADMIN_PASSWORD` | Web console password |
+| `BIND_ADDR` | Listen address (`0.0.0.0:3001` on host; Compose maps `3001→8080`) |
+| `JACKETT_URL` / `JACKETT_API_KEY` | Optional; prefer console after sign-in |
 | `RUST_LOG` | Tracing filter |
-
-LAN discovery fills the server address only. Devices must type the 6-digit code from the signed-in console. Jackett is configured there once for every device.
 
 ## GraphQL (selected)
 
@@ -145,12 +130,12 @@ mutation { triggerSync { success message } }
 
 ## File scanning & playback
 
-1. Drop files into `MEDIA_PATH` using `Title.Year.Quality.ext`
-2. The watcher matches `title + year` (and `SxxExx` for episodes) to catalog rows
-3. A `FileReference` is stored; `playbackUrl` is `PUBLIC_URL/files/{id}`
-4. The player requests that URL with HTTP **Range** headers so seeking works
+1. Put files in `MEDIA_PATH` as `Title.Year.Quality.ext` (episodes: `Title.Year.S01E01.Quality.ext`)
+2. The watcher matches title + year (and `SxxExx`) to catalog rows
+3. `playbackUrl` is `PUBLIC_URL/files/{id}` with HTTP **Range** for seeking
+4. Jackett magnets stream on-device via libtorrent (3s seek settle + Range retarget)
 
-Only files that belong to you should be placed in `MEDIA_PATH`.
+Only files you own should live in `MEDIA_PATH`.
 
 ## Tests
 

@@ -87,17 +87,32 @@ class _PosterCardState extends ConsumerState<PosterCard> {
             child: AnimatedScale(
               scale: highlighted ? (tv ? TvPosterDim.scale : 1.08) : 1,
               alignment: Alignment.center,
-              duration: Duration(milliseconds: tv ? 220 : 180),
+              duration: Duration(milliseconds: tv ? 160 : 180),
               curve: Curves.easeOut,
               child: tv
-                  ? Material(
-                      elevation: highlighted ? 12 : 2,
-                      shadowColor: Colors.black,
-                      color: Colors.transparent,
-                      surfaceTintColor: Colors.transparent,
-                      borderRadius: BorderRadius.circular(12),
-                      clipBehavior: Clip.antiAlias,
-                      child: _posterFace(item, compact: true),
+                  ? DecoratedBox(
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: highlighted
+                              ? Colors.white.withValues(alpha: 0.92)
+                              : Colors.transparent,
+                          width: 3,
+                        ),
+                        boxShadow: highlighted
+                            ? [
+                                BoxShadow(
+                                  color: Colors.black.withValues(alpha: 0.55),
+                                  blurRadius: 18,
+                                  offset: const Offset(0, 8),
+                                ),
+                              ]
+                            : null,
+                      ),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(10),
+                        child: _posterFace(item, compact: true),
+                      ),
                     )
                   : Material(
                       elevation: highlighted ? 18 : 2,

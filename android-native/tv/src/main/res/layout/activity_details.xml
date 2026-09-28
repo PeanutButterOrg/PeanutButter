@@ -1,0 +1,322 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Flutter DetailScreen: scrollable hero → cast → trailer → seasons -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/pb_canvas"
+    android:clipChildren="false">
+
+    <ScrollView
+        android:id="@+id/detail_scroll"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:clipChildren="false"
+        android:clipToPadding="false"
+        android:fillViewport="true"
+        android:overScrollMode="never"
+        android:scrollbars="none">
+
+        <LinearLayout
+            android:id="@+id/detail_body"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:clipChildren="false"
+            android:clipToPadding="false"
+            android:orientation="vertical"
+            android:paddingBottom="48dp">
+
+            <!-- Hero (Flutter HeroBannerFrame ~58% viewport) -->
+            <FrameLayout
+                android:id="@+id/hero_frame"
+                android:layout_width="match_parent"
+                android:layout_height="520dp"
+                android:clipChildren="false">
+
+                <ImageView
+                    android:id="@+id/backdrop"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:contentDescription="@null"
+                    android:scaleType="centerCrop" />
+
+                <View
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:background="@drawable/hero_scrim_left" />
+
+                <View
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:background="@drawable/hero_scrim_bottom" />
+
+                <LinearLayout
+                    android:id="@+id/hero_copy"
+                    android:layout_width="560dp"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="bottom|start"
+                    android:layout_marginStart="@dimen/shelf_inset"
+                    android:layout_marginBottom="28dp"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:id="@+id/eyebrow"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:textColor="@color/pb_white54"
+                        android:textSize="13sp"
+                        android:textStyle="bold" />
+
+                    <ImageView
+                        android:id="@+id/logo"
+                        android:layout_width="260dp"
+                        android:layout_height="56dp"
+                        android:layout_marginTop="8dp"
+                        android:adjustViewBounds="true"
+                        android:contentDescription="@null"
+                        android:scaleType="fitStart"
+                        android:visibility="gone" />
+
+                    <TextView
+                        android:id="@+id/title"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="6dp"
+                        android:ellipsize="end"
+                        android:maxLines="2"
+                        android:textColor="@color/pb_white"
+                        android:textSize="30sp"
+                        android:textStyle="bold" />
+
+                    <HorizontalScrollView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="10dp"
+                        android:overScrollMode="never"
+                        android:scrollbars="none">
+
+                        <LinearLayout
+                            android:id="@+id/meta_chips"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:gravity="center_vertical"
+                            android:orientation="horizontal" />
+                    </HorizontalScrollView>
+
+                    <TextView
+                        android:id="@+id/synopsis"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="10dp"
+                        android:ellipsize="end"
+                        android:lineSpacingMultiplier="1.35"
+                        android:maxLines="3"
+                        android:textColor="@color/pb_white54"
+                        android:textSize="14sp" />
+
+                    <LinearLayout
+                        android:id="@+id/action_row"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="14dp"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal"
+                        android:visibility="gone">
+
+                        <LinearLayout
+                            android:id="@+id/btn_play"
+                            android:layout_width="wrap_content"
+                            android:layout_height="48dp"
+                            android:background="@drawable/bg_button_primary"
+                            android:focusable="true"
+                            android:focusableInTouchMode="true"
+                            android:gravity="center_vertical"
+                            android:minWidth="148dp"
+                            android:orientation="horizontal"
+                            android:paddingHorizontal="20dp">
+
+                            <ImageView
+                                android:layout_width="22dp"
+                                android:layout_height="22dp"
+                                android:contentDescription="@null"
+                                android:src="@drawable/ic_play_arrow"
+                                android:tint="@color/pb_white" />
+
+                            <TextView
+                                android:id="@+id/btn_play_label"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:layout_marginStart="6dp"
+                                android:text="@string/play"
+                                android:textColor="@color/pb_white"
+                                android:textSize="15sp"
+                                android:textStyle="bold" />
+                        </LinearLayout>
+
+                        <TextView
+                            android:id="@+id/btn_from_start"
+                            android:layout_width="wrap_content"
+                            android:layout_height="48dp"
+                            android:layout_marginStart="12dp"
+                            android:background="@drawable/bg_button_ghost"
+                            android:focusable="true"
+                            android:focusableInTouchMode="true"
+                            android:gravity="center"
+                            android:minWidth="120dp"
+                            android:paddingHorizontal="16dp"
+                            android:text="@string/from_start"
+                            android:textColor="#B3FFFFFF"
+                            android:textSize="12sp"
+                            android:visibility="gone" />
+
+                        <ImageButton
+                            android:id="@+id/btn_watched"
+                            android:layout_width="48dp"
+                            android:layout_height="48dp"
+                            android:layout_marginStart="12dp"
+                            android:background="@drawable/header_icon_bg"
+                            android:contentDescription="@string/watched"
+                            android:focusable="true"
+                            android:padding="12dp"
+                            android:src="@drawable/ic_check_outline"
+                            android:tint="@color/pb_white" />
+
+                        <ImageButton
+                            android:id="@+id/btn_favorite"
+                            android:layout_width="48dp"
+                            android:layout_height="48dp"
+                            android:layout_marginStart="8dp"
+                            android:background="@drawable/header_icon_bg"
+                            android:contentDescription="@string/favourites"
+                            android:focusable="true"
+                            android:padding="12dp"
+                            android:src="@drawable/ic_favorite_border"
+                            android:tint="@color/pb_white" />
+                    </LinearLayout>
+                </LinearLayout>
+            </FrameLayout>
+
+            <!-- Cast & crew -->
+            <TextView
+                android:id="@+id/cast_heading"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="@dimen/shelf_inset"
+                android:layout_marginTop="12dp"
+                android:layout_marginEnd="@dimen/shelf_inset"
+                android:text="@string/cast_crew"
+                android:textColor="@color/pb_white"
+                android:textSize="18sp"
+                android:textStyle="bold"
+                android:visibility="gone" />
+
+            <androidx.recyclerview.widget.RecyclerView
+                android:id="@+id/cast_list"
+                android:layout_width="match_parent"
+                android:layout_height="248dp"
+                android:layout_marginTop="2dp"
+                android:clipChildren="false"
+                android:clipToPadding="false"
+                android:orientation="horizontal"
+                android:overScrollMode="never"
+                android:paddingStart="@dimen/shelf_inset"
+                android:paddingTop="6dp"
+                android:paddingEnd="@dimen/shelf_inset"
+                android:paddingBottom="6dp"
+                android:scrollbars="none"
+                android:visibility="gone" />
+
+            <!-- Trailer — Flutter: scale + elevation, no stroke -->
+            <TextView
+                android:id="@+id/trailer_heading"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="@dimen/shelf_inset"
+                android:layout_marginTop="8dp"
+                android:text="@string/trailer"
+                android:textColor="@color/pb_white"
+                android:textSize="18sp"
+                android:textStyle="bold"
+                android:visibility="gone" />
+
+            <FrameLayout
+                android:id="@+id/trailer_wrap"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="@dimen/shelf_inset"
+                android:layout_marginTop="2dp"
+                android:clipChildren="false"
+                android:clipToPadding="false"
+                android:padding="4dp"
+                android:visibility="gone">
+
+                <FrameLayout
+                    android:id="@+id/trailer_card"
+                    android:layout_width="220dp"
+                    android:layout_height="124dp"
+                    android:background="@drawable/poster_card_bg"
+                    android:clickable="true"
+                    android:elevation="4dp"
+                    android:focusable="true"
+                    android:focusableInTouchMode="true">
+
+                    <ImageView
+                        android:id="@+id/trailer_thumb"
+                        android:layout_width="match_parent"
+                        android:layout_height="match_parent"
+                        android:contentDescription="@null"
+                        android:scaleType="centerCrop" />
+
+                    <ImageView
+                        android:layout_width="40dp"
+                        android:layout_height="40dp"
+                        android:layout_gravity="center"
+                        android:contentDescription="@null"
+                        android:src="@drawable/ic_play_arrow"
+                        android:tint="@color/pb_white" />
+                </FrameLayout>
+            </FrameLayout>
+
+            <!-- Seasons (Flutter ExpansionTile list) -->
+            <TextView
+                android:id="@+id/seasons_heading"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="@dimen/shelf_inset"
+                android:layout_marginTop="16dp"
+                android:layout_marginEnd="@dimen/shelf_inset"
+                android:text="@string/seasons"
+                android:textColor="@color/pb_white"
+                android:textSize="18sp"
+                android:textStyle="bold"
+                android:visibility="gone" />
+
+            <LinearLayout
+                android:id="@+id/seasons_container"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:clipChildren="false"
+                android:clipToPadding="false"
+                android:orientation="vertical"
+                android:visibility="gone" />
+        </LinearLayout>
+    </ScrollView>
+
+    <FrameLayout
+        android:id="@+id/busy_block"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#99000000"
+        android:clickable="true"
+        android:focusable="true"
+        android:focusableInTouchMode="true"
+        android:visibility="gone">
+
+        <ProgressBar
+            android:id="@+id/busy"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:indeterminateTint="@color/pb_seed" />
+    </FrameLayout>
+</FrameLayout>

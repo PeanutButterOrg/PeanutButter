@@ -1,3 +1,3 @@
 mod meilisearch;
 
-pub use meilisearch::SearchClient;
+pub use meilisearch::{search_relevance, SearchClient};

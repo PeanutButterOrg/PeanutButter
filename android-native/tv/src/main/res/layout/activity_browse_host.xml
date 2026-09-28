@@ -1,0 +1,134 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Host for Leanback grids (catalog / library) with API busy overlay -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/pb_canvas">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical">
+
+        <LinearLayout
+            android:id="@+id/catalog_header"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="@dimen/shelf_inset"
+            android:paddingTop="8dp"
+            android:paddingEnd="16dp"
+            android:paddingBottom="4dp"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/catalog_heading"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:ellipsize="end"
+                android:maxLines="1"
+                android:textColor="@color/pb_white"
+                android:textSize="18sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/filter_sort"
+                android:layout_width="wrap_content"
+                android:layout_height="32dp"
+                android:layout_marginStart="8dp"
+                android:background="@drawable/kind_tab_bg"
+                android:ellipsize="end"
+                android:focusable="true"
+                android:focusableInTouchMode="true"
+                android:gravity="center"
+                android:maxWidth="150dp"
+                android:maxLines="1"
+                android:paddingHorizontal="10dp"
+                android:textColor="@color/pb_white"
+                android:textSize="12sp" />
+
+            <TextView
+                android:id="@+id/filter_year"
+                android:layout_width="wrap_content"
+                android:layout_height="32dp"
+                android:layout_marginStart="6dp"
+                android:background="@drawable/kind_tab_bg"
+                android:focusable="true"
+                android:focusableInTouchMode="true"
+                android:gravity="center"
+                android:paddingHorizontal="10dp"
+                android:text="@string/filter_year"
+                android:textColor="@color/pb_white"
+                android:textSize="12sp" />
+
+            <TextView
+                android:id="@+id/filter_rating"
+                android:layout_width="wrap_content"
+                android:layout_height="32dp"
+                android:layout_marginStart="6dp"
+                android:background="@drawable/kind_tab_bg"
+                android:focusable="true"
+                android:focusableInTouchMode="true"
+                android:gravity="center"
+                android:paddingHorizontal="10dp"
+                android:text="@string/filter_rating"
+                android:textColor="@color/pb_white"
+                android:textSize="12sp" />
+
+            <TextView
+                android:id="@+id/filter_genre"
+                android:layout_width="wrap_content"
+                android:layout_height="32dp"
+                android:layout_marginStart="6dp"
+                android:background="@drawable/kind_tab_bg"
+                android:focusable="true"
+                android:focusableInTouchMode="true"
+                android:gravity="center"
+                android:paddingHorizontal="10dp"
+                android:text="@string/filter_genre"
+                android:textColor="@color/pb_white"
+                android:textSize="12sp" />
+        </LinearLayout>
+
+        <FrameLayout
+            android:id="@+id/browse_host"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1" />
+    </LinearLayout>
+
+    <FrameLayout
+        android:id="@+id/loading_overlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@android:color/transparent"
+        android:clickable="true"
+        android:focusable="true"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:gravity="center"
+            android:orientation="vertical">
+
+            <ProgressBar
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:indeterminate="true"
+                android:indeterminateTint="@color/pb_seed" />
+
+            <TextView
+                android:id="@+id/loading_label"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                android:text="@string/loading_catalog"
+                android:textColor="@color/pb_muted"
+                android:textSize="14sp" />
+        </LinearLayout>
+    </FrameLayout>
+</FrameLayout>

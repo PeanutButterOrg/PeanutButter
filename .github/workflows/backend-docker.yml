@@ -1,0 +1,189 @@
+# Backend binary + Docker image
+#
+# Artifacts:
+#   peanutbutter-api-linux-x86_64  → peanutbutter-linux-x86_64.tar.gz
+#   peanutbutter-api-image         → peanutbutter-api-<version>.tar.gz (docker save)
+# GHCR:
+#   ghcr.io/<owner>/peanutbutter-api:latest (main)
+#   ghcr.io/<owner>/peanutbutter-api:<semver> (tags v*)
+#
+# Local: cd backend && cargo build --release
+#        docker build -t peanutbutter-api:0.2.0 ./backend
+#        ./scripts/run-server.sh --save
+
+name: Backend & Docker
+
+on:
+  workflow_dispatch:
+    inputs:
+      push_image:
+        description: Push image to GHCR
+        type: boolean
+        default: true
+      build_binary:
+        description: Build Linux API binary artifact
+        type: boolean
+        default: true
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+    paths:
+      - "backend/**"
+      - "docker-compose*.yml"
+      - ".github/workflows/backend-docker.yml"
+  pull_request:
+    paths:
+      - "backend/**"
+      - ".github/workflows/backend-docker.yml"
+
+concurrency:
+  group: backend-docker-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  version:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      image: ${{ steps.ver.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: ver
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" =~ ^v([0-9]+\.[0-9]+\.[0-9]+) ]]; then
+            VER="${BASH_REMATCH[1]}"
+          else
+            VER="$(sed -n 's/^version = "\([0-9.]*\)"/\1/p' backend/Cargo.toml | head -1)"
+          fi
+          OWNER_LC="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          echo "version=${VER:-0.2.0}" >> "$GITHUB_OUTPUT"
+          echo "image=${{ env.REGISTRY }}/${OWNER_LC}/peanutbutter-api" >> "$GITHUB_OUTPUT"
+          echo "Resolved API version ${VER:-0.2.0} image=${{ env.REGISTRY }}/${OWNER_LC}/peanutbutter-api"
+
+  binary:
+    name: Linux API binary
+    needs: version
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_binary }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+
+      - name: Build release
+        run: cargo build --release
+
+      - name: Package tarball
+        run: |
+          strip -s target/release/peanutbutter
+          STAGE="${RUNNER_TEMP}/peanutbutter-linux-x86_64"
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE/migrations"
+          cp target/release/peanutbutter "$STAGE/"
+          cp -a src/db/migrations/. "$STAGE/migrations/"
+          cat > "$STAGE/README.txt" <<EOF
+          PeanutButter API ${{ needs.version.outputs.version }}
+
+          export MIGRATIONS_DIR="\$PWD/migrations"
+          export DATABASE_URL=postgres://...
+          export MEILI_URL=http://127.0.0.1:7700
+          export MEILI_MASTER_KEY=...
+          export PUBLIC_URL=http://127.0.0.1:3001
+          export BIND_ADDR=0.0.0.0:3001
+          ./peanutbutter
+          EOF
+          mkdir -p dist
+          tar -C "$STAGE" -czf "dist/peanutbutter-linux-x86_64.tar.gz" .
+          ls -lh dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: peanutbutter-api-linux-x86_64
+          path: backend/dist/peanutbutter-linux-x86_64.tar.gz
+          if-no-files-found: error
+
+  docker:
+    name: Docker image
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.push_image)
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ needs.version.outputs.image }}
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=sha-,format=short
+            type=raw,value=${{ needs.version.outputs.version }}
+
+      - name: Build image (local load for artifact)
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          push: false
+          load: true
+          tags: |
+            peanutbutter-api:${{ needs.version.outputs.version }}
+            peanutbutter-api:0.2.0
+            ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Push to GHCR
+        if: github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.push_image)
+        run: |
+          set -euo pipefail
+          while IFS= read -r tag; do
+            [[ -z "$tag" ]] && continue
+            echo "Pushing $tag"
+            docker tag "peanutbutter-api:${{ needs.version.outputs.version }}" "$tag"
+            docker push "$tag"
+          done <<< "${{ steps.meta.outputs.tags }}"
+
+      - name: Save image tarball
+        run: |
+          VER="${{ needs.version.outputs.version }}"
+          mkdir -p dist
+          docker save "peanutbutter-api:${VER}" | gzip -1 > "dist/peanutbutter-api-${VER}.tar.gz"
+          ls -lh dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: peanutbutter-api-image
+          path: dist/peanutbutter-api-*.tar.gz
+          if-no-files-found: error

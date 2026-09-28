@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Flutter home: fixed KindSwitch overlay; banner/shelves scroll underneath -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/pb_canvas"
+    android:clipChildren="false">
+
+    <FrameLayout
+        android:id="@+id/main_browse_fragment"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:clipChildren="false" />
+
+    <!-- Fixed overlay header (Flutter Scaffold.header) — never scrolls/clips -->
+    <include
+        android:id="@+id/home_header"
+        layout="@layout/item_kind_switch"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top"
+        android:elevation="8dp" />
+
+    <FrameLayout
+        android:id="@+id/loading_overlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@color/pb_canvas"
+        android:clickable="true"
+        android:focusable="true">
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:gravity="center"
+            android:orientation="vertical">
+
+            <ProgressBar
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:indeterminate="true"
+                android:indeterminateTint="@color/pb_seed" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:text="@string/loading_catalog"
+                android:textColor="@color/pb_muted"
+                android:textSize="15sp" />
+        </LinearLayout>
+    </FrameLayout>
+</FrameLayout>

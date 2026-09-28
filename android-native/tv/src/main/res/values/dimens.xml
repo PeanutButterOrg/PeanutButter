@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Same left edge as the hero Details button. -->
+    <dimen name="shelf_inset">40dp</dimen>
+    <!-- Gap under the hero before the first shelf title. -->
+    <dimen name="hero_shelf_gap">24dp</dimen>
+    <!-- Leanback otherwise leaves 16dp above the selected row and 28dp below it. -->
+    <dimen name="lb_browse_expanded_selected_row_top_padding">6dp</dimen>
+    <dimen name="lb_browse_selected_row_top_padding">6dp</dimen>
+    <dimen name="lb_browse_expanded_row_no_hovercard_bottom_padding">28dp</dimen>
+</resources>

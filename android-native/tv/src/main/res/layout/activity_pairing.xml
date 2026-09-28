@@ -1,0 +1,151 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/pb_canvas"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center"
+        android:orientation="vertical"
+        android:paddingHorizontal="48dp"
+        android:paddingVertical="36dp">
+
+        <LinearLayout
+            android:layout_width="480dp"
+            android:layout_height="wrap_content"
+            android:gravity="center_horizontal"
+            android:orientation="vertical">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:letterSpacing="0.2"
+                android:text="PEANUTBUTTER"
+                android:textAllCaps="true"
+                android:textColor="@color/pb_seed"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:text="@string/pair_title"
+                android:textColor="@color/pb_white"
+                android:textSize="28sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/subtitle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:gravity="center"
+                android:lineSpacingMultiplier="1.45"
+                android:text="Looking for a catalog server on this network…"
+                android:textColor="@color/pb_white54"
+                android:textSize="15sp" />
+
+            <ProgressBar
+                android:id="@+id/progress"
+                android:layout_width="28dp"
+                android:layout_height="28dp"
+                android:layout_marginTop="28dp"
+                android:indeterminate="true"
+                android:visibility="gone" />
+
+            <LinearLayout
+                android:id="@+id/found_row"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="28dp"
+                android:background="@drawable/bg_field"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:paddingHorizontal="16dp"
+                android:paddingVertical="14dp"
+                android:visibility="gone">
+
+                <TextView
+                    android:id="@+id/found_label"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:ellipsize="end"
+                    android:maxLines="1"
+                    android:textColor="@color/pb_white54"
+                    android:textSize="14sp" />
+
+                <Button
+                    android:id="@+id/change"
+                    style="?android:attr/borderlessButtonStyle"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Change"
+                    android:textColor="@color/pb_seed" />
+            </LinearLayout>
+
+            <EditText
+                android:id="@+id/url"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="28dp"
+                android:background="@drawable/bg_field"
+                android:hint="@string/pair_hint_url"
+                android:imeOptions="actionDone"
+                android:inputType="textUri"
+                android:paddingHorizontal="16dp"
+                android:paddingVertical="14dp"
+                android:textColor="@color/pb_white"
+                android:textColorHint="@color/pb_muted"
+                android:visibility="gone" />
+
+            <EditText
+                android:id="@+id/token"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:background="@drawable/bg_field"
+                android:hint="@string/pair_hint_code"
+                android:imeOptions="actionDone"
+                android:inputType="number"
+                android:maxLength="6"
+                android:paddingHorizontal="16dp"
+                android:paddingVertical="14dp"
+                android:textColor="@color/pb_white"
+                android:textColorHint="@color/pb_muted" />
+
+            <TextView
+                android:id="@+id/status"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:gravity="center"
+                android:textColor="@color/pb_error"
+                android:textSize="14sp" />
+
+            <Button
+                android:id="@+id/connect"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:layout_marginTop="20dp"
+                android:background="@drawable/bg_button_primary"
+                android:text="@string/pair_connect"
+                android:textAllCaps="false"
+                android:textColor="@color/pb_white" />
+
+            <Button
+                android:id="@+id/find"
+                style="?android:attr/borderlessButtonStyle"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:layout_marginTop="10dp"
+                android:text="@string/pair_find"
+                android:textAllCaps="false"
+                android:textColor="@color/pb_seed" />
+        </LinearLayout>
+    </LinearLayout>
+</ScrollView>

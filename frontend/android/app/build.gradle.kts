@@ -49,7 +49,6 @@ android {
                 "lib/**/libc++_shared.so",
                 "lib/**/libvlc.so",
                 "lib/**/libvlcjni.so",
-                "lib/**/libmla.so",
             )
         }
     }

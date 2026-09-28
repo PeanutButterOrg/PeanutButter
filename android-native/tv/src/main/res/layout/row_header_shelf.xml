@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Row header matching Flutter _HomeRow: title + See all TextButton -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:clipChildren="false"
+    android:clipToPadding="false"
+    android:gravity="center_vertical"
+    android:orientation="horizontal"
+    android:paddingStart="@dimen/shelf_inset"
+    android:paddingTop="2dp"
+    android:paddingEnd="@dimen/shelf_inset"
+    android:paddingBottom="0dp">
+
+    <!-- Required by RowHeaderPresenter.ViewHolder — must be RowHeaderView -->
+    <androidx.leanback.widget.RowHeaderView
+        android:id="@id/row_header"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:visibility="gone" />
+
+    <TextView
+        android:id="@id/row_header_description"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:visibility="gone" />
+
+    <TextView
+        android:id="@+id/shelf_title"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:ellipsize="end"
+        android:maxLines="1"
+        android:textColor="@color/pb_white"
+        android:textSize="20sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/shelf_see_all"
+        android:layout_width="wrap_content"
+        android:layout_height="32dp"
+        android:background="@drawable/see_all_focus_bg"
+        android:clickable="true"
+        android:focusable="true"
+        android:focusableInTouchMode="true"
+        android:gravity="center"
+        android:minWidth="64dp"
+        android:paddingHorizontal="14dp"
+        android:text="@string/see_all"
+        android:textColor="@color/pb_seed"
+        android:textSize="14sp" />
+</LinearLayout>

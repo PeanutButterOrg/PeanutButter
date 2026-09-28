@@ -190,6 +190,17 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                         .setAndroidPlaybackBackend(AndroidPlayback.fromPrefs(v)),
                   ),
                 ),
+                const _Divider(),
+                _SimpleRow(
+                  label: 'TV playback lab',
+                  subtitle: 'Phase 0 — SurfaceView LibVLC probe',
+                  trailing: TvFocus(
+                    child: FilledButton.tonal(
+                      onPressed: () => context.push('/tv-lab'),
+                      child: const Text('Open'),
+                    ),
+                  ),
+                ),
               ],
               const _Divider(),
               _SimpleRow(

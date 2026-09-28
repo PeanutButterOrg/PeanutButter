@@ -47,7 +47,9 @@ GraphQLClient createGraphQLClient(
 }
 
 const FetchPolicy catalogFetchPolicy = FetchPolicy.cacheAndNetwork;
-const FetchPolicy searchFetchPolicy = FetchPolicy.cacheAndNetwork;
+// One-shot search must not return a stale cache hit and drop the network
+// result. A newer keystroke also has to be able to discard the older response.
+const FetchPolicy searchFetchPolicy = FetchPolicy.networkOnly;
 
 bool isUnauthorizedError(Object error) {
   if (error is OperationException) {

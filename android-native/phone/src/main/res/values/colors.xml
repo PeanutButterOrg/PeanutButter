@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Mirrored from Flutter AppTheme / PtTheme -->
+    <color name="pb_seed">#FF5B9FFF</color>
+    <color name="pb_canvas">#FF0E0E12</color>
+    <color name="pb_panel">#FF1A1A22</color>
+    <color name="pb_field">#FF121218</color>
+    <color name="pb_sidebar">#FF12141A</color>
+    <color name="pb_muted">#FF9A9AA8</color>
+    <color name="pb_white">#FFFFFFFF</color>
+    <color name="pb_white54">#8AFFFFFF</color>
+    <color name="pb_rt">#FFFA320A</color>
+    <color name="pb_completed">#FF7CFFB2</color>
+    <color name="pb_hairline">#22FFFFFF</color>
+    <color name="pb_error">#FFFF6B6B</color>
+</resources>

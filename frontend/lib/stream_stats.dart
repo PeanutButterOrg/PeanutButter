@@ -11,7 +11,9 @@ String streamStatsLine({
   bool playing = false,
 }) {
   final String speedStr;
-  if (speed >= 0.05) {
+  if (pct >= 99.5) {
+    speedStr = speed >= 0.05 ? '${speed.toStringAsFixed(1)} MB/s' : 'downloaded';
+  } else if (speed >= 0.05) {
     speedStr = '${speed.toStringAsFixed(1)} MB/s';
   } else if (pct >= 2 && (hasVideo || playing)) {
     speedStr = 'ready';

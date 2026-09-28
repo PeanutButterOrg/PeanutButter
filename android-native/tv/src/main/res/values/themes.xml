@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.PeanutButter.Tv" parent="Theme.Leanback">
+        <item name="android:colorPrimary">@color/pb_seed</item>
+        <item name="android:colorAccent">@color/pb_seed</item>
+        <item name="android:windowBackground">@color/pb_canvas</item>
+        <item name="android:windowFullscreen">true</item>
+        <item name="defaultSearchColor">@color/pb_seed</item>
+        <item name="overlayDimMaskColor">@android:color/transparent</item>
+        <item name="defaultBrandColor">@color/pb_canvas</item>
+        <item name="defaultBrandColorDark">@color/pb_canvas</item>
+        <item name="browseRowsMarginTop">0dp</item>
+        <item name="browseRowsMarginStart">0dp</item>
+        <item name="browsePaddingStart">0dp</item>
+        <item name="browsePaddingEnd">0dp</item>
+        <item name="rowHeaderDockStyle">@style/Pb.Tv.HeaderDock</item>
+        <item name="android:scrollbars">none</item>
+        <item name="android:overScrollMode">never</item>
+        <item name="browsePaddingTop">0dp</item>
+        <item name="browsePaddingBottom">24dp</item>
+        <item name="rowHorizontalGridStyle">@style/Pb.Tv.HorizontalGrid</item>
+    </style>
+
+    <!-- Header dock inset is 0; shelf titles and poster rows share shelf_inset. -->
+    <style name="Pb.Tv.HeaderDock" parent="Widget.Leanback.Row.HeaderDock">
+        <item name="android:paddingStart">0dp</item>
+        <item name="android:paddingEnd">0dp</item>
+    </style>
+
+    <style name="Pb.Tv.HorizontalGrid" parent="Widget.Leanback.Row.HorizontalGridView">
+        <item name="focusOutFront">true</item>
+        <item name="focusOutEnd">true</item>
+        <item name="android:paddingStart">@dimen/shelf_inset</item>
+        <item name="android:paddingEnd">@dimen/shelf_inset</item>
+        <item name="android:paddingTop">6dp</item>
+        <item name="android:paddingBottom">6dp</item>
+        <item name="android:horizontalSpacing">0dp</item>
+        <item name="android:clipChildren">false</item>
+        <item name="android:clipToPadding">false</item>
+        <item name="android:scrollbars">none</item>
+        <item name="android:overScrollMode">never</item>
+    </style>
+
+    <style name="Theme.PeanutButter.Dialog" parent="Theme.AppCompat.Dialog">
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:backgroundDimEnabled">true</item>
+        <item name="android:backgroundDimAmount">0.65</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowIsFloating">true</item>
+        <item name="colorAccent">@color/pb_seed</item>
+    </style>
+</resources>

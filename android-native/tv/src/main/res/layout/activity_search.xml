@@ -1,0 +1,209 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Flutter SearchScreen: KindSwitch + field + actions, sort chips, results grid -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/pb_canvas"
+    android:clipChildren="false"
+    android:orientation="vertical">
+
+    <!-- Header bar -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:clipChildren="false"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="@dimen/shelf_inset"
+        android:paddingTop="16dp"
+        android:paddingEnd="12dp"
+        android:paddingBottom="12dp">
+
+        <TextView
+            android:id="@+id/kind_movies"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:background="@drawable/kind_tab_bg"
+            android:focusable="true"
+            android:focusableInTouchMode="true"
+            android:gravity="center"
+            android:includeFontPadding="false"
+            android:minHeight="44dp"
+            android:minWidth="72dp"
+            android:paddingHorizontal="16dp"
+            android:paddingVertical="10dp"
+            android:text="@string/movies"
+            android:textColor="@color/pb_seed"
+            android:textSize="16sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/kind_series"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="10dp"
+            android:background="@drawable/kind_tab_bg"
+            android:focusable="true"
+            android:focusableInTouchMode="true"
+            android:gravity="center"
+            android:includeFontPadding="false"
+            android:minHeight="44dp"
+            android:minWidth="72dp"
+            android:paddingHorizontal="16dp"
+            android:paddingVertical="10dp"
+            android:text="@string/series"
+            android:textColor="@color/pb_muted"
+            android:textSize="16sp" />
+
+        <FrameLayout
+            android:layout_width="0dp"
+            android:layout_height="44dp"
+            android:layout_marginStart="16dp"
+            android:layout_weight="1"
+            android:background="@drawable/bg_field">
+
+            <EditText
+                android:id="@+id/query"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:background="@android:color/transparent"
+                android:drawableStart="@drawable/ic_search"
+                android:drawablePadding="10dp"
+                android:drawableTint="@color/pb_muted"
+                android:focusable="true"
+                android:focusableInTouchMode="true"
+                android:hint="@string/search_hint"
+                android:imeOptions="actionSearch"
+                android:inputType="text"
+                android:nextFocusRight="@id/btn_mic"
+                android:paddingStart="14dp"
+                android:paddingEnd="44dp"
+                android:textColor="@color/pb_white"
+                android:textColorHint="@color/pb_muted"
+                android:textSize="15sp" />
+
+            <ImageButton
+                android:id="@+id/btn_mic"
+                android:layout_width="36dp"
+                android:layout_height="36dp"
+                android:layout_gravity="end|center_vertical"
+                android:layout_marginEnd="4dp"
+                android:background="@drawable/mic_inside"
+                android:contentDescription="@string/voice_search"
+                android:focusable="true"
+                android:focusableInTouchMode="true"
+                android:nextFocusLeft="@id/query"
+                android:padding="6dp"
+                android:src="@drawable/ic_mic"
+                android:tint="@color/pb_white" />
+        </FrameLayout>
+
+        <TextView
+            android:id="@+id/filter_sort"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:layout_marginStart="10dp"
+            android:background="@drawable/kind_tab_bg"
+            android:ellipsize="end"
+            android:focusable="true"
+            android:focusableInTouchMode="true"
+            android:gravity="center"
+            android:maxWidth="168dp"
+            android:maxLines="1"
+            android:paddingHorizontal="12dp"
+            android:textColor="@color/pb_white"
+            android:textSize="12sp" />
+
+        <ImageButton
+            android:id="@+id/btn_favourites"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:layout_marginStart="8dp"
+            android:background="@drawable/header_icon_bg"
+            android:contentDescription="@string/favourites"
+            android:focusable="true"
+            android:focusableInTouchMode="true"
+            android:padding="10dp"
+            android:src="@drawable/ic_favorite"
+            android:tint="@color/pb_white" />
+
+        <ImageButton
+            android:id="@+id/btn_settings"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:layout_marginStart="4dp"
+            android:background="@drawable/header_icon_bg"
+            android:contentDescription="@string/settings"
+            android:focusable="true"
+            android:focusableInTouchMode="true"
+            android:padding="10dp"
+            android:src="@drawable/ic_settings"
+            android:tint="@color/pb_white" />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/result_count"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="@dimen/shelf_inset"
+        android:layout_marginTop="8dp"
+        android:layout_marginEnd="@dimen/shelf_inset"
+        android:textColor="@color/pb_muted"
+        android:textSize="13sp" />
+
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:clipChildren="false">
+
+        <androidx.fragment.app.FragmentContainerView
+            android:id="@+id/results"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+
+        <!-- Idle empty state (Flutter _IdleSearch) -->
+        <LinearLayout
+            android:id="@+id/idle_state"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:gravity="center"
+            android:orientation="vertical"
+            android:padding="40dp">
+
+            <ImageView
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:contentDescription="@null"
+                android:src="@drawable/ic_search"
+                android:tint="@color/pb_muted" />
+
+            <TextView
+                android:id="@+id/idle_title"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                android:text="@string/search_idle_title"
+                android:textColor="@color/pb_white"
+                android:textSize="22sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:gravity="center"
+                android:text="@string/search_idle_hint"
+                android:textColor="@color/pb_muted"
+                android:textSize="15sp" />
+        </LinearLayout>
+
+        <ProgressBar
+            android:id="@+id/busy"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:indeterminateTint="@color/pb_seed"
+            android:visibility="gone" />
+    </FrameLayout>
+</LinearLayout>

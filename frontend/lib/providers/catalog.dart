@@ -533,9 +533,11 @@ class SearchNotifier extends StateNotifier<SearchState> {
 
   final Ref _ref;
   Timer? _debounce;
+  var _generation = 0;
 
   void onQueryChanged(String value) {
     _debounce?.cancel();
+    final generation = ++_generation;
     state = state.copyWith(query: value);
     final trimmed = value.trim();
     if (trimmed.isEmpty) {
@@ -552,7 +554,7 @@ class SearchNotifier extends StateNotifier<SearchState> {
       return;
     }
     _debounce = Timer(const Duration(milliseconds: 320), () {
-      _run(trimmed, page: 1, replace: true);
+      _run(trimmed, page: 1, replace: true, generation: generation);
     });
   }
 
@@ -592,10 +594,16 @@ class SearchNotifier extends StateNotifier<SearchState> {
     if (!state.hasNextPage || state.loadingMore || state.loading || q.isEmpty) {
       return;
     }
-    await _run(q, page: state.page + 1, replace: false);
+    await _run(q, page: state.page + 1, replace: false, generation: _generation);
   }
 
-  Future<void> _run(String query, {required int page, required bool replace}) async {
+  Future<void> _run(
+    String query, {
+    required int page,
+    required bool replace,
+    int? generation,
+  }) async {
+    final gen = generation ?? ++_generation;
     state = state.copyWith(loading: replace, loadingMore: !replace, error: null, clearError: true);
     final client = _ref.read(graphQLClientProvider);
     try {
@@ -611,6 +619,7 @@ class SearchNotifier extends StateNotifier<SearchState> {
           fetchPolicy: searchFetchPolicy,
         ),
       );
+      if (gen != _generation) return;
       if (result.hasException) {
         state = state.copyWith(
           loading: false,
@@ -626,6 +635,7 @@ class SearchNotifier extends StateNotifier<SearchState> {
           .where(state.facets.matches)
           .toList();
       items = _sortItems(items, state.sort);
+      if (gen != _generation) return;
       if (!isAndroidTv) unawaited(ArtCache.prefetch(items.take(12)));
       state = state.copyWith(
         query: query,
@@ -640,6 +650,7 @@ class SearchNotifier extends StateNotifier<SearchState> {
         clearError: true,
       );
     } catch (e) {
+      if (gen != _generation) return;
       state = state.copyWith(query: query, recent: _pushRecent(query), loading: false, error: e.toString());
     }
   }

@@ -232,6 +232,7 @@ class NativeVlcPlayer(
                     mapOf(
                         "event" to "buffering",
                         "buffering" to event.buffering.toDouble(),
+                        "playing" to player.isPlaying,
                         "position" to player.time,
                         "duration" to player.length,
                     ),
@@ -380,8 +381,10 @@ class NativeVlcPlayer(
         private var libsLoaded = false
 
         /**
-         * libmla.so (bundled in jniLibs) needs libvlc + c++_shared. Load in order
-         * before MediaPlayer opens codecs — crashes without MLA on many streams.
+         * Do NOT load libmla.so — VLC's MLA JNI requires
+         * org.videolan.medialibrary.MedialibraryImpl (full VLC app), which we
+         * don't ship. Loading MLA aborts the process with SIGABRT on TV.
+         * libvlc-all's LibVLC() loads libvlcjni / libvlc on its own.
          */
         fun preloadNativeLibs() {
             if (libsLoaded) return
@@ -391,17 +394,6 @@ class NativeVlcPlayer(
                     System.loadLibrary("c++_shared")
                 } catch (e: Throwable) {
                     Log.w(TAG, "c++_shared preload: $e")
-                }
-                try {
-                    System.loadLibrary("vlc")
-                } catch (e: Throwable) {
-                    Log.w(TAG, "libvlc preload: $e")
-                }
-                try {
-                    System.loadLibrary("mla")
-                    Log.i(TAG, "libmla.so loaded")
-                } catch (e: Throwable) {
-                    Log.e(TAG, "libmla preload failed — playback may crash: $e")
                 }
                 libsLoaded = true
             }
