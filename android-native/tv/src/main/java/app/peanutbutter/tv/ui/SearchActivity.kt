@@ -291,6 +291,10 @@ class SearchActivity : FragmentActivity() {
             Toast.makeText(this, R.string.voice_unavailable, Toast.LENGTH_SHORT).show()
             return
         }
+        findViewById<EditText>(R.id.query)?.apply {
+            setText("")
+            setSelection(0)
+        }
         recognizer?.destroy()
         val speech = SpeechRecognizer.createSpeechRecognizer(this)
         recognizer = speech

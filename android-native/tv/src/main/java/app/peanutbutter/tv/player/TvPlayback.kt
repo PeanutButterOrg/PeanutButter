@@ -2,7 +2,8 @@ package app.peanutbutter.tv.player
 
 import android.content.Context
 import android.net.Uri
-import android.view.TextureView
+import android.util.Log
+import android.view.SurfaceView
 import android.view.View
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -20,8 +21,8 @@ import java.io.File
 
 /**
  * Jellyfin-style Android TV playback:
- * Media3 ExoPlayer, MediaCodec first, FFmpeg (bundled) when hardware decode fails,
- * Surface video, AudioTrack audio, container subtitles on [SubtitleView].
+ * Media3 ExoPlayer on SurfaceView (TextureView caused green frames on 10-bit HEVC),
+ * MediaCodec first with FFmpeg fallback, container subtitles on [SubtitleView].
  */
 class TvPlayback(
     context: Context,
@@ -31,7 +32,7 @@ class TvPlayback(
     private val appContext = context.applicationContext
     private var exo: ExoPlayer = buildPlayer(preferSoftware = false)
     private var software = false
-    private var textureView: TextureView? = null
+    private var surfaceView: SurfaceView? = null
     private var subtitles: SubtitleView? = null
     private var frame: AspectRatioFrameLayout? = null
     private var aspectMode = "fit"
@@ -59,21 +60,9 @@ class TvPlayback(
         get() = exo.isPlaying
 
     override fun seekTo(positionMs: Long) {
-        val target = positionMs.coerceAtLeast(0L)
-        val cur = exo.currentPosition.coerceAtLeast(0L)
-        val jump = kotlin.math.abs(target - cur)
-        val uri = exo.currentMediaItem?.localConfiguration?.uri
-        // Large scrub on a growing HTTP torrent: pause+seekTo often snaps to 0.
-        // Re-open the same URL at the new position so Exo issues a fresh Range.
-        if (jump > 12_000L && uri != null) {
-            val play = exo.playWhenReady || exo.isPlaying
-            exo.setMediaItem(MediaItem.fromUri(uri), target)
-            exo.prepare()
-            exo.playWhenReady = play
-            if (play) exo.play()
-        } else {
-            exo.seekTo(target)
-        }
+        // Plain seek only — reopening the media item mid-stream caused player
+        // errors / restarts on progressive torrent HTTP.
+        exo.seekTo(positionMs.coerceAtLeast(0L))
     }
 
     fun attachFrame(layout: AspectRatioFrameLayout?) {
@@ -125,18 +114,18 @@ class TvPlayback(
         view?.setBottomPaddingFraction(0.08f)
     }
 
-    override fun attachTexture(view: TextureView?) {
-        textureView = view
-        exo.setVideoTextureView(view)
+    override fun attachSurface(view: SurfaceView?) {
+        surfaceView = view
+        if (view != null) exo.setVideoSurfaceView(view) else exo.clearVideoSurface()
     }
 
     override fun open(url: String, resumeMs: Long, preferSoftware: Boolean) {
         if (preferSoftware != software) {
-            val keep = textureView
+            val keep = surfaceView
             releasePlayerOnly()
             software = preferSoftware
             exo = buildPlayer(preferSoftware)
-            exo.setVideoTextureView(keep)
+            if (keep != null) exo.setVideoSurfaceView(keep)
         }
         listener.onOpening()
         val item = MediaItem.fromUri(url)
@@ -224,7 +213,7 @@ class TvPlayback(
 
     private fun releasePlayerOnly() {
         runCatching {
-            exo.setVideoTextureView(null)
+            exo.clearVideoSurface()
             exo.release()
         }
     }
@@ -233,20 +222,17 @@ class TvPlayback(
         val mode = if (preferSoftware) {
             DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER
         } else {
-            // MediaCodec first. FFmpeg renderers run when the hardware decoder cannot.
             DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON
         }
         val renderers = DefaultRenderersFactory(appContext)
             .setEnableDecoderFallback(true)
             .setExtensionRendererMode(mode)
         val load = DefaultLoadControl.Builder()
-            // After an underrun, resume with a smaller requirement so playback
-            // restarts as soon as the next torrent pieces arrive.
             .setBufferDurationsMs(
                 /* minBufferMs */ 15_000,
-                /* maxBufferMs */ 60_000,
-                /* bufferForPlaybackMs */ 1_200,
-                /* bufferForPlaybackAfterRebufferMs */ 1_500,
+                /* maxBufferMs */ 50_000,
+                /* bufferForPlaybackMs */ 2_500,
+                /* bufferForPlaybackAfterRebufferMs */ 3_000,
             )
             .build()
         return ExoPlayer.Builder(appContext)
@@ -275,7 +261,13 @@ class TvPlayback(
                     }
 
                     override fun onPlayerError(error: PlaybackException) {
-                        listener.onError()
+                        val decoder = error.errorCode == PlaybackException.ERROR_CODE_DECODER_INIT_FAILED ||
+                            error.errorCode == PlaybackException.ERROR_CODE_DECODER_QUERY_FAILED ||
+                            error.errorCode == PlaybackException.ERROR_CODE_DECODING_FAILED ||
+                            error.errorCode == PlaybackException.ERROR_CODE_DECODING_FORMAT_EXCEEDS_CAPABILITIES ||
+                            error.errorCode == PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED
+                        Log.e(TAG, "Exo error code=${error.errorCode} decoder=$decoder ${error.message}")
+                        listener.onError(isDecoderError = decoder)
                     }
 
                     override fun onVideoSizeChanged(videoSize: androidx.media3.common.VideoSize) {
@@ -305,5 +297,9 @@ class TvPlayback(
                     }
                 })
             }
+    }
+
+    companion object {
+        private const val TAG = "TvPlayback"
     }
 }

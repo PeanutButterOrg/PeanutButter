@@ -13,7 +13,7 @@
         android:layout_height="match_parent"
         android:layout_gravity="center">
 
-        <TextureView
+        <SurfaceView
             android:id="@+id/surface"
             android:layout_width="match_parent"
             android:layout_height="match_parent" />
@@ -264,39 +264,19 @@
         android:gravity="start"
         android:orientation="vertical">
 
-        <TextView
+        <include
             android:id="@+id/btn_skip"
+            layout="@layout/player_overlay_action"
             android:layout_width="wrap_content"
-            android:layout_height="44dp"
-            android:background="@drawable/bg_button_primary"
-            android:focusable="true"
-            android:focusableInTouchMode="true"
-            android:gravity="center"
-            android:minWidth="140dp"
-            android:nextFocusDown="@id/btn_play"
-            android:paddingHorizontal="18dp"
-            android:text="@string/skip_intro"
-            android:textColor="@color/pb_white"
-            android:textSize="14sp"
-            android:textStyle="bold"
+            android:layout_height="wrap_content"
             android:visibility="gone" />
 
-        <TextView
+        <include
             android:id="@+id/btn_next"
+            layout="@layout/player_overlay_action"
             android:layout_width="wrap_content"
-            android:layout_height="44dp"
-            android:layout_marginTop="10dp"
-            android:background="@drawable/bg_button_ghost"
-            android:focusable="true"
-            android:focusableInTouchMode="true"
-            android:gravity="center"
-            android:minWidth="140dp"
-            android:nextFocusDown="@id/btn_play"
-            android:paddingHorizontal="18dp"
-            android:text="@string/play_next"
-            android:textColor="@color/pb_white"
-            android:textSize="14sp"
-            android:textStyle="bold"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
             android:visibility="gone" />
     </LinearLayout>
 

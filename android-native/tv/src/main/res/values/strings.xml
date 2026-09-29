@@ -40,6 +40,7 @@
     <string name="stream_start_failed">Couldn\'t start this stream. Try another source.</string>
     <string name="finding_peers">Finding peers…</string>
     <string name="buffering_pct">Buffering %1$d%% · %2$.1f Mb/s</string>
+    <string name="playing_with_speed">Playing · %1$d%% buffered · %2$.1f Mb/s</string>
     <string name="playback_error">Playback error</string>
     <string name="movies">Movies</string>
     <string name="series">Series</string>

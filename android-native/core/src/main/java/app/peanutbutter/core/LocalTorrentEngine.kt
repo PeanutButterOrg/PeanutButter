@@ -75,7 +75,7 @@ object LocalTorrentEngine {
             runCatching { System.loadLibrary("torrent4j") }
             Log.i(TAG, "libtorrent ${LibTorrent.version()} / ${LibTorrent.libtorrent4jVersion()}")
             AppLog.i(TAG, "libtorrent ${LibTorrent.version()} / ${LibTorrent.libtorrent4jVersion()}")
-            val dir = File(context.applicationContext.cacheDir, "pb-streams")
+            val dir = File(context.applicationContext.filesDir, "pb-streams")
             if (!dir.exists()) dir.mkdirs()
             saveDir = dir
             val sm = SessionManager()
@@ -83,16 +83,16 @@ object LocalTorrentEngine {
             // DHT/LSD have crashed libtorrent native on this BeyondTV (armeabi-v7a).
             pack.setEnableDht(false)
             pack.setEnableLsd(false)
-            pack.connectionsLimit(80)
-            pack.activeDownloads(4)
-            pack.activeSeeds(2)
-            pack.activeLimit(6)
+            pack.connectionsLimit(60)
+            pack.activeDownloads(3)
+            pack.activeSeeds(1)
+            pack.activeLimit(4)
             pack.downloadRateLimit(0)
             pack.uploadRateLimit(0)
             pack.listenInterfaces("0.0.0.0:0")
             sm.start()
             sm.applySettings(pack)
-            sm.maxConnections(80)
+            sm.maxConnections(60)
             sm.downloadRateLimit(0)
             sm.uploadRateLimit(0)
             sm.addListener(object : AlertListener {
@@ -114,11 +114,14 @@ object LocalTorrentEngine {
                                 AppLog.i(TAG, "ADD_TORRENT")
                             }
                             AlertType.METADATA_RECEIVED -> {
+                                // Only flip the latch + stash info-hash. Do not poke the
+                                // alert handle further — remap makes it crash-prone on ARM.
                                 metadataLatch.set(true)
-                                val h = (alert as MetadataReceivedAlert).handle()
-                                if (h != null && h.isValid) {
-                                    handleRef.set(h)
-                                    runCatching { infoHashRef.set(h.infoHash()) }
+                                runCatching {
+                                    val h = (alert as MetadataReceivedAlert).handle()
+                                    if (h != null && h.isValid) {
+                                        runCatching { infoHashRef.set(h.infoHash()) }
+                                    }
                                 }
                                 AppLog.i(TAG, "METADATA_RECEIVED")
                             }
@@ -174,68 +177,68 @@ object LocalTorrentEngine {
         AppLog.i(TAG, "download() returned — waiting metadata")
 
         val metaOk = withTimeoutOrNull(180_000L) {
+            // CRITICAL: do not call torrentFile()/status() on the magnet handle
+            // before metadata — that native path crashes armeabi-v7a BeyondTV.
             while (!metadataLatch.get()) {
-                var h = handleRef.get()
-                if (h == null) {
-                    delay(200)
-                    h = handleRef.get()
-                }
-                if (h != null && h.isValid) {
-                    val ti = runCatching { h.torrentFile() }.getOrNull()
-                    if (ti != null && ti.isValid && ti.numFiles() > 0) {
-                        metadataLatch.set(true)
-                        break
-                    }
-                }
-                // Don't call status() until metadata exists — that path crashed native.
                 onStats?.invoke(LocalStreamStats.empty().copy(peers = 0, seeders = 0))
-                delay(400)
+                delay(500)
             }
             true
         } == true
         AppLog.i(TAG, "metadata ok=$metaOk")
         if (!metaOk) {
-            stop(deleteFiles = true)
+            stop(deleteFiles = false)
             throw IllegalStateException("Couldn’t find enough peers to start this stream. Try another result.")
         }
 
         // SessionManager remaps magnet→torrent after metadata; alert handles go stale.
-        delay(500)
+        // Give the native remap a moment before touching the handle again.
+        delay(1_200)
         val handle = liveHandle(sm)
             ?: run {
-                stop(deleteFiles = true)
+                AppLog.e(TAG, "live handle missing after metadata")
+                stop(deleteFiles = false)
                 throw IllegalStateException("Couldn’t start this stream. Try another result.")
             }
         AppLog.i(TAG, "live handle ok hash=${infoHashRef.get()}")
-        runCatching { injectTrackers(handle) }
 
-        val info = handle.torrentFile()
+        // Skip forceReannounce — it has crashed native right after metadata on ARM TVs.
+        runCatching { injectTrackers(handle) }.onFailure {
+            AppLog.e(TAG, "injectTrackers failed", it)
+        }
+
+        val info = runCatching { handle.torrentFile() }.getOrNull()
             ?: run {
-                stop(deleteFiles = true)
+                AppLog.e(TAG, "torrentFile() null after metadata")
+                stop(deleteFiles = false)
                 throw IllegalStateException("Couldn’t start this stream. Try another result.")
             }
+        AppLog.i(TAG, "torrent info files=${info.numFiles()} pieceLength=${info.pieceLength()}")
         val chosen = fileIndex?.takeIf { it in 0 until info.numFiles() }
             ?: pickFile(info, season, episode)
             ?: run {
-                stop(deleteFiles = true)
+                stop(deleteFiles = false)
                 throw IllegalStateException("This source doesn’t contain a playable video file. Try another result.")
             }
         fileIndexRef.set(chosen)
+        AppLog.i(TAG, "chosen file index=$chosen name=${runCatching { info.files().fileName(chosen) }.getOrNull()}")
 
-        val priorities = Priority.array(Priority.IGNORE, info.numFiles())
-        priorities[chosen] = Priority.TOP_PRIORITY
-        runCatching { handle.prioritizeFiles(priorities) }
+        runCatching {
+            val priorities = Priority.array(Priority.IGNORE, info.numFiles())
+            priorities[chosen] = Priority.TOP_PRIORITY
+            handle.prioritizeFiles(priorities)
+        }.onFailure { AppLog.e(TAG, "prioritizeFiles failed", it) }
         runCatching { handle.setFlags(TorrentFlags.SEQUENTIAL_DOWNLOAD) }
         runCatching { handle.resume() }
 
-        // Prioritize the first pieces of the video for quick start.
+        // Prioritize a small head window only — large deadline loops OOMed / crashed ARM.
         val fs = info.files()
         val fileSize = fs.fileSize(chosen)
         val pieceLength = info.pieceLength().coerceAtLeast(1)
         val firstPiece = (fs.fileOffset(chosen) / pieceLength).toInt()
         val lastPiece = ((fs.fileOffset(chosen) + fileSize - 1) / pieceLength).toInt()
         runCatching { handle.setSequentialRange(firstPiece, lastPiece) }
-        val headPieces = ((8L * 1024 * 1024) / pieceLength).toInt().coerceAtLeast(4)
+        val headPieces = ((4L * 1024 * 1024) / pieceLength).toInt().coerceIn(2, 12)
         for (i in 0 until headPieces.coerceAtMost(lastPiece - firstPiece + 1)) {
             val p = firstPiece + i
             runCatching {
@@ -243,6 +246,7 @@ object LocalTorrentEngine {
                 handle.piecePriority(p, Priority.TOP_PRIORITY)
             }
         }
+        AppLog.i(TAG, "prioritized pieces $firstPiece..${firstPiece + headPieces - 1} of $lastPiece")
 
         val videoRel = fs.filePath(chosen)
         val videoFile = File(dir, videoRel)
@@ -358,20 +362,21 @@ object LocalTorrentEngine {
     }
 
     fun seekTo(positionMs: Long, durationMs: Long) {
-        val handle = handleRef.get()?.takeIf { it.isValid } ?: return
+        val sm = session ?: return
+        val handle = liveHandle(sm) ?: return
         val idx = fileIndexRef.get() ?: return
         if (positionMs < 0) return
         try {
-            val st = handle.status()
+            val st = runCatching { handle.status() }.getOrNull() ?: return
             if (st.isFinished || st.progress().toDouble() >= 0.99) return
-            val info = handle.torrentFile() ?: return
+            val info = runCatching { handle.torrentFile() }.getOrNull() ?: return
             val fs = info.files()
             val fileSize = fs.fileSize(idx)
+            if (fileSize <= 0) return
             val pieceLength = info.pieceLength().coerceAtLeast(1)
             val ratio = if (durationMs > 0) {
                 (positionMs.toDouble() / durationMs).coerceIn(0.0, 0.98)
             } else {
-                // Duration unknown — assume ~2 Mbps and map time → byte offset.
                 val assumedBps = 250_000.0
                 ((positionMs / 1000.0) * assumedBps / fileSize).coerceIn(0.0, 0.98)
             }
@@ -379,7 +384,8 @@ object LocalTorrentEngine {
             val piece = ((fs.fileOffset(idx) + offset) / pieceLength).toInt()
             val last = ((fs.fileOffset(idx) + fileSize - 1) / pieceLength).toInt()
             handle.setSequentialRange(piece, last)
-            for (i in 0 until 48) {
+            // Keep deadline window tiny — large loops crashed native on ARM.
+            for (i in 0 until 16) {
                 val p = piece + i
                 if (p > last) break
                 handle.setPieceDeadline(p, 40 + i * 30)
@@ -388,6 +394,7 @@ object LocalTorrentEngine {
             handle.resume()
         } catch (t: Throwable) {
             Log.w(TAG, "seekTo failed", t)
+            AppLog.e(TAG, "seekTo failed", t)
         }
     }
 
@@ -420,8 +427,8 @@ object LocalTorrentEngine {
         stop(deleteFiles = true)
         val roots = listOfNotNull(
             saveDir,
-            File(context.applicationContext.cacheDir, "pb-streams"),
             File(context.applicationContext.filesDir, "pb-streams"),
+            File(context.applicationContext.cacheDir, "pb-streams"),
             context.applicationContext.externalCacheDir?.let { File(it, "pb-streams") },
         )
         for (root in roots) {
@@ -444,10 +451,10 @@ object LocalTorrentEngine {
     }
 
     private fun injectTrackers(handle: TorrentHandle) {
-        for (tr in publicTrackers.take(4)) {
+        for (tr in publicTrackers.take(3)) {
             runCatching { handle.addTracker(AnnounceEntry(tr)) }
         }
-        runCatching { handle.forceReannounce() }
+        // Do NOT forceReannounce here — native crash on BeyondTV after metadata.
     }
 
     /** Keep magnet lean — stuffing dozens of trackers has crashed native on ARM TVs. */

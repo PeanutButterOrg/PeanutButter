@@ -1,5 +1,6 @@
 package app.peanutbutter.tv.player
 
+import android.view.SurfaceView
 import android.view.TextureView
 import androidx.media3.ui.SubtitleView
 import java.io.File
@@ -11,7 +12,7 @@ interface PlaybackEngine {
         fun onBuffering(percent: Int)
         fun onPlaying()
         fun onPaused()
-        fun onError()
+        fun onError(isDecoderError: Boolean = true)
         fun onEnded()
         fun onTime(positionMs: Long)
         fun onDuration(durationMs: Long)
@@ -22,7 +23,8 @@ interface PlaybackEngine {
     val isPlaying: Boolean
 
     fun bindSubtitles(view: SubtitleView?)
-    fun attachTexture(view: TextureView?)
+    fun attachTexture(view: TextureView?) {}
+    fun attachSurface(view: SurfaceView?) {}
     fun open(url: String, resumeMs: Long, preferSoftware: Boolean)
     fun play()
     fun pause()
@@ -30,8 +32,7 @@ interface PlaybackEngine {
     fun release()
 
     /**
-     * Seek to [positionMs]. For progressive HTTP torrents, large jumps should
-     * reopen the media item so Exo issues a fresh Range request.
+     * Seek to [positionMs]. Default maps to [time].
      */
     fun seekTo(positionMs: Long) {
         time = positionMs

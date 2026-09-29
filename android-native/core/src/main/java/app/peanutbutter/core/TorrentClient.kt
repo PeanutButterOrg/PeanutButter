@@ -23,6 +23,9 @@ object TorrentClient {
     private val connRef = AtomicReference<ServiceConnection?>(null)
     @Volatile private var lastStats: LocalStreamStats? = null
 
+    /** Optional UI refresh when a stats reply arrives from `:torrent`. */
+    @Volatile var onStatsUpdated: ((LocalStreamStats) -> Unit)? = null
+
     fun currentStats(): LocalStreamStats? {
         // Request a refresh; return last known immediately.
         val m = messengerRef.get()
@@ -41,7 +44,9 @@ object TorrentClient {
             // READY handled elsewhere; STATS updates cache
         }
         if (msg.what == TorrentService.MSG_STATS) {
-            lastStats = msg.data.toStats()
+            val stats = msg.data.toStats()
+            lastStats = stats
+            onStatsUpdated?.invoke(stats)
         }
         true
     })
@@ -66,6 +71,7 @@ object TorrentClient {
                         val s = msg.data.toStats()
                         lastStats = s
                         onStats?.invoke(s)
+                        onStatsUpdated?.invoke(s)
                     }
                     TorrentService.MSG_READY -> {
                         if (!cont.isActive) return@Handler true

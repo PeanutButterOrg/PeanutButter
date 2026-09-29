@@ -6,9 +6,9 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
-import android.graphics.SurfaceTexture
 import android.view.KeyEvent
-import android.view.TextureView
+import android.view.SurfaceHolder
+import android.view.SurfaceView
 import android.view.View
 import android.widget.FrameLayout
 import android.widget.ImageButton
@@ -40,10 +40,10 @@ import kotlinx.coroutines.withContext
 
 /**
  * ExoPlayer / Media3 torrent player (Jellyfin Android TV approach):
- * MediaCodec hardware decode, FFmpeg when that fails, Surface video.
+ * MediaCodec hardware decode, FFmpeg when that fails, SurfaceView video.
  * Debounced seek retargets the swarm; false-EOF recovery stays.
  */
-class PlayerActivity : FragmentActivity(), TextureView.SurfaceTextureListener {
+class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
     private val main = Handler(Looper.getMainLooper())
     private var player: PlaybackEngine? = null
     private var surfaceReady = false
@@ -81,8 +81,10 @@ class PlayerActivity : FragmentActivity(), TextureView.SurfaceTextureListener {
     private var btnRew: ImageButton? = null
     private var btnFf: ImageButton? = null
     private var overlayActions: View? = null
-    private var btnSkip: TextView? = null
-    private var btnNext: TextView? = null
+    private var btnSkip: View? = null
+    private var btnSkipLabel: TextView? = null
+    private var btnNext: View? = null
+    private var btnNextLabel: TextView? = null
     private var btnSubs: TextView? = null
     private var btnAspect: TextView? = null
     private var leaveDialog: AlertDialog? = null
@@ -107,6 +109,9 @@ class PlayerActivity : FragmentActivity(), TextureView.SurfaceTextureListener {
     private var lastTorrentNudgeMs = 0L
     private var lastSession: StreamSession? = null
     private var hwDecode = true
+    /** Once the torrent has been playable, never fall back to "Finding peers…". */
+    private var torrentReadyLatched = false
+    private var exoBuffering = false
 
     private val hideChrome = Runnable { setChrome(false) }
     private val commitSeek = Runnable { commitPendingSeek() }
@@ -138,16 +143,19 @@ class PlayerActivity : FragmentActivity(), TextureView.SurfaceTextureListener {
         btnFf = findViewById(R.id.btn_ff)
         overlayActions = findViewById(R.id.overlay_actions)
         btnSkip = findViewById(R.id.btn_skip)
+        btnSkipLabel = btnSkip?.findViewById(R.id.overlay_action_label)
         btnNext = findViewById(R.id.btn_next)
+        btnNextLabel = btnNext?.findViewById(R.id.overlay_action_label)
+        btnNextLabel?.setText(R.string.play_next)
         overlayActions?.bringToFront()
         btnSubs = findViewById(R.id.btn_subs)
         btnAspect = findViewById(R.id.btn_aspect)
 
-        val surface = findViewById<TextureView>(R.id.surface)
-        surface.surfaceTextureListener = this
+        val surface = findViewById<SurfaceView>(R.id.surface)
+        surface.holder.addCallback(this)
         // Do NOT create VLC/Exo yet — BeyondTV is armeabi-v7a / low RAM.
         // Loading VLC + libtorrent together OOMs the player activity.
-        surfaceReady = surface.isAvailable
+        surfaceReady = surface.holder.surface?.isValid == true
 
         val title = intent.getStringExtra(EXTRA_TITLE).orEmpty()
         val rawUrl = intent.getStringExtra(EXTRA_URL)?.takeIf { it.isNotBlank() }
@@ -164,6 +172,15 @@ class PlayerActivity : FragmentActivity(), TextureView.SurfaceTextureListener {
             sessionId?.startsWith("local-") == true ||
             rawUrl?.contains("127.0.0.1") == true
         isStream = !sessionId.isNullOrBlank() || localTorrent
+        // 10-bit / HEVC Blu-rays often green-screen on this TV's MediaCodec —
+        // start with FFmpeg software decode for those labels.
+        val hint = listOfNotNull(title, magnet).joinToString(" ").lowercase()
+        if (hint.contains("10bit") || hint.contains("10-bit") ||
+            hint.contains("hevc") || hint.contains("x265") || hint.contains("h265")
+        ) {
+            hwDecode = false
+            AppLog.i(TAG, "prefer software decode (hevc/10bit hint)")
+        }
         application.asTv().activeStreamSession = sessionId
         titleView?.text = title
         statusView?.text = getString(R.string.finding_peers)
@@ -304,12 +321,14 @@ class PlayerActivity : FragmentActivity(), TextureView.SurfaceTextureListener {
             application.asTv().activeStreamSession = started.sessionId
             fileIndex = started.fileIndex
             pendingUrl = started.url
+            torrentReadyLatched = true
             AppLog.i(TAG, "local torrent ready url=${started.url}")
             mediaAttached = false
             streamOpened = false
             // Create player engine only now that libtorrent is up and URL exists.
             main.post {
                 if (stopped) return@post
+                statusView?.text = getString(R.string.starting_stream)
                 ensurePlayer(forceExo = true)
                 attachAndPlay()
             }
@@ -326,25 +345,38 @@ class PlayerActivity : FragmentActivity(), TextureView.SurfaceTextureListener {
     }
 
     private fun startLocalStatusPolling() {
+        TorrentClient.onStatsUpdated = { stats ->
+            if (!stopped) main.post { handleLocalStatsTick(stats) }
+        }
         statusPollJob?.cancel()
         statusPollJob = lifecycleScope.launch {
             while (isActive && !stopped) {
                 val tick = withContext(Dispatchers.IO) { TorrentClient.currentStats() }
                 if (tick != null && !stopped) {
-                    main.post { showLocalTorrentStatus(tick) }
-                    // Open when fully buffered even if first attach failed.
-                    if (!mediaAttached && !pendingUrl.isNullOrBlank() &&
-                        (tick.ready || tick.torrentComplete || tick.bufferPct >= 1.0)
-                    ) {
-                        main.post { attachAndPlay() }
-                    }
+                    main.post { handleLocalStatsTick(tick) }
                 }
                 delay(1_000L)
             }
         }
     }
 
+    private fun handleLocalStatsTick(tick: LocalStreamStats) {
+        showLocalTorrentStatus(tick)
+        if (!mediaAttached && !pendingUrl.isNullOrBlank() &&
+            (tick.ready || tick.torrentComplete || tick.bufferPct >= 1.0)
+        ) {
+            attachAndPlay()
+        }
+    }
+
     private fun showLocalTorrentStatus(stats: LocalStreamStats) {
+        if (stats.ready || stats.torrentComplete || stats.bufferPct >= 1.0) {
+            torrentReadyLatched = true
+        }
+        // Once we have a stream URL, treat as ready for status purposes so the
+        // UI doesn't bounce back to "Finding peers…" while Exo buffers.
+        val ready = torrentReadyLatched || !pendingUrl.isNullOrBlank() ||
+            stats.ready || stats.torrentComplete
         val session = StreamSession(
             id = sessionId.orEmpty(),
             title = titleView?.text?.toString().orEmpty(),
@@ -354,10 +386,83 @@ class PlayerActivity : FragmentActivity(), TextureView.SurfaceTextureListener {
             seeders = stats.seeders,
             peers = stats.peers,
             resumePosition = resumeMs.toInt(),
-            status = if (stats.ready || stats.torrentComplete) "ready" else "buffering",
-            streamUrl = pendingUrl.orEmpty(),
+            status = if (ready) "ready" else "starting",
+            streamUrl = pendingUrl.orEmpty().ifBlank { if (ready) "pending" else "" },
         )
         showTorrentStatus(session)
+    }
+
+    private fun showTorrentStatus(session: StreamSession) {
+        lastSession = session
+        if (session.isReady || session.streamUrl.isNotBlank()) {
+            torrentReadyLatched = true
+        }
+        // Prefer buffer %, but ignore bogus "complete" (1.0 with no real bytes).
+        val rawFrac = when {
+            session.bufferProgress in 0.001..0.999 -> session.bufferProgress
+            session.bufferProgress >= 0.999 && session.progress >= 0.999 -> 1.0
+            session.progress in 0.001..0.999 -> session.progress
+            else -> 0.0
+        }
+        val rawPct = rawFrac * 100
+        val bufPct = when {
+            rawPct >= 99.5 && session.downloadMbps >= 0.05 -> 99
+            rawPct >= 99.5 && session.progress < 0.999 -> 0
+            else -> rawPct.toInt().coerceIn(0, 100)
+        }
+        val speed = when {
+            session.downloadMbps >= 1 -> String.format("%.1f MB/s", session.downloadMbps)
+            session.downloadMbps > 0 -> String.format("%.0f KB/s", session.downloadMbps * 1024)
+            else -> null
+        }
+        topProgress?.isVisible = true
+        topProgress?.progress = bufPct
+        val piecePct = (session.progress * 100).toInt().coerceIn(0, 99).let { p ->
+            if (session.progress >= 0.995 && session.downloadMbps < 0.05) 100 else p
+        }
+        topProgress?.secondaryProgress = piecePct.coerceAtLeast(bufPct)
+
+        if (streamOpened) {
+            seek?.secondaryProgress = (bufPct / 100.0 * SEEK_MAX).toInt().coerceIn(0, SEEK_MAX)
+        }
+
+        val hasSwarm = session.peers > 0 || session.seeders > 0 || session.downloadMbps > 0.01
+        val ready = torrentReadyLatched || session.isReady || !pendingUrl.isNullOrBlank()
+
+        val line = buildString {
+            when {
+                session.isError -> append(session.status)
+                streamOpened && session.downloadMbps < 0.05 && bufPct >= 99 && !exoBuffering ->
+                    append("Playing")
+                streamOpened && session.downloadMbps >= 0.05 ->
+                    append(getString(R.string.playing_with_speed, bufPct.coerceIn(0, 99), session.downloadMbps))
+                streamOpened || ready || hasSwarm || bufPct > 0 -> {
+                    append(getString(R.string.buffering_pct, bufPct.coerceAtLeast(1), session.downloadMbps))
+                    if (!ready && session.peers > 0) append("  ·  ${session.peers} peers")
+                    else if (!ready && session.seeders > 0) append("  ·  ${session.seeders} seeds")
+                }
+                else -> append(getString(R.string.finding_peers))
+            }
+            if (session.downloadMbps <= 0.01 && !ready) {
+                speed?.let { append("  ·  $it") }
+            }
+        }
+        applyStatusLine(line)
+        busy?.isVisible = (!streamOpened) && !userSeeking
+    }
+
+    private fun applyStatusLine(line: String) {
+        if (userSeeking || seekTargetMs >= 0) return
+        statusView?.text = line
+    }
+
+    private fun torrentStatusLine(bufferPct: Int, downloadMbps: Double): String {
+        val pct = bufferPct.coerceIn(0, 100)
+        return if (streamOpened && downloadMbps >= 0.05) {
+            getString(R.string.playing_with_speed, pct, downloadMbps)
+        } else {
+            getString(R.string.buffering_pct, pct.coerceAtLeast(1), downloadMbps)
+        }
     }
 
     private suspend fun waitAndPlay(sessionId: String) {
@@ -390,6 +495,7 @@ class PlayerActivity : FragmentActivity(), TextureView.SurfaceTextureListener {
                 resumeMs = session.resumePosition.toLong()
             }
             pendingUrl = api.playableStreamUrl(url)
+            torrentReadyLatched = true
             mediaAttached = false
             streamOpened = false
             Log.i(TAG, "stream playable url=${pendingUrl?.take(140)}")
@@ -413,11 +519,11 @@ class PlayerActivity : FragmentActivity(), TextureView.SurfaceTextureListener {
                     val tick = withContext(Dispatchers.IO) { api.streamStatus(sessionId) }
                     if (stopped) return@launch
                     main.post { showTorrentStatus(tick) }
-                    // If URL appeared later / changed host, adopt it once before open
                     if (!mediaAttached && tick.streamUrl.isNotBlank()) {
                         val next = api.playableStreamUrl(tick.streamUrl)
                         if (next != pendingUrl) {
                             pendingUrl = next
+                            torrentReadyLatched = true
                             main.post { attachAndPlay() }
                         }
                     }
@@ -429,88 +535,22 @@ class PlayerActivity : FragmentActivity(), TextureView.SurfaceTextureListener {
         }
     }
 
-    private fun showTorrentStatus(session: StreamSession) {
-        lastSession = session
-        // Prefer buffer %, but ignore bogus "complete" (1.0 with no real bytes).
-        val rawFrac = when {
-            session.bufferProgress in 0.001..0.999 -> session.bufferProgress
-            session.bufferProgress >= 0.999 && session.progress >= 0.999 -> 1.0
-            session.progress in 0.001..0.999 -> session.progress
-            else -> 0.0
-        }
-        val rawPct = rawFrac * 100
-        // Don't claim 100% while the swarm is still transferring (desktop parity).
-        val bufPct = when {
-            rawPct >= 99.5 && session.downloadMbps >= 0.05 -> 99
-            rawPct >= 99.5 && session.progress < 0.999 -> 0 // not actually done
-            else -> rawPct.toInt().coerceIn(0, 100)
-        }
-        val speed = when {
-            session.downloadMbps >= 1 -> String.format("%.1f MB/s", session.downloadMbps)
-            session.downloadMbps > 0 -> String.format("%.0f KB/s", session.downloadMbps * 1024)
-            else -> null
-        }
-        topProgress?.isVisible = true
-        topProgress?.progress = bufPct
-        // Secondary = overall piece progress when available
-        val piecePct = (session.progress * 100).toInt().coerceIn(0, 99).let { p ->
-            if (session.progress >= 0.995 && session.downloadMbps < 0.05) 100 else p
-        }
-        topProgress?.secondaryProgress = piecePct.coerceAtLeast(bufPct)
-
-        // Mirror buffer onto the seek secondary so scrubbing shows downloaded span
-        if (streamOpened) {
-            seek?.secondaryProgress = (bufPct / 100.0 * SEEK_MAX).toInt().coerceIn(0, SEEK_MAX)
-        }
-
-        val line = buildString {
-            when {
-                session.isError -> append(session.status)
-                !session.isReady -> {
-                    append(getString(R.string.finding_peers))
-                    append("  ·  $bufPct%")
-                }
-                !streamOpened -> append(getString(R.string.buffering_pct, bufPct, session.downloadMbps))
-                session.downloadMbps > 0.05 || bufPct < 99 -> {
-                    append(getString(R.string.buffering_pct, bufPct, session.downloadMbps))
-                }
-                else -> append("Playing")
-            }
-            speed?.takeIf { session.isReady && streamOpened && session.downloadMbps > 0.05 }
-                ?.let { /* already in buffering_pct */ }
-            if (!session.isReady) {
-                speed?.let { append("  ·  $it") }
-                if (session.seeders > 0) append("  ·  ${session.seeders} seeds")
-                else if (session.peers > 0) append("  ·  ${session.peers} peers")
-            }
-        }
-        // Don't clobber "Seeking…" / skip UI while scrubbing
-        if (!userSeeking && seekTargetMs < 0) {
-            statusView?.text = line
-        }
-        busy?.isVisible = (!session.isReady || !streamOpened) && !userSeeking
-    }
-
-    override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) {
+    override fun surfaceCreated(holder: SurfaceHolder) {
         surfaceReady = true
-        // Defer VLC/Exo until we have a URL — see ensurePlayer in attachAndPlay.
         if (!pendingUrl.isNullOrBlank()) {
             ensurePlayer()
-            player?.attachTexture(findViewById(R.id.surface))
+            player?.attachSurface(findViewById(R.id.surface))
             player?.setAspectMode(application.asTv().session.aspectRatio)
             attachAndPlay()
         }
     }
 
-    override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, width: Int, height: Int) = Unit
+    override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) = Unit
 
-    override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean {
+    override fun surfaceDestroyed(holder: SurfaceHolder) {
         surfaceReady = false
-        player?.attachTexture(null)
-        return true
+        player?.attachSurface(null)
     }
-
-    override fun onSurfaceTextureUpdated(surface: SurfaceTexture) = Unit
 
     private fun ensurePlayer(forceExo: Boolean = false) {
         if (player != null) return
@@ -519,7 +559,7 @@ class PlayerActivity : FragmentActivity(), TextureView.SurfaceTextureListener {
         } else {
             application.asTv().session.playbackEngine
         }
-        AppLog.i(TAG, "ensurePlayer engine=$engine")
+        AppLog.i(TAG, "ensurePlayer engine=$engine hwDecode=$hwDecode")
         player = if (engine == SessionStore.PLAYER_VLC) {
             VlcPlayback(this, playbackListener())
         } else {
@@ -542,13 +582,19 @@ class PlayerActivity : FragmentActivity(), TextureView.SurfaceTextureListener {
 
             override fun onBuffering(percent: Int) {
                 main.post {
+                    exoBuffering = percent < 100
                     if (!userSeeking && percent < 100) {
-                        statusView?.text = "Buffering $percent%"
+                        val tick = lastSession
+                        val mbps = tick?.downloadMbps ?: 0.0
+                        val buf = tick?.bufferProgress?.times(100)?.toInt()?.coerceIn(0, 100) ?: percent
+                        applyStatusLine(torrentStatusLine(buf, mbps))
                         topProgress?.isVisible = true
                         topProgress?.progress = percent
                     }
                     busy?.isVisible = percent < 100 && (!streamOpened || userSeeking)
-                    if (isStream && streamOpened && !userSeeking && percent < 100) {
+                    if (isStream && streamOpened && !userSeeking && percent < 100 &&
+                        lastGoodPosMs > 8_000L
+                    ) {
                         armBufferStallWatch()
                         nudgeTorrentAtPlayhead()
                     }
@@ -560,6 +606,8 @@ class PlayerActivity : FragmentActivity(), TextureView.SurfaceTextureListener {
                 main.post {
                     Log.i(TAG, "ExoPlayer playing pos=${mp.time} len=${mp.length}")
                     streamOpened = true
+                    exoBuffering = false
+                    torrentReadyLatched = true
                     falseEofCount = 0
                     stallRecoverCount = 0
                     cancelBufferStallWatch()
@@ -577,6 +625,7 @@ class PlayerActivity : FragmentActivity(), TextureView.SurfaceTextureListener {
                     main.removeCallbacks(tickProgress)
                     main.post(tickProgress)
                     maybeLoadSegments()
+                    lastSession?.let { showTorrentStatus(it) }
                 }
             }
 
@@ -588,14 +637,31 @@ class PlayerActivity : FragmentActivity(), TextureView.SurfaceTextureListener {
                 }
             }
 
-            override fun onError() {
+            override fun onError(isDecoderError: Boolean) {
                 main.post {
-                    Log.e(TAG, "ExoPlayer error url=$pendingUrl hw=$hwDecode")
-                    if (hwDecode) {
+                    Log.e(TAG, "player error url=$pendingUrl hw=$hwDecode decoder=$isDecoderError")
+                    AppLog.e(TAG, "player error hw=$hwDecode decoder=$isDecoderError")
+                    if (isDecoderError && hwDecode) {
                         hwDecode = false
                         mediaAttached = false
                         statusView?.text = "Retrying with FFmpeg…"
                         attachAndPlay()
+                    } else if (!isDecoderError && isStream && streamOpened) {
+                        // Source/underrun — nudge torrent + soft resume, don't flip decoder.
+                        statusView?.text = "Reconnecting…"
+                        busy?.isVisible = true
+                        val recover = lastGoodPosMs.coerceAtLeast(0L)
+                        if (localTorrent) {
+                            TorrentClient.seekTo(recover, player?.length ?: 0L)
+                        }
+                        main.postDelayed({
+                            if (stopped) return@postDelayed
+                            runCatching {
+                                val mp = player ?: return@runCatching
+                                if (recover > 1_000) mp.seekTo(recover)
+                                mp.play()
+                            }
+                        }, 800L)
                     } else {
                         statusView?.text = getString(R.string.playback_error)
                         busy?.isVisible = false
@@ -648,12 +714,12 @@ class PlayerActivity : FragmentActivity(), TextureView.SurfaceTextureListener {
 
     private fun armBufferStallWatch() {
         if (!isStream || userSeeking || stopped) return
+        if (lastGoodPosMs < 8_000L) return
         if (bufferingSinceMs != 0L) return // already armed; don't reset on % ticks
         bufferingSinceMs = System.currentTimeMillis()
         main.removeCallbacks(bufferStallRecover)
-        // After ~5s of underrun, force a tiny seek-back so Exo/VLC opens a fresh
-        // HTTP Range against newly arrived pieces (manual seek already unsticks this).
-        main.postDelayed(bufferStallRecover, 5_000L)
+        // After ~8s of underrun, soft-seek so Exo re-requests Range bytes.
+        main.postDelayed(bufferStallRecover, 8_000L)
     }
 
     private fun cancelBufferStallWatch() {
@@ -710,7 +776,7 @@ class PlayerActivity : FragmentActivity(), TextureView.SurfaceTextureListener {
         val url = pendingUrl?.takeIf { it.isNotBlank() } ?: return
         if (mediaAttached) {
             if (surfaceReady) {
-                player?.attachTexture(findViewById(R.id.surface))
+                player?.attachSurface(findViewById(R.id.surface))
             }
             return
         }
@@ -722,7 +788,7 @@ class PlayerActivity : FragmentActivity(), TextureView.SurfaceTextureListener {
         val mp = player ?: return
         try {
             Log.i(TAG, "attachAndPlay hw=$hwDecode $url")
-            mp.attachTexture(findViewById(R.id.surface))
+            mp.attachSurface(findViewById(R.id.surface))
             val start = resumeMs
             resumeMs = 0
             mediaAttached = true
@@ -866,9 +932,12 @@ class PlayerActivity : FragmentActivity(), TextureView.SurfaceTextureListener {
         val wasSkip = btnSkip?.isVisible == true
         btnSkip?.isVisible = showSkip
         if (showSkip) {
-            btnSkip?.text = opening?.label?.ifBlank { null } ?: getString(R.string.skip_intro)
+            btnSkipLabel?.text = opening?.label?.ifBlank { null } ?: getString(R.string.skip_intro)
             raiseSkipButtons()
+            updateOverlayFocusChain()
             if (!wasSkip) btnSkip?.requestFocus()
+        } else {
+            updateOverlayFocusChain()
         }
         val nearEnd = dur > 60_000 && (pos >= dur - 45_000 || pos.toDouble() / dur >= 0.97)
         val inCredits = segments.any { it.kind.equals("CREDITS", true) && it.contains(pos, dur) }
@@ -879,6 +948,7 @@ class PlayerActivity : FragmentActivity(), TextureView.SurfaceTextureListener {
         if (!show) {
             playNextVisible = false
             btnNext?.isVisible = false
+            updateOverlayFocusChain()
             return
         }
         val was = playNextVisible
@@ -888,6 +958,29 @@ class PlayerActivity : FragmentActivity(), TextureView.SurfaceTextureListener {
         if (!was) {
             showChrome()
             btnNext?.requestFocus()
+        }
+        updateOverlayFocusChain()
+    }
+
+    /** Keep Skip / Play Next reachable from the transport row after focus leaves. */
+    private fun updateOverlayFocusChain() {
+        val skipVisible = btnSkip?.isVisible == true
+        val nextVisible = btnNext?.isVisible == true
+        val upFromTransport = when {
+            skipVisible -> R.id.btn_skip
+            nextVisible -> R.id.btn_next
+            else -> R.id.seek
+        }
+        btnPlay?.nextFocusUpId = upFromTransport
+        btnRew?.nextFocusUpId = upFromTransport
+        btnFf?.nextFocusUpId = upFromTransport
+        if (skipVisible) {
+            btnSkip?.nextFocusDownId = R.id.btn_play
+            btnSkip?.nextFocusUpId = R.id.seek
+        }
+        if (nextVisible) {
+            btnNext?.nextFocusDownId = R.id.btn_play
+            btnNext?.nextFocusUpId = if (skipVisible) R.id.btn_skip else R.id.seek
         }
     }
 
@@ -1054,6 +1147,7 @@ class PlayerActivity : FragmentActivity(), TextureView.SurfaceTextureListener {
         if (streamOpened) chromeBottom?.isVisible = true
         chromeBottom?.animate()?.alpha(1f)?.setDuration(200)?.start()
         placeSkipButtons(true)
+        updateOverlayFocusChain()
         scheduleHideChrome()
     }
 
@@ -1096,11 +1190,36 @@ class PlayerActivity : FragmentActivity(), TextureView.SurfaceTextureListener {
             )
         ) {
             showChrome()
+            if (keyCode == KeyEvent.KEYCODE_DPAD_UP) {
+                when {
+                    btnSkip?.isVisible == true && focus !== btnSkip && focus !== btnNext &&
+                        (focus === btnPlay || focus === btnRew || focus === btnFf || focus === seek) -> {
+                        btnSkip?.requestFocus()
+                        return true
+                    }
+                    btnNext?.isVisible == true && btnSkip?.isVisible != true &&
+                        focus !== btnNext &&
+                        (focus === btnPlay || focus === btnRew || focus === btnFf) -> {
+                        btnNext?.requestFocus()
+                        return true
+                    }
+                }
+            }
             return super.onKeyDown(keyCode, event)
         }
 
         showChrome()
         when (keyCode) {
+            KeyEvent.KEYCODE_DPAD_UP -> {
+                if (btnSkip?.isVisible == true && focus !== btnSkip) {
+                    btnSkip?.requestFocus()
+                    return true
+                }
+                if (btnNext?.isVisible == true && focus !== btnNext) {
+                    btnNext?.requestFocus()
+                    return true
+                }
+            }
             KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
                 togglePlay()
                 return true
@@ -1200,6 +1319,7 @@ class PlayerActivity : FragmentActivity(), TextureView.SurfaceTextureListener {
         leaveDialog?.dismiss()
         leaveDialog = null
         stopped = true
+        TorrentClient.onStatsUpdated = null
         waitJob?.cancel()
         statusPollJob?.cancel()
         main.removeCallbacks(hideChrome)

@@ -3,6 +3,7 @@ package app.peanutbutter.tv.player
 import android.content.Context
 import android.net.Uri
 import android.view.Surface
+import android.view.SurfaceView
 import android.view.TextureView
 import android.view.View
 import androidx.media3.ui.SubtitleView
@@ -23,7 +24,7 @@ class VlcPlayback(
     private val appContext = context.applicationContext
     private var libVLC: LibVLC? = null
     private var mp: MediaPlayer? = null
-    private var texture: TextureView? = null
+    private var surfaceView: SurfaceView? = null
     private var surface: Surface? = null
     private var software = false
     private var aspectMode = "fit"
@@ -50,34 +51,36 @@ class VlcPlayback(
         view?.setCues(emptyList())
     }
 
-    override fun attachTexture(view: TextureView?) {
-        texture = view
+    override fun attachSurface(view: SurfaceView?) {
+        surfaceView = view
         val vout = mp?.vlcVout
-        val tex = view?.surfaceTexture
-        if (view == null || tex == null) {
+        val holder = view?.holder
+        val surf = holder?.surface?.takeIf { it.isValid }
+        if (view == null || surf == null) {
             if (vout != null && vout.areViewsAttached()) vout.detachViews()
-            surface?.release()
             surface = null
             return
         }
-        val next = Surface(tex)
-        surface?.release()
-        surface = next
+        surface = surf
         if (vout == null) return
-        vout.setVideoSurface(next, null)
+        vout.setVideoSurface(surf, holder)
         if (!vout.areViewsAttached()) vout.attachViews()
         val w = view.width.takeIf { it > 0 } ?: appContext.resources.displayMetrics.widthPixels
         val h = view.height.takeIf { it > 0 } ?: appContext.resources.displayMetrics.heightPixels
         vout.setWindowSize(w, h)
     }
 
+    override fun attachTexture(view: TextureView?) {
+        // TextureView path retired — SurfaceView avoids green 10-bit frames.
+    }
+
     override fun open(url: String, resumeMs: Long, preferSoftware: Boolean) {
         if (mp == null || preferSoftware != software) {
-            val keep = texture
+            val keep = surfaceView
             releasePlayerOnly()
             software = preferSoftware
             build()
-            attachTexture(keep)
+            attachSurface(keep)
         }
         val lib = libVLC ?: return
         val player = mp ?: return
@@ -221,7 +224,7 @@ class VlcPlayback(
                     listener.onBuffering(event.buffering.toInt().coerceIn(0, 100))
                 MediaPlayer.Event.Playing -> listener.onPlaying()
                 MediaPlayer.Event.Paused -> listener.onPaused()
-                MediaPlayer.Event.EncounteredError -> listener.onError()
+                MediaPlayer.Event.EncounteredError -> listener.onError(isDecoderError = true)
                 MediaPlayer.Event.EndReached -> listener.onEnded()
                 MediaPlayer.Event.TimeChanged -> listener.onTime(event.timeChanged.coerceAtLeast(0L))
                 MediaPlayer.Event.LengthChanged -> {
@@ -243,7 +246,6 @@ class VlcPlayback(
             mp?.stop()
             mp?.release()
         }
-        surface?.release()
         surface = null
         mp = null
         runCatching { libVLC?.release() }
