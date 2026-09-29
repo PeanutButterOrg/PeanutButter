@@ -1,35 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Skip Intro / Play Next — same oval chrome as rew/play/ff. -->
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<!-- Skip Intro / Play Next — same ghost chip as Aspect / Subtitles. -->
+<TextView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="wrap_content"
-    android:layout_height="52dp"
-    android:background="@drawable/player_control_btn"
-    android:clickable="true"
+    android:layout_height="36dp"
+    android:background="@drawable/bg_button_ghost"
     android:focusable="true"
     android:focusableInTouchMode="true"
     android:gravity="center"
-    android:minWidth="148dp"
-    android:nextFocusDown="@id/btn_play"
-    android:orientation="horizontal"
-    android:paddingHorizontal="18dp">
-
-    <TextView
-        android:id="@+id/overlay_action_label"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:duplicateParentState="true"
-        android:focusable="false"
-        android:textColor="@color/pb_white"
-        android:textSize="14sp"
-        android:textStyle="bold" />
-
-    <ImageView
-        android:layout_width="22dp"
-        android:layout_height="22dp"
-        android:layout_marginStart="8dp"
-        android:contentDescription="@null"
-        android:duplicateParentState="true"
-        android:focusable="false"
-        android:src="@drawable/ic_skip_next"
-        android:tint="@color/pb_white" />
-</LinearLayout>
+    android:minWidth="108dp"
+    android:nextFocusDown="@id/seek"
+    android:paddingHorizontal="14dp"
+    android:textColor="@color/pb_white"
+    android:textSize="13sp"
+    android:textStyle="bold" />

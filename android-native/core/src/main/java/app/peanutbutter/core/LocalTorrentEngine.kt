@@ -383,18 +383,73 @@ object LocalTorrentEngine {
             val offset = (fileSize * ratio).toLong()
             val piece = ((fs.fileOffset(idx) + offset) / pieceLength).toInt()
             val last = ((fs.fileOffset(idx) + fileSize - 1) / pieceLength).toInt()
+            val firstFile = (fs.fileOffset(idx) / pieceLength).toInt()
+
+            // Drop old deadlines so the swarm stops chasing the previous playhead.
+            runCatching { handle.clearPieceDeadlines() }
+
+            // Demote pieces before the seek point — keep them downloadable but not urgent.
+            val prios = Priority.array(Priority.DEFAULT, info.numPieces())
+            for (p in firstFile until piece.coerceAtMost(last + 1)) {
+                if (p in prios.indices) prios[p] = Priority.LOW
+            }
+            // High priority window right at the scrubbed frame.
+            val window = 48
+            for (i in 0 until window) {
+                val p = piece + i
+                if (p > last || p !in prios.indices) break
+                prios[p] = Priority.TOP_PRIORITY
+            }
+            // Keep remaining file pieces default so sequential can continue after the window.
+            runCatching { handle.prioritizePieces(prios) }
             handle.setSequentialRange(piece, last)
-            // Keep deadline window tiny — large loops crashed native on ARM.
-            for (i in 0 until 16) {
+            for (i in 0 until window) {
                 val p = piece + i
                 if (p > last) break
-                handle.setPieceDeadline(p, 40 + i * 30)
-                handle.piecePriority(p, Priority.TOP_PRIORITY)
+                handle.setPieceDeadline(p, 20 + i * 25)
             }
             handle.resume()
+            AppLog.i(TAG, "seekTo pos=$positionMs dur=$durationMs piece=$piece offset=$offset")
+
+            // Flutter parity: open a Range reader at the seek byte so the HTTP
+            // server blocks on those pieces and peers fill from the scrub point.
+            val url = httpServer.get()?.url
+            if (!url.isNullOrBlank()) {
+                Thread {
+                    probeHttpRange(url, offset, fileSize)
+                }.start()
+            }
         } catch (t: Throwable) {
             Log.w(TAG, "seekTo failed", t)
             AppLog.e(TAG, "seekTo failed", t)
+        }
+    }
+
+    /** Pull a few MB from [offset] so libtorrent's piece window follows the seek. */
+    private fun probeHttpRange(url: String, offset: Long, fileSize: Long) {
+        if (offset < 0 || fileSize <= 0) return
+        val end = (offset + 4L * 1024 * 1024 - 1).coerceAtMost(fileSize - 1).coerceAtLeast(offset)
+        var conn: java.net.HttpURLConnection? = null
+        try {
+            conn = (java.net.URL(url).openConnection() as java.net.HttpURLConnection).apply {
+                connectTimeout = 4_000
+                readTimeout = 12_000
+                setRequestProperty("Range", "bytes=$offset-$end")
+            }
+            conn.connect()
+            conn.inputStream.use { input ->
+                val buf = ByteArray(64 * 1024)
+                var got = 0
+                while (got < 2 * 1024 * 1024) {
+                    val n = input.read(buf)
+                    if (n <= 0) break
+                    got += n
+                }
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "probeHttpRange failed: ${t.message}")
+        } finally {
+            runCatching { conn?.disconnect() }
         }
     }
 

@@ -81,10 +81,8 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
     private var btnRew: ImageButton? = null
     private var btnFf: ImageButton? = null
     private var overlayActions: View? = null
-    private var btnSkip: View? = null
-    private var btnSkipLabel: TextView? = null
-    private var btnNext: View? = null
-    private var btnNextLabel: TextView? = null
+    private var btnSkip: TextView? = null
+    private var btnNext: TextView? = null
     private var btnSubs: TextView? = null
     private var btnAspect: TextView? = null
     private var leaveDialog: AlertDialog? = null
@@ -107,6 +105,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
     private var stallRecoverCount = 0
     private var bufferingSinceMs = 0L
     private var lastTorrentNudgeMs = 0L
+    private var lastKnownDurationMs: Long = 0
     private var lastSession: StreamSession? = null
     private var hwDecode = true
     /** Once the torrent has been playable, never fall back to "Finding peers…". */
@@ -143,10 +142,8 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         btnFf = findViewById(R.id.btn_ff)
         overlayActions = findViewById(R.id.overlay_actions)
         btnSkip = findViewById(R.id.btn_skip)
-        btnSkipLabel = btnSkip?.findViewById(R.id.overlay_action_label)
         btnNext = findViewById(R.id.btn_next)
-        btnNextLabel = btnNext?.findViewById(R.id.overlay_action_label)
-        btnNextLabel?.setText(R.string.play_next)
+        btnNext?.setText(R.string.play_next)
         overlayActions?.bringToFront()
         btnSubs = findViewById(R.id.btn_subs)
         btnAspect = findViewById(R.id.btn_aspect)
@@ -680,7 +677,10 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             }
 
             override fun onDuration(durationMs: Long) {
-                if (durationMs > 0) main.post { timeDur?.text = formatMs(durationMs) }
+                if (durationMs > 0) {
+                    lastKnownDurationMs = durationMs
+                    main.post { timeDur?.text = formatMs(durationMs) }
+                }
             }
     }
 
@@ -828,26 +828,31 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             return
         }
         val token = seekToken
-        Log.i(TAG, "commitSeek $target len=${mp.length}")
+        val durationMs = mp.length.takeIf { it > 0 }
+            ?: lastKnownDurationMs.takeIf { it > 0 }
+            ?: 0L
+        Log.i(TAG, "commitSeek $target dur=$durationMs")
         try {
+            // Retarget swarm BEFORE the player Range request so pieces arrive at the scrub.
             if (localTorrent) {
-                TorrentClient.seekTo(target, mp.length.coerceAtLeast(0))
+                TorrentClient.seekTo(target, durationMs)
             }
             mp.seekTo(target)
             lastGoodPosMs = target
             mp.play()
             btnPlay?.setImageResource(R.drawable.ic_pause)
+            statusView?.text = "Buffering at ${formatMs(target)}…"
+            busy?.isVisible = true
         } catch (e: Exception) {
             Log.e(TAG, "seek failed", e)
         }
-        // Keep "seeking" flag briefly so ticks don't yank the thumb back
         main.postDelayed({
             if (token == seekToken) {
                 userSeeking = false
                 seekTargetMs = -1
-                busy?.isVisible = false
+                if (player?.isPlaying == true) busy?.isVisible = false
             }
-        }, 1_200L)
+        }, 1_500L)
         showChrome()
     }
 
@@ -932,7 +937,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         val wasSkip = btnSkip?.isVisible == true
         btnSkip?.isVisible = showSkip
         if (showSkip) {
-            btnSkipLabel?.text = opening?.label?.ifBlank { null } ?: getString(R.string.skip_intro)
+            btnSkip?.text = opening?.label?.ifBlank { null } ?: getString(R.string.skip_intro)
             raiseSkipButtons()
             updateOverlayFocusChain()
             if (!wasSkip) btnSkip?.requestFocus()
@@ -974,13 +979,18 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         btnPlay?.nextFocusUpId = upFromTransport
         btnRew?.nextFocusUpId = upFromTransport
         btnFf?.nextFocusUpId = upFromTransport
+        seek?.nextFocusUpId = when {
+            skipVisible -> R.id.btn_skip
+            nextVisible -> R.id.btn_next
+            else -> R.id.btn_aspect
+        }
         if (skipVisible) {
-            btnSkip?.nextFocusDownId = R.id.btn_play
-            btnSkip?.nextFocusUpId = R.id.seek
+            btnSkip?.nextFocusDownId = R.id.seek
+            btnSkip?.nextFocusUpId = R.id.btn_subs
         }
         if (nextVisible) {
-            btnNext?.nextFocusDownId = R.id.btn_play
-            btnNext?.nextFocusUpId = if (skipVisible) R.id.btn_skip else R.id.seek
+            btnNext?.nextFocusDownId = R.id.seek
+            btnNext?.nextFocusUpId = if (skipVisible) R.id.btn_skip else R.id.btn_subs
         }
     }
 
@@ -1146,6 +1156,9 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         chromeTop?.animate()?.alpha(1f)?.setDuration(200)?.start()
         if (streamOpened) chromeBottom?.isVisible = true
         chromeBottom?.animate()?.alpha(1f)?.setDuration(200)?.start()
+        overlayActions?.alpha = 1f
+        btnSkip?.alpha = 1f
+        btnNext?.alpha = 1f
         placeSkipButtons(true)
         updateOverlayFocusChain()
         scheduleHideChrome()
@@ -1157,7 +1170,39 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             chromeTop?.animate()?.alpha(0f)?.setDuration(280)?.start()
             chromeBottom?.animate()?.alpha(0f)?.setDuration(280)?.start()
             placeSkipButtons(false)
+            // Hide overlay chips with chrome so Back can clear the whole UI.
+            if (btnSkip?.isVisible == true) btnSkip?.alpha = 0f
+            if (btnNext?.isVisible == true) btnNext?.alpha = 0f
+            overlayActions?.alpha = 0f
+            main.removeCallbacks(hideChrome)
+            // Drop focus from chrome so the next key isn't stuck on a hidden control.
+            findViewById<View>(R.id.player_root)?.requestFocus()
+        } else if (visible) {
+            overlayActions?.alpha = 1f
+            btnSkip?.alpha = 1f
+            btnNext?.alpha = 1f
         }
+    }
+
+    private fun overlaysVisible(): Boolean {
+        if (!streamOpened) return false
+        if (chromeVisible) return true
+        if ((chromeTop?.alpha ?: 0f) > 0.2f) return true
+        if ((chromeBottom?.alpha ?: 0f) > 0.2f && chromeBottom?.isVisible == true) return true
+        if ((overlayActions?.alpha ?: 0f) > 0.2f &&
+            (btnSkip?.isVisible == true || btnNext?.isVisible == true)
+        ) return true
+        return false
+    }
+
+    private fun hidePlayerUi() {
+        setChrome(false)
+        chromeTop?.alpha = 0f
+        chromeBottom?.alpha = 0f
+        chromeBottom?.isVisible = false
+        overlayActions?.alpha = 0f
+        chromeVisible = false
+        main.removeCallbacks(hideChrome)
     }
 
     private fun scheduleHideChrome() {
@@ -1173,6 +1218,10 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         if (!streamOpened) {
             if (keyCode == KeyEvent.KEYCODE_BACK) {
+                if (overlaysVisible()) {
+                    hidePlayerUi()
+                    return true
+                }
                 confirmLeave()
                 return true
             }
@@ -1250,6 +1299,15 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                 return true
             }
             KeyEvent.KEYCODE_BACK -> {
+                if (leaveDialog?.isShowing == true) {
+                    leaveDialog?.dismiss()
+                    return true
+                }
+                // First Back hides chrome / overlays; second Back asks to leave.
+                if (overlaysVisible()) {
+                    hidePlayerUi()
+                    return true
+                }
                 confirmLeave()
                 return true
             }

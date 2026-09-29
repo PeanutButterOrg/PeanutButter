@@ -60,9 +60,21 @@ class TvPlayback(
         get() = exo.isPlaying
 
     override fun seekTo(positionMs: Long) {
-        // Plain seek only — reopening the media item mid-stream caused player
-        // errors / restarts on progressive torrent HTTP.
-        exo.seekTo(positionMs.coerceAtLeast(0L))
+        val target = positionMs.coerceAtLeast(0L)
+        val cur = exo.currentPosition.coerceAtLeast(0L)
+        val jump = kotlin.math.abs(target - cur)
+        val uri = exo.currentMediaItem?.localConfiguration?.uri
+        // Large scrub on progressive torrent HTTP: plain seekTo often stays on the
+        // old buffered window. Re-open at the new position so Exo issues a fresh Range.
+        if (jump > 8_000L && uri != null) {
+            val play = exo.playWhenReady || exo.isPlaying
+            exo.setMediaItem(MediaItem.fromUri(uri), target)
+            exo.prepare()
+            exo.playWhenReady = play
+            if (play) exo.play()
+        } else {
+            exo.seekTo(target)
+        }
     }
 
     fun attachFrame(layout: AspectRatioFrameLayout?) {
