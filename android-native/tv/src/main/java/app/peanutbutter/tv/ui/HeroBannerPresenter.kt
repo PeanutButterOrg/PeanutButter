@@ -15,7 +15,6 @@ import app.peanutbutter.core.TitleItem
 import app.peanutbutter.tv.PbGlide
 import app.peanutbutter.tv.R
 import com.bumptech.glide.Glide
-import com.bumptech.glide.request.RequestListener
 
 class HeroCarousel(val items: List<TitleItem>) {
     @Volatile
@@ -130,43 +129,11 @@ class HeroBannerPresenter(
 
             val apply = {
                 eyebrow.text = view.context.getString(R.string.trending_now)
-                titleView.text = title.title
-
-                if (!title.logoUrl.isNullOrBlank()) {
-                    logo.isVisible = true
-                    PbGlide.logo(
-                        logo,
-                        title.logoUrl,
-                        object : RequestListener<android.graphics.drawable.Drawable> {
-                            override fun onLoadFailed(
-                                e: com.bumptech.glide.load.engine.GlideException?,
-                                model: Any?,
-                                target: com.bumptech.glide.request.target.Target<android.graphics.drawable.Drawable>,
-                                isFirstResource: Boolean,
-                            ): Boolean {
-                                logo.isVisible = false
-                                titleView.isVisible = true
-                                return false
-                            }
-
-                            override fun onResourceReady(
-                                resource: android.graphics.drawable.Drawable,
-                                model: Any,
-                                target: com.bumptech.glide.request.target.Target<android.graphics.drawable.Drawable>?,
-                                dataSource: com.bumptech.glide.load.DataSource,
-                                isFirstResource: Boolean,
-                            ): Boolean {
-                                titleView.isVisible = false
-                                logo.isVisible = true
-                                return false
-                            }
-                        },
-                    )
-                } else {
-                    logo.isVisible = false
-                    titleView.isVisible = true
-                    PbGlide.clear(logo)
-                }
+                titleView.text = title.displayTitle
+                // Always show plain app typography — never movie/series logo art.
+                logo.isVisible = false
+                titleView.isVisible = true
+                PbGlide.clear(logo)
 
                 meta.text = buildString {
                     title.year?.let { append(it) }

@@ -48,6 +48,35 @@ object PbGlide {
             .into(view)
     }
 
+    /** Full-bleed player HUD art — always fitXY so aspect never jumps mid-load. */
+    fun playerBackdrop(view: ImageView, url: String?, placeholderColor: Int = R.color.pb_panel) {
+        if (url.isNullOrBlank()) {
+            view.setImageDrawable(null)
+            view.setBackgroundResource(placeholderColor)
+            return
+        }
+        view.background = null
+        view.scaleType = ImageView.ScaleType.FIT_XY
+        val dm = view.resources.displayMetrics
+        val w = dm.widthPixels.coerceIn(640, 1920)
+        val h = dm.heightPixels.coerceIn(360, 1080)
+        // Single request only — a centerCrop thumbnail then fitXY final caused a 1–2s aspect glitch.
+        Glide.with(view)
+            .load(url)
+            .apply(
+                RequestOptions()
+                    .format(DecodeFormat.PREFER_RGB_565)
+                    .disallowHardwareConfig()
+                    .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
+                    .override(w, h)
+                    .dontTransform()
+                    .dontAnimate()
+                    .priority(Priority.IMMEDIATE),
+            )
+            .placeholder(placeholderColor)
+            .into(view)
+    }
+
     fun logo(
         view: ImageView,
         url: String?,

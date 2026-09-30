@@ -33,8 +33,10 @@ class TorrentService : Service() {
                 val season = data.getInt(KEY_SEASON, -1).takeIf { it > 0 }
                 val episode = data.getInt(KEY_EPISODE, -1).takeIf { it > 0 }
                 val fileIndex = data.getInt(KEY_FILE_INDEX, -1).takeIf { it >= 0 }
-                AppLog.i(TAG, "MSG_START magnet=${magnet.take(48)}…")
-                startTorrent(replyTo, magnet, season, episode, fileIndex)
+                val resumeMs = data.getLong(KEY_POSITION_MS, 0L).coerceAtLeast(0L)
+                val durationMs = data.getLong(KEY_DURATION_MS, 0L).coerceAtLeast(0L)
+                AppLog.i(TAG, "MSG_START magnet=${magnet.take(48)}… resumeMs=$resumeMs")
+                startTorrent(replyTo, magnet, season, episode, fileIndex, resumeMs, durationMs)
                 true
             }
             MSG_STOP -> {
@@ -61,8 +63,9 @@ class TorrentService : Service() {
             MSG_SEEK -> {
                 val pos = msg.data?.getLong(KEY_POSITION_MS, 0L) ?: 0L
                 val dur = msg.data?.getLong(KEY_DURATION_MS, 0L) ?: 0L
-                AppLog.i(TAG, "MSG_SEEK pos=$pos dur=$dur")
-                runCatching { LocalTorrentEngine.seekTo(pos, dur) }
+                val aggressive = msg.data?.getBoolean(KEY_AGGRESSIVE, true) != false
+                AppLog.i(TAG, "MSG_SEEK pos=$pos dur=$dur aggressive=$aggressive")
+                runCatching { LocalTorrentEngine.seekTo(pos, dur, aggressive) }
                 true
             }
             else -> false
@@ -96,6 +99,8 @@ class TorrentService : Service() {
         season: Int?,
         episode: Int?,
         fileIndex: Int?,
+        resumeMs: Long = 0L,
+        durationMs: Long = 0L,
     ) {
         job?.cancel()
         if (magnet.isBlank()) {
@@ -104,13 +109,15 @@ class TorrentService : Service() {
         }
         job = scope.launch {
             try {
-                AppLog.i(TAG, "LocalTorrentEngine.start…")
+                AppLog.i(TAG, "LocalTorrentEngine.start… resumeMs=$resumeMs")
                 val handle = LocalTorrentEngine.start(
                     context = this@TorrentService,
                     magnet = magnet,
                     season = season,
                     episode = episode,
                     fileIndex = fileIndex,
+                    resumeMs = resumeMs,
+                    durationMs = durationMs,
                     onStats = { stats ->
                         val b = Bundle().apply {
                             putDouble(KEY_BUFFER, stats.bufferPct)
@@ -181,5 +188,6 @@ class TorrentService : Service() {
         const val KEY_POSITION_MS = "position_ms"
         const val KEY_DURATION_MS = "duration_ms"
         const val KEY_DELETE_FILES = "delete_files"
+        const val KEY_AGGRESSIVE = "aggressive"
     }
 }

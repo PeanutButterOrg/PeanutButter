@@ -11,7 +11,7 @@ query GetHomeFeed(${'$'}kind: TitleKind!) {
   }
 }
 fragment T on Title {
-  id kind title synopsis year runtimeMinutes
+  id kind title originalTitle synopsis year runtimeMinutes
   posterUrl backdropUrl logoUrl
   ratings { tmdbVoteAverage imdbRating rtScore }
   genres
@@ -22,7 +22,7 @@ fragment T on Title {
     const val TITLE = """
 query GetTitle(${'$'}id: UUID!) {
   title(id: ${'$'}id) {
-    id kind title synopsis year runtimeMinutes
+    id kind title originalTitle synopsis year runtimeMinutes
     posterUrl backdropUrl logoUrl
     ratings { tmdbVoteAverage imdbRating rtScore }
     genres
@@ -161,7 +161,7 @@ query Genres { genres }
     const val SEARCH = """
 query Search(${'$'}q: String!, ${'$'}kind: TitleKind) {
   search(query: ${'$'}q, kind: ${'$'}kind) {
-    items { id kind title year posterUrl backdropUrl synopsis ratings { imdbRating tmdbVoteAverage rtScore } genres }
+    items { id kind title originalTitle year posterUrl backdropUrl synopsis ratings { imdbRating tmdbVoteAverage rtScore } genres }
   }
 }
 """
@@ -186,7 +186,7 @@ query GetCatalog(
   }
 }
 fragment T on Title {
-  id kind title synopsis year runtimeMinutes
+  id kind title originalTitle synopsis year runtimeMinutes
   posterUrl backdropUrl logoUrl
   ratings { tmdbVoteAverage imdbRating rtScore }
   genres

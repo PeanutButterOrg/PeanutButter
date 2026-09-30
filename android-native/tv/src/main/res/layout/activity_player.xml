@@ -28,14 +28,15 @@
         android:id="@+id/poster_hud"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:visibility="gone">
+        android:background="@color/pb_panel"
+        android:visibility="visible">
 
         <ImageView
             android:id="@+id/poster_art"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
             android:contentDescription="@null"
-            android:scaleType="centerCrop" />
+            android:scaleType="fitXY" />
 
         <View
             android:layout_width="match_parent"
@@ -264,19 +265,39 @@
         android:gravity="start"
         android:orientation="vertical">
 
-        <include
+        <!-- Same chip attrs as btn_aspect (no extra padding / minWidth). -->
+        <TextView
             android:id="@+id/btn_skip"
-            layout="@layout/player_overlay_action"
             android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
+            android:layout_height="36dp"
+            android:background="@drawable/bg_button_ghost"
+            android:focusable="true"
+            android:focusableInTouchMode="true"
+            android:gravity="center"
+            android:minWidth="88dp"
+            android:nextFocusDown="@id/seek"
+            android:paddingHorizontal="14dp"
+            android:textColor="@color/pb_white"
+            android:textSize="13sp"
+            android:textStyle="bold"
             android:visibility="gone" />
 
-        <include
+        <TextView
             android:id="@+id/btn_next"
-            layout="@layout/player_overlay_action"
             android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
+            android:layout_height="36dp"
+            android:layout_marginTop="8dp"
+            android:background="@drawable/bg_button_ghost"
+            android:focusable="true"
+            android:focusableInTouchMode="true"
+            android:gravity="center"
+            android:minWidth="88dp"
+            android:nextFocusDown="@id/seek"
+            android:paddingHorizontal="14dp"
+            android:text="@string/play_next"
+            android:textColor="@color/pb_white"
+            android:textSize="13sp"
+            android:textStyle="bold"
             android:visibility="gone" />
     </LinearLayout>
 

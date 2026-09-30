@@ -112,23 +112,37 @@ class StreamHttpServer(
         val fileOffset = fs.fileOffset(fileIndex)
         val first = ((fileOffset + start) / pieceLength).toInt()
         val last = ((fileOffset + end) / pieceLength).toInt()
-        val deadline = System.currentTimeMillis() + 45_000L
+        val deadline = System.currentTimeMillis() + 120_000L
         while (System.currentTimeMillis() < deadline && running.get()) {
             val live = handleProvider()?.takeIf { it.isValid } ?: break
             var missing = false
             for (p in first..last) {
-                if (!runCatching { live.havePiece(p) }.getOrDefault(true)) {
+                // Default false — sparse/preallocated files look "present" on disk
+                // even when the piece hasn't arrived; never treat a failed probe as had.
+                val have = runCatching { live.havePiece(p) }.getOrDefault(false)
+                if (!have) {
                     missing = true
                     runCatching {
-                        live.setPieceDeadline(p, 50)
+                        live.setPieceDeadline(p, 10)
+                        live.piecePriority(p, org.libtorrent4j.Priority.TOP_PRIORITY)
+                    }
+                }
+            }
+            // Always warm a few pieces ahead of this read so the next Exo chunk is ready.
+            val warmTo = (last + 8).coerceAtMost(
+                ((fileOffset + fileSize - 1) / pieceLength).toInt(),
+            )
+            for (p in (last + 1)..warmTo) {
+                runCatching {
+                    if (!live.havePiece(p)) {
+                        live.setPieceDeadline(p, 40 + (p - last) * 12)
                         live.piecePriority(p, org.libtorrent4j.Priority.TOP_PRIORITY)
                     }
                 }
             }
             if (!missing) return
-            // Also accept if the on-disk file already covers the range.
-            if (file.exists() && file.length() > end) return
-            Thread.sleep(100)
+            // Short sleep — Exo is blocked on this read; wake ASAP when pieces land.
+            Thread.sleep(40)
         }
     }
 
@@ -146,7 +160,7 @@ class StreamHttpServer(
         }
         val sb = StringBuilder()
         sb.append(status)
-        sb.append("Content-Type: video/mp4\r\n")
+        sb.append("Content-Type: ${contentTypeFor(file)}\r\n")
         sb.append("Accept-Ranges: bytes\r\n")
         sb.append("Content-Length: $length\r\n")
         if (start != 0L || end != fileSize - 1) {
@@ -156,6 +170,20 @@ class StreamHttpServer(
         sb.append("\r\n")
         out.write(sb.toString().toByteArray(Charsets.US_ASCII))
         if (headOnly) out.flush()
+    }
+
+    private fun contentTypeFor(f: File): String {
+        return when (f.name.substringAfterLast('.', "").lowercase()) {
+            "mkv", "webm" -> "video/x-matroska"
+            "mp4", "m4v", "mov" -> "video/mp4"
+            "avi" -> "video/x-msvideo"
+            "ts", "m2ts", "mts" -> "video/mp2t"
+            "mpeg", "mpg", "vob" -> "video/mpeg"
+            "flv" -> "video/x-flv"
+            "ogv" -> "video/ogg"
+            "wmv" -> "video/x-ms-wmv"
+            else -> "video/mp4"
+        }
     }
 
     private fun writeStatus(out: OutputStream, code: Int, msg: String, length: Int) {
@@ -194,14 +222,17 @@ class StreamHttpServer(
 
     private fun parseRange(header: String?, size: Long): Pair<Long, Long> {
         if (size <= 0) return 0L to 0L
+        val defaultChunk = (2L * 1024 * 1024).coerceAtMost(size) - 1
         if (header.isNullOrBlank() || !header.startsWith("bytes=")) {
-            return 0L to (size - 1)
+            // No Range → only the first chunk (never the whole file).
+            return 0L to defaultChunk.coerceAtLeast(0L)
         }
         val spec = header.removePrefix("bytes=").substringBefore(',').trim()
         val dash = spec.indexOf('-')
-        if (dash < 0) return 0L to (size - 1)
+        if (dash < 0) return 0L to defaultChunk.coerceAtLeast(0L)
         val startStr = spec.substring(0, dash)
         val endStr = spec.substring(dash + 1)
+        val openEndedCap = 8L * 1024 * 1024
         return try {
             when {
                 startStr.isEmpty() && endStr.isNotEmpty() -> {
@@ -211,7 +242,8 @@ class StreamHttpServer(
                 }
                 startStr.isNotEmpty() && endStr.isEmpty() -> {
                     val start = startStr.toLong().coerceIn(0, size - 1)
-                    start to (size - 1)
+                    val end = min(start + openEndedCap - 1, size - 1)
+                    start to end
                 }
                 else -> {
                     val start = startStr.toLong().coerceIn(0, size - 1)
@@ -220,7 +252,7 @@ class StreamHttpServer(
                 }
             }
         } catch (_: Exception) {
-            0L to (size - 1)
+            0L to defaultChunk.coerceAtLeast(0L)
         }
     }
 

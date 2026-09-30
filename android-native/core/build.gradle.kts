@@ -32,4 +32,7 @@ dependencies {
     api("org.libtorrent4j:libtorrent4j-android-arm64:2.1.0-39")
     api("org.libtorrent4j:libtorrent4j-android-arm:2.1.0-39")
     api("org.libtorrent4j:libtorrent4j-android-x86_64:2.1.0-39")
+    // 32-bit x86 emulators (ro.product.cpu.abi=x86) need this — without it
+    // playback fails with "On-device torrent streaming isn’t available".
+    api("org.libtorrent4j:libtorrent4j-android-x86:2.1.0-39")
 }

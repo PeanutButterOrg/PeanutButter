@@ -98,20 +98,16 @@ class DetailsActivity : FragmentActivity() {
             isSeries -> getString(R.string.series)
             else -> getString(R.string.movies)
         }
-        title.text = t.title
+        title.text = t.displayTitle
         synopsis.text = t.synopsis.orEmpty()
         synopsis.isVisible = !t.synopsis.isNullOrBlank()
 
         PbGlide.backdrop(backdrop, t.backdropUrl ?: t.posterUrl)
 
-        if (!t.logoUrl.isNullOrBlank()) {
-            logo.isVisible = true
-            title.isVisible = false
-            PbGlide.logo(logo, t.logoUrl)
-        } else {
-            logo.isVisible = false
-            title.isVisible = true
-        }
+        // Always use app text title — never branded logo artwork / colors.
+        logo.isVisible = false
+        title.isVisible = true
+        PbGlide.clear(logo)
 
         chips.removeAllViews()
         var first = true
@@ -275,9 +271,18 @@ class DetailsActivity : FragmentActivity() {
         sections.forEachIndexed { index, section ->
             val above = sections.getOrNull(index - 1)?.cards.orEmpty()
             val below = sections.getOrNull(index + 1)?.cards.orEmpty()
+            val playBtn = findViewById<View>(R.id.btn_play)
             section.cards.forEachIndexed { column, card ->
-                card.nextFocusUpId = (above.getOrNull(column) ?: above.lastOrNull())?.id ?: View.NO_ID
-                card.nextFocusDownId = (below.getOrNull(column) ?: below.firstOrNull())?.id ?: View.NO_ID
+                val left = section.cards.getOrNull(column - 1)
+                val right = section.cards.getOrNull(column + 1)
+                // L/R stay on episode cards in this season row only.
+                card.nextFocusLeftId = left?.id ?: card.id
+                card.nextFocusRightId = right?.id ?: card.id
+                card.nextFocusUpId = (above.getOrNull(column) ?: above.lastOrNull())?.id
+                    ?: playBtn?.id
+                    ?: View.NO_ID
+                card.nextFocusDownId = (below.getOrNull(column) ?: below.firstOrNull())?.id
+                    ?: View.NO_ID
             }
         }
     }
@@ -525,9 +530,9 @@ class DetailsActivity : FragmentActivity() {
         }
 
         val query = if (season != null && episode != null) {
-            String.format("%s S%02dE%02d", t.title, season, episode)
+            String.format("%s S%02dE%02d", t.displayTitle, season, episode)
         } else {
-            t.title
+            t.displayTitle
         }
         val wantResume = !fromBeginning && t.canResume &&
             (playEpisodeId == null || playEpisodeId == t.episodeId)
@@ -634,8 +639,8 @@ class DetailsActivity : FragmentActivity() {
     ) {
         val api = application.asTv().api
         val label = if (season != null && episode != null) {
-            String.format("%s S%02dE%02d", t.title, season, episode)
-        } else t.title
+            String.format("%s S%02dE%02d", t.displayTitle, season, episode)
+        } else t.displayTitle
         try {
             // Flutter parity: open the player immediately; torrent starts there.
             // Waiting for peers on DetailsActivity was killing this screen on TV.
@@ -661,7 +666,15 @@ class DetailsActivity : FragmentActivity() {
                     .putExtra(PlayerActivity.EXTRA_KIND, t.kind)
                     .putExtra(PlayerActivity.EXTRA_SEASON, season ?: -1)
                     .putExtra(PlayerActivity.EXTRA_EPISODE, episode ?: -1)
-                    .putExtra(PlayerActivity.EXTRA_RESUME_MS, seek),
+                    .putExtra(PlayerActivity.EXTRA_RESUME_MS, seek)
+                    .putExtra(
+                        PlayerActivity.EXTRA_DURATION_MS,
+                        when {
+                            t.durationMs > 0L -> t.durationMs
+                            (t.runtimeMinutes ?: 0) > 0 -> t.runtimeMinutes!! * 60_000L
+                            else -> 0L
+                        },
+                    ),
             )
         } catch (t: Throwable) {
             AppLog.e(TAG, "playSource failed", t)
@@ -734,17 +747,49 @@ private class SeasonSection(
     val landing: View?,
 )
 
-/** Keeps the focused episode card in the middle of its row and on screen vertically. */
+/** Keeps focused episode cards in-row for L/R; U/D leave to adjacent seasons. */
 private class CenterFocusScroll(
     context: android.content.Context,
 ) : HorizontalScrollView(context) {
     init {
         isHorizontalScrollBarEnabled = false
         isFocusable = false
+        isFocusableInTouchMode = false
+        descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
         clipChildren = false
         clipToPadding = false
         val pad = resources.getDimensionPixelSize(R.dimen.shelf_inset)
         setPadding(pad, 0, pad, 0)
+    }
+
+    override fun focusSearch(focused: View?, direction: Int): View? {
+        val row = getChildAt(0) as? ViewGroup
+        if (focused != null && row != null) {
+            val card = findDirectChild(row, focused)
+            if (card != null) {
+                when (direction) {
+                    View.FOCUS_LEFT, View.FOCUS_RIGHT -> {
+                        val idx = row.indexOfChild(card)
+                        val nextIdx = if (direction == View.FOCUS_LEFT) idx - 1 else idx + 1
+                        if (nextIdx in 0 until row.childCount) {
+                            return row.getChildAt(nextIdx)
+                        }
+                        // End of season row — stay on this card (don't jump to cast/hero).
+                        return focused
+                    }
+                }
+            }
+        }
+        return super.focusSearch(focused, direction)
+    }
+
+    private fun findDirectChild(row: ViewGroup, focused: View): View? {
+        var v: View? = focused
+        while (v != null) {
+            if (v.parent === row) return v
+            v = v.parent as? View
+        }
+        return null
     }
 
     override fun requestChildRectangleOnScreen(
@@ -757,6 +802,7 @@ private class CenterFocusScroll(
         val max = (content - width).coerceAtLeast(0)
         val x = target.coerceIn(0, max)
         if (immediate) scrollTo(x, scrollY) else smoothScrollTo(x, scrollY)
-        return super.requestChildRectangleOnScreen(child, rectangle, immediate)
+        // false → let the outer vertical ScrollView bring the row on-screen.
+        return false
     }
 }

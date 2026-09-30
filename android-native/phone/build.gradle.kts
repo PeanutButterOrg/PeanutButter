@@ -41,6 +41,9 @@ dependencies {
     implementation("androidx.activity:activity-ktx:1.9.3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("com.github.bumptech.glide:glide:4.16.0")
-    implementation("androidx.media3:media3-exoplayer:1.5.1")
-    implementation("androidx.media3:media3-ui:1.5.1")
+    implementation("androidx.media3:media3-exoplayer:1.8.0")
+    implementation("androidx.media3:media3-ui:1.8.0")
+    implementation("androidx.media3:media3-datasource:1.8.0")
+    implementation("androidx.media3:media3-extractor:1.8.0")
+    implementation("org.jellyfin.media3:media3-ffmpeg-decoder:1.8.0+1")
 }

@@ -11,6 +11,7 @@ data class TitleItem(
     val id: String,
     val kind: String,
     val title: String,
+    val originalTitle: String? = null,
     val synopsis: String? = null,
     val year: Int? = null,
     val runtimeMinutes: Int? = null,
@@ -32,14 +33,24 @@ data class TitleItem(
     val seasons: List<Season> = emptyList(),
     val episodeId: String? = null,
 ) {
-    /** 0..1 watch progress for poster bar (Flutter _progressOf). */
+    /**
+     * Prefer original (usually English) title so UI never switches into
+     * localized / logo-branded artwork styles.
+     */
+    val displayTitle: String
+        get() = originalTitle?.takeIf { it.isNotBlank() } ?: title
+    /** 0..1 watch progress for poster bars (Flutter _progressOf). */
     val watchProgress: Double
         get() {
             if (watched) return 0.0
-            if (progressPercent > 0.02) return progressPercent.coerceIn(0.0, 1.0)
-            if (positionMs < 2000) return 0.0
-            if (durationMs <= 0) return 0.08
-            return (positionMs.toDouble() / durationMs).coerceIn(0.0, 1.0)
+            // Prefer in-episode fraction when we have a resume position — series-wide
+            // progressPercent can be tiny (ep1 of 100 ≈ 0.01) and hide the bar.
+            if (positionMs > 2000L && durationMs > 0L) {
+                return (positionMs.toDouble() / durationMs).coerceIn(0.0, 0.98)
+            }
+            if (progressPercent > 0.0) return progressPercent.coerceIn(0.0, 1.0)
+            if (positionMs > 2000L) return 0.08
+            return 0.0
         }
 
     val canResume: Boolean get() = !watched && positionMs > 2000

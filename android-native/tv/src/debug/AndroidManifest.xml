@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <!-- Debug-only: allow adb am start for emulator verification. -->
+    <application>
+        <activity
+            android:name=".player.PlayerActivity"
+            android:exported="true"
+            tools:replace="android:exported" />
+    </application>
+</manifest>

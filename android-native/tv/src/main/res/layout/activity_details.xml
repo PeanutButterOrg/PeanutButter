@@ -12,6 +12,7 @@
         android:layout_height="match_parent"
         android:clipChildren="false"
         android:clipToPadding="false"
+        android:descendantFocusability="afterDescendants"
         android:fillViewport="true"
         android:overScrollMode="never"
         android:scrollbars="none">

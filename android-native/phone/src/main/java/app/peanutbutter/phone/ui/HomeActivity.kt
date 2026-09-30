@@ -6,9 +6,11 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.ImageView
+import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.isVisible
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import app.peanutbutter.core.TitleItem
@@ -40,7 +42,7 @@ class HomeActivity : AppCompatActivity() {
             startActivity(
                 Intent(this, DetailsActivity::class.java)
                     .putExtra(DetailsActivity.EXTRA_ID, title.id)
-                    .putExtra(DetailsActivity.EXTRA_TITLE, title.title),
+                    .putExtra(DetailsActivity.EXTRA_TITLE, title.displayTitle),
             )
         }
         val list = findViewById<RecyclerView>(R.id.list)
@@ -75,6 +77,7 @@ class PosterAdapter(
         val poster: ImageView = view.findViewById(R.id.poster)
         val title: TextView = view.findViewById(R.id.title)
         val year: TextView = view.findViewById(R.id.year)
+        val progress: ProgressBar = view.findViewById(R.id.progress)
     }
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VH {
@@ -86,9 +89,21 @@ class PosterAdapter(
 
     override fun onBindViewHolder(holder: VH, position: Int) {
         val item = items[position]
-        holder.title.text = item.title
+        holder.title.text = item.displayTitle
         holder.year.text = item.year?.toString().orEmpty()
         holder.year.visibility = if (item.year != null) View.VISIBLE else View.GONE
+        val p = item.watchProgress
+        if (p > 0.0 || item.canResume) {
+            holder.progress.isVisible = true
+            val fraction = when {
+                p <= 0.0 -> 0.08
+                p < 0.08 -> 0.08
+                else -> p.coerceAtMost(0.98)
+            }
+            holder.progress.progress = (fraction * 100).toInt().coerceIn(8, 98)
+        } else {
+            holder.progress.isVisible = false
+        }
         Glide.with(holder.poster)
             .load(item.posterUrl)
             .placeholder(R.drawable.poster_placeholder)

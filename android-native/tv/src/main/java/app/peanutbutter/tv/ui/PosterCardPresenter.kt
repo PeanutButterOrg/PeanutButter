@@ -2,10 +2,11 @@ package app.peanutbutter.tv.ui
 
 import android.util.TypedValue
 import android.view.LayoutInflater
+import android.view.View
 import android.view.ViewGroup
+import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
-import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.core.view.isVisible
 import androidx.leanback.widget.Presenter
@@ -61,9 +62,10 @@ class PosterCardPresenter(
         val scoreValue = root.findViewById<TextView>(R.id.score_value)
         val scoreSource = root.findViewById<TextView>(R.id.score_source)
         val scoreStar = root.findViewById<ImageView>(R.id.score_star)
-        val progress = root.findViewById<ProgressBar>(R.id.progress)
+        val progress = root.findViewById<ViewGroup>(R.id.progress)
+        val progressFill = root.findViewById<View>(R.id.progress_fill)
 
-        titleView.text = title.title
+        titleView.text = title.displayTitle
         // Flutter: year only under title (no rating / genres / runtime)
         metaView.text = title.year?.toString().orEmpty()
         metaView.isVisible = title.year != null
@@ -86,9 +88,24 @@ class PosterCardPresenter(
         }
 
         val p = title.watchProgress
-        if (p > 0.02) {
+        // Continue-watching / resume items often sit at ~1% — still show a clear bar.
+        if (p > 0.0 || title.canResume) {
+            val fraction = when {
+                p <= 0.0 -> 0.08
+                p < 0.08 -> 0.08 // minimum visible chunk on 10-foot UI
+                else -> p.coerceAtMost(0.98)
+            }
             progress.isVisible = true
-            progress.progress = (p * 100).toInt().coerceIn(0, 100)
+            progress.bringToFront()
+            fun applyFill() {
+                val trackW = progress.width.takeIf { it > 0 } ?: face.width
+                if (trackW <= 0) return
+                val lp = progressFill.layoutParams as FrameLayout.LayoutParams
+                lp.width = (trackW * fraction).toInt().coerceAtLeast(dp(root, 12))
+                progressFill.layoutParams = lp
+            }
+            applyFill()
+            if (progress.width <= 0) progress.post { applyFill() }
         } else {
             progress.isVisible = false
         }

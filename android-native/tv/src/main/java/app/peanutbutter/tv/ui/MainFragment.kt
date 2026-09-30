@@ -166,7 +166,7 @@ class MainFragment : RowsSupportFragment() {
         startActivity(
             Intent(requireContext(), DetailsActivity::class.java)
                 .putExtra(DetailsActivity.EXTRA_ID, item.id)
-                .putExtra(DetailsActivity.EXTRA_TITLE, item.title),
+                .putExtra(DetailsActivity.EXTRA_TITLE, item.displayTitle),
         )
     }
 

@@ -496,6 +496,7 @@ class ApiClient(
             id = o.getStringOr("id", ""),
             kind = o.getStringOr("kind", "MOVIE"),
             title = o.getStringOr("title", ""),
+            originalTitle = o.get("originalTitle")?.takeUnless { it.isJsonNull }?.asString,
             synopsis = o.get("synopsis")?.takeUnless { it.isJsonNull }?.asString,
             year = o.get("year")?.takeUnless { it.isJsonNull }?.asInt,
             runtimeMinutes = o.get("runtimeMinutes")?.takeUnless { it.isJsonNull }?.asInt,
@@ -506,9 +507,12 @@ class ApiClient(
             tmdbVoteAverage = ratings?.get("tmdbVoteAverage")?.takeUnless { it.isJsonNull }?.asDouble,
             rtScore = ratings?.get("rtScore")?.takeUnless { it.isJsonNull }?.asInt,
             genres = genres,
-            positionMs = state?.getLongOr("positionMs", 0) ?: 0,
-            durationMs = state?.getLongOr("durationMs", 0) ?: 0,
-            progressPercent = state?.get("progressPercent")?.takeUnless { it.isJsonNull }?.asDouble ?: 0.0,
+            positionMs = state?.numberLong("positionMs") ?: 0,
+            durationMs = state?.numberLong("durationMs") ?: 0,
+            progressPercent = state?.numberDouble("progressPercent")?.let { pct ->
+                // Accept 0–1 or 0–100 from older payloads.
+                if (pct > 1.0) (pct / 100.0).coerceIn(0.0, 1.0) else pct.coerceIn(0.0, 1.0)
+            } ?: 0.0,
             watched = state?.getBooleanOr("watched", false) ?: false,
             favorite = state?.getBooleanOr("favorite", false) ?: false,
             trailerYoutubeKey = o.get("trailerYoutubeKey")?.takeUnless { it.isJsonNull }?.asString,
@@ -566,10 +570,11 @@ class ApiClient(
                     airDate = e.get("airDate")?.takeUnless { it.isJsonNull }?.asString,
                     runtime = e.get("runtime")?.takeUnless { it.isJsonNull }?.asInt,
                     watched = st?.getBooleanOr("watched", false) ?: false,
-                    positionMs = st?.getLongOr("positionMs", 0) ?: 0,
-                    durationMs = st?.getLongOr("durationMs", 0) ?: 0,
-                    progressPercent = st?.get("progressPercent")?.takeUnless { it.isJsonNull }?.asDouble
-                        ?: 0.0,
+                    positionMs = st?.numberLong("positionMs") ?: 0,
+                    durationMs = st?.numberLong("durationMs") ?: 0,
+                    progressPercent = st?.numberDouble("progressPercent")?.let { pct ->
+                        if (pct > 1.0) (pct / 100.0).coerceIn(0.0, 1.0) else pct.coerceIn(0.0, 1.0)
+                    } ?: 0.0,
                 )
             }.onFailure {
                 android.util.Log.w("ApiClient", "parseEpisode failed", it)
@@ -638,6 +643,20 @@ private fun JsonObject.getLongOr(key: String, fallback: Long): Long =
 
 private fun JsonObject.getBooleanOr(key: String, fallback: Boolean): Boolean =
     get(key)?.takeUnless { it.isJsonNull }?.asBoolean ?: fallback
+
+private fun JsonObject.numberLong(key: String): Long? {
+    val el = get(key)?.takeUnless { it.isJsonNull } ?: return null
+    return runCatching { el.asLong }.getOrElse {
+        runCatching { el.asDouble.toLong() }.getOrNull()
+    }
+}
+
+private fun JsonObject.numberDouble(key: String): Double? {
+    val el = get(key)?.takeUnless { it.isJsonNull } ?: return null
+    return runCatching { el.asDouble }.getOrElse {
+        runCatching { el.asLong.toDouble() }.getOrNull()
+    }
+}
 
 private fun JsonElement?.asLongSafe(): Long? =
     this?.takeUnless { it.isJsonNull }?.asLong

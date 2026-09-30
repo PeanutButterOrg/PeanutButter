@@ -34,7 +34,8 @@
                 android:layout_height="wrap_content"
                 android:layout_gravity="bottom"
                 android:orientation="vertical"
-                android:padding="8dp">
+                android:paddingHorizontal="8dp"
+                android:paddingBottom="10dp">
 
                 <TextView
                     android:id="@+id/title"
@@ -53,6 +54,17 @@
                     android:textColor="@color/pb_white54"
                     android:textSize="11sp" />
             </LinearLayout>
+
+            <ProgressBar
+                android:id="@+id/progress"
+                style="?android:attr/progressBarStyleHorizontal"
+                android:layout_width="match_parent"
+                android:layout_height="4dp"
+                android:layout_gravity="bottom"
+                android:max="100"
+                android:progressBackgroundTint="#3DFFFFFF"
+                android:progressTint="@color/pb_seed"
+                android:visibility="gone" />
         </FrameLayout>
     </com.google.android.material.card.MaterialCardView>
 </FrameLayout>

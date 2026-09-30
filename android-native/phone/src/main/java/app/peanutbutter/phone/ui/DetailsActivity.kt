@@ -45,7 +45,7 @@ class DetailsActivity : AppCompatActivity() {
     }
 
     private fun bind(item: TitleItem) {
-        findViewById<TextView>(R.id.title).text = item.title
+        findViewById<TextView>(R.id.title).text = item.displayTitle
         findViewById<TextView>(R.id.meta).text = buildString {
             item.year?.let { append(it) }
             item.imdbRating?.let {
@@ -132,12 +132,12 @@ class DetailsActivity : AppCompatActivity() {
         val isSeries = item.kind.equals("SERIES", true) ||
             item.kind.equals("ANIME", true) ||
             item.kind.equals("TV", true)
-        if (!isSeries) return SourceLookup(item.title, null, null)
-        val target = item.seriesPlayTarget() ?: return SourceLookup(item.title, null, null)
+        if (!isSeries) return SourceLookup(item.displayTitle, null, null)
+        val target = item.seriesPlayTarget() ?: return SourceLookup(item.displayTitle, null, null)
         val season = target.first.seasonNumber
         val episode = target.second.episodeNumber
         return SourceLookup(
-            String.format("%s S%02dE%02d", item.title, season, episode),
+            String.format("%s S%02dE%02d", item.displayTitle, season, episode),
             season,
             episode,
         )
@@ -153,6 +153,8 @@ class DetailsActivity : AppCompatActivity() {
                     magnet = source.magnet,
                     season = lookup.season,
                     episode = lookup.episode,
+                    resumeMs = item.positionMs,
+                    durationMs = item.durationMs,
                 )
                 if (started.sessionId.isBlank() || started.url.isBlank()) {
                     Toast.makeText(this@DetailsActivity, "Couldn't start stream", Toast.LENGTH_LONG).show()
@@ -160,7 +162,7 @@ class DetailsActivity : AppCompatActivity() {
                 }
                 startActivity(
                     Intent(this@DetailsActivity, PlayerActivity::class.java)
-                        .putExtra(PlayerActivity.EXTRA_TITLE, item.title)
+                        .putExtra(PlayerActivity.EXTRA_TITLE, item.displayTitle)
                         .putExtra(PlayerActivity.EXTRA_SESSION, started.sessionId)
                         .putExtra(PlayerActivity.EXTRA_URL, started.url)
                         .putExtra(PlayerActivity.EXTRA_LOCAL, true),

@@ -10,10 +10,15 @@ import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.extractor.DefaultExtractorsFactory
 import androidx.media3.ui.PlayerView
 import app.peanutbutter.core.LocalTorrentEngine
 import app.peanutbutter.core.StreamSession
@@ -36,7 +41,11 @@ class PlayerActivity : AppCompatActivity() {
     private var streamOpened = false
     private var lastGoodPosMs = 0L
     private var stallRecoverCount = 0
+    private var falseEofCount = 0
     private var stallArmed = false
+    private var lastBufferPct = 0.0
+    private var torrentComplete = false
+    private var software = false
     private var statusView: TextView? = null
     private var busy: ProgressBar? = null
     private val main = Handler(Looper.getMainLooper())
@@ -56,59 +65,8 @@ class PlayerActivity : AppCompatActivity() {
         statusView = findViewById(R.id.status)
         busy = findViewById(R.id.busy)
 
-        val load = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(15_000, 60_000, 1_200, 1_500)
-            .build()
-        val exo = ExoPlayer.Builder(this).setLoadControl(load).build()
-        player = exo
-        findViewById<PlayerView>(R.id.player).player = exo
-        exo.addListener(object : Player.Listener {
-            override fun onPlaybackStateChanged(playbackState: Int) {
-                when (playbackState) {
-                    Player.STATE_BUFFERING -> {
-                        statusView?.text = "Buffering…"
-                        busy?.visibility = View.VISIBLE
-                        if (streamOpened && localTorrent) {
-                            armBufferStallWatch()
-                            nudgeTorrentAtPlayhead()
-                        }
-                    }
-                    Player.STATE_READY -> {
-                        streamOpened = true
-                        stallRecoverCount = 0
-                        cancelBufferStallWatch()
-                        statusView?.text = "Playing"
-                        busy?.visibility = View.GONE
-                    }
-                    Player.STATE_ENDED -> {
-                        if (localTorrent && streamOpened) {
-                            handleFalseEof()
-                        } else {
-                            statusView?.text = "Ended"
-                        }
-                    }
-                    else -> Unit
-                }
-            }
-
-            override fun onIsPlayingChanged(isPlaying: Boolean) {
-                if (isPlaying) {
-                    streamOpened = true
-                    stallRecoverCount = 0
-                    cancelBufferStallWatch()
-                }
-            }
-
-            override fun onEvents(player: Player, events: Player.Events) {
-                val pos = player.currentPosition.coerceAtLeast(0L)
-                if (pos > lastGoodPosMs) lastGoodPosMs = pos
-            }
-
-            override fun onPlayerError(error: PlaybackException) {
-                statusView?.text = error.message ?: "Playback error"
-                busy?.visibility = View.GONE
-            }
-        })
+        player = buildPlayer(preferSoftware = false)
+        findViewById<PlayerView>(R.id.player).player = player
 
         if (localTorrent && directUrl.isNotBlank()) {
             openUrl(directUrl)
@@ -125,6 +83,104 @@ class PlayerActivity : AppCompatActivity() {
         }
     }
 
+    private fun buildPlayer(preferSoftware: Boolean): ExoPlayer {
+        val mode = if (preferSoftware) {
+            DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER
+        } else {
+            DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON
+        }
+        val renderers = DefaultRenderersFactory(this)
+            .setEnableDecoderFallback(true)
+            .setExtensionRendererMode(mode)
+        val load = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(3_500, 14_000, 400, 1_800)
+            .setPrioritizeTimeOverSizeThresholds(true)
+            .build()
+        val http = DefaultHttpDataSource.Factory()
+            .setAllowCrossProtocolRedirects(true)
+            .setConnectTimeoutMs(8_000)
+            .setReadTimeoutMs(60_000)
+            .setUserAgent("PeanutButterPhone/1.0")
+        val extractors = DefaultExtractorsFactory()
+            // Don't scan 0→resume on torrents — use container indexes + Range seeks.
+            .setConstantBitrateSeekingEnabled(false)
+        val mediaSources = DefaultMediaSourceFactory(this, extractors)
+            .setDataSourceFactory(http)
+        return ExoPlayer.Builder(this)
+            .setRenderersFactory(renderers)
+            .setLoadControl(load)
+            .setMediaSourceFactory(mediaSources)
+            .build()
+            .also { exo ->
+                exo.addListener(object : Player.Listener {
+                    override fun onPlaybackStateChanged(playbackState: Int) {
+                        when (playbackState) {
+                            Player.STATE_BUFFERING -> {
+                                statusView?.text = "Buffering…"
+                                busy?.visibility = View.VISIBLE
+                                if (streamOpened && localTorrent) {
+                                    armBufferStallWatch()
+                                    nudgeTorrentAtPlayhead()
+                                }
+                            }
+                            Player.STATE_READY -> {
+                                streamOpened = true
+                                stallRecoverCount = 0
+                                falseEofCount = 0
+                                cancelBufferStallWatch()
+                                statusView?.text = "Playing"
+                                busy?.visibility = View.GONE
+                            }
+                            Player.STATE_ENDED -> handleEndReached()
+                            else -> Unit
+                        }
+                    }
+
+                    override fun onIsPlayingChanged(isPlaying: Boolean) {
+                        if (isPlaying) {
+                            streamOpened = true
+                            stallRecoverCount = 0
+                            cancelBufferStallWatch()
+                        }
+                    }
+
+                    override fun onEvents(player: Player, events: Player.Events) {
+                        val pos = player.currentPosition.coerceAtLeast(0L)
+                        if (pos > lastGoodPosMs) lastGoodPosMs = pos
+                    }
+
+                    override fun onPlayerError(error: PlaybackException) {
+                        val code = error.errorCode
+                        val decoder = code == PlaybackException.ERROR_CODE_DECODER_INIT_FAILED ||
+                            code == PlaybackException.ERROR_CODE_DECODER_QUERY_FAILED ||
+                            code == PlaybackException.ERROR_CODE_DECODING_FAILED ||
+                            code == PlaybackException.ERROR_CODE_DECODING_FORMAT_EXCEEDS_CAPABILITIES ||
+                            code == PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED
+                        if (decoder && !software) {
+                            Log.w(TAG, "decoder fail — retry with FFmpeg")
+                            val url = exo.currentMediaItem?.localConfiguration?.uri?.toString()
+                            val pos = lastGoodPosMs.coerceAtLeast(exo.currentPosition)
+                            if (!url.isNullOrBlank()) {
+                                rebuildWithSoftware(url, pos)
+                                return
+                            }
+                        }
+                        statusView?.text = error.message ?: "Playback error"
+                        busy?.visibility = View.GONE
+                    }
+                })
+            }
+    }
+
+    private fun rebuildWithSoftware(url: String, resumeMs: Long) {
+        software = true
+        findViewById<PlayerView>(R.id.player).player = null
+        player?.release()
+        player = buildPlayer(preferSoftware = true)
+        findViewById<PlayerView>(R.id.player).player = player
+        openUrl(url, resumeMs)
+    }
+
     private fun armBufferStallWatch() {
         if (stopped || stallArmed) return
         stallArmed = true
@@ -139,8 +195,8 @@ class PlayerActivity : AppCompatActivity() {
     private fun nudgeTorrentAtPlayhead() {
         val exo = player ?: return
         val pos = exo.currentPosition.coerceAtLeast(lastGoodPosMs)
-        val dur = exo.duration.takeIf { it > 0 } ?: 0L
-        LocalTorrentEngine.seekTo(pos, dur)
+        val dur = exo.duration.takeIf { it > 0 } ?: return
+        LocalTorrentEngine.seekTo(pos, dur, aggressive = false)
     }
 
     private fun recoverFromBufferStall() {
@@ -158,7 +214,7 @@ class PlayerActivity : AppCompatActivity() {
         Log.w(TAG, "buffer stall #$stallRecoverCount — nudge to $recover")
         statusView?.text = "Catching up…"
         busy?.visibility = View.VISIBLE
-        LocalTorrentEngine.seekTo(recover, exo.duration.takeIf { it > 0 } ?: 0L)
+        LocalTorrentEngine.seekTo(recover, exo.duration.takeIf { it > 0 } ?: 0L, aggressive = false)
         runCatching {
             exo.seekTo(recover)
             exo.playWhenReady = true
@@ -169,28 +225,32 @@ class PlayerActivity : AppCompatActivity() {
         }, 6_000L)
     }
 
-    private fun handleFalseEof() {
+    private fun handleEndReached() {
         val exo = player ?: return
         val len = exo.duration.takeIf { it > 0 } ?: 0L
         val pos = lastGoodPosMs.coerceAtLeast(exo.currentPosition)
-        val nearEnd = len > 120_000 && pos >= (len * 0.90).toLong()
-        if (nearEnd || stallRecoverCount >= 8) {
-            statusView?.text = "Ended"
+        val nearEnd = len <= 0 ||
+            (len > 30_000 && pos >= (len * 0.88).toLong()) ||
+            (len > 0 && len - pos <= 8_000)
+        val downloadDone = torrentComplete || lastBufferPct >= 99.0
+        if (localTorrent && streamOpened && !nearEnd && !downloadDone && falseEofCount < 8) {
+            falseEofCount++
+            val recover = lastGoodPosMs.coerceAtLeast(0L)
+            Log.w(TAG, "false EOF — resume at $recover")
+            statusView?.text = "Reconnecting…"
+            LocalTorrentEngine.seekTo(recover, len, aggressive = false)
+            main.postDelayed({
+                if (stopped) return@postDelayed
+                runCatching {
+                    if (recover > 1_000) exo.seekTo(recover)
+                    exo.playWhenReady = true
+                    exo.play()
+                }
+            }, 600L)
             return
         }
-        stallRecoverCount++
-        val recover = lastGoodPosMs.coerceAtLeast(0L)
-        Log.w(TAG, "false EOF — resume at $recover")
-        statusView?.text = "Reconnecting…"
-        LocalTorrentEngine.seekTo(recover, len)
-        main.postDelayed({
-            if (stopped) return@postDelayed
-            runCatching {
-                if (recover > 1_000) exo.seekTo(recover)
-                exo.playWhenReady = true
-                exo.play()
-            }
-        }, 600L)
+        statusView?.text = "Ended"
+        finish()
     }
 
     private fun startLocalStatusPolling() {
@@ -199,6 +259,8 @@ class PlayerActivity : AppCompatActivity() {
             while (isActive && !stopped) {
                 val tick = withContext(Dispatchers.IO) { LocalTorrentEngine.currentStats() }
                 if (tick != null) {
+                    lastBufferPct = tick.bufferPct
+                    torrentComplete = tick.torrentComplete
                     val pct = tick.bufferPct.toInt().coerceIn(0, 100)
                     statusView?.text = when {
                         tick.torrentComplete -> "Downloaded · $pct%"
@@ -241,18 +303,35 @@ class PlayerActivity : AppCompatActivity() {
 
     private fun showTorrentStatus(session: StreamSession) {
         val pct = (session.bufferProgress * 100).toInt().coerceIn(0, 100)
+        lastBufferPct = session.bufferProgress * 100
         statusView?.text = when {
             session.isReady -> "Ready · buffering $pct% · ${"%.1f".format(session.downloadMbps)} MB/s"
             else -> "Finding peers…" + if (session.peers > 0) " · ${session.peers} peers" else ""
         }
     }
 
-    private fun openUrl(url: String) {
+    private fun openUrl(url: String, resumeMs: Long = 0L) {
         val exo = player ?: return
         statusView?.text = "Opening…"
-        exo.setMediaItem(MediaItem.fromUri(url))
+        val item = mediaItemFor(url)
+        val start = resumeMs.coerceAtLeast(0L)
+        if (start > 2_000) exo.setMediaItem(item, start) else exo.setMediaItem(item)
         exo.prepare()
         exo.playWhenReady = true
+    }
+
+    private fun mediaItemFor(url: String): MediaItem {
+        val lower = url.substringBefore('?').lowercase()
+        val mime = when {
+            lower.endsWith(".mkv") -> MimeTypes.VIDEO_MATROSKA
+            lower.endsWith(".webm") -> MimeTypes.VIDEO_WEBM
+            lower.endsWith(".mp4") || lower.endsWith(".m4v") || lower.endsWith(".mov") -> MimeTypes.VIDEO_MP4
+            lower.endsWith(".ts") || lower.endsWith(".m2ts") || lower.endsWith(".mts") -> MimeTypes.VIDEO_MP2T
+            else -> null
+        }
+        val builder = MediaItem.Builder().setUri(url)
+        if (mime != null) builder.setMimeType(mime)
+        return builder.build()
     }
 
     override fun onStop() {

@@ -57,6 +57,9 @@ object TorrentClient {
         season: Int? = null,
         episode: Int? = null,
         fileIndex: Int? = null,
+        /** Resume / scrub target — pieces are fetched around this offset, not 0→resume. */
+        resumeMs: Long = 0L,
+        durationMs: Long = 0L,
         onStats: ((LocalStreamStats) -> Unit)? = null,
         timeoutMs: Long = 210_000L,
     ): LocalStreamHandle = withTimeout(timeoutMs) {
@@ -114,6 +117,8 @@ object TorrentClient {
                         putInt(TorrentService.KEY_SEASON, season ?: -1)
                         putInt(TorrentService.KEY_EPISODE, episode ?: -1)
                         putInt(TorrentService.KEY_FILE_INDEX, fileIndex ?: -1)
+                        putLong(TorrentService.KEY_POSITION_MS, resumeMs.coerceAtLeast(0L))
+                        putLong(TorrentService.KEY_DURATION_MS, durationMs.coerceAtLeast(0L))
                     }
                     try {
                         messenger.send(msg)
@@ -169,7 +174,7 @@ object TorrentClient {
         runCatching { LocalTorrentEngine.stop(deleteFiles = deleteFiles) }
     }
 
-    fun seekTo(positionMs: Long, durationMs: Long) {
+    fun seekTo(positionMs: Long, durationMs: Long, aggressive: Boolean = true) {
         val m = messengerRef.get()
         if (m != null) {
             runCatching {
@@ -177,14 +182,18 @@ object TorrentClient {
                 msg.data = Bundle().apply {
                     putLong(TorrentService.KEY_POSITION_MS, positionMs)
                     putLong(TorrentService.KEY_DURATION_MS, durationMs)
+                    putBoolean(TorrentService.KEY_AGGRESSIVE, aggressive)
                 }
                 m.send(msg)
             }
         } else {
-            // In-process fallback (phone / tests).
-            LocalTorrentEngine.seekTo(positionMs, durationMs)
+            LocalTorrentEngine.seekTo(positionMs, durationMs, aggressive)
         }
     }
+
+    /** Soft playhead retarget during buffering — no deadline wipe / HTTP probe. */
+    fun retargetPlayhead(positionMs: Long, durationMs: Long) =
+        seekTo(positionMs, durationMs, aggressive = false)
 
     private fun Bundle.toStats() = LocalStreamStats(
         bufferPct = getDouble(TorrentService.KEY_BUFFER),
