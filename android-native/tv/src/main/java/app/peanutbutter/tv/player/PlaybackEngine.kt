@@ -21,6 +21,8 @@ interface PlaybackEngine {
     val length: Long
     var time: Long
     val isPlaying: Boolean
+    /** 0–100 Exo/VLC buffer while opening; used to finish the pre-play progress bar. */
+    val bufferedPercent: Int get() = 0
 
     fun bindSubtitles(view: SubtitleView?)
     fun attachTexture(view: TextureView?) {}

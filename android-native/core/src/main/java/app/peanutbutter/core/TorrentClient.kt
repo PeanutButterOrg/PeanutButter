@@ -80,7 +80,7 @@ object TorrentClient {
                         if (!cont.isActive) return@Handler true
                         val d = msg.data
                         lastStats = LocalStreamStats(
-                            bufferPct = 1.0,
+                            bufferPct = 100.0,
                             downloadMbps = lastStats?.downloadMbps ?: 0.0,
                             seeders = lastStats?.seeders ?: 0,
                             peers = lastStats?.peers ?: 0,

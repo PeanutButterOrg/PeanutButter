@@ -316,8 +316,9 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         AppLog.i(TAG, "startLocalTorrent season=$seasonNum episode=$episodeNum")
         statusView?.text = getString(R.string.finding_peers)
         busy?.isVisible = true
+        // Build Exo while the swarm fills so attach isn't delayed after 100%.
+        ensurePlayer(forceExo = true)
         try {
-            // Prefer Exo on low-RAM boxes when starting a torrent — VLC .so is huge.
             val started = withContext(Dispatchers.IO) {
                 TorrentClient.start(
                     context = this@PlayerActivity,
@@ -342,13 +343,10 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             AppLog.i(TAG, "local torrent ready url=${started.url}")
             mediaAttached = false
             streamOpened = false
-            // Create player engine only now that libtorrent is up and URL exists.
-            main.post {
-                if (stopped) return@post
-                statusView?.text = getString(R.string.starting_stream)
-                ensurePlayer(forceExo = true)
-                attachAndPlay()
-            }
+            // Already on Main (lifecycleScope) — open Exo immediately, no extra post hop.
+            statusView?.text = getString(R.string.starting_stream)
+            ensurePlayer(forceExo = true)
+            attachAndPlay()
             startLocalStatusPolling()
         } catch (t: Throwable) {
             AppLog.e(TAG, "startLocalTorrent failed", t)
@@ -390,17 +388,17 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         if (stats.ready || stats.torrentComplete) {
             torrentReadyLatched = true
         }
-        // Once we have a stream URL, treat as ready for status purposes so the
-        // UI doesn't bounce back to "Finding peers…" while Exo buffers.
         val ready = torrentReadyLatched || !pendingUrl.isNullOrBlank() ||
             stats.ready || stats.torrentComplete
-        // progress = full-file fraction (for "download done"); buffer = playhead runway.
         val fileFrac = if (stats.torrentComplete) 1.0 else 0.0
+        // Cap torrent runway at 92% — the last stretch is Exo opening the stream.
+        // 100% is reserved for actual playback (see displayBufferPct).
+        val torrentFrac = (stats.bufferPct / 100.0).coerceIn(0.0, 0.92)
         val session = StreamSession(
             id = sessionId.orEmpty(),
             title = titleView?.text?.toString().orEmpty(),
             progress = fileFrac,
-            bufferProgress = (stats.bufferPct / 100.0).coerceIn(0.0, 1.0),
+            bufferProgress = torrentFrac,
             downloadMbps = stats.downloadMbps,
             seeders = stats.seeders,
             peers = stats.peers,
@@ -411,19 +409,26 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         showTorrentStatus(session)
     }
 
+    /** UI buffer: torrent 0–92%, Exo open 92–99%, 100% only when frames are playing. */
+    private fun displayBufferPct(torrentFrac: Double, exoPercent: Int = -1): Int {
+        if (streamOpened) return 100
+        val base = (torrentFrac.coerceIn(0.0, 0.92) * 100).toInt()
+        if (!mediaAttached) return base.coerceIn(0, 92)
+        val exo = when {
+            exoPercent in 0..100 -> exoPercent
+            else -> player?.bufferedPercent?.coerceIn(0, 100) ?: 40
+        }
+        val blended = 92 + ((exo.coerceIn(0, 100) / 100.0) * 7).toInt()
+        return maxOf(base, blended).coerceIn(0, 99)
+    }
+
     private fun showTorrentStatus(session: StreamSession) {
         lastSession = session
         if (session.isReady || session.streamUrl.isNotBlank()) {
             torrentReadyLatched = true
         }
-        // Prefer buffer % (playhead runway). progress is full-file only.
-        val rawFrac = when {
-            session.bufferProgress in 0.001..0.999 -> session.bufferProgress
-            session.bufferProgress >= 0.999 && session.progress >= 0.999 -> 1.0
-            else -> 0.0
-        }
-        val rawPct = rawFrac * 100
-        val bufPct = rawPct.toInt().coerceIn(0, 100)
+        // bufferProgress from torrent is capped ≤0.92; blend Exo while opening.
+        val bufPct = displayBufferPct(session.bufferProgress)
         val speed = when {
             session.downloadMbps >= 1 -> String.format("%.1f MB/s", session.downloadMbps)
             session.downloadMbps > 0 -> String.format("%.0f KB/s", session.downloadMbps * 1024)
@@ -614,21 +619,19 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                 main.post {
                     exoBuffering = percent < 100
                     if (!streamOpened) {
-                        // Pre-play: keep the torrent buffer banner.
-                        if (!userSeeking && percent < 100) {
-                            val tick = lastSession
-                            val mbps = tick?.downloadMbps ?: 0.0
-                            val buf = tick?.bufferProgress?.times(100)?.toInt()?.coerceIn(0, 100)
-                                ?: percent
+                        val tick = lastSession
+                        val mbps = tick?.downloadMbps ?: 0.0
+                        val torrentFrac = tick?.bufferProgress ?: 0.0
+                        val buf = displayBufferPct(torrentFrac, exoPercent = percent)
+                        if (!userSeeking) {
                             applyStatusLine(torrentStatusLine(buf, mbps))
                             topProgress?.isVisible = true
                             topProgress?.progress = buf
+                            topProgress?.secondaryProgress = buf
                         }
-                        busy?.isVisible = percent < 100
+                        busy?.isVisible = true
                         applyBufferingChrome()
                     } else {
-                        // Mid-play: never flash the buffer overlay / Aspect+Subs.
-                        // Brief Exo BUFFERING is normal; only nudge pieces quietly.
                         busy?.isVisible = false
                         topProgress?.isVisible = false
                         if (chromeVisible && !userSeeking && percent < 100) {
@@ -657,10 +660,12 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                     stallRecoverCount = 0
                     softErrorCount = 0
                     cancelBufferStallWatch()
+                    // 100% = frames on screen — then drop the banner.
+                    topProgress?.progress = 100
+                    topProgress?.secondaryProgress = 100
                     busy?.isVisible = false
                     topProgress?.isVisible = false
                     posterHud?.isVisible = false
-                    // Playing again — drop buffering chrome and auto-hide controls.
                     applyBufferingChrome()
                     btnPlay?.setImageResource(R.drawable.ic_pause)
                     if (btnPlay?.hasFocus() != true && !userSeeking) {

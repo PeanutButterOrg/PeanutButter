@@ -63,6 +63,9 @@ class TvPlayback(
     override val isPlaying: Boolean
         get() = exo.isPlaying
 
+    override val bufferedPercent: Int
+        get() = exo.bufferedPercentage.coerceIn(0, 100)
+
     override fun seekTo(positionMs: Long) {
         // Always plain seek. Re-opening the media item mid-stream raced the
         // torrent HTTP server and produced black screens / PlaybackException.
@@ -253,10 +256,10 @@ class TvPlayback(
             .setExtensionRendererMode(mode)
         val load = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
-                /* minBufferMs */ 2_500,
-                /* maxBufferMs */ 12_000,
-                /* bufferForPlaybackMs */ 250,
-                /* bufferForPlaybackAfterRebufferMs */ 1_200,
+                /* minBufferMs */ 1_500,
+                /* maxBufferMs */ 10_000,
+                /* bufferForPlaybackMs */ 100,
+                /* bufferForPlaybackAfterRebufferMs */ 600,
             )
             .setPrioritizeTimeOverSizeThresholds(true)
             .build()
