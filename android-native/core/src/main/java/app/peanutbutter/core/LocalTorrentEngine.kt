@@ -63,6 +63,8 @@ object LocalTorrentEngine {
     private val httpServer = AtomicReference<StreamHttpServer?>(null)
     private val metadataLatch = AtomicBoolean(false)
     @Volatile private var lastSoftPiece: Int = -1
+    /** Smoothed UI buffer % so large pieces don't leap 1→40→80. */
+    @Volatile private var smoothedBufferPct: Double = 0.0
 
     val isSupported: Boolean get() = !nativeUnavailable
     val isActive: Boolean get() = handleRef.get()?.isValid == true
@@ -380,15 +382,16 @@ object LocalTorrentEngine {
                 val playOk = playHave >= minPlayContiguous ||
                     (playHave >= 1 && rate >= 0.35)
                 val headReady = complete || (headOk && playOk)
-                // Startup bar: 0–90% of pieces needed to open, never fake 99%.
                 val needTotal = (minHeadContiguous + minPlayContiguous).coerceAtLeast(1)
                 val gotTotal = (headHave + playHave).coerceAtMost(needTotal)
+                val rawPct = when {
+                    complete -> 100.0
+                    headReady -> 90.0
+                    else -> (gotTotal.toDouble() / needTotal * 85.0).coerceIn(0.0, 84.0)
+                }
+                smoothedBufferPct = smoothBuffer(rawPct)
                 val stats = LocalStreamStats(
-                    bufferPct = when {
-                        complete -> 100.0
-                        headReady -> 90.0
-                        else -> (gotTotal.toDouble() / needTotal * 85.0).coerceIn(0.0, 84.0)
-                    },
+                    bufferPct = smoothedBufferPct,
                     downloadMbps = rate,
                     seeders = st.numSeeds().coerceAtLeast(0),
                     peers = st.numPeers().coerceAtLeast(0),
@@ -472,11 +475,13 @@ object LocalTorrentEngine {
             // Full-file only — never st.progress() (IGNORE gap makes that hit ~1.0 early).
             val complete = progress >= 0.99
             val playheadPct = playheadBufferPct(handle, info, idx)
+            val rawPct = when {
+                complete -> 100.0
+                else -> playheadPct.coerceIn(0.0, 90.0)
+            }
+            smoothedBufferPct = smoothBuffer(rawPct)
             LocalStreamStats(
-                bufferPct = when {
-                    complete -> 100.0
-                    else -> playheadPct.coerceIn(0.0, 90.0)
-                },
+                bufferPct = smoothedBufferPct,
                 downloadMbps = st.downloadPayloadRate() / (1024.0 * 1024.0),
                 seeders = st.numSeeds().coerceAtLeast(0),
                 peers = st.numPeers().coerceAtLeast(0),
@@ -489,8 +494,9 @@ object LocalTorrentEngine {
     }
 
     /**
-     * Contiguous pieces at/after the soft playhead as a 0–90% comfort buffer.
-     * Never reports 99% just because a small deadline window finished.
+     * Playhead runway (not whole-file download %): contiguous bytes ready at the
+     * resume/play position vs ~24MB comfort window, scaled 0–90.
+     * Includes partial progress on the next piece so the bar doesn't leap per piece.
      */
     private fun playheadBufferPct(handle: TorrentHandle, info: org.libtorrent4j.TorrentInfo?, idx: Int): Double {
         if (info == null) return 0.0
@@ -501,17 +507,38 @@ object LocalTorrentEngine {
         val first = (fs.fileOffset(idx) / pieceLength).toInt()
         val last = ((fs.fileOffset(idx) + fileSize - 1) / pieceLength).toInt()
         val from = if (lastSoftPiece >= 0) lastSoftPiece.coerceIn(first, last) else first
-        // ~30s of 1080p — honest "how much runway at the playhead".
         val comfortBytes = 24L * 1024 * 1024
-        val need = (comfortBytes / pieceLength).toInt().coerceIn(8, 48)
-        var have = 0
-        while (have < need) {
-            val p = from + have
-            if (p > last) break
-            if (!runCatching { handle.havePiece(p) }.getOrDefault(false)) break
-            have++
+        val needBytes = comfortBytes.toDouble()
+        var haveBytes = 0.0
+        var p = from
+        while (haveBytes < needBytes && p <= last) {
+            if (runCatching { handle.havePiece(p) }.getOrDefault(false)) {
+                haveBytes += pieceLength.toDouble()
+                p++
+                continue
+            }
+            // Credit blocks already finished in the next incomplete piece.
+            val partial = runCatching {
+                handle.getDownloadQueue().firstOrNull { it.pieceIndex() == p }
+            }.getOrNull()
+            if (partial != null && partial.blocksInPiece() > 0) {
+                haveBytes += pieceLength.toDouble() *
+                    (partial.finished().toDouble() / partial.blocksInPiece())
+            }
+            break
         }
-        return (have.toDouble() / need) * 90.0
+        return ((haveBytes / needBytes) * 90.0).coerceIn(0.0, 90.0)
+    }
+
+    /** Ease the UI bar toward the raw playhead % (piece boundaries are coarse). */
+    private fun smoothBuffer(raw: Double): Double {
+        val prev = smoothedBufferPct
+        val next = when {
+            raw >= 99.5 -> 100.0
+            raw <= prev -> raw // allow drop on seek
+            else -> prev + (raw - prev) * 0.35
+        }
+        return next.coerceIn(0.0, 100.0)
     }
 
     /**
@@ -626,6 +653,7 @@ object LocalTorrentEngine {
         videoFileRef.set(null)
         metadataLatch.set(false)
         lastSoftPiece = -1
+        smoothedBufferPct = 0.0
         if (handle != null && handle.isValid && sm != null) {
             try {
                 if (deleteFiles) {
