@@ -81,6 +81,7 @@ Future<List<StreamSource>> searchStreamingSources({
   String? titleId,
   int? season,
   int? episode,
+  String? language,
   bool live = false,
 }) async {
   final result = await client.query(
@@ -93,6 +94,7 @@ Future<List<StreamSource>> searchStreamingSources({
         'season': season,
         'episode': episode,
         'titleId': titleId,
+        'language': language,
         'live': live,
       },
     ),
@@ -104,19 +106,98 @@ Future<List<StreamSource>> searchStreamingSources({
   return raw.whereType<Map<String, dynamic>>().map(StreamSource.fromJson).toList();
 }
 
-String _lookupHeading({
+/// One preferred-language bucket for the Choose a stream dialog.
+class StreamSourceGroup {
+  const StreamSourceGroup({
+    required this.code,
+    required this.label,
+    required this.sources,
+  });
+
+  final String code;
+  final String label;
+  final List<StreamSource> sources;
+}
+
+/// Search each preferred language separately (preferred order), dedupe magnets,
+/// and drop empty language headings.
+Future<List<StreamSourceGroup>> searchStreamingSourcesGrouped({
+  required GraphQLClient client,
   required String title,
+  required String kind,
+  String? titleId,
   int? season,
   int? episode,
-}) {
-  final name = title.trim();
-  if (season != null && episode != null) {
-    final s = season.toString().padLeft(2, '0');
-    final e = episode.toString().padLeft(2, '0');
-    return name.isEmpty ? 'S${s}E${e}' : '$name · S${s}E${e}';
+  List<String>? preferredLanguages,
+  bool live = false,
+}) async {
+  final langs = preferredLanguageCodes(preferredLanguages ?? const []);
+  if (langs.isEmpty) {
+    final all = sourcesMatchingEpisode(
+      await searchStreamingSources(
+        client: client,
+        title: title,
+        kind: kind,
+        titleId: titleId,
+        season: season,
+        episode: episode,
+        live: live,
+      ),
+      season: season,
+      episode: episode,
+    );
+    final capped = all.length > 24 ? all.sublist(0, 24) : all;
+    if (capped.isEmpty) return const [];
+    return [StreamSourceGroup(code: 'all', label: 'Streams', sources: capped)];
   }
-  return name;
+
+  final seen = <String>{};
+  final groups = <StreamSourceGroup>[];
+  // Parallel per-language Jackett searches — same ranking as a single query.
+  final results = await Future.wait([
+    for (final lang in langs)
+      searchStreamingSources(
+        client: client,
+        title: title,
+        kind: kind,
+        titleId: titleId,
+        season: season,
+        episode: episode,
+        language: lang,
+        live: live,
+      ),
+  ]);
+
+  for (var i = 0; i < langs.length; i++) {
+    final lang = langs[i];
+    final matched = sourcesMatchingEpisode(
+      results[i],
+      season: season,
+      episode: episode,
+    );
+    final unique = <StreamSource>[];
+    for (final src in matched) {
+      final key = src.magnet.trim().isNotEmpty ? src.magnet.trim() : src.id;
+      if (key.isEmpty || !seen.add(key)) continue;
+      unique.add(src);
+    }
+    if (unique.isEmpty) continue;
+    final capped = unique.length > 24 ? unique.sublist(0, 24) : unique;
+    groups.add(
+      StreamSourceGroup(
+        code: lang,
+        label: languageDisplayName(lang),
+        sources: capped,
+      ),
+    );
+  }
+  return groups;
 }
+
+List<StreamSource> flattenSourceGroups(List<StreamSourceGroup> groups) {
+  return [for (final g in groups) ...g.sources];
+}
+
 
 /// On Android TV, [showDialog] uses a transparent route so the heavy catalog
 /// underneath keeps painting every frame and ANRs. Opaque fullscreen routes
@@ -420,8 +501,6 @@ Future<StreamStart?> _showStreamingPickerDialogs({
   String? stopPreviousSessionId,
 }) async {
   if (!context.mounted) return null;
-  final languageLabel = _preferredLanguageLabel(preferredLanguages);
-  final heading = _lookupHeading(title: title, season: season, episode: episode);
 
   // Cancel must return immediately so episode/movie busy spinners clear;
   // in-flight GraphQL work is ignored when it eventually finishes.
@@ -432,8 +511,6 @@ Future<StreamStart?> _showStreamingPickerDialogs({
       context: context,
       barrierDismissible: true,
       builder: (ctx) => _BusyDialog(
-        label: 'Looking up sources…',
-        title: heading,
         onCancel: () => Navigator.of(ctx).pop(),
       ),
     ).whenComplete(() {
@@ -443,50 +520,42 @@ Future<StreamStart?> _showStreamingPickerDialogs({
     }),
   );
 
-  late List<StreamSource> found;
+  late List<StreamSourceGroup> groups;
   try {
-    // Cache-first on the server (strong=24h / weak=2h TTL). Pass live:true only from Refresh.
-    final searchFuture = searchStreamingSources(
+    final searchFuture = searchStreamingSourcesGrouped(
       client: client,
       title: title,
       kind: kind,
       titleId: titleId,
       season: season,
       episode: episode,
+      preferredLanguages: preferredLanguages,
       live: false,
     );
-    // Ignore late success/failure after the user already cancelled.
     unawaited(searchFuture.then((_) {}, onError: (_) {}));
-    final sources = await Future.any<List<StreamSource>?>([
+    final found = await Future.any<List<StreamSourceGroup>?>([
       searchFuture.then((v) => v),
       searchCancel.future.then((_) => null),
     ]);
-    if (sources == null || searchCancel.isCompleted) {
+    if (found == null || searchCancel.isCompleted) {
       return null;
     }
-    found = sourcesMatchingEpisode(
-      sources,
-      season: season,
-      episode: episode,
-    );
+    groups = found;
     // Cache miss / empty Jackett flake: one forced live refresh before giving up.
-    if (found.isEmpty && !searchCancel.isCompleted) {
+    if (groups.isEmpty && !searchCancel.isCompleted) {
       try {
-        final liveSources = await searchStreamingSources(
+        final liveGroups = await searchStreamingSourcesGrouped(
           client: client,
           title: title,
           kind: kind,
           titleId: titleId,
           season: season,
           episode: episode,
+          preferredLanguages: preferredLanguages,
           live: true,
         );
         if (!searchCancel.isCompleted) {
-          found = sourcesMatchingEpisode(
-            liveSources,
-            season: season,
-            episode: episode,
-          );
+          groups = liveGroups;
         }
       } catch (_) {}
     }
@@ -506,46 +575,29 @@ Future<StreamStart?> _showStreamingPickerDialogs({
     final nav = Navigator.of(context, rootNavigator: true);
     if (nav.canPop()) nav.pop();
   }
-  // Let the busy dialog unmount and paint before building the results list —
-  // building dozens of TV focus tiles in the same frame as the pop ANRs on
-  // Android TV emulators.
   await Future<void>.delayed(Duration.zero);
   if (!context.mounted) return null;
-  if (found.isEmpty) {
+  if (groups.isEmpty) {
     await _alert(
       context,
       'No healthy sources with enough seeders were found. Try again later, or check Jackett on the server console.',
     );
     return null;
   }
-  // Server ranks to 24; cap anyway so a fat cache entry cannot freeze the UI.
-  if (found.length > 24) {
-    found = found.sublist(0, 24);
-  }
 
   final picked = await _showPickerOverlay<StreamSource>(
     context: context,
     builder: (ctx) => _ResultsDialog(
-      sources: found,
-      languageLabel: languageLabel,
-      title: heading,
-      onRefresh: () => searchStreamingSources(
+      groups: groups,
+      onRefresh: () => searchStreamingSourcesGrouped(
         client: client,
         title: title,
         kind: kind,
         titleId: titleId,
         season: season,
         episode: episode,
+        preferredLanguages: preferredLanguages,
         live: true,
-      ).then(
-        (list) {
-          final matched = sourcesMatchingEpisode(
-            list,
-            season: season,
-            episode: episode,
-          );
-          return matched.length > 24 ? matched.sublist(0, 24) : matched;
-        },
       ),
     ),
   );
@@ -568,8 +620,6 @@ Future<StreamStart?> _showStreamingPickerDialogs({
         context: context,
         barrierDismissible: true,
         builder: (ctx) => _BusyDialog(
-          label: 'Reading torrent files…',
-          title: heading,
           onCancel: () => Navigator.of(ctx).pop(),
         ),
       ).whenComplete(() {
@@ -646,7 +696,7 @@ Future<StreamStart?> _showStreamingPickerDialogs({
     _showPickerOverlay<void>(
       context: context,
       barrierDismissible: false,
-      builder: (ctx) => _BusyDialog(label: 'Starting stream…', title: heading),
+      builder: (ctx) => const _BusyDialog(),
     ),
   );
   try {
@@ -716,16 +766,6 @@ Future<void> _alert(BuildContext context, String message) {
   );
 }
 
-String _preferredLanguageLabel(List<String>? codes) {
-  final cleaned = (codes ?? const [])
-      .map((e) => e.trim().toLowerCase())
-      .where((e) => e.isNotEmpty && e != 'all')
-      .toList();
-  if (cleaned.isEmpty) return 'All languages';
-  final names = cleaned.map(languageDisplayName).where((n) => n.isNotEmpty).join(', ');
-  if (names.isEmpty) return 'All languages';
-  return '$names + Multi';
-}
 
 /// Single opaque page for Android TV: search → choose → start, without
 /// uncovering the detail/catalog between steps (that handoff ANRs).
@@ -766,15 +806,10 @@ class _TvStreamingPickerPageState extends State<_TvStreamingPickerPage> {
   static const _phaseError = 4;
 
   var _phase = _phaseLookup;
-  var _busyLabel = 'Looking up sources…';
   String? _error;
-  List<StreamSource> _sources = const [];
+  List<StreamSourceGroup> _groups = const [];
   List<TorrentFileOption> _files = const [];
   StreamSource? _picked;
-
-  String get _heading =>
-      _lookupHeading(title: widget.title, season: widget.season, episode: widget.episode);
-  String get _languageLabel => _preferredLanguageLabel(widget.preferredLanguages);
 
   @override
   void initState() {
@@ -787,27 +822,21 @@ class _TvStreamingPickerPageState extends State<_TvStreamingPickerPage> {
   Future<void> _runSearch({required bool live}) async {
     setState(() {
       _phase = _phaseLookup;
-      _busyLabel = live ? 'Refreshing sources from Jackett…' : 'Looking up sources…';
       _error = null;
     });
     try {
-      final sources = await searchStreamingSources(
+      final groups = await searchStreamingSourcesGrouped(
         client: widget.client,
         title: widget.title,
         kind: widget.kind,
         titleId: widget.titleId,
         season: widget.season,
         episode: widget.episode,
+        preferredLanguages: widget.preferredLanguages,
         live: live,
       );
       if (!mounted) return;
-      var found = sourcesMatchingEpisode(
-        sources,
-        season: widget.season,
-        episode: widget.episode,
-      );
-      if (found.length > 24) found = found.sublist(0, 24);
-      if (found.isEmpty) {
+      if (groups.isEmpty) {
         setState(() {
           _phase = _phaseError;
           _error =
@@ -816,7 +845,7 @@ class _TvStreamingPickerPageState extends State<_TvStreamingPickerPage> {
         return;
       }
       setState(() {
-        _sources = found;
+        _groups = groups;
         _phase = _phaseResults;
       });
     } catch (e) {
@@ -841,8 +870,7 @@ class _TvStreamingPickerPageState extends State<_TvStreamingPickerPage> {
     if (_looksLikeSeasonPack(source.title)) {
       setState(() {
         _phase = _phaseLookup;
-        _busyLabel = 'Reading torrent files…';
-      });
+        });
       try {
         final listed = await widget.client.query(
           QueryOptions(
@@ -890,8 +918,7 @@ class _TvStreamingPickerPageState extends State<_TvStreamingPickerPage> {
     if (!mounted) return;
     setState(() {
       _phase = _phaseStarting;
-      _busyLabel = 'Starting stream…';
-    });
+      });
     // Let "Starting stream…" paint and the input dispatcher settle.
     await Future<void>.delayed(const Duration(milliseconds: 50));
     if (!mounted) return;
@@ -957,25 +984,17 @@ class _TvStreamingPickerPageState extends State<_TvStreamingPickerPage> {
           child: Center(
             child: switch (_phase) {
               _phaseResults => _ResultsDialog(
-                  sources: _sources,
-                  languageLabel: _languageLabel,
-                  title: _heading,
-                  onRefresh: () => searchStreamingSources(
+                  groups: _groups,
+                  onRefresh: () => searchStreamingSourcesGrouped(
                     client: widget.client,
                     title: widget.title,
                     kind: widget.kind,
                     titleId: widget.titleId,
                     season: widget.season,
                     episode: widget.episode,
+                    preferredLanguages: widget.preferredLanguages,
                     live: true,
-                  ).then((list) {
-                    final matched = sourcesMatchingEpisode(
-                      list,
-                      season: widget.season,
-                      episode: widget.episode,
-                    );
-                    return matched.length > 24 ? matched.sublist(0, 24) : matched;
-                  }),
+                  ),
                   onSelected: _onPick,
                 ),
               _phaseFiles => _FilePickerDialog(
@@ -996,8 +1015,6 @@ class _TvStreamingPickerPageState extends State<_TvStreamingPickerPage> {
                   ],
                 ),
               _ => _BusyDialog(
-                  label: _busyLabel,
-                  title: _heading,
                   onCancel: _phase == _phaseStarting
                       ? null
                       : () => Navigator.of(context).pop(),
@@ -1011,75 +1028,36 @@ class _TvStreamingPickerPageState extends State<_TvStreamingPickerPage> {
 }
 
 class _BusyDialog extends StatelessWidget {
-  const _BusyDialog({required this.label, this.title, this.onCancel});
-  final String label;
-  final String? title;
+  const _BusyDialog({this.onCancel});
   final VoidCallback? onCancel;
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final heading = (title ?? '').trim();
     return AlertDialog(
-      contentPadding: const EdgeInsets.fromLTRB(20, 8, 8, 20),
+      contentPadding: const EdgeInsets.fromLTRB(28, 28, 28, 28),
       content: SizedBox(
-        width: 420,
+        width: 160,
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Expanded(
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(4, 10, 8, 0),
-                    child: Text(
-                      heading.isEmpty ? label : heading,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontSize: heading.isEmpty ? 16 : 15,
-                        fontWeight: FontWeight.w700,
-                        height: 1.25,
-                        color: scheme.onSurface,
-                      ),
-                    ),
+            if (onCancel != null)
+              Align(
+                alignment: Alignment.topRight,
+                child: TvFocus(
+                  child: IconButton(
+                    tooltip: 'Close',
+                    visualDensity: VisualDensity.compact,
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                    onPressed: onCancel,
+                    icon: const Icon(Icons.close),
                   ),
                 ),
-                if (onCancel != null)
-                  TvFocus(
-                    child: IconButton(
-                      tooltip: 'Close',
-                      visualDensity: VisualDensity.compact,
-                      padding: EdgeInsets.zero,
-                      constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-                      onPressed: onCancel,
-                      icon: const Icon(Icons.close),
-                    ),
-                  ),
-              ],
-            ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(4, 10, 12, 4),
-              child: Row(
-                children: [
-                  const SizedBox(
-                    width: 28,
-                    height: 28,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  ),
-                  const SizedBox(width: 16),
-                  Expanded(
-                    child: Text(
-                      heading.isEmpty ? 'Please wait…' : label,
-                      style: TextStyle(
-                        fontSize: 14,
-                        color: scheme.onSurfaceVariant,
-                      ),
-                    ),
-                  ),
-                ],
               ),
+            const SizedBox(
+              width: 36,
+              height: 36,
+              child: CircularProgressIndicator(strokeWidth: 3),
             ),
           ],
         ),
@@ -1090,18 +1068,13 @@ class _BusyDialog extends StatelessWidget {
 
 class _ResultsDialog extends StatefulWidget {
   const _ResultsDialog({
-    required this.sources,
-    required this.languageLabel,
-    required this.title,
+    required this.groups,
     required this.onRefresh,
     this.onSelected,
   });
 
-  final List<StreamSource> sources;
-  final String languageLabel;
-  final String title;
-  final Future<List<StreamSource>> Function() onRefresh;
-  /// When set (TV single-page flow), call instead of [Navigator.pop].
+  final List<StreamSourceGroup> groups;
+  final Future<List<StreamSourceGroup>> Function() onRefresh;
   final Future<void> Function(StreamSource source)? onSelected;
 
   @override
@@ -1109,7 +1082,7 @@ class _ResultsDialog extends StatefulWidget {
 }
 
 class _ResultsDialogState extends State<_ResultsDialog> {
-  late List<StreamSource> _sources = List<StreamSource>.from(widget.sources);
+  late List<StreamSourceGroup> _groups = List<StreamSourceGroup>.from(widget.groups);
   var _refreshing = false;
   String? _refreshError;
 
@@ -1130,7 +1103,7 @@ class _ResultsDialogState extends State<_ResultsDialog> {
         return;
       }
       setState(() {
-        _sources = next;
+        _groups = next;
         _refreshing = false;
       });
     } catch (e) {
@@ -1142,13 +1115,33 @@ class _ResultsDialogState extends State<_ResultsDialog> {
     }
   }
 
+  List<_ResultRow> _buildRows() {
+    final rows = <_ResultRow>[];
+    var firstSource = true;
+    for (final group in _groups) {
+      if (group.sources.isEmpty) continue;
+      if (group.code != 'all') {
+        rows.add(_ResultRow.heading(group.label));
+      }
+      for (final src in group.sources) {
+        rows.add(
+          _ResultRow.source(
+            src,
+            best: firstSource,
+            autofocus: firstSource,
+          ),
+        );
+        firstSource = false;
+      }
+    }
+    return rows;
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final maxH = MediaQuery.sizeOf(context).height * 0.72;
-    final heading = widget.title.trim();
-    // Fixed height + Expanded ListView (no shrinkWrap). Flexible+shrinkWrap
-    // inside a min-sized Column lays out every tile up-front and ANRs on TV.
+    final rows = _buildRows();
     return FocusScope(
       autofocus: true,
       child: AlertDialog(
@@ -1178,50 +1171,36 @@ class _ResultsDialogState extends State<_ResultsDialog> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              if (heading.isNotEmpty) ...[
-                Text(
-                  heading,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 14, height: 1.3),
-                ),
-                const SizedBox(height: 6),
-              ],
-              Text(
-                _refreshing
-                    ? 'Refreshing sources from Jackett…'
-                    : 'Showing ${widget.languageLabel} — most seeded magnets first. Cached up to 3 days; refresh for live results.',
-                style: TextStyle(color: scheme.onSurfaceVariant, height: 1.35, fontSize: 13),
-              ),
               if (_refreshError != null) ...[
-                const SizedBox(height: 8),
                 Text(
                   _refreshError!,
                   style: TextStyle(color: scheme.error, fontSize: 13, height: 1.3),
                 ),
+                const SizedBox(height: 8),
               ],
-              const SizedBox(height: 12),
               Expanded(
                 child: ListView.separated(
-                  itemCount: _sources.length,
-                  separatorBuilder: (_, i) => i == 0 && _sources.length > 1
-                      ? Padding(
-                          padding: const EdgeInsets.fromLTRB(4, 14, 4, 10),
-                          child: Text(
-                            'More options',
-                            style: TextStyle(
-                              color: scheme.onSurfaceVariant,
-                              fontWeight: FontWeight.w700,
-                              fontSize: 12,
-                            ),
-                          ),
-                        )
-                      : const SizedBox(height: 8),
+                  itemCount: rows.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: 8),
                   itemBuilder: (context, i) {
+                    final row = rows[i];
+                    if (row.heading != null) {
+                      return Padding(
+                        padding: EdgeInsets.only(top: i == 0 ? 4 : 10, bottom: 2, left: 4),
+                        child: Text(
+                          row.heading!,
+                          style: TextStyle(
+                            color: scheme.onSurfaceVariant,
+                            fontWeight: FontWeight.w700,
+                            fontSize: 13,
+                          ),
+                        ),
+                      );
+                    }
                     return _TorrentTile(
-                      source: _sources[i],
-                      best: i == 0,
-                      autofocus: i == 0,
+                      source: row.source!,
+                      best: row.best,
+                      autofocus: row.autofocus,
                       onSelected: widget.onSelected,
                     );
                   },
@@ -1233,6 +1212,18 @@ class _ResultsDialogState extends State<_ResultsDialog> {
       ),
     );
   }
+}
+
+class _ResultRow {
+  const _ResultRow._({this.heading, this.source, this.best = false, this.autofocus = false});
+  factory _ResultRow.heading(String label) => _ResultRow._(heading: label);
+  factory _ResultRow.source(StreamSource source, {required bool best, required bool autofocus}) =>
+      _ResultRow._(source: source, best: best, autofocus: autofocus);
+
+  final String? heading;
+  final StreamSource? source;
+  final bool best;
+  final bool autofocus;
 }
 
 class _TorrentTile extends StatelessWidget {

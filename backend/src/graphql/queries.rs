@@ -490,12 +490,26 @@ impl Query {
         }
 
         let force_live = live.unwrap_or(false);
+        // Prefer explicit client language (per-language picker searches) over the
+        // server-wide list so English / Hindi / … can be fetched separately.
+        let server_langs = state.config.live.preferred_languages();
+        let preferred = {
+            let from_client = language.as_deref().unwrap_or("").trim();
+            if !from_client.is_empty() {
+                from_client.to_string()
+            } else if !server_langs.trim().is_empty() {
+                server_langs
+            } else {
+                String::new()
+            }
+        };
         let cache_key = crate::db::stream_search_cache_key(
             title_id,
             &query,
             kind.as_db(),
             season,
             episode,
+            Some(preferred.as_str()),
         );
         // Strong swarm caches keep longer; weak/unknown seeders refresh often so
         // dead magnets are not served as "healthy" for days.
@@ -544,15 +558,8 @@ impl Query {
             }
         }
 
-        // Never bake year/language into the Jackett *query* (too few hits), but
-        // always filter results by preferred languages so ASL/sign/etc. stay out.
+        // Never bake year/language into the Jackett *query* (too few hits).
         let _ = year;
-        let server_langs = state.config.live.preferred_languages();
-        let preferred = if !server_langs.trim().is_empty() {
-            server_langs
-        } else {
-            language.unwrap_or_default()
-        };
         let found = client
             .search(
                 &search_title,

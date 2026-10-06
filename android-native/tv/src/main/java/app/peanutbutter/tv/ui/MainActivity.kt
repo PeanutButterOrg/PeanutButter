@@ -25,6 +25,8 @@ import kotlinx.coroutines.launch
  */
 class MainActivity : FragmentActivity() {
     private var selectedKind: String = "MOVIE"
+    /** Skip the first onResume (onCreate already loads); refresh CW/watched after player. */
+    private var refreshOnResume = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -48,6 +50,12 @@ class MainActivity : FragmentActivity() {
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() = onHomeBack()
         })
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (refreshOnResume) loadHome(quiet = true)
+        refreshOnResume = true
     }
 
     private fun onHomeBack() {
@@ -175,15 +183,15 @@ class MainActivity : FragmentActivity() {
         outState.putString(STATE_KIND, selectedKind)
     }
 
-    private fun loadHome() {
+    private fun loadHome(quiet: Boolean = false) {
         val app = application.asTv()
-        findViewById<View>(R.id.loading_overlay).isVisible = true
+        if (!quiet) findViewById<View>(R.id.loading_overlay).isVisible = true
         lifecycleScope.launch {
             try {
                 val feed = app.api.homeFeed(selectedKind)
                 val fragment = supportFragmentManager
                     .findFragmentById(R.id.main_browse_fragment) as? MainFragment
-                fragment?.bindFeed(selectedKind, feed)
+                fragment?.bindFeed(selectedKind, feed, preserveFocus = quiet)
                 findViewById<View>(R.id.loading_overlay).apply {
                     isVisible = false
                     isClickable = false
@@ -196,11 +204,13 @@ class MainActivity : FragmentActivity() {
                     isClickable = false
                     isFocusable = false
                 }
-                Toast.makeText(
-                    this@MainActivity,
-                    e.message ?: getString(R.string.error_generic),
-                    Toast.LENGTH_LONG,
-                ).show()
+                if (!quiet) {
+                    Toast.makeText(
+                        this@MainActivity,
+                        e.message ?: getString(R.string.error_generic),
+                        Toast.LENGTH_LONG,
+                    ).show()
+                }
             }
         }
     }

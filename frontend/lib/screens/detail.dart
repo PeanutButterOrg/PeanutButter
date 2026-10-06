@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -62,8 +64,22 @@ class _DetailBodyState extends ConsumerState<_DetailBody> {
   final FocusNode _favorite = FocusNode(debugLabel: 'detail-favorite');
   final FocusNode _back = FocusNode(debugLabel: 'detail-back');
   final ScrollController _scroll = ScrollController();
+  TitleItem? _optimistic;
 
-  TitleItem get item => widget.item;
+  TitleItem get item => _optimistic ?? widget.item;
+
+  @override
+  void didUpdateWidget(covariant _DetailBody oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.item.id != widget.item.id) {
+      _optimistic = null;
+    } else if (_optimistic != null &&
+        widget.item.userState?.favorite == _optimistic!.userState?.favorite &&
+        widget.item.userState?.watched == _optimistic!.userState?.watched) {
+      // Server caught up — drop local override.
+      _optimistic = null;
+    }
+  }
 
   @override
   void initState() {
@@ -79,6 +95,55 @@ class _DetailBodyState extends ConsumerState<_DetailBody> {
         final node = item.fileReferences.isEmpty && !jackett ? _watched : _play;
         if (node.canRequestFocus) node.requestFocus();
       });
+    }
+  }
+
+  Future<void> _toggleWatched() async {
+    final current = item;
+    final next = current.userState?.watched != true;
+    final prev = _optimistic;
+    setState(() {
+      _optimistic = current.copyWith(
+        userState: (current.userState ?? const UserState()).copyWith(
+          watched: next,
+          positionMs: next ? 0 : current.userState?.positionMs ?? 0,
+          progressPercent: next ? 0 : current.userState?.progressPercent ?? 0,
+        ),
+      );
+    });
+    try {
+      await ref.read(graphQLClientProvider).mutate(
+            MutationOptions(
+              document: gql(SET_WATCHED),
+              variables: {'titleId': current.id, 'watched': next},
+            ),
+          );
+      invalidatePlaybackProgress(ref, titleId: current.id);
+    } catch (_) {
+      if (mounted) setState(() => _optimistic = prev);
+    }
+  }
+
+  Future<void> _toggleFavorite() async {
+    final current = item;
+    final next = current.userState?.favorite != true;
+    final prev = _optimistic;
+    setState(() {
+      _optimistic = current.copyWith(
+        userState: (current.userState ?? const UserState()).copyWith(favorite: next),
+      );
+    });
+    try {
+      await ref.read(graphQLClientProvider).mutate(
+            MutationOptions(
+              document: gql(SET_FAVORITE),
+              variables: {'titleId': current.id, 'favorite': next},
+            ),
+          );
+      ref.invalidate(favoritesFeedProvider);
+      invalidatePlaybackProgress(ref, titleId: current.id);
+    } catch (_) {
+      if (mounted) setState(() => _optimistic = prev);
     }
   }
 
@@ -433,26 +498,11 @@ class _DetailBodyState extends ConsumerState<_DetailBody> {
                         );
                       },
                       onHeroFocus: _pinTop,
-                      onToggleWatched: () async {
-                        final next = item.userState?.watched != true;
-                        await ref.read(graphQLClientProvider).mutate(
-                              MutationOptions(
-                                document: gql(SET_WATCHED),
-                                variables: {'titleId': item.id, 'watched': next},
-                              ),
-                            );
-                        ref.invalidate(detailProvider(item.id));
+                      onToggleWatched: () {
+                        unawaited(_toggleWatched());
                       },
-                      onToggleFavorite: () async {
-                        final next = item.userState?.favorite != true;
-                        await ref.read(graphQLClientProvider).mutate(
-                              MutationOptions(
-                                document: gql(SET_FAVORITE),
-                                variables: {'titleId': item.id, 'favorite': next},
-                              ),
-                            );
-                        ref.invalidate(detailProvider(item.id));
-                        ref.invalidate(favoritesFeedProvider);
+                      onToggleFavorite: () {
+                        unawaited(_toggleFavorite());
                       },
                     ),
                     if (files.length > 1)

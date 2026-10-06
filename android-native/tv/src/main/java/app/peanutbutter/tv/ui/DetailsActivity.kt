@@ -308,14 +308,16 @@ class DetailsActivity : FragmentActivity() {
         val landing = cards.zip(episodes).firstOrNull { it.second.id == progressId }?.first
             ?: cards.zip(episodes).firstOrNull { !it.second.watched }?.first
             ?: cards.firstOrNull()
-        landing?.let { card ->
-            row.post {
-                val scroller = row.parent as? HorizontalScrollView ?: return@post
-                val x = card.left - (scroller.width - card.width) / 2
-                scroller.scrollTo(x.coerceAtLeast(0), 0)
+        val scroller = CenterFocusScroll(this).apply { addView(row) }
+        cards.forEach { card ->
+            card.setOnFocusChangeListener { v, hasFocus ->
+                if (hasFocus) scroller.centerChild(v, smooth = true)
             }
         }
-        return SeasonSection(header, CenterFocusScroll(this).apply { addView(row) }, cards, landing)
+        landing?.let { card ->
+            row.post { scroller.centerChild(card, smooth = false) }
+        }
+        return SeasonSection(header, scroller, cards, landing)
     }
 
     private fun bindSeasonHeader(
@@ -474,13 +476,15 @@ class DetailsActivity : FragmentActivity() {
 
     private fun toggleWatched() {
         val t = item ?: return
+        val next = !t.watched
+        item = t.copy(watched = next, positionMs = if (next) 0 else t.positionMs)
+        updateWatchedFav(item!!)
         lifecycleScope.launch {
             try {
-                val next = !t.watched
                 application.asTv().api.setWatched(t.id, next)
-                item = t.copy(watched = next, positionMs = if (next) 0 else t.positionMs)
-                updateWatchedFav(item!!)
             } catch (e: Exception) {
+                item = t
+                updateWatchedFav(t)
                 Toast.makeText(this@DetailsActivity, e.message, Toast.LENGTH_SHORT).show()
             }
         }
@@ -488,13 +492,15 @@ class DetailsActivity : FragmentActivity() {
 
     private fun toggleFavorite() {
         val t = item ?: return
+        val next = !t.favorite
+        item = t.copy(favorite = next)
+        updateWatchedFav(item!!)
         lifecycleScope.launch {
             try {
-                val next = !t.favorite
                 application.asTv().api.setFavorite(t.id, next)
-                item = t.copy(favorite = next)
-                updateWatchedFav(item!!)
             } catch (e: Exception) {
+                item = t
+                updateWatchedFav(t)
                 Toast.makeText(this@DetailsActivity, e.message, Toast.LENGTH_SHORT).show()
             }
         }
@@ -747,7 +753,7 @@ private class SeasonSection(
     val landing: View?,
 )
 
-/** Keeps focused episode cards in-row for L/R; U/D leave to adjacent seasons. */
+/** Keeps focused episode cards centered in-row for L/R; U/D leave to adjacent seasons. */
 private class CenterFocusScroll(
     context: android.content.Context,
 ) : HorizontalScrollView(context) {
@@ -759,6 +765,7 @@ private class CenterFocusScroll(
         clipChildren = false
         clipToPadding = false
         val pad = resources.getDimensionPixelSize(R.dimen.shelf_inset)
+        // Symmetric padding so edge episodes can still center in the viewport.
         setPadding(pad, 0, pad, 0)
     }
 
@@ -772,7 +779,9 @@ private class CenterFocusScroll(
                         val idx = row.indexOfChild(card)
                         val nextIdx = if (direction == View.FOCUS_LEFT) idx - 1 else idx + 1
                         if (nextIdx in 0 until row.childCount) {
-                            return row.getChildAt(nextIdx)
+                            val next = row.getChildAt(nextIdx)
+                            centerChild(next, smooth = true)
+                            return next
                         }
                         // End of season row — stay on this card (don't jump to cast/hero).
                         return focused
@@ -792,17 +801,38 @@ private class CenterFocusScroll(
         return null
     }
 
+    /** Keep the focused episode near the middle of the row — never snap to the extreme left. */
+    fun centerChild(child: View?, smooth: Boolean = true) {
+        if (child == null) return
+        post {
+            if (width <= 0) return@post
+            val target = child.left + child.width / 2 - width / 2
+            val content = getChildAt(0)?.width ?: 0
+            val max = (content + paddingLeft + paddingRight - width).coerceAtLeast(0)
+            val x = target.coerceIn(0, max)
+            if (smooth) smoothScrollTo(x, 0) else scrollTo(x, 0)
+        }
+    }
+
     override fun requestChildRectangleOnScreen(
         child: View,
         rectangle: Rect,
         immediate: Boolean,
     ): Boolean {
-        val target = child.left + rectangle.centerX() - width / 2
+        // `child` is the row LinearLayout; `rectangle` is the focused card relative to it.
+        val focusCenter = child.left + rectangle.left + rectangle.width() / 2
+        val target = focusCenter - width / 2
         val content = getChildAt(0)?.width ?: 0
-        val max = (content - width).coerceAtLeast(0)
+        val max = (content + paddingLeft + paddingRight - width).coerceAtLeast(0)
         val x = target.coerceIn(0, max)
         if (immediate) scrollTo(x, scrollY) else smoothScrollTo(x, scrollY)
-        // false → let the outer vertical ScrollView bring the row on-screen.
-        return false
+        // Consume horizontal scroll so the parent doesn't left-align the card.
+        // Still ask the vertical parent to keep this row on-screen.
+        val parent = parent as? ViewGroup
+        if (parent != null) {
+            val local = Rect(0, top, width, bottom)
+            parent.requestChildRectangleOnScreen(this, local, immediate)
+        }
+        return true
     }
 }

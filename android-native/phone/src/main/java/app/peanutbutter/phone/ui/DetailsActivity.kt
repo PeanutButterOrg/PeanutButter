@@ -132,14 +132,15 @@ class DetailsActivity : AppCompatActivity() {
         val isSeries = item.kind.equals("SERIES", true) ||
             item.kind.equals("ANIME", true) ||
             item.kind.equals("TV", true)
-        if (!isSeries) return SourceLookup(item.displayTitle, null, null)
-        val target = item.seriesPlayTarget() ?: return SourceLookup(item.displayTitle, null, null)
+        if (!isSeries) return SourceLookup(item.displayTitle, null, null, null)
+        val target = item.seriesPlayTarget() ?: return SourceLookup(item.displayTitle, null, null, null)
         val season = target.first.seasonNumber
         val episode = target.second.episodeNumber
         return SourceLookup(
             String.format("%s S%02dE%02d", item.displayTitle, season, episode),
             season,
             episode,
+            target.second.id,
         )
     }
 
@@ -165,7 +166,9 @@ class DetailsActivity : AppCompatActivity() {
                         .putExtra(PlayerActivity.EXTRA_TITLE, item.displayTitle)
                         .putExtra(PlayerActivity.EXTRA_SESSION, started.sessionId)
                         .putExtra(PlayerActivity.EXTRA_URL, started.url)
-                        .putExtra(PlayerActivity.EXTRA_LOCAL, true),
+                        .putExtra(PlayerActivity.EXTRA_LOCAL, true)
+                        .putExtra(PlayerActivity.EXTRA_TITLE_ID, item.id)
+                        .putExtra(PlayerActivity.EXTRA_EPISODE_ID, lookup.episodeId),
                 )
             } catch (e: Exception) {
                 Toast.makeText(this@DetailsActivity, e.message, Toast.LENGTH_LONG).show()
@@ -183,6 +186,7 @@ private data class SourceLookup(
     val query: String,
     val season: Int?,
     val episode: Int?,
+    val episodeId: String?,
 )
 
 private class SourceAdapter(

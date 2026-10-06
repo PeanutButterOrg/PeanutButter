@@ -360,8 +360,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               ),
               const _Divider(),
               _SimpleRow(
-                label: 'Clear cache on exit',
-                subtitle: 'Delete streamed downloads when the app closes',
+                label: 'Clear stream cache when leaving',
+                subtitle: 'Wipe torrent pieces when you leave the player, play next, or quit',
                 trailing: TvFocus(
                   child: Switch(
                     value: settings.clearCacheOnExit,

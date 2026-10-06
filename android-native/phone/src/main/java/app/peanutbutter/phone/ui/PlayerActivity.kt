@@ -34,6 +34,9 @@ import kotlinx.coroutines.withContext
 class PlayerActivity : AppCompatActivity() {
     private var player: ExoPlayer? = null
     private var sessionId: String? = null
+    private var titleId: String? = null
+    private var episodeId: String? = null
+    private var lastSavedPosMs = -1L
     private var waitJob: Job? = null
     private var statusJob: Job? = null
     private var stopped = false
@@ -50,6 +53,12 @@ class PlayerActivity : AppCompatActivity() {
     private var busy: ProgressBar? = null
     private val main = Handler(Looper.getMainLooper())
     private val bufferStallRecover = Runnable { recoverFromBufferStall() }
+    private val progressTick = object : Runnable {
+        override fun run() {
+            saveWatchProgress()
+            if (!stopped) main.postDelayed(this, 5_000L)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -57,6 +66,8 @@ class PlayerActivity : AppCompatActivity() {
         val title = intent.getStringExtra(EXTRA_TITLE).orEmpty()
         val directUrl = intent.getStringExtra(EXTRA_URL).orEmpty()
         sessionId = intent.getStringExtra(EXTRA_SESSION)
+        titleId = intent.getStringExtra(EXTRA_TITLE_ID)
+        episodeId = intent.getStringExtra(EXTRA_EPISODE_ID)
         localTorrent = intent.getBooleanExtra(EXTRA_LOCAL, false) ||
             sessionId?.startsWith("local-") == true ||
             directUrl.contains("127.0.0.1")
@@ -64,6 +75,10 @@ class PlayerActivity : AppCompatActivity() {
         findViewById<TextView>(R.id.title).text = title
         statusView = findViewById(R.id.status)
         busy = findViewById(R.id.busy)
+        val btnSkip = findViewById<TextView>(R.id.btn_skip)
+        val btnNext = findViewById<TextView>(R.id.btn_next)
+        btnSkip.setOnClickListener { pulseChip(btnSkip) { /* segments when wired */ } }
+        btnNext.setOnClickListener { pulseChip(btnNext) { /* next episode when wired */ } }
 
         player = buildPlayer(preferSoftware = false)
         findViewById<PlayerView>(R.id.player).player = player
@@ -130,8 +145,13 @@ class PlayerActivity : AppCompatActivity() {
                                 cancelBufferStallWatch()
                                 statusView?.text = "Playing"
                                 busy?.visibility = View.GONE
+                                main.removeCallbacks(progressTick)
+                                main.post(progressTick)
                             }
-                            Player.STATE_ENDED -> handleEndReached()
+                            Player.STATE_ENDED -> {
+                                saveWatchProgress(force = true, complete = true)
+                                handleEndReached()
+                            }
                             else -> Unit
                         }
                     }
@@ -339,8 +359,69 @@ class PlayerActivity : AppCompatActivity() {
         super.onStop()
     }
 
+    private fun pulseChip(view: View, then: () -> Unit) {
+        view.isPressed = true
+        view.animate().cancel()
+        view.animate()
+            .scaleX(0.94f)
+            .scaleY(0.94f)
+            .setDuration(70)
+            .withEndAction {
+                view.animate()
+                    .scaleX(1f)
+                    .scaleY(1f)
+                    .setDuration(110)
+                    .withEndAction {
+                        view.isPressed = false
+                        then()
+                    }
+                    .start()
+            }
+            .start()
+    }
+
+    private fun saveWatchProgress(force: Boolean = false, complete: Boolean = false) {
+        val id = titleId?.takeIf { it.isNotBlank() } ?: return
+        val mp = player ?: return
+        val length = mp.duration.takeIf { it > 0L } ?: 0L
+        var pos = when {
+            mp.currentPosition > 0L -> mp.currentPosition
+            else -> lastGoodPosMs
+        }
+        if (complete && length > 0L) pos = maxOf(pos, length)
+        if (!complete && pos < 2_000L) return
+        if (!force && !complete && lastSavedPosMs >= 0L && kotlin.math.abs(pos - lastSavedPosMs) < 5_000L) return
+        lastSavedPosMs = pos
+        val dur = length.takeIf { it > 0L }
+        val ep = episodeId
+        val api = application.asPhone().api
+        lifecycleScope.launch(Dispatchers.IO) {
+            runCatching {
+                api.updateProgress(
+                    titleId = id,
+                    episodeId = ep,
+                    positionMs = pos,
+                    durationMs = dur,
+                    complete = complete,
+                )
+            }
+        }
+    }
+
+    override fun onPause() {
+        saveWatchProgress(force = true)
+        super.onPause()
+    }
+
+    override fun onStop() {
+        saveWatchProgress(force = true)
+        super.onStop()
+    }
+
     override fun onDestroy() {
         stopped = true
+        main.removeCallbacks(progressTick)
+        saveWatchProgress(force = true)
         cancelBufferStallWatch()
         waitJob?.cancel()
         statusJob?.cancel()
@@ -362,5 +443,7 @@ class PlayerActivity : AppCompatActivity() {
         const val EXTRA_TITLE = "title"
         const val EXTRA_SESSION = "session"
         const val EXTRA_LOCAL = "local_torrent"
+        const val EXTRA_TITLE_ID = "title_id"
+        const val EXTRA_EPISODE_ID = "episode_id"
     }
 }

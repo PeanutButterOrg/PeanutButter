@@ -7,9 +7,12 @@
 #   PeanutButter-linux-x86_64.AppImage
 #   PeanutButter/                          (Windows portable folder)
 #   PeanutButter-windows-x64-setup.exe
-#   PeanutButter.app/                      (macOS universal)
+#   PeanutButter-macos-universal.zip       (ditto zip → PeanutButter.app; compression-level 0)
 #   PeanutButter-android-tv.apk
 #
+# macOS: never upload a raw .app directory — Actions' zip breaks Frameworks
+# symlinks. We ditto-zip the bundle, then upload with compression-level: 0 so
+# the downloaded artifact is that zip (open it to get PeanutButter.app).
 # Server / API images are built separately: .github/workflows/backend-docker.yml
 #
 # Local Linux (fast, Docker): ./scripts/build-desktop-docker.sh
@@ -318,16 +321,24 @@ jobs:
             lipo -info "$BIN" || true
           fi
           mkdir -p dist
-          rm -rf dist/PeanutButter.app
-          # Stable name for the artifact (Flutter may emit peanutbutter.app).
+          rm -rf dist/PeanutButter.app dist/PeanutButter-macos-universal.zip
+          # Stable name (Flutter may emit peanutbutter.app).
           ditto "$APP" dist/PeanutButter.app
-          ls -la dist/PeanutButter.app/Contents/MacOS
+          # Actions' zip of a raw .app breaks Frameworks symlinks — package with ditto.
+          ditto -c -k --sequesterRsrc --keepParent \
+            dist/PeanutButter.app \
+            dist/PeanutButter-macos-universal.zip
+          rm -rf dist/PeanutButter.app
+          ls -lh dist/PeanutButter-macos-universal.zip
+          unzip -l dist/PeanutButter-macos-universal.zip | head -20
 
       - uses: actions/upload-artifact@v4
         with:
           name: PeanutButter-macos-universal
-          path: frontend/dist/PeanutButter.app
+          path: frontend/dist/PeanutButter-macos-universal.zip
           if-no-files-found: error
+          # Already a proper macOS zip from ditto — don't recompress into a nest.
+          compression-level: 0
 
   android-tv:
     name: Android TV APK

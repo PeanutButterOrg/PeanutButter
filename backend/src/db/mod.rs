@@ -1389,21 +1389,28 @@ pub async fn jackett_listings_for_title(pool: &PgPool, title_id: Uuid) -> Result
     .await?)
 }
 
-/// Cache key for stream picker results (title + optional S/E, else query text).
+/// Cache key for stream picker results (title + optional S/E + language).
 pub fn stream_search_cache_key(
     title_id: Option<Uuid>,
     query: &str,
     kind: &str,
     season: Option<i32>,
     episode: Option<i32>,
+    language: Option<&str>,
 ) -> String {
     let s = season.unwrap_or(0);
     let e = episode.unwrap_or(0);
+    let lang = language
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase()
+        .replace([',', '/', '|', '+', ' '], "-");
+    let lang_key = if lang.is_empty() { "all".into() } else { lang };
     if let Some(id) = title_id {
-        format!("title:{id}:{s}:{e}")
+        format!("title:{id}:{s}:{e}:lang:{lang_key}")
     } else {
         let q = query.trim().to_ascii_lowercase();
-        format!("query:{kind}:{q}:{s}:{e}")
+        format!("query:{kind}:{q}:{s}:{e}:lang:{lang_key}")
     }
 }
 

@@ -335,14 +335,17 @@ impl Mutation {
         let movie = kind.as_deref() == Some("movie");
         let force_complete = complete.unwrap_or(false);
         // Only finished movies enter Watched. Series stay in Continue watching
-        // until the user marks them watched explicitly.
+        // until the user marks them watched explicitly — except force_complete
+        // always promotes a movie even when duration is unknown.
         let watched = movie
-            && duration_ms
-                .map(|d| d > 0 && position_ms as f64 >= d as f64 * 0.9)
-                .unwrap_or(false);
+            && (force_complete
+                || duration_ms
+                    .map(|d| d > 0 && position_ms as f64 >= d as f64 * 0.9)
+                    .unwrap_or(false));
         // Finished series episodes must not leave title resume parked at EOF —
         // that restarts the same torrent near the end on the next Play.
-        let title_position = if force_complete && !movie {
+        // Watched movies clear resume so they leave Continue watching immediately.
+        let title_position = if watched || (force_complete && !movie) {
             0_i64
         } else {
             position_ms.max(0)

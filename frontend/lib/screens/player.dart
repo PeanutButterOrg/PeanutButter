@@ -34,6 +34,7 @@ import '../friendly_error.dart';
 import '../player_cache.dart';
 import '../stream_stats.dart';
 import '../widgets/cached_art.dart';
+import '../widgets/desktop_seek_preview.dart';
 import '../widgets/streaming_picker.dart';
 import '../widgets/subtitle_import.dart';
 import '../widgets/tv_chrome.dart';
@@ -137,7 +138,7 @@ class _SubtitleOption {
   final String content;
 }
 
-class _PlayerScreenState extends ConsumerState<PlayerScreen> {
+class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBindingObserver {
   Player? _player;
   VideoController? _controller;
   VideoPlayerController? _exo;
@@ -209,6 +210,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   bool _progressFlushed = false;
   bool _savedOnce = false;
   bool _closing = false;
+  bool _playerReleased = false;
   bool _allowLeave = false;
   bool _confirmExitOpen = false;
   DateTime? _confirmOpenedAt;
@@ -268,6 +270,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     // Prefer the non-Riverpod flag — writing StateProviders from initState
     // races go_router rebuilds on Android TV (red "UI error" screen).
     playbackSessionActive = true;
@@ -344,9 +347,14 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     try {
       MediaKit.ensureInitialized();
       // Tiny demuxer RAM on Android — large sync alloc freezes TV emulators.
+      // Desktop streams: keep modest to avoid Windows OOM crashes.
       final bufferBytes = (!kIsWeb && Platform.isAndroid)
           ? 4 * 1024 * 1024
-          : (widget.isStream ? 64 * 1024 * 1024 : 48 * 1024 * 1024);
+          : (widget.isStream
+              ? ((!kIsWeb && (Platform.isWindows || Platform.isMacOS))
+                  ? 24 * 1024 * 1024
+                  : 48 * 1024 * 1024)
+              : 32 * 1024 * 1024);
       final player = Player(
         configuration: PlayerConfiguration(
           bufferSize: bufferBytes,
@@ -569,10 +577,25 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       return true;
     }
     if (key == LogicalKeyboardKey.arrowUp) {
+      if (_playbackStarted &&
+          _activeSegment != null &&
+          (_activeSegment!.kind == 'INTRO' || _activeSegment!.kind == 'RECAP') &&
+          _skipFocus.canRequestFocus) {
+        _skipFocus.requestFocus();
+        return true;
+      }
+      if (_playbackStarted && _playNextVisible && _playNextFocus.canRequestFocus) {
+        _playNextFocus.requestFocus();
+        return true;
+      }
       _audioFocus.requestFocus();
       return true;
     }
     if (key == LogicalKeyboardKey.arrowDown) {
+      if (_skipFocus.hasFocus || _playNextFocus.hasFocus) {
+        _playFocus.requestFocus();
+        return true;
+      }
       _playFocus.requestFocus();
       return true;
     }
@@ -698,26 +721,38 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   void _onPlayerReady() {
     final native = _player?.platform;
     if (native is! NativePlayer) return;
-    // Hardware decode: try vaapi (Intel/AMD on Linux), fall back to auto, then software.
-    // On Android TV use mediacodec for hardware decode.
     final bool isAndroid = !kIsWeb && Platform.isAndroid;
-    native.setProperty('hwdec', isAndroid ? 'mediacodec' : 'vaapi,auto-safe');
+    final bool isWindows = !kIsWeb && Platform.isWindows;
+    final bool isMacOS = !kIsWeb && Platform.isMacOS;
+    // Platform-correct hwdec — vaapi on Windows/macOS caused streaming crashes.
+    final hwdec = isAndroid
+        ? 'mediacodec'
+        : isWindows
+            ? 'd3d11va,auto'
+            : isMacOS
+                ? 'videotoolbox,auto'
+                : 'vaapi,auto-safe';
+    native.setProperty('hwdec', hwdec);
     if (isAndroid) {
       // display-resample + interpolation desyncs audio on Android TV.
       native.setProperty('video-sync', 'audio');
       native.setProperty('interpolation', 'no');
       native.setProperty('audio-pitch-correction', 'yes');
     } else {
-      native.setProperty('video-sync', 'display-resample');
-      native.setProperty('interpolation', 'yes');
-      native.setProperty('tscale', 'oversample');
-      native.setProperty('audio-pitch-correction', 'no');
+      // Safer defaults on desktop — display-resample + heavy interpolation OOMs some GPUs.
+      native.setProperty('video-sync', 'audio');
+      native.setProperty('interpolation', 'no');
+      native.setProperty('audio-pitch-correction', 'yes');
     }
     // Keep prefetching while paused so resume is smooth (mpv still demuxes into cache).
     native.setProperty('cache', 'yes');
     native.setProperty('demuxer-thread', 'yes');
-    native.setProperty('demuxer-max-bytes', widget.isStream ? '512MiB' : '256MiB');
-    native.setProperty('demuxer-max-back-bytes', '64MiB');
+    // Cap demuxer RAM — 512MiB was crashing Windows while streaming.
+    final demuxCap = widget.isStream
+        ? (isWindows || isMacOS ? '96MiB' : '192MiB')
+        : (isWindows || isMacOS ? '64MiB' : '128MiB');
+    native.setProperty('demuxer-max-bytes', demuxCap);
+    native.setProperty('demuxer-max-back-bytes', '32MiB');
     // Keep readahead modest for streams so seeks don't wait for a huge demuxer fill.
     native.setProperty('demuxer-readahead-secs', widget.isStream ? '20' : '120');
     native.setProperty('cache-secs', widget.isStream ? '30' : '120');
@@ -1066,7 +1101,22 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Flush resume position on background / kill so Continue watching stays accurate.
+    if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached) {
+      unawaited(_saveProgress(
+        invalidateHome: state == AppLifecycleState.detached ||
+            state == AppLifecycleState.paused,
+      ));
+    }
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     playbackSessionActive = false;
     HardwareKeyboard.instance.removeHandler(_onHardwareKey);
     _posSub?.cancel();
@@ -1093,41 +1143,114 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     _seekCtl.dispose();
     unawaited(_vlcSub?.cancel() ?? Future<void>.value());
     _vlcSub = null;
-    final position = _useVlc
-        ? _vlcPosition
-        : _useExo
-            ? _exo?.value.position
-            : _player?.state.position;
-    final duration = _useVlc
-        ? _vlcDuration
-        : _useExo
-            ? _exo?.value.duration
-            : _player?.state.duration;
-    unawaited(_saveProgress(position: position, duration: duration, closing: true));
-    _exo?.removeListener(_onExoTick);
-    unawaited(_exo?.dispose());
-    if (_vlcStarted) {
-      unawaited(AndroidPlayback.stopNativeVlc());
-      _vlcStarted = false;
-    }
-    _player?.dispose();
-    final sessionId = widget.sessionId;
-    // Prefer the explicit stop in _closePlayer; keep dispose as a safety net.
-    if (!_closing) {
-      if (widget.isStream && sessionId != null && !widget.localTorrent && !sessionId.startsWith('local-')) {
-        _client.mutate(
-          MutationOptions(document: gql(STOP_STREAM), variables: {'sessionId': sessionId}),
-        );
+    if (!_playerReleased) {
+      final position = _useVlc
+          ? _vlcPosition
+          : _useExo
+              ? _exo?.value.position
+              : _player?.state.position;
+      final duration = _useVlc
+          ? _vlcDuration
+          : _useExo
+              ? _exo?.value.duration
+              : _player?.state.duration;
+      unawaited(_saveProgress(
+        position: position,
+        duration: duration,
+        closing: true,
+        invalidateHome: true,
+      ));
+      _exo?.removeListener(_onExoTick);
+      unawaited(_exo?.dispose());
+      if (_vlcStarted) {
+        unawaited(AndroidPlayback.stopNativeVlc());
+        _vlcStarted = false;
       }
-      if (widget.localTorrent || (widget.isStream && (sessionId?.startsWith('local-') ?? false))) {
-        unawaited(LocalTorrentEngine.instance.stop());
+      try {
+        _player?.dispose();
+      } catch (_) {}
+      _player = null;
+      _controller = null;
+      _exo = null;
+      // Prefer the explicit stop in _closePlayer; keep dispose as a safety net.
+      if (!_closing) {
+        unawaited(_releaseStreamResources(wipeIfEnabled: true));
       }
-    }
-    if (!kIsWeb && Platform.isAndroid) {
-      unawaited(PlayerCache.clear());
     }
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     super.dispose();
+  }
+
+  /// Stop torrent / stream; wipe pieces when Settings → Clear cache on exit is on.
+  Future<void> _releaseStreamResources({required bool wipeIfEnabled}) async {
+    final wipe = wipeIfEnabled && ref.read(settingsProvider).clearCacheOnExit;
+    final sessionId = widget.sessionId;
+    if (widget.isStream &&
+        sessionId != null &&
+        !widget.localTorrent &&
+        !sessionId.startsWith('local-')) {
+      try {
+        await _client
+            .mutate(
+              MutationOptions(
+                document: gql(STOP_STREAM),
+                variables: {'sessionId': sessionId},
+              ),
+            )
+            .timeout(const Duration(seconds: 3));
+      } catch (_) {}
+    }
+    final localActive = widget.localTorrent ||
+        (widget.isStream && (sessionId?.startsWith('local-') ?? false)) ||
+        LocalTorrentEngine.instance.isActive;
+    if (!localActive && !wipe) return;
+    try {
+      if (wipe) {
+        await LocalTorrentEngine.instance.purgeDownloads();
+        await PlayerCache.clear();
+      } else if (localActive) {
+        await LocalTorrentEngine.instance.stop(deleteFiles: false);
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _disposePlaybackEngines() async {
+    if (_playerReleased) return;
+    _playerReleased = true;
+    final player = _player;
+    final exo = _exo;
+    final vlc = _vlcStarted;
+    _player = null;
+    _controller = null;
+    _exo = null;
+    _vlcStarted = false;
+    // Unmount Video/Texture before native dispose — avoids desktop leave crashes.
+    if (mounted) {
+      try {
+        setState(() {});
+      } catch (_) {}
+      await Future<void>.delayed(Duration.zero);
+    }
+    try {
+      await player?.pause();
+    } catch (_) {}
+    try {
+      await player?.dispose();
+    } catch (_) {}
+    try {
+      await exo?.pause();
+    } catch (_) {}
+    try {
+      exo?.removeListener(_onExoTick);
+    } catch (_) {}
+    try {
+      await exo?.dispose();
+    } catch (_) {}
+    if (vlc) {
+      try {
+        await AndroidPlayback.stopNativeVlc();
+      } catch (_) {}
+    }
   }
 
   Future<void> _closePlayer() async {
@@ -1136,20 +1259,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     _playNextTick?.cancel();
     _pauseBufferTimer?.cancel();
     try {
-      await _player?.pause();
-    } catch (_) {}
-    try {
-      await _exo?.pause();
-    } catch (_) {}
-    try {
-      await AndroidPlayback.stopNativeVlc();
-    } catch (_) {}
-    _vlcStarted = false;
-    await _stopStreamingSession();
-    try {
       await _saveProgress(closing: true, invalidateHome: true)
           .timeout(const Duration(seconds: 2), onTimeout: () {});
     } catch (_) {}
+    await _disposePlaybackEngines();
+    await _releaseStreamResources(wipeIfEnabled: true);
     if (!mounted) return;
     // PopScope keeps canPop=false while playing, so context.canPop() stays false
     // unless we flip this flag — otherwise Leave appears to do nothing.
@@ -1181,33 +1295,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       _notifyOverlays();
     }
     await _closePlayer();
-  }
-
-  /// Stop remote Jackett stream session and/or local libtorrent download/upload.
-  Future<void> _stopStreamingSession() async {
-    final sessionId = widget.sessionId;
-    if (widget.isStream &&
-        sessionId != null &&
-        !widget.localTorrent &&
-        !sessionId.startsWith('local-')) {
-      try {
-        await _client
-            .mutate(
-              MutationOptions(
-                document: gql(STOP_STREAM),
-                variables: {'sessionId': sessionId},
-              ),
-            )
-            .timeout(const Duration(seconds: 3));
-      } catch (_) {}
-    }
-    if (widget.localTorrent ||
-        (widget.isStream && (sessionId?.startsWith('local-') ?? false)) ||
-        LocalTorrentEngine.instance.isActive) {
-      try {
-        await LocalTorrentEngine.instance.stop();
-      } catch (_) {}
-    }
   }
 
   void _onPosition(Duration position) {
@@ -1257,7 +1344,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     final now = DateTime.now();
     final due = !_savedOnce
         ? position.inMilliseconds >= 2000
-        : now.difference(_lastProgress) >= const Duration(seconds: 8);
+        : now.difference(_lastProgress) >= const Duration(seconds: 5);
     if (!due) return;
     _savedOnce = true;
     _lastProgress = now;
@@ -1581,6 +1668,17 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
         await _player?.pause();
       } catch (_) {}
 
+      // Clear the finished episode's pieces when the setting is on — before the next magnet.
+      final wipe = ref.read(settingsProvider).clearCacheOnExit;
+      try {
+        if (wipe) {
+          await LocalTorrentEngine.instance.stop(deleteFiles: true);
+          await PlayerCache.clear();
+        } else {
+          await LocalTorrentEngine.instance.stop(deleteFiles: false);
+        }
+      } catch (_) {}
+
       final previousSession = widget.sessionId;
       var opened = false;
       // Next episode is a fresh play — always pick a torrent (don't reuse prior ep magnet).
@@ -1602,9 +1700,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
           if (!mounted) return;
           opened = true;
           setState(() => _playNextDismissed = true);
-          if (widget.localTorrent || LocalTorrentEngine.instance.isActive) {
-            unawaited(LocalTorrentEngine.instance.stop());
-          }
           context.pushReplacement(
             '/player/${s.session.id}',
             extra: {
@@ -1644,9 +1739,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       if (opened) return;
 
       setState(() => _playNextDismissed = true);
-      if (widget.localTorrent || LocalTorrentEngine.instance.isActive) {
-        unawaited(LocalTorrentEngine.instance.stop());
-      }
 
       if (!mounted) return;
       context.pushReplacement(
@@ -1888,7 +1980,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
         );
       }
     } catch (_) {}
-    if (invalidateHome && mounted) {
+    if ((complete || invalidateHome) && mounted) {
       invalidatePlaybackProgress(ref, titleId: titleId);
     }
   }
@@ -2240,11 +2332,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     return false;
   }
 
-  /// Compact seed/speed chip while streaming with video — also during mid-play rebuffers
-  /// (full HUD still shows poster-less stats via [_bufferOverlay]).
+  /// Compact seed/speed chip while streaming mid-play — never alongside the HUD.
   bool get _showStreamChip =>
       widget.isStream &&
       _streamError == null &&
+      !_showStreamHud &&
       (_hasVideo || _streamOpened) &&
       (_buffering || _seeking || _seekSettling || !_playing);
 
@@ -2978,9 +3070,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     final info = _streamInfo;
     final local = LocalTorrentEngine.instance.currentStats();
     final speed = info?.downloadMbps ?? local?.downloadMbps ?? 0;
-    // Live swarm only — never Jackett listed counts.
-    final seeders = info?.seeders ?? local?.seeders ?? 0;
-    final peers = info?.peers ?? local?.peers ?? 0;
     final rawFrac = () {
       final b = info?.bufferProgress ?? 0;
       final p = info?.progress ?? 0;
@@ -2990,17 +3079,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       return 0.0;
     }();
     final rawPct = (rawFrac * 100).clamp(0.0, 100.0);
-    // Keep the bar honest while the swarm is still transferring.
     final pct = (rawPct >= 99.5 && speed >= 0.05) ? 99.0 : rawPct;
     final barValue = pct > 0 ? (pct / 100).clamp(0.0, 1.0) : null;
-    final line = streamStatsLine(
-      pct: pct,
-      speed: speed,
-      seeders: seeders,
-      peers: peers,
-      hasVideo: _hasVideo,
-      playing: _playing,
-    );
     final art = widget.backdropUrl ?? widget.posterUrl;
     // Poster only while waiting for first start — never over mid-playback rebuffers.
     final showPoster = !_streamOpened && art != null && art.isNotEmpty;
@@ -3011,57 +3091,20 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
         CachedArt(
           url: art,
           fallbackUrl: widget.posterUrl,
-          // FIT_XY: stretch to the exact player viewport (no letterbox / crop).
           fit: BoxFit.fill,
         ),
-        DecoratedBox(
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topCenter,
-              end: Alignment.bottomCenter,
-              colors: [
-                Colors.black.withValues(alpha: 0.35),
-                Colors.black.withValues(alpha: 0.72),
-                Colors.black.withValues(alpha: 0.88),
-              ],
-            ),
-          ),
-        ),
+        // No black gradient scrim — keep the art clean before play.
       ],
-      Positioned(
-        right: 16,
-        bottom: 72,
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            color: Colors.black.withValues(alpha: 0.68),
-            borderRadius: BorderRadius.circular(20),
-          ),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-            child: IntrinsicWidth(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    line,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  LinearProgressIndicator(
-                    value: barValue,
-                    minHeight: 3,
-                    backgroundColor: Colors.white24,
-                    color: AppTheme.seed,
-                    borderRadius: BorderRadius.circular(2),
-                  ),
-                ],
-              ),
-            ),
+      // Single centered progress — no text, no second chip elsewhere.
+      Center(
+        child: SizedBox(
+          width: 220,
+          child: LinearProgressIndicator(
+            value: barValue,
+            minHeight: 4,
+            backgroundColor: Colors.white24,
+            color: AppTheme.seed,
+            borderRadius: BorderRadius.circular(2),
           ),
         ),
       ),
@@ -3523,60 +3566,52 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
             ? 'Next Season  ·  ${_playNextSecondsLeft}s'
             : 'Play Next  ·  ${_playNextSecondsLeft}s';
     return SafeArea(
-      child: Material(
-        color: Colors.black.withValues(alpha: 0.72),
-        borderRadius: BorderRadius.circular(20),
-        child: InkWell(
-          focusNode: _playNextFocus,
-          borderRadius: BorderRadius.circular(20),
-          onTap: _playNextBusy ? null : _onPlayNextPressed,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.center,
-              children: [
-                if (_playNextBusy)
-                  const SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                  )
-                else
-                  const Icon(Icons.skip_next_rounded, color: Colors.white, size: 22),
-                const SizedBox(width: 8),
-                ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 260),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        title,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.w700,
-                          fontSize: 13,
-                        ),
-                      ),
-                      if (!_playNextBusy) ...[
-                        const SizedBox(height: 2),
-                        Text(
-                          next.label,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            color: Colors.white.withValues(alpha: 0.75),
-                            fontSize: 12,
-                          ),
-                        ),
-                      ],
-                    ],
+      child: _ActionChipFocus(
+        focusNode: _playNextFocus,
+        onTap: _playNextBusy ? null : _onPlayNextPressed,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            if (_playNextBusy)
+              const SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+              )
+            else
+              const Icon(Icons.skip_next_rounded, color: Colors.white, size: 22),
+            const SizedBox(width: 8),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 260),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 13,
+                    ),
                   ),
-                ),
-              ],
+                  if (!_playNextBusy) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      next.label,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: Colors.white.withValues(alpha: 0.75),
+                        fontSize: 12,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
             ),
-          ),
+          ],
         ),
       ),
     );
@@ -3585,31 +3620,23 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   Widget _skipSegmentButton(MediaSegment segment) {
     // Match seed/speed chip chrome and insets (16 / 72).
     return SafeArea(
-      child: Material(
-        color: Colors.black.withValues(alpha: 0.68),
-        borderRadius: BorderRadius.circular(20),
-        child: InkWell(
-          focusNode: _skipFocus,
-          borderRadius: BorderRadius.circular(20),
-          onTap: _skipActiveSegment,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  segment.label,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.w600,
-                    fontSize: 13,
-                  ),
-                ),
-                const SizedBox(width: 6),
-                const Icon(Icons.skip_next_rounded, color: Colors.white, size: 20),
-              ],
+      child: _ActionChipFocus(
+        focusNode: _skipFocus,
+        onTap: _skipActiveSegment,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              segment.label,
+              style: const TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.w600,
+                fontSize: 13,
+              ),
             ),
-          ),
+            const SizedBox(width: 6),
+            const Icon(Icons.skip_next_rounded, color: Colors.white, size: 20),
+          ],
         ),
       ),
     );
@@ -3818,16 +3845,50 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       ),
       child: MaterialDesktopVideoControlsTheme(
         normal: MaterialDesktopVideoControlsThemeData(
+          displaySeekBar: false,
           seekBarContainerHeight: 36.0,
           seekBarHeight: 3.2,
           seekBarHoverHeight: 5.6,
           seekBarThumbSize: 12.0,
+          bottomButtonBar: [
+            const MaterialDesktopSkipPreviousButton(),
+            const MaterialDesktopPlayOrPauseButton(),
+            const MaterialDesktopSkipNextButton(),
+            const MaterialDesktopVolumeButton(),
+            const MaterialDesktopPositionIndicator(),
+            const SizedBox(width: 12),
+            Expanded(
+              child: DesktopSeekPreviewBar(
+                player: controller.player,
+                mediaUrl: _url.isNotEmpty ? _url : widget.playbackUrl,
+              ),
+            ),
+            const SizedBox(width: 12),
+            const MaterialDesktopFullscreenButton(),
+          ],
         ),
         fullscreen: MaterialDesktopVideoControlsThemeData(
+          displaySeekBar: false,
           seekBarContainerHeight: 36.0,
           seekBarHeight: 3.2,
           seekBarHoverHeight: 5.6,
           seekBarThumbSize: 12.0,
+          bottomButtonBar: [
+            const MaterialDesktopSkipPreviousButton(),
+            const MaterialDesktopPlayOrPauseButton(),
+            const MaterialDesktopSkipNextButton(),
+            const MaterialDesktopVolumeButton(),
+            const MaterialDesktopPositionIndicator(),
+            const SizedBox(width: 12),
+            Expanded(
+              child: DesktopSeekPreviewBar(
+                player: controller.player,
+                mediaUrl: _url.isNotEmpty ? _url : widget.playbackUrl,
+              ),
+            ),
+            const SizedBox(width: 12),
+            const MaterialDesktopFullscreenButton(),
+          ],
         ),
         child: Video(
           key: _videoKey,
@@ -3852,5 +3913,92 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       return Opacity(opacity: 0, child: IgnorePointer(child: video));
     }
     return video;
+  }
+}
+
+/// Skip Intro / Play Next chip with TV focus ring + press scale feedback.
+class _ActionChipFocus extends StatefulWidget {
+  const _ActionChipFocus({
+    required this.focusNode,
+    required this.child,
+    this.onTap,
+  });
+
+  final FocusNode focusNode;
+  final Widget child;
+  final VoidCallback? onTap;
+
+  @override
+  State<_ActionChipFocus> createState() => _ActionChipFocusState();
+}
+
+class _ActionChipFocusState extends State<_ActionChipFocus> {
+  bool _focused = false;
+  bool _pressed = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _focused = widget.focusNode.hasFocus;
+    widget.focusNode.addListener(_onFocus);
+  }
+
+  @override
+  void didUpdateWidget(covariant _ActionChipFocus oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.focusNode != widget.focusNode) {
+      oldWidget.focusNode.removeListener(_onFocus);
+      widget.focusNode.addListener(_onFocus);
+      _focused = widget.focusNode.hasFocus;
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.focusNode.removeListener(_onFocus);
+    super.dispose();
+  }
+
+  void _onFocus() {
+    if (!mounted) return;
+    setState(() => _focused = widget.focusNode.hasFocus);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scale = _pressed ? 0.94 : (_focused ? 1.06 : 1.0);
+    return AnimatedScale(
+      scale: scale,
+      duration: const Duration(milliseconds: 110),
+      curve: Curves.easeOut,
+      child: Material(
+        color: Colors.black.withValues(alpha: _focused ? 0.88 : 0.72),
+        borderRadius: BorderRadius.circular(20),
+        child: InkWell(
+          focusNode: widget.focusNode,
+          borderRadius: BorderRadius.circular(20),
+          onTap: widget.onTap == null
+              ? null
+              : () async {
+                  setState(() => _pressed = true);
+                  await Future<void>.delayed(const Duration(milliseconds: 70));
+                  if (mounted) setState(() => _pressed = false);
+                  widget.onTap?.call();
+                },
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 120),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(
+                color: _focused ? Colors.white : Colors.white24,
+                width: _focused ? 2 : 1,
+              ),
+            ),
+            child: widget.child,
+          ),
+        ),
+      ),
+    );
   }
 }

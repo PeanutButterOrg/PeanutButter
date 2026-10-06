@@ -78,7 +78,9 @@ class LocalTorrentEngine {
     try {
       await TrackerManager.fetchBestTrackers().timeout(const Duration(seconds: 4));
     } catch (_) {}
-    await stop();
+    // Keep pieces on disk by default so resume / clear-cache-off works.
+    // Callers that want a wipe pass deleteFiles via stop() or purgeDownloads().
+    await stop(deleteFiles: false);
 
     final engine = LibtorrentFlutter.instance;
     final magnetUri = TrackerManager.injectTrackers(_withPublicTrackers(magnet));

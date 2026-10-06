@@ -214,6 +214,37 @@ class TitleItem {
       container: json['container'] as String?,
     );
   }
+
+  TitleItem copyWith({UserState? userState}) {
+    return TitleItem(
+      id: id,
+      kind: kind,
+      title: title,
+      originalTitle: originalTitle,
+      synopsis: synopsis,
+      description: description,
+      year: year,
+      runtimeMinutes: runtimeMinutes,
+      posterUrl: posterUrl,
+      backdropUrl: backdropUrl,
+      logoUrl: logoUrl,
+      thumbUrl: thumbUrl,
+      ratings: ratings,
+      genres: genres,
+      trailers: trailers,
+      fileReferences: fileReferences,
+      seasons: seasons,
+      trailerYoutubeKey: trailerYoutubeKey,
+      availablePeers: availablePeers,
+      bestQuality: bestQuality,
+      people: people,
+      userState: userState ?? this.userState,
+      contentRating: contentRating,
+      videoCodec: videoCodec,
+      audioCodec: audioCodec,
+      container: container,
+    );
+  }
 }
 
 class Ratings {
@@ -549,6 +580,26 @@ class UserState {
       episodeId: json['episodeId'] as String?,
       fileId: json['fileId'] as String?,
       progressPercent: (json['progressPercent'] as num?)?.toDouble() ?? 0,
+    );
+  }
+
+  UserState copyWith({
+    bool? favorite,
+    bool? watched,
+    int? positionMs,
+    int? durationMs,
+    String? episodeId,
+    String? fileId,
+    double? progressPercent,
+  }) {
+    return UserState(
+      favorite: favorite ?? this.favorite,
+      watched: watched ?? this.watched,
+      positionMs: positionMs ?? this.positionMs,
+      durationMs: durationMs ?? this.durationMs,
+      episodeId: episodeId ?? this.episodeId,
+      fileId: fileId ?? this.fileId,
+      progressPercent: progressPercent ?? this.progressPercent,
     );
   }
 }

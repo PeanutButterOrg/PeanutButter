@@ -70,7 +70,7 @@ GitHub Actions publishes:
 
 | Workflow | Artifacts |
 | --- | --- |
-| [Platform Builds](.github/workflows/desktop-builds.yml) | Linux portable folder / `.deb` / AppImage, Windows portable folder / setup `.exe`, macOS `PeanutButter.app`, Android TV APK (raw files — no zip-in-zip) |
+| [Platform Builds](.github/workflows/desktop-builds.yml) | Linux portable folder / `.deb` / AppImage, Windows portable folder / setup `.exe`, macOS `PeanutButter-macos-universal.zip` (ditto → `.app`), Android TV APK |
 | [Backend & Docker](.github/workflows/backend-docker.yml) | Linux API binary (`.tar.gz`), Docker image `ghcr.io/peanutbutterorg/peanutbutter-api`, offline image `.tar.gz` |
 
 On version tags (`v*`), images are tagged with the semver and `latest`. Pull:

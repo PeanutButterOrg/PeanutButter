@@ -454,17 +454,16 @@ class _PeanutButterAppState extends ConsumerState<PeanutButterApp> with WidgetsB
   }
 
   Future<void> _clearCachesOnExit() async {
-    // Always stop torrents + wipe stream pieces when leaving the app.
-    try {
-      await LocalTorrentEngine.instance.purgeDownloads();
-    } catch (_) {}
-    try {
-      await PlayerCache.clear();
-    } catch (_) {}
     final settings = ref.read(settingsProvider);
-    if (!settings.clearCacheOnExit && !isAndroidTv) return;
+    final wipe = settings.clearCacheOnExit || isAndroidTv;
     try {
-      await ArtCache.clear();
+      if (wipe) {
+        await LocalTorrentEngine.instance.purgeDownloads();
+        await PlayerCache.clear();
+        await ArtCache.clear();
+      } else {
+        await LocalTorrentEngine.instance.stop(deleteFiles: false);
+      }
     } catch (_) {}
   }
 

@@ -125,7 +125,7 @@ class MainFragment : RowsSupportFragment() {
         grid.setPadding(0, 0, 0, bottom)
     }
 
-    fun bindFeed(kind: String, feed: HomeFeed) {
+    fun bindFeed(kind: String, feed: HomeFeed, preserveFocus: Boolean = false) {
         if (!::rowsAdapter.isInitialized) return
         this.kind = kind
         rowsAdapter.clear()
@@ -155,10 +155,14 @@ class MainFragment : RowsSupportFragment() {
         addShelf(getString(R.string.popular), feed.popular, "POPULARITY")
         addShelf(getString(R.string.last_added), feed.recent, "DATE_ADDED")
 
-        setSelectedPosition(0, true)
-        view?.post {
-            alignFocusedRows()
-            verticalGridView?.requestFocus()
+        if (!preserveFocus) {
+            setSelectedPosition(0, true)
+            view?.post {
+                alignFocusedRows()
+                verticalGridView?.requestFocus()
+            }
+        } else {
+            view?.post { alignFocusedRows() }
         }
     }
 

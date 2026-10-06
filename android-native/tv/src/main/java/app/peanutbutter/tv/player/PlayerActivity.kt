@@ -24,6 +24,7 @@ import app.peanutbutter.core.AppLog
 import app.peanutbutter.core.LocalStreamStats
 import app.peanutbutter.core.MediaSegment
 import app.peanutbutter.core.SessionStore
+import app.peanutbutter.core.StreamDownloads
 import app.peanutbutter.core.StreamQuality
 import app.peanutbutter.core.TitleItem
 import app.peanutbutter.core.StreamSession
@@ -37,7 +38,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * ExoPlayer / Media3 torrent player (Jellyfin Android TV approach):
@@ -55,6 +58,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
     private var titleId: String? = null
     private var episodeId: String? = null
     private var lastSavedPosMs = -1L
+    private var markedComplete = false
     private var kind: String? = null
     private var seasonNum: Int? = null
     private var episodeNum: Int? = null
@@ -216,10 +220,20 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         btnRew?.setOnClickListener { seekBy(-10_000); showChrome() }
         btnFf?.setOnClickListener { seekBy(10_000); showChrome() }
         btnPlay?.setOnClickListener { togglePlay() }
-        btnSkip?.setOnClickListener { skipActiveSegment() }
-        btnNext?.setOnClickListener { playNextEpisode() }
-        btnSubs?.setOnClickListener { openSubtitles() }
-        btnAspect?.setOnClickListener { openAspect() }
+        btnSkip?.setOnClickListener { pulseAction(btnSkip) { skipActiveSegment() } }
+        btnNext?.setOnClickListener { pulseAction(btnNext) { playNextEpisode() } }
+        btnSubs?.setOnClickListener { pulseAction(btnSubs) { openSubtitles() } }
+        btnAspect?.setOnClickListener { pulseAction(btnAspect) { openAspect() } }
+        listOfNotNull(btnSkip, btnNext).forEach { chip ->
+            chip.setOnFocusChangeListener { v, hasFocus ->
+                v.animate().cancel()
+                v.animate()
+                    .scaleX(if (hasFocus) 1.08f else 1f)
+                    .scaleY(if (hasFocus) 1.08f else 1f)
+                    .setDuration(120)
+                    .start()
+            }
+        }
 
         // API 34+ routes Back through OnBackPressedDispatcher (not only onKeyDown).
         // Without this callback the activity finishes and skips the exit dialog.
@@ -660,19 +674,16 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                     stallRecoverCount = 0
                     softErrorCount = 0
                     cancelBufferStallWatch()
-                    // 100% = frames on screen — then drop the banner.
                     topProgress?.progress = 100
                     topProgress?.secondaryProgress = 100
                     busy?.isVisible = false
                     topProgress?.isVisible = false
                     posterHud?.isVisible = false
-                    applyBufferingChrome()
                     btnPlay?.setImageResource(R.drawable.ic_pause)
-                    if (btnPlay?.hasFocus() != true && !userSeeking) {
-                        btnPlay?.requestFocus()
-                    }
-                    showChrome()
-                    scheduleHideChrome()
+                    // Clean start: hide transport; Skip/Next may appear on their own layer.
+                    chromeVisible = false
+                    applyPlayingChrome(showTransport = false)
+                    findViewById<View>(R.id.player_root)?.requestFocus()
                     main.removeCallbacks(tickProgress)
                     main.post(tickProgress)
                     maybeLoadSegments()
@@ -971,7 +982,6 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                 if (player?.isPlaying == true) busy?.isVisible = false
             }
         }, 1_500L)
-        showChrome()
     }
 
     private fun maybeLoadSegments() {
@@ -1053,22 +1063,33 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         activeSegment = opening
         val showSkip = opening != null
         val wasSkip = btnSkip?.isVisible == true
-        btnSkip?.isVisible = showSkip
         if (showSkip) {
             btnSkip?.text = opening?.label?.ifBlank { null } ?: getString(R.string.skip_intro)
-            raiseSkipButtons()
-            updateOverlayFocusChain()
-            if (!wasSkip) btnSkip?.requestFocus()
+            revealActionChip(btnSkip, focusIfNew = !wasSkip)
+        } else if (wasSkip && currentFocus === btnSkip) {
+            btnSkip?.isVisible = false
+            findViewById<View>(R.id.player_root)?.requestFocus()
         } else {
-            updateOverlayFocusChain()
+            btnSkip?.isVisible = false
         }
         val nearEnd = dur > 60_000 && (pos >= dur - 45_000 || pos.toDouble() / dur >= 0.97)
         val inCredits = segments.any { it.kind.equals("CREDITS", true) && it.contains(pos, dur) }
+        // Promote to Watched (~85% / credits) without waiting for app reopen.
+        val mostlyDone = dur >= 5 * 60_000 && pos > 0 && pos >= (dur * 0.85).toInt()
+        if ((mostlyDone || inCredits) && !markedComplete) {
+            markedComplete = true
+            saveWatchProgress(force = true, complete = true)
+        }
         showPlayNext(!showSkip && (nearEnd || inCredits) && nextEpisode != null)
+        updateOverlayFocusChain()
+        placeSkipButtons(chromeVisible)
     }
 
     private fun showPlayNext(show: Boolean) {
         if (!show) {
+            if (playNextVisible && currentFocus === btnNext) {
+                findViewById<View>(R.id.player_root)?.requestFocus()
+            }
             playNextVisible = false
             btnNext?.isVisible = false
             updateOverlayFocusChain()
@@ -1076,39 +1097,94 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         }
         val was = playNextVisible
         playNextVisible = true
-        btnNext?.isVisible = true
-        raiseSkipButtons()
-        if (!was) {
-            showChrome()
-            btnNext?.requestFocus()
-        }
+        // Own layer — do not dump the whole transport chrome.
+        revealActionChip(btnNext, focusIfNew = !was)
         updateOverlayFocusChain()
+    }
+
+    /** Fade + scale in an action chip; optionally take focus without showing transport. */
+    private fun revealActionChip(chip: TextView?, focusIfNew: Boolean) {
+        val view = chip ?: return
+        overlayActions?.bringToFront()
+        overlayActions?.alpha = 1f
+        if (!view.isVisible) {
+            view.alpha = 0f
+            view.scaleX = 0.92f
+            view.scaleY = 0.92f
+            view.isVisible = true
+            view.animate()
+                .alpha(1f)
+                .scaleX(1f)
+                .scaleY(1f)
+                .setDuration(180)
+                .start()
+        } else {
+            view.alpha = 1f
+            view.scaleX = 1f
+            view.scaleY = 1f
+        }
+        if (focusIfNew) {
+            view.post { view.requestFocus() }
+        }
+    }
+
+    /** Press feedback shared by Skip / Next / Aspect / Subs. */
+    private fun pulseAction(view: View?, then: () -> Unit) {
+        val v = view ?: run { then(); return }
+        v.isPressed = true
+        v.animate().cancel()
+        v.animate()
+            .scaleX(0.94f)
+            .scaleY(0.94f)
+            .setDuration(70)
+            .withEndAction {
+                v.animate()
+                    .scaleX(1f)
+                    .scaleY(1f)
+                    .setDuration(110)
+                    .withEndAction {
+                        v.isPressed = false
+                        then()
+                        // Restore focus only if the chip is still on screen (Skip hides itself).
+                        if (v.isShown && v.isFocusable) v.requestFocus()
+                    }
+                    .start()
+            }
+            .start()
     }
 
     /** Keep Skip / Play Next reachable from the transport row after focus leaves. */
     private fun updateOverlayFocusChain() {
         val skipVisible = btnSkip?.isVisible == true
         val nextVisible = btnNext?.isVisible == true
-        val upFromTransport = when {
+        val actionId = when {
             skipVisible -> R.id.btn_skip
             nextVisible -> R.id.btn_next
-            else -> R.id.seek
+            else -> View.NO_ID
         }
-        btnPlay?.nextFocusUpId = upFromTransport
-        btnRew?.nextFocusUpId = upFromTransport
-        btnFf?.nextFocusUpId = upFromTransport
+        btnPlay?.nextFocusUpId = if (actionId != View.NO_ID) actionId else R.id.seek
+        btnRew?.nextFocusUpId = if (actionId != View.NO_ID) actionId else R.id.seek
+        btnFf?.nextFocusUpId = if (actionId != View.NO_ID) actionId else R.id.seek
+        btnFf?.nextFocusRightId = if (actionId != View.NO_ID) actionId else View.NO_ID
+        btnRew?.nextFocusLeftId = if (actionId != View.NO_ID) actionId else View.NO_ID
         seek?.nextFocusUpId = when {
             skipVisible -> R.id.btn_skip
             nextVisible -> R.id.btn_next
             else -> R.id.btn_aspect
         }
         if (skipVisible) {
-            btnSkip?.nextFocusDownId = R.id.seek
-            btnSkip?.nextFocusUpId = R.id.btn_subs
+            btnSkip?.nextFocusDownId = if (chromeVisible) R.id.seek else View.NO_ID
+            btnSkip?.nextFocusLeftId = if (chromeVisible) R.id.btn_ff else View.NO_ID
+            btnSkip?.nextFocusUpId = if (chromeVisible) R.id.btn_subs else View.NO_ID
+            btnSkip?.nextFocusRightId = View.NO_ID
         }
         if (nextVisible) {
-            btnNext?.nextFocusDownId = R.id.seek
-            btnNext?.nextFocusUpId = if (skipVisible) R.id.btn_skip else R.id.btn_subs
+            btnNext?.nextFocusDownId = if (chromeVisible) R.id.seek else View.NO_ID
+            btnNext?.nextFocusLeftId = if (chromeVisible) R.id.btn_ff else View.NO_ID
+            btnNext?.nextFocusUpId = if (skipVisible) R.id.btn_skip else {
+                if (chromeVisible) R.id.btn_subs else View.NO_ID
+            }
+            btnNext?.nextFocusRightId = View.NO_ID
         }
     }
 
@@ -1120,11 +1196,14 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         val overlay = overlayActions ?: return
         val lp = overlay.layoutParams as? FrameLayout.LayoutParams ?: return
         val d = resources.displayMetrics.density
-        lp.gravity = android.view.Gravity.BOTTOM or android.view.Gravity.START
-        lp.bottomMargin = ((if (chromeUp) 200 else 48) * d).toInt()
-        lp.marginStart = (48 * d).toInt()
+        lp.gravity = android.view.Gravity.BOTTOM or android.view.Gravity.END
+        // Sit above the transport when it's up; otherwise float just above the safe edge.
+        lp.bottomMargin = ((if (chromeUp) 168 else 48) * d).toInt()
+        lp.marginEnd = (48 * d).toInt()
+        lp.marginStart = 0
         overlay.layoutParams = lp
         overlay.bringToFront()
+        overlay.alpha = 1f
     }
 
     private fun playNextEpisode() {
@@ -1133,11 +1212,19 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         if (nextBusy) return
         nextBusy = true
         btnNext?.isEnabled = false
+        // Keep focus + pressed look while we look up sources.
+        btnNext?.isSelected = true
+        btnNext?.requestFocus()
         statusView?.text = getString(R.string.looking_up_sources)
-        showChrome()
+        // Title-only feedback — don't open the whole transport bar.
+        chromeTop?.isVisible = true
+        chromeTop?.animate()?.cancel()
+        chromeTop?.alpha = 1f
         lifecycleScope.launch {
             try {
-                saveWatchProgress(force = true)
+                saveWatchProgress(force = true, complete = true)
+                // Drop previous episode pieces when clear-cache-on-exit is enabled.
+                maybeWipeStreamCache()
                 val api = application.asTv().api
                 val label = String.format("%s S%02dE%02d", next.catalogTitle, next.season, next.episode)
                 val raw = api.lookupSources(label, next.kind, tid, next.season, next.episode)
@@ -1170,6 +1257,8 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             } finally {
                 nextBusy = false
                 btnNext?.isEnabled = true
+                btnNext?.isSelected = false
+                if (btnNext?.isVisible == true) btnNext?.requestFocus()
             }
         }
     }
@@ -1178,10 +1267,21 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         val seg = activeSegment ?: return
         val mp = player ?: return
         val dur = mp.length.toInt()
-        queueSeek(seg.skipTargetMs(dur).toLong(), settleMs = 100L)
+        val target = seg.skipTargetMs(dur).toLong()
         activeSegment = null
+        // Hide chip after the pulse; keep focus on root so transport doesn't steal it.
         btnSkip?.isVisible = false
-        showChrome()
+        findViewById<View>(R.id.player_root)?.requestFocus()
+        updateOverlayFocusChain()
+        statusView?.text = getString(R.string.skip_intro)
+        chromeTop?.isVisible = true
+        chromeTop?.alpha = 1f
+        main.postDelayed({
+            if (!chromeVisible && streamOpened && !userPaused) {
+                chromeTop?.animate()?.alpha(0f)?.setDuration(220)?.start()
+            }
+        }, 1_200L)
+        queueSeek(target, settleMs = 100L)
     }
 
     private fun togglePlay() {
@@ -1207,7 +1307,10 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         }
         timePos?.text = formatMs(target)
         queueSeek(target, settleMs = if (isStream) 700L else 50L)
-        showChrome()
+        // Scrubbing shows transport; Skip-driven seeks do not (they call queueSeek directly).
+        if (currentFocus !== btnSkip && currentFocus !== btnNext) {
+            showChrome()
+        }
     }
 
     private fun updateProgressUi() {
@@ -1230,14 +1333,17 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
     private fun saveWatchProgress(force: Boolean = false, complete: Boolean = false) {
         val id = titleId?.takeIf { it.isNotBlank() } ?: return
         val mp = player
-        val pos = when {
+        val length = mp?.length?.takeIf { it > 0L } ?: lastKnownDurationMs.takeIf { it > 0L } ?: 0L
+        var pos = when {
             mp != null && mp.time > 0L -> mp.time
             else -> lastGoodPosMs
         }
+        if (complete && length > 0L) pos = maxOf(pos, length)
         if (!complete && pos < 2_000L) return
-        if (!force && lastSavedPosMs >= 0L && kotlin.math.abs(pos - lastSavedPosMs) < 12_000L) return
-        val dur = mp?.length?.takeIf { it > 0L }
+        if (!force && !complete && lastSavedPosMs >= 0L && kotlin.math.abs(pos - lastSavedPosMs) < 5_000L) return
+        val dur = length.takeIf { it > 0L }
         lastSavedPosMs = pos
+        if (complete) markedComplete = true
         val ep = episodeId
         val api = application.asTv().api
         val write = suspend {
@@ -1250,9 +1356,12 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             )
         }
         if (force) {
-            Thread {
-                runCatching { kotlinx.coroutines.runBlocking { write() } }
-            }.start()
+            // Blocking flush on pause/stop/destroy so sudden close still persists.
+            runCatching {
+                runBlocking {
+                    withTimeoutOrNull(1_800L) { write() }
+                }
+            }
         } else {
             lifecycleScope.launch(Dispatchers.IO) {
                 runCatching { write() }
@@ -1271,56 +1380,74 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
 
     private fun showChrome() {
         chromeVisible = true
-        chromeTop?.isVisible = true
         chromeTop?.animate()?.cancel()
-        chromeTop?.animate()?.alpha(1f)?.setDuration(200)?.start()
-        applyBufferingChrome()
-        if (!isBufferingUi()) {
-            chromeBottom?.animate()?.alpha(1f)?.setDuration(200)?.start()
-            overlayActions?.alpha = 1f
-            btnSkip?.alpha = 1f
-            btnNext?.alpha = 1f
-            placeSkipButtons(true)
-            updateOverlayFocusChain()
-            scheduleHideChrome()
-        } else {
-            // Keep the top buffering banner up — never auto-hide while buffering.
+        chromeBottom?.animate()?.cancel()
+        if (isBufferingUi()) {
+            // Buffering / paused: title banner only — no transport dump.
+            applyBufferingChrome()
             main.removeCallbacks(hideChrome)
             placeSkipButtons(false)
+            return
         }
+        applyPlayingChrome(showTransport = true)
+        placeSkipButtons(true)
+        updateOverlayFocusChain()
+        scheduleHideChrome()
     }
 
     /**
      * Pre-play or paused: top title + status + progress only (no Aspect/CC/transport).
-     * Playing: full chrome including Aspect + Subtitles when the UI is shown.
+     * Playing: transport opt-in; Skip/Next live on their own layer.
      */
     private fun isBufferingUi(): Boolean = !streamOpened || userPaused
 
     private fun applyBufferingChrome() {
-        val stripped = isBufferingUi()
         chromeTop?.isVisible = true
-        if (stripped) {
-            chromeTop?.alpha = 1f
+        chromeTop?.alpha = 1f
+        btnAspect?.isVisible = false
+        btnSubs?.isVisible = false
+        chromeBottom?.isVisible = false
+        if (!streamOpened) {
+            topProgress?.isVisible = true
+            posterHud?.isVisible = true
+        } else {
+            topProgress?.isVisible = false
+        }
+        main.removeCallbacks(hideChrome)
+        // Action chips stay independent while paused.
+        syncActionChipVisibility()
+    }
+
+    private fun applyPlayingChrome(showTransport: Boolean) {
+        posterHud?.isVisible = false
+        topProgress?.isVisible = false
+        if (showTransport) {
+            chromeVisible = true
+            chromeTop?.isVisible = true
+            chromeTop?.animate()?.alpha(1f)?.setDuration(180)?.start()
+            chromeBottom?.isVisible = true
+            chromeBottom?.alpha = 0f
+            chromeBottom?.animate()?.alpha(1f)?.setDuration(180)?.start()
+            btnAspect?.isVisible = true
+            btnSubs?.isVisible = true
+        } else {
+            chromeVisible = false
+            chromeTop?.animate()?.alpha(0f)?.setDuration(220)?.start()
+            chromeBottom?.animate()?.alpha(0f)?.setDuration(220)?.withEndAction {
+                if (!chromeVisible) chromeBottom?.isVisible = false
+            }?.start()
             btnAspect?.isVisible = false
             btnSubs?.isVisible = false
-            chromeBottom?.isVisible = false
-            if (!streamOpened) {
-                topProgress?.isVisible = true
-                posterHud?.isVisible = true
-            } else {
-                // Paused while playing — no buffer bar / Aspect / Subs.
-                topProgress?.isVisible = false
-            }
-            main.removeCallbacks(hideChrome)
-        } else if (streamOpened) {
-            // Aspect / Subs only while chrome is intentionally visible.
-            val showControls = chromeVisible
-            btnAspect?.isVisible = showControls
-            btnSubs?.isVisible = showControls
-            chromeBottom?.isVisible = showControls
-            topProgress?.isVisible = false
-            posterHud?.isVisible = false
         }
+        syncActionChipVisibility()
+    }
+
+    private fun syncActionChipVisibility() {
+        overlayActions?.bringToFront()
+        overlayActions?.alpha = 1f
+        if (btnSkip?.isVisible == true) btnSkip?.alpha = 1f
+        if (btnNext?.isVisible == true) btnNext?.alpha = 1f
+        placeSkipButtons(chromeVisible && !isBufferingUi())
     }
 
     private fun setChrome(visible: Boolean) {
@@ -1329,26 +1456,22 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             applyBufferingChrome()
             return
         }
-        chromeVisible = visible
         if (!visible && streamOpened && !userSeeking) {
-            chromeTop?.animate()?.alpha(0f)?.setDuration(280)?.start()
-            chromeBottom?.animate()?.alpha(0f)?.setDuration(280)?.start()
-            placeSkipButtons(false)
-            // Hide overlay chips with chrome so Back can clear the whole UI.
-            if (btnSkip?.isVisible == true) btnSkip?.alpha = 0f
-            if (btnNext?.isVisible == true) btnNext?.alpha = 0f
-            overlayActions?.alpha = 0f
-            btnAspect?.isVisible = false
-            btnSubs?.isVisible = false
-            topProgress?.isVisible = false
+            applyPlayingChrome(showTransport = false)
             main.removeCallbacks(hideChrome)
-            // Drop focus from chrome so the next key isn't stuck on a hidden control.
-            findViewById<View>(R.id.player_root)?.requestFocus()
+            // Keep focus on Skip/Next if they're up; otherwise clear to root.
+            when {
+                btnSkip?.isVisible == true && (currentFocus === btnSkip || currentFocus === btnNext) ->
+                    btnSkip?.requestFocus()
+                btnNext?.isVisible == true && currentFocus === btnNext ->
+                    btnNext?.requestFocus()
+                currentFocus === btnSkip || currentFocus === btnNext ->
+                    Unit
+                else -> findViewById<View>(R.id.player_root)?.requestFocus()
+            }
+            updateOverlayFocusChain()
         } else if (visible) {
-            overlayActions?.alpha = 1f
-            btnSkip?.alpha = 1f
-            btnNext?.alpha = 1f
-            applyBufferingChrome()
+            showChrome()
         }
     }
 
@@ -1357,11 +1480,14 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         // Pre-play / buffering chrome is not dismissible via Back — Back exits.
         if (isBufferingUi()) return false
         if (chromeVisible) return true
-        if ((chromeTop?.alpha ?: 0f) > 0.2f) return true
+        if ((chromeTop?.alpha ?: 0f) > 0.2f && (btnAspect?.isVisible == true || btnSubs?.isVisible == true)) {
+            return true
+        }
         if ((chromeBottom?.alpha ?: 0f) > 0.2f && chromeBottom?.isVisible == true) return true
-        if ((overlayActions?.alpha ?: 0f) > 0.2f &&
-            (btnSkip?.isVisible == true || btnNext?.isVisible == true)
-        ) return true
+        // Skip/Next alone count as an overlay so Back can dismiss focus cleanly.
+        if (btnSkip?.isVisible == true || btnNext?.isVisible == true) {
+            if (currentFocus === btnSkip || currentFocus === btnNext) return true
+        }
         return false
     }
 
@@ -1370,22 +1496,20 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             applyBufferingChrome()
             return
         }
+        // If focus is on Skip/Next, first Back clears focus but keeps the chip.
+        if (currentFocus === btnSkip || currentFocus === btnNext) {
+            findViewById<View>(R.id.player_root)?.requestFocus()
+            if (!chromeVisible) return
+        }
         setChrome(false)
-        chromeTop?.alpha = 0f
-        chromeBottom?.alpha = 0f
-        chromeBottom?.isVisible = false
-        overlayActions?.alpha = 0f
-        btnSkip?.alpha = 0f
-        btnNext?.alpha = 0f
-        chromeVisible = false
         main.removeCallbacks(hideChrome)
         findViewById<View>(R.id.player_root)?.requestFocus()
     }
 
     private fun scheduleHideChrome() {
         main.removeCallbacks(hideChrome)
-        if (streamOpened && !userSeeking && !isBufferingUi()) {
-            main.postDelayed(hideChrome, 8_000L)
+        if (streamOpened && !userSeeking && !isBufferingUi() && chromeVisible) {
+            main.postDelayed(hideChrome, 6_000L)
         }
     }
 
@@ -1422,27 +1546,55 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         if (!streamOpened) return true
 
         val focus = currentFocus
-        val onControl = focus === btnPlay || focus === btnRew || focus === btnFf ||
-            focus === btnAspect || focus === btnSubs ||
-            focus === seek || focus === btnSkip || focus === btnNext
+        val onActionChip = focus === btnSkip || focus === btnNext
+        val onTransport = focus === btnPlay || focus === btnRew || focus === btnFf ||
+            focus === btnAspect || focus === btnSubs || focus === seek
 
-        if (onControl && keyCode in listOf(
+        // Skip / Next are their own layer — never force the full transport bar.
+        if (onActionChip) {
+            scheduleHideChrome()
+            if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT || keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
+                if (chromeVisible) {
+                    when (keyCode) {
+                        KeyEvent.KEYCODE_DPAD_LEFT -> btnFf?.requestFocus()
+                        KeyEvent.KEYCODE_DPAD_DOWN -> seek?.requestFocus()
+                    }
+                    return true
+                }
+                // No transport up: Left/Down does nothing destructive; stay on chip.
+                if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN &&
+                    focus === btnSkip && btnNext?.isVisible == true
+                ) {
+                    btnNext?.requestFocus()
+                    return true
+                }
+                return true
+            }
+            return super.onKeyDown(keyCode, event)
+        }
+
+        if (onTransport && keyCode in listOf(
                 KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT,
                 KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN,
                 KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER,
             )
         ) {
             showChrome()
-            if (keyCode == KeyEvent.KEYCODE_DPAD_UP) {
+            if (keyCode == KeyEvent.KEYCODE_DPAD_UP || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) {
                 when {
-                    btnSkip?.isVisible == true && focus !== btnSkip && focus !== btnNext &&
-                        (focus === btnPlay || focus === btnRew || focus === btnFf || focus === seek) -> {
-                        btnSkip?.requestFocus()
-                        return true
+                    btnSkip?.isVisible == true &&
+                        (focus === btnPlay || focus === btnRew || focus === btnFf ||
+                            focus === seek || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT && focus === btnFf) -> {
+                        if (keyCode == KeyEvent.KEYCODE_DPAD_UP ||
+                            (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT && focus === btnFf)
+                        ) {
+                            btnSkip?.requestFocus()
+                            return true
+                        }
                     }
                     btnNext?.isVisible == true && btnSkip?.isVisible != true &&
-                        focus !== btnNext &&
-                        (focus === btnPlay || focus === btnRew || focus === btnFf) -> {
+                        (focus === btnPlay || focus === btnRew || focus === btnFf ||
+                            (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT && focus === btnFf)) -> {
                         btnNext?.requestFocus()
                         return true
                     }
@@ -1451,16 +1603,22 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             return super.onKeyDown(keyCode, event)
         }
 
-        showChrome()
         when (keyCode) {
             KeyEvent.KEYCODE_DPAD_UP -> {
-                if (btnSkip?.isVisible == true && focus !== btnSkip) {
-                    btnSkip?.requestFocus()
-                    return true
-                }
-                if (btnNext?.isVisible == true && focus !== btnNext) {
-                    btnNext?.requestFocus()
-                    return true
+                when {
+                    btnSkip?.isVisible == true -> {
+                        btnSkip?.requestFocus()
+                        return true
+                    }
+                    btnNext?.isVisible == true -> {
+                        btnNext?.requestFocus()
+                        return true
+                    }
+                    else -> {
+                        showChrome()
+                        btnPlay?.requestFocus()
+                        return true
+                    }
                 }
             }
             KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
@@ -1490,6 +1648,11 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             }
             KeyEvent.KEYCODE_DPAD_LEFT -> {
                 seekBy(-10_000)
+                return true
+            }
+            KeyEvent.KEYCODE_DPAD_DOWN -> {
+                showChrome()
+                btnPlay?.requestFocus()
                 return true
             }
         }
@@ -1554,10 +1717,16 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         super.onPause()
     }
 
+    override fun onStop() {
+        saveWatchProgress(force = true)
+        super.onStop()
+    }
+
     override fun onDestroy() {
         leaveDialog?.dismiss()
         leaveDialog = null
         stopped = true
+        saveWatchProgress(force = true)
         TorrentClient.onStatsUpdated = null
         waitJob?.cancel()
         statusPollJob?.cancel()
@@ -1567,8 +1736,8 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         main.removeCallbacks(bufferStallRecover)
         val sid = sessionId
         if (localTorrent || sid?.startsWith("local-") == true) {
-            // Leave the torrent service running and keep pieces on disk.
-            // Wipe only happens on app exit when clear-cache-on-exit is enabled.
+            // Stop playback engine first; wipe pieces only when the setting is on.
+            maybeWipeStreamCache()
         } else if (!sid.isNullOrBlank()) {
             val api = application.asTv().api
             Thread {
@@ -1582,6 +1751,16 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         }
         player = null
         super.onDestroy()
+    }
+
+    /** When Settings → Clear cache on exit is enabled, purge torrent pieces now. */
+    private fun maybeWipeStreamCache() {
+        val app = application.asTv()
+        if (!app.session.clearCacheOnExit) return
+        runCatching {
+            TorrentClient.stop(this, deleteFiles = true)
+            StreamDownloads.wipe(this)
+        }
     }
 
     private data class NextEpisode(
