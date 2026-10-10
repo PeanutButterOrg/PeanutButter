@@ -26,6 +26,7 @@ class SettingsScreen extends ConsumerStatefulWidget {
 
 class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   final _opensubKey = TextEditingController();
+  final _wyzieKey = TextEditingController();
   bool _saving = false;
   bool _opensubEnabled = false;
   bool _opensubHydrated = false;
@@ -45,6 +46,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   @override
   void dispose() {
     _opensubKey.dispose();
+    _wyzieKey.dispose();
     super.dispose();
   }
 
@@ -75,17 +77,22 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       _saving = true;
       _opensubMessage = null;
     });
-    final keyEntered = _opensubKey.text.trim().isNotEmpty;
-    final already = ref.read(serverInfoProvider).valueOrNull?.opensubtitlesConfigured ?? false;
-    if (_opensubEnabled && !keyEntered && !already) {
+    final info = ref.read(serverInfoProvider).valueOrNull;
+    final osKey = _opensubKey.text.trim();
+    final wyzieKey = _wyzieKey.text.trim();
+    final osAlready = info?.opensubtitlesConfigured ?? false;
+    final wyzieAlready = info?.wyzieConfigured ?? false;
+    if (_opensubEnabled && osKey.isEmpty && !osAlready && wyzieKey.isEmpty && !wyzieAlready) {
       setState(() {
         _saving = false;
-        _opensubMessage = 'Paste your OpenSubtitles API key to turn captions on.';
+        _opensubMessage =
+            'Paste an OpenSubtitles or Wyzie (store.wyzie.io) key — or use a key already saved on the server.';
       });
       return;
     }
     final input = <String, dynamic>{'opensubtitlesEnabled': _opensubEnabled};
-    if (keyEntered) input['opensubtitlesApiKey'] = _opensubKey.text.trim();
+    if (osKey.isNotEmpty) input['opensubtitlesApiKey'] = osKey;
+    if (wyzieKey.isNotEmpty) input['wyzieApiKey'] = wyzieKey;
     try {
       final client = ref.read(graphQLClientProvider);
       final result = await client.mutate(
@@ -96,9 +103,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         return;
       }
       _opensubKey.clear();
+      _wyzieKey.clear();
       ref.invalidate(serverInfoProvider);
       setState(() {
-        _opensubMessage = _opensubEnabled ? 'Subtitles enabled.' : 'Subtitles turned off.';
+        _opensubMessage = 'Subtitle settings saved. Devices use the server key when set.';
       });
     } finally {
       if (mounted) setState(() => _saving = false);
@@ -292,8 +300,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           _Card(
             children: [
               _SimpleRow(
-                label: 'OpenSubtitles',
-                subtitle: 'Download captions in the player',
+                label: 'Captions',
+                subtitle: server?.subtitlesConfigured == true
+                    ? 'Server key available — used by all devices'
+                    : 'Add a key here or in the server console',
                 trailing: TvFocus(
                   child: Switch(
                     value: _opensubEnabled,
@@ -308,8 +318,18 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   obscureText: true,
                   decoration: _field(
                     (server?.opensubtitlesConfigured ?? false)
-                        ? 'API key — paste to replace'
+                        ? 'OpenSubtitles key — paste to replace'
                         : 'OpenSubtitles API key',
+                  ),
+                ),
+                const SizedBox(height: 10),
+                TvTextField(
+                  controller: _wyzieKey,
+                  obscureText: true,
+                  decoration: _field(
+                    (server?.wyzieConfigured ?? false)
+                        ? 'Wyzie key (store.wyzie.io) — paste to replace'
+                        : 'Wyzie API key (store.wyzie.io)',
                   ),
                 ),
               ],

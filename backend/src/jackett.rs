@@ -778,8 +778,14 @@ impl JackettClient {
                     .guid
                     .filter(|s| !s.trim().is_empty())
                     .unwrap_or_else(|| magnet.chars().take(80).collect());
-                // Rank unknown-seeder magnets as "poor but tryable" (1), not dead (0).
-                let rank_seeders = if seeders_unknown { 1 } else { seeders };
+                // Rank unknown/zero Jackett seeders as tryable — public indexers
+                // commonly report Seeders=0 for live swarms. Never brand those "dead"
+                // or the picker filters the whole Jackett result set away.
+                let rank_seeders = if seeders_unknown || seeders == 0 {
+                    1
+                } else {
+                    seeders
+                };
                 Some(StreamSource {
                     id,
                     title: if hit.title.trim().is_empty() {
@@ -791,7 +797,7 @@ impl JackettClient {
                     seeders: rank_seeders,
                     peers,
                     rating: calculate_rating(rank_seeders),
-                    health: if seeders_unknown {
+                    health: if seeders_unknown || seeders == 0 {
                         "unknown".into()
                     } else {
                         health_for(seeders).into()
@@ -1542,6 +1548,89 @@ pub fn health_for(seeders: i32) -> &'static str {
         20..=49 => "good",
         _ => "excellent",
     }
+}
+
+/// Decode `tr=` announce URLs already attached by Jackett / indexers.
+pub fn trackers_from_magnet(magnet: &str) -> Vec<String> {
+    let magnet = magnet.trim();
+    let Some(query) = magnet.split_once('?').map(|(_, q)| q) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for part in query.split('&') {
+        let Some(raw) = part
+            .strip_prefix("tr=")
+            .or_else(|| part.strip_prefix("TR="))
+        else {
+            continue;
+        };
+        let decoded = percent_decode_plus(raw);
+        let tr = decoded.trim();
+        if tr.is_empty() {
+            continue;
+        }
+        if seen.insert(tr.to_ascii_lowercase()) {
+            out.push(tr.to_string());
+        }
+    }
+    out
+}
+
+fn percent_decode_plus(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b'%' if i + 2 < bytes.len() => {
+                let h = hex_nibble(bytes[i + 1]);
+                let l = hex_nibble(bytes[i + 2]);
+                if let (Some(h), Some(l)) = (h, l) {
+                    out.push((h << 4) | l);
+                    i += 3;
+                } else {
+                    out.push(bytes[i]);
+                    i += 1;
+                }
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn hex_nibble(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// Unique announce URLs harvested from Jackett magnets (preferred over hardcoded lists).
+pub fn harvest_trackers_from_sources(sources: &[StreamSource]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for src in sources {
+        for tr in trackers_from_magnet(&src.magnet) {
+            if seen.insert(tr.to_ascii_lowercase()) {
+                out.push(tr);
+            }
+            if out.len() >= 48 {
+                return out;
+            }
+        }
+    }
+    out
 }
 
 /// Rank playable torrents: most seeders first (peers are only a weak tiebreak).

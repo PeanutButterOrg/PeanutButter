@@ -13,6 +13,7 @@ import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.lifecycleScope
 import androidx.media3.common.MimeTypes
 import app.peanutbutter.core.ApiClient
+import app.peanutbutter.core.SubtitleHit
 import app.peanutbutter.tv.R
 import app.peanutbutter.tv.ui.closeKeyboardOnIme
 import app.peanutbutter.tv.ui.hideKeyboard
@@ -21,7 +22,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
-/** Player caption menu: embedded tracks, OpenSubtitles SRT, or a subtitle link. */
+/** Player caption menu: embedded tracks, OpenSubtitles, Wyzie (lazy download), or a link. */
 class SubtitlePicker(
     private val activity: FragmentActivity,
     private val player: () -> PlaybackEngine?,
@@ -36,15 +37,26 @@ class SubtitlePicker(
             val info = withContext(Dispatchers.IO) { runCatching { api.serverInfo() }.getOrNull() }
             val tracks = player()?.listTextTracks().orEmpty()
             val langs = languages().ifEmpty { setOf("en") }
+            val preferred = langs.firstOrNull().orEmpty().ifBlank { "en" }
             val options = ArrayList<Pair<String, () -> Unit>>()
             options += activity.getString(R.string.subs_off) to { player()?.selectTextTrack(null) }
             tracks.forEach { (id, label) ->
                 options += label to { player()?.selectTextTrack(id) }
             }
-            if (info?.opensubtitlesConfigured == true) {
-                langs.forEach { code ->
-                    val label = activity.getString(R.string.subs_download, code.uppercase())
-                    options += label to { fetch(code) }
+            val subsReady = info?.subtitlesConfigured == true ||
+                info?.opensubtitlesConfigured == true ||
+                info?.wyzieConfigured == true
+            if (subsReady) {
+                if (info?.wyzieConfigured == true) {
+                    options += activity.getString(R.string.subs_search_wyzie, preferred.uppercase()) to {
+                        searchWyzie(preferred)
+                    }
+                }
+                if (info?.opensubtitlesConfigured == true) {
+                    langs.forEach { code ->
+                        val label = activity.getString(R.string.subs_download, code.uppercase())
+                        options += label to { fetchOpenSubtitles(code) }
+                    }
                 }
             } else {
                 options += activity.getString(R.string.subs_add_key) to { promptKey() }
@@ -54,7 +66,50 @@ class SubtitlePicker(
         }
     }
 
-    private fun fetch(language: String) {
+    private fun searchWyzie(language: String) {
+        val id = titleId()?.takeIf { it.isNotBlank() } ?: run {
+            toast(activity.getString(R.string.subs_no_title))
+            return
+        }
+        activity.lifecycleScope.launch {
+            try {
+                val hits = api.searchSubtitles(id, language, season(), episode())
+                if (hits.isEmpty()) {
+                    toast(activity.getString(R.string.subs_none))
+                    return@launch
+                }
+                val options = hits.map { hit ->
+                    hit.label to { downloadHit(hit) }
+                }
+                showList(activity.getString(R.string.subs_wyzie_results), options)
+            } catch (e: Exception) {
+                toast(e.message ?: activity.getString(R.string.subs_none))
+            }
+        }
+    }
+
+    private fun downloadHit(hit: SubtitleHit) {
+        activity.lifecycleScope.launch {
+            try {
+                val sub = api.downloadSubtitle(hit)
+                if (!sub.content.contains("-->")) {
+                    toast(activity.getString(R.string.subs_none))
+                    return@launch
+                }
+                val file = writeSubtitle(sub.label.ifBlank { "${hit.language}.srt" }, sub.content)
+                player()?.addExternalSubtitle(
+                    file,
+                    sub.label.ifBlank { hit.language },
+                    mimeFor(file.name, sub.content),
+                )
+                toast(activity.getString(R.string.subs_added))
+            } catch (e: Exception) {
+                toast(e.message ?: activity.getString(R.string.subs_none))
+            }
+        }
+    }
+
+    private fun fetchOpenSubtitles(language: String) {
         val id = titleId()?.takeIf { it.isNotBlank() } ?: run {
             toast(activity.getString(R.string.subs_no_title))
             return
@@ -77,24 +132,50 @@ class SubtitlePicker(
     }
 
     private fun promptKey() {
-        val input = EditText(activity).apply {
+        val col = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            val pad = (18 * resources.displayMetrics.density).toInt()
+            setPadding(pad, pad / 2, pad, pad / 2)
+        }
+        val opensub = EditText(activity).apply {
             hint = activity.getString(R.string.subs_key_hint)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            imeOptions = EditorInfo.IME_ACTION_NEXT
+            isFocusable = true
+            closeKeyboardOnIme()
+        }
+        val wyzie = EditText(activity).apply {
+            hint = activity.getString(R.string.subs_wyzie_hint)
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
             imeOptions = EditorInfo.IME_ACTION_DONE
             isFocusable = true
             closeKeyboardOnIme()
+            val lp = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            )
+            lp.topMargin = (10 * resources.displayMetrics.density).toInt()
+            layoutParams = lp
         }
+        col.addView(opensub)
+        col.addView(wyzie)
         AlertDialog.Builder(activity)
             .setTitle(R.string.subs_key_title)
-            .setView(input)
+            .setView(col)
             .setNegativeButton(android.R.string.cancel, null)
             .setPositiveButton(R.string.subs_save) { _, _ ->
-                input.hideKeyboard()
-                val key = input.text?.toString()?.trim().orEmpty()
-                if (key.isEmpty()) return@setPositiveButton
+                opensub.hideKeyboard()
+                wyzie.hideKeyboard()
+                val osKey = opensub.text?.toString()?.trim().orEmpty()
+                val wyzieKey = wyzie.text?.toString()?.trim().orEmpty()
+                if (osKey.isEmpty() && wyzieKey.isEmpty()) return@setPositiveButton
                 activity.lifecycleScope.launch {
                     try {
-                        api.updateOpenSubtitles(enabled = true, apiKey = key)
+                        api.updateSubtitleKeys(
+                            opensubtitlesEnabled = true,
+                            opensubtitlesApiKey = osKey.ifBlank { null },
+                            wyzieApiKey = wyzieKey.ifBlank { null },
+                        )
                         toast(activity.getString(R.string.subs_enabled))
                     } catch (e: Exception) {
                         toast(e.message ?: activity.getString(R.string.error_generic))
@@ -102,7 +183,7 @@ class SubtitlePicker(
                 }
             }
             .show()
-        input.requestFocus()
+        opensub.requestFocus()
     }
 
     private fun promptLink() {

@@ -8,8 +8,20 @@ use crate::config::LiveSettings;
 use crate::error::{AppError, Result};
 
 const OPENSUBTITLES_API: &str = "https://api.opensubtitles.com/api/v1";
+const WYZIE_API: &str = "https://sub.wyzie.io";
 const USER_AGENT: &str = "PeanutButter v0.2";
 const MAX_SUBTITLE_BYTES: usize = 5 * 1024 * 1024;
+
+/// Search hit — body is fetched only after the user picks a row.
+#[derive(Debug, Clone)]
+pub struct SubtitleHit {
+    pub id: String,
+    pub language: String,
+    pub label: String,
+    pub format: String,
+    pub source: String,
+    pub download_url: String,
+}
 
 #[derive(Debug, Clone)]
 pub struct Subtitle {
@@ -467,10 +479,202 @@ async fn download_srt(http: &reqwest::Client, url: &str) -> Result<String> {
         return Err(AppError::Provider("zip subtitles are not supported".into()));
     }
     let text = decode_subtitle_bytes(&bytes)?;
-    if !looks_like_srt(&text) {
-        return Err(AppError::Provider("response was not an SRT file".into()));
+    // Wyzie may return WebVTT; accept either cue format.
+    if !looks_like_srt(&text) && !looks_like_vtt(&text) {
+        return Err(AppError::Provider("response was not an SRT/VTT file".into()));
     }
     Ok(text)
+}
+
+fn looks_like_vtt(text: &str) -> bool {
+    let sample = text.chars().take(800).collect::<String>();
+    sample.contains("-->")
+        && (sample.trim_start().starts_with("WEBVTT") || sample.contains("WEBVTT"))
+}
+
+/// Search Wyzie by TMDB (preferred) or IMDb — never downloads the file body.
+pub async fn search_wyzie_for_title(
+    pool: &PgPool,
+    http: &reqwest::Client,
+    live: &LiveSettings,
+    title_id: Uuid,
+    preferred_lang: &str,
+    season: Option<i32>,
+    episode: Option<i32>,
+) -> Result<Vec<SubtitleHit>> {
+    let Some(api_key) = live.wyzie_api_key() else {
+        return Ok(vec![]);
+    };
+    let meta: Option<(Option<i32>, Option<String>, String)> = sqlx::query_as(
+        r#"SELECT tmdb_id, imdb_id, title FROM titles WHERE id = $1"#,
+    )
+    .bind(title_id)
+    .fetch_optional(pool)
+    .await?;
+    let Some((tmdb_id, imdb_id, title)) = meta else {
+        return Ok(vec![]);
+    };
+    let lang = normalize_lang(preferred_lang);
+    let mut url =
+        reqwest::Url::parse(&format!("{WYZIE_API}/search")).map_err(|e| AppError::Provider(e.to_string()))?;
+    {
+        let mut q = url.query_pairs_mut();
+        q.append_pair("key", &api_key);
+        q.append_pair("language", &lang);
+        q.append_pair("format", "srt");
+        if let Some(id) = tmdb_id {
+            q.append_pair("id", &id.to_string());
+        } else if let Some(imdb) = normalize_imdb(imdb_id.as_deref()) {
+            q.append_pair("id", &imdb);
+        } else {
+            tracing::info!(%title, "Wyzie search skipped — no TMDB/IMDb id");
+            return Ok(vec![]);
+        }
+        if let (Some(s), Some(e)) = (season, episode) {
+            q.append_pair("season", &s.to_string());
+            q.append_pair("episode", &e.to_string());
+        }
+    }
+    let resp = http
+        .get(url)
+        .header("User-Agent", USER_AGENT)
+        .header("Accept", "application/json")
+        .send()
+        .await?;
+    if resp.status().as_u16() == 401 || resp.status().as_u16() == 403 {
+        return Err(AppError::Provider(
+            "Wyzie rejected the API key. Check it in Settings (store.wyzie.io).".into(),
+        ));
+    }
+    if resp.status().as_u16() == 429 {
+        return Err(AppError::Provider(
+            "Wyzie daily request limit reached. Try again tomorrow or upgrade the key.".into(),
+        ));
+    }
+    if !resp.status().is_success() {
+        return Err(AppError::Provider(format!(
+            "Wyzie search HTTP {}",
+            resp.status()
+        )));
+    }
+    let body: serde_json::Value = resp.json().await?;
+    let rows = body
+        .as_array()
+        .cloned()
+        .or_else(|| body.get("data").and_then(|v| v.as_array()).cloned())
+        .unwrap_or_default();
+    let mut out = Vec::new();
+    for row in rows {
+        let download = row
+            .get("url")
+            .or_else(|| row.get("downloadUrl"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if download.is_empty() {
+            continue;
+        }
+        let row_lang = normalize_lang(
+            row.get("language")
+                .or_else(|| row.get("lang"))
+                .and_then(|v| v.as_str())
+                .unwrap_or(&lang),
+        );
+        // Prefer exact language; keep English as soft fallback when preferred isn't present.
+        if row_lang != lang && row_lang != "en" && lang != "en" {
+            continue;
+        }
+        let display = row
+            .get("display")
+            .or_else(|| row.get("release"))
+            .or_else(|| row.get("fileName"))
+            .or_else(|| row.get("filename"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+        let format = row
+            .get("format")
+            .and_then(|v| v.as_str())
+            .unwrap_or("srt")
+            .to_ascii_lowercase();
+        let id = row
+            .get("id")
+            .map(|v| v.to_string().trim_matches('"').to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| format!("wyzie-{}", out.len() + 1));
+        let label = if display.is_empty() {
+            format!("{} · Wyzie", language_label(&row_lang))
+        } else {
+            format!("{} · {display}", language_label(&row_lang))
+        };
+        out.push(SubtitleHit {
+            id,
+            language: row_lang,
+            label,
+            format,
+            source: "wyzie".into(),
+            download_url: download,
+        });
+        if out.len() >= 24 {
+            break;
+        }
+    }
+    // Prefer preferred language first.
+    out.sort_by_key(|h| if h.language == lang { 0 } else { 1 });
+    Ok(out)
+}
+
+/// Download a previously listed Wyzie (or other) subtitle URL.
+pub async fn download_remote_subtitle(
+    http: &reqwest::Client,
+    download_url: &str,
+    language: &str,
+    label: &str,
+    format: &str,
+    source: &str,
+) -> Result<Subtitle> {
+    let url = download_url.trim();
+    if url.is_empty() || !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err(AppError::BadRequest("Invalid subtitle download URL.".into()));
+    }
+    // Only allow Wyzie CDN hosts for safety.
+    let host = reqwest::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase()));
+    let allowed = matches!(
+        host.as_deref(),
+        Some("sub.wyzie.io") | Some("cdn.wyzie.io") | Some("wyzie.io")
+    );
+    if !allowed {
+        return Err(AppError::BadRequest(
+            "Subtitle download host is not allowed.".into(),
+        ));
+    }
+    let content = download_srt(http, url).await?;
+    let fmt = if looks_like_vtt(&content) {
+        "vtt".into()
+    } else if format.trim().is_empty() {
+        "srt".into()
+    } else {
+        format.to_ascii_lowercase()
+    };
+    Ok(Subtitle {
+        id: Uuid::new_v4(),
+        language: normalize_lang(language),
+        label: if label.trim().is_empty() {
+            language_label(&normalize_lang(language))
+        } else {
+            label.trim().into()
+        },
+        format: fmt,
+        content,
+        source: if source.trim().is_empty() {
+            "wyzie".into()
+        } else {
+            source.trim().into()
+        },
+    })
 }
 
 fn decode_subtitle_bytes(bytes: &[u8]) -> Result<String> {

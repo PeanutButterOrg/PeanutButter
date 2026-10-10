@@ -6,11 +6,11 @@ import 'platform/device_profile.dart';
 /// Test-only override. Set in widget tests; leave null in production.
 bool? debugIsAndroidTvOverride;
 
-/// True when D-pad / Leanback TV UX should be active.
+/// Flutter targets phone + desktop only. Android TV uses the native Leanback app.
 ///
 /// Prefer [DeviceProfile.current.prefersDpad] in new code. This getter stays
-/// for existing call sites and resolves through [DeviceProfile] after
-/// [TvDevice.init].
+/// for existing call sites and resolves through [DeviceProfile] (always phone
+/// on Android) unless a test sets [debugIsAndroidTvOverride].
 bool get isAndroidTv {
   if (debugIsAndroidTvOverride != null) return debugIsAndroidTvOverride!;
   return DeviceProfile.current.prefersDpad;

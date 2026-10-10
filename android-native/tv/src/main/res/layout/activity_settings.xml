@@ -250,6 +250,21 @@
                     android:layout_marginTop="12dp"
                     android:background="@drawable/bg_field"
                     android:hint="@string/subs_key_hint"
+                    android:imeOptions="actionNext"
+                    android:inputType="textPassword"
+                    android:paddingHorizontal="14dp"
+                    android:textColor="@color/pb_white"
+                    android:textColorHint="@color/pb_muted"
+                    android:textSize="15sp"
+                    android:visibility="gone" />
+
+                <EditText
+                    android:id="@+id/wyzie_key"
+                    android:layout_width="match_parent"
+                    android:layout_height="48dp"
+                    android:layout_marginTop="10dp"
+                    android:background="@drawable/bg_field"
+                    android:hint="@string/subs_wyzie_hint"
                     android:imeOptions="actionDone"
                     android:inputType="textPassword"
                     android:paddingHorizontal="14dp"

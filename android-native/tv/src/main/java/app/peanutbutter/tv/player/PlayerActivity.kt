@@ -405,9 +405,8 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         val ready = torrentReadyLatched || !pendingUrl.isNullOrBlank() ||
             stats.ready || stats.torrentComplete
         val fileFrac = if (stats.torrentComplete) 1.0 else 0.0
-        // Cap torrent runway at 92% — the last stretch is Exo opening the stream.
-        // 100% is reserved for actual playback (see displayBufferPct).
-        val torrentFrac = (stats.bufferPct / 100.0).coerceIn(0.0, 0.92)
+        // Report true torrent readiness (0–1). Display mapping lives in displayBufferPct.
+        val torrentFrac = (stats.bufferPct / 100.0).coerceIn(0.0, 1.0)
         val session = StreamSession(
             id = sessionId.orEmpty(),
             title = titleView?.text?.toString().orEmpty(),
@@ -423,17 +422,20 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         showTorrentStatus(session)
     }
 
-    /** UI buffer: torrent 0–92%, Exo open 92–99%, 100% only when frames are playing. */
+    /**
+     * Buffer % for the HUD.
+     * Pre-play: trust the torrent engine's piece-window readiness (0–99).
+     * After open: Exo's bufferedPercent for underrun (not a fake 100).
+     */
     private fun displayBufferPct(torrentFrac: Double, exoPercent: Int = -1): Int {
-        if (streamOpened) return 100
-        val base = (torrentFrac.coerceIn(0.0, 0.92) * 100).toInt()
-        if (!mediaAttached) return base.coerceIn(0, 92)
-        val exo = when {
-            exoPercent in 0..100 -> exoPercent
-            else -> player?.bufferedPercent?.coerceIn(0, 100) ?: 40
+        if (streamOpened) {
+            val exo = when {
+                exoPercent in 0..100 -> exoPercent
+                else -> player?.bufferedPercent?.coerceIn(0, 100) ?: 100
+            }
+            return exo.coerceIn(0, 100)
         }
-        val blended = 92 + ((exo.coerceIn(0, 100) / 100.0) * 7).toInt()
-        return maxOf(base, blended).coerceIn(0, 99)
+        return (torrentFrac.coerceIn(0.0, 1.0) * 100.0).toInt().coerceIn(0, 99)
     }
 
     private fun showTorrentStatus(session: StreamSession) {
@@ -475,12 +477,13 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         val line = buildString {
             when {
                 session.isError -> append(session.status)
+                userPaused -> append("Paused")
                 streamOpened && exoBuffering && chromeVisible ->
                     append(String.format("Buffering… · %.1f MB/s", session.downloadMbps))
-                streamOpened && session.downloadMbps < 0.05 && bufPct >= 99 && !exoBuffering ->
+                streamOpened && session.downloadMbps < 0.05 && !exoBuffering ->
                     append("Playing")
                 streamOpened && session.downloadMbps >= 0.05 ->
-                    append(getString(R.string.playing_with_speed, bufPct.coerceIn(0, 99), session.downloadMbps))
+                    append(getString(R.string.playing_with_speed, bufPct.coerceIn(0, 100), session.downloadMbps))
                 !streamOpened && (ready || hasSwarm || bufPct > 0) -> {
                     append(getString(R.string.buffering_pct, bufPct.coerceAtLeast(1), session.downloadMbps))
                     if (!ready && session.peers > 0) append("  ·  ${session.peers} peers")
@@ -494,7 +497,12 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             }
         }
         applyStatusLine(line)
-        busy?.isVisible = (!streamOpened) && !userSeeking
+        // Spinner only while waiting for first playable data — never on user pause.
+        busy?.isVisible = (!streamOpened) && !userSeeking && !userPaused
+        if (userPaused || streamOpened) {
+            topProgress?.isVisible = false
+            posterHud?.isVisible = false
+        }
     }
 
     private fun applyStatusLine(line: String) {
@@ -648,7 +656,8 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                     } else {
                         busy?.isVisible = false
                         topProgress?.isVisible = false
-                        if (chromeVisible && !userSeeking && percent < 100) {
+                        // Never treat intentional pause as an underrun buffer banner.
+                        if (chromeVisible && !userSeeking && !userPaused && percent < 100) {
                             val mbps = lastSession?.downloadMbps ?: 0.0
                             applyStatusLine(String.format("Buffering… · %.1f MB/s", mbps))
                         }
@@ -693,10 +702,15 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             override fun onPaused() {
                 main.post {
                     userPaused = true
+                    exoBuffering = false
                     if (!userSeeking) statusView?.text = "Paused"
                     btnPlay?.setImageResource(R.drawable.ic_play_arrow)
-                    applyBufferingChrome()
+                    // User pause ≠ underrun buffering — show full transport chrome.
+                    busy?.isVisible = false
+                    topProgress?.isVisible = false
+                    applyPlayingChrome(showTransport = true)
                     showChrome()
+                    btnPlay?.requestFocus()
                 }
             }
 
@@ -1382,8 +1396,8 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         chromeVisible = true
         chromeTop?.animate()?.cancel()
         chromeBottom?.animate()?.cancel()
-        if (isBufferingUi()) {
-            // Buffering / paused: title banner only — no transport dump.
+        if (!streamOpened) {
+            // Pre-play only: title + buffer status (no transport).
             applyBufferingChrome()
             main.removeCallbacks(hideChrome)
             placeSkipButtons(false)
@@ -1396,10 +1410,10 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
     }
 
     /**
-     * Pre-play or paused: top title + status + progress only (no Aspect/CC/transport).
-     * Playing: transport opt-in; Skip/Next live on their own layer.
+     * Pre-play underrun / peer-find chrome only.
+     * Intentional pause uses the normal transport bar ([applyPlayingChrome]).
      */
-    private fun isBufferingUi(): Boolean = !streamOpened || userPaused
+    private fun isBufferingUi(): Boolean = !streamOpened
 
     private fun applyBufferingChrome() {
         chromeTop?.isVisible = true
@@ -1407,14 +1421,9 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         btnAspect?.isVisible = false
         btnSubs?.isVisible = false
         chromeBottom?.isVisible = false
-        if (!streamOpened) {
-            topProgress?.isVisible = true
-            posterHud?.isVisible = true
-        } else {
-            topProgress?.isVisible = false
-        }
+        topProgress?.isVisible = true
+        posterHud?.isVisible = true
         main.removeCallbacks(hideChrome)
-        // Action chips stay independent while paused.
         syncActionChipVisibility()
     }
 
@@ -1508,7 +1517,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
 
     private fun scheduleHideChrome() {
         main.removeCallbacks(hideChrome)
-        if (streamOpened && !userSeeking && !isBufferingUi() && chromeVisible) {
+        if (streamOpened && !userSeeking && !userPaused && !isBufferingUi() && chromeVisible) {
             main.postDelayed(hideChrome, 6_000L)
         }
     }
@@ -1573,10 +1582,20 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             return super.onKeyDown(keyCode, event)
         }
 
+        // OK / Enter always toggles playback and reveals chrome (even over soft buttons).
+        if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER ||
+            keyCode == KeyEvent.KEYCODE_ENTER ||
+            keyCode == KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE
+        ) {
+            togglePlay()
+            showChrome()
+            btnPlay?.requestFocus()
+            return true
+        }
+
         if (onTransport && keyCode in listOf(
                 KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT,
                 KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN,
-                KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER,
             )
         ) {
             showChrome()
@@ -1605,6 +1624,8 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
 
         when (keyCode) {
             KeyEvent.KEYCODE_DPAD_UP -> {
+                // Always surface chrome first (especially when paused with UI hidden).
+                showChrome()
                 when {
                     btnSkip?.isVisible == true -> {
                         btnSkip?.requestFocus()
@@ -1615,15 +1636,10 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                         return true
                     }
                     else -> {
-                        showChrome()
                         btnPlay?.requestFocus()
                         return true
                     }
                 }
-            }
-            KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
-                togglePlay()
-                return true
             }
             KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> {
                 seekBy(10_000)
@@ -1633,20 +1649,21 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                 seekBy(-10_000)
                 return true
             }
-            KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
-                if (!chromeVisible || chromeBottom?.alpha == 0f) {
-                    showChrome()
+            KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                showChrome()
+                if (userPaused) {
                     btnPlay?.requestFocus()
                     return true
                 }
-                togglePlay()
-                return true
-            }
-            KeyEvent.KEYCODE_DPAD_RIGHT -> {
                 seekBy(10_000)
                 return true
             }
             KeyEvent.KEYCODE_DPAD_LEFT -> {
+                showChrome()
+                if (userPaused) {
+                    btnPlay?.requestFocus()
+                    return true
+                }
                 seekBy(-10_000)
                 return true
             }

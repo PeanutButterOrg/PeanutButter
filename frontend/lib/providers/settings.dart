@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../android_playback.dart';
 import '../graphql/client.dart';
 import '../graphql/queries.dart';
+import '../local_torrent.dart';
 import '../models.dart';
 import '../services/discovery.dart';
 
@@ -443,6 +444,9 @@ final serverInfoProvider = FutureProvider<ServerInfo?>((ref) async {
   final json = result.data?['serverInfo'] as Map<String, dynamic>?;
   if (json == null) return null;
   final parsed = ServerInfo.fromJson(json);
+  if (parsed.streamTrackers.isNotEmpty) {
+    LocalTorrentEngine.instance.configureTrackers(parsed.streamTrackers);
+  }
   // Defer so we don't rebuild this provider while it's still resolving.
   Future.microtask(() {
     ref.read(settingsProvider.notifier).rememberJackettFromServer(parsed);

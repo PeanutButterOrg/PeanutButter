@@ -35,6 +35,7 @@ const EMBEDDED_MIGRATION_022: &str = include_str!("migrations/022_hide_unrelease
 const EMBEDDED_MIGRATION_023: &str = include_str!("migrations/023_episode_progress.sql");
 const EMBEDDED_MIGRATION_024: &str = include_str!("migrations/024_stream_search_cache.sql");
 const EMBEDDED_MIGRATION_025: &str = include_str!("migrations/025_stream_bookmark.sql");
+const EMBEDDED_MIGRATION_026: &str = include_str!("migrations/026_wyzie_subtitles.sql");
 
 pub async fn connect(database_url: &str) -> Result<PgPool> {
     connect_with(database_url, 40, 4, Duration::from_secs(15)).await
@@ -105,6 +106,7 @@ pub async fn run_migrations(pool: &PgPool, extra_dir: Option<&Path>) -> Result<(
     apply_one(pool, "023_episode_progress", EMBEDDED_MIGRATION_023).await?;
     apply_one(pool, "024_stream_search_cache", EMBEDDED_MIGRATION_024).await?;
     apply_one(pool, "025_stream_bookmark", EMBEDDED_MIGRATION_025).await?;
+    apply_one(pool, "026_wyzie_subtitles", EMBEDDED_MIGRATION_026).await?;
 
     if let Some(dir) = extra_dir {
         if dir.is_dir() {
@@ -147,6 +149,7 @@ pub async fn run_migrations(pool: &PgPool, extra_dir: Option<&Path>) -> Result<(
                     || version == "023_episode_progress"
                     || version == "024_stream_search_cache"
                     || version == "025_stream_bookmark"
+                    || version == "026_wyzie_subtitles"
                 {
                     continue;
                 }
@@ -502,6 +505,7 @@ struct SettingsRow {
     preferred_languages: String,
     opensubtitles_enabled: bool,
     opensubtitles_api_key: Option<String>,
+    wyzie_api_key: Option<String>,
 }
 
 pub async fn overlay_saved_settings(pool: &PgPool, config: &crate::config::Config) -> Result<()> {
@@ -510,7 +514,7 @@ pub async fn overlay_saved_settings(pool: &PgPool, config: &crate::config::Confi
         SELECT tmdb_api_key, omdb_api_key, anilist_client_id, media_path,
                jackett_enabled, jackett_url, jackett_api_key, streaming_resolution,
                preferred_languages,
-               opensubtitles_enabled, opensubtitles_api_key
+               opensubtitles_enabled, opensubtitles_api_key, wyzie_api_key
         FROM app_settings WHERE id = 1
         "#,
     )
@@ -548,6 +552,7 @@ pub async fn overlay_saved_settings(pool: &PgPool, config: &crate::config::Confi
         Some(row.opensubtitles_enabled),
         Some(row.opensubtitles_api_key.filter(|s| !s.trim().is_empty())),
     );
+    config.live.apply_wyzie(Some(row.wyzie_api_key.filter(|s| !s.trim().is_empty())));
     Ok(())
 }
 
@@ -885,18 +890,21 @@ pub async fn save_settings(
     opensubtitles_enabled: Option<bool>,
     opensubtitles_api_key: Option<&str>,
     preferred_languages: Option<&str>,
+    wyzie_api_key: Option<&str>,
 ) -> Result<()> {
     sqlx::query(
         r#"
         INSERT INTO app_settings (
             id, tmdb_api_key, omdb_api_key, anilist_client_id, media_path,
             jackett_enabled, jackett_url, jackett_api_key, streaming_resolution,
-            opensubtitles_enabled, opensubtitles_api_key, preferred_languages, updated_at
+            opensubtitles_enabled, opensubtitles_api_key, preferred_languages,
+            wyzie_api_key, updated_at
         )
         VALUES (
             1, COALESCE($1, ''), COALESCE($2, ''), $3, $4,
             COALESCE($5, FALSE), $6, $7, COALESCE($8, '1080p'),
-            COALESCE($9, FALSE), $10, COALESCE($11, 'en'), now()
+            COALESCE($9, FALSE), $10, COALESCE($11, 'en'),
+            $12, now()
         )
         ON CONFLICT (id) DO UPDATE SET
             tmdb_api_key = COALESCE($1, app_settings.tmdb_api_key),
@@ -910,6 +918,7 @@ pub async fn save_settings(
             opensubtitles_enabled = COALESCE($9, app_settings.opensubtitles_enabled),
             opensubtitles_api_key = COALESCE($10, app_settings.opensubtitles_api_key),
             preferred_languages = COALESCE($11, app_settings.preferred_languages),
+            wyzie_api_key = COALESCE($12, app_settings.wyzie_api_key),
             updated_at = now()
         "#,
     )
@@ -924,6 +933,7 @@ pub async fn save_settings(
     .bind(opensubtitles_enabled)
     .bind(opensubtitles_api_key)
     .bind(preferred_languages)
+    .bind(wyzie_api_key)
     .execute(pool)
     .await?;
     Ok(())
@@ -1505,6 +1515,25 @@ pub async fn stream_search_cache_delete_title(pool: &PgPool, title_id: Uuid) -> 
         .execute(pool)
         .await?;
     Ok(())
+}
+
+/// Recent Jackett search payloads — used to harvest announce URLs for clients.
+pub async fn stream_search_cache_recent(
+    pool: &PgPool,
+    limit: i64,
+) -> Result<Vec<serde_json::Value>> {
+    let rows: Vec<(serde_json::Value,)> = sqlx::query_as(
+        r#"
+        SELECT sources
+        FROM stream_search_cache
+        ORDER BY updated_at DESC
+        LIMIT $1
+        "#,
+    )
+    .bind(limit.clamp(1, 50))
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|(sources,)| sources).collect())
 }
 
 /// Create Season 1 + numbered episodes when a series/anime has no episode list yet.

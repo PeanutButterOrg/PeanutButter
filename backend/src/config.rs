@@ -22,6 +22,7 @@ struct LiveInner {
     preferred_languages: String,
     opensubtitles_enabled: bool,
     opensubtitles_api_key: Option<String>,
+    wyzie_api_key: Option<String>,
 }
 
 impl LiveSettings {
@@ -40,6 +41,7 @@ impl LiveSettings {
                 preferred_languages: env_or("PREFERRED_LANGUAGES", "en"),
                 opensubtitles_enabled: false,
                 opensubtitles_api_key: optional_env("OPENSUBTITLES_API_KEY"),
+                wyzie_api_key: optional_env("WYZIE_API_KEY"),
             })),
         }
     }
@@ -182,6 +184,35 @@ impl LiveSettings {
         }
         if let Some(v) = api_key {
             g.opensubtitles_api_key = v.filter(|s| !s.trim().is_empty());
+        }
+    }
+
+    pub fn wyzie_api_key(&self) -> Option<String> {
+        self.inner
+            .read()
+            .expect("settings lock")
+            .wyzie_api_key
+            .clone()
+    }
+
+    pub fn wyzie_configured(&self) -> bool {
+        self.inner
+            .read()
+            .expect("settings lock")
+            .wyzie_api_key
+            .as_deref()
+            .is_some_and(|s| !s.trim().is_empty())
+    }
+
+    /// True when any remote subtitle provider can serve clients.
+    pub fn subtitles_configured(&self) -> bool {
+        self.opensubtitles_configured() || self.wyzie_configured()
+    }
+
+    pub fn apply_wyzie(&self, api_key: Option<Option<String>>) {
+        let mut g = self.inner.write().expect("settings lock");
+        if let Some(v) = api_key {
+            g.wyzie_api_key = v.filter(|s| !s.trim().is_empty());
         }
     }
 }

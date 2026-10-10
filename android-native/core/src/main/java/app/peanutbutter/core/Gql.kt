@@ -55,8 +55,11 @@ query ServerInfo {
     version
     jackettConfigured
     preferredLanguages
+    streamTrackers
     opensubtitlesEnabled
     opensubtitlesConfigured
+    wyzieConfigured
+    subtitlesConfigured
     syncStatus { totalTitles }
   }
 }
@@ -65,6 +68,26 @@ query ServerInfo {
     const val FETCH_SUBTITLES = """
 mutation FetchSubtitles(${'$'}titleId: UUID!, ${'$'}language: String, ${'$'}season: Int, ${'$'}episode: Int) {
   fetchSubtitles(titleId: ${'$'}titleId, language: ${'$'}language, season: ${'$'}season, episode: ${'$'}episode) {
+    id language label format content
+  }
+}
+"""
+
+    const val SEARCH_SUBTITLES = """
+mutation SearchSubtitles(${'$'}titleId: UUID!, ${'$'}language: String, ${'$'}season: Int, ${'$'}episode: Int) {
+  searchSubtitles(titleId: ${'$'}titleId, language: ${'$'}language, season: ${'$'}season, episode: ${'$'}episode) {
+    id language label format source downloadUrl
+  }
+}
+"""
+
+    const val DOWNLOAD_SUBTITLE = """
+mutation DownloadSubtitle(
+  ${'$'}downloadUrl: String!, ${'$'}language: String, ${'$'}label: String, ${'$'}format: String, ${'$'}source: String
+) {
+  downloadSubtitle(
+    downloadUrl: ${'$'}downloadUrl, language: ${'$'}language, label: ${'$'}label, format: ${'$'}format, source: ${'$'}source
+  ) {
     id language label format content
   }
 }

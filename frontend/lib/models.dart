@@ -742,9 +742,12 @@ class ServerInfo {
     this.jackettUrl,
     this.streamingResolution = '1080p',
     this.preferredLanguages = const ['en'],
+    this.streamTrackers = const [],
     this.jackettCatalog = const JackettCatalogStatus(),
     this.opensubtitlesEnabled = false,
     this.opensubtitlesConfigured = false,
+    this.wyzieConfigured = false,
+    this.subtitlesConfigured = false,
   });
 
   final String version;
@@ -760,14 +763,22 @@ class ServerInfo {
   final String? jackettUrl;
   final String streamingResolution;
   final List<String> preferredLanguages;
+  /// Jackett-harvested announce URLs (LocalTorrentEngine fallback only).
+  final List<String> streamTrackers;
   final JackettCatalogStatus jackettCatalog;
   final bool opensubtitlesEnabled;
   final bool opensubtitlesConfigured;
+  final bool wyzieConfigured;
+  final bool subtitlesConfigured;
 
   factory ServerInfo.fromJson(Map<String, dynamic> json) {
     final sync = json['syncStatus'] as Map<String, dynamic>? ?? const {};
     final langs = ((json['preferredLanguages'] as List?) ?? const [])
         .map((e) => e.toString().trim().toLowerCase())
+        .where((e) => e.isNotEmpty)
+        .toList();
+    final trackers = ((json['streamTrackers'] as List?) ?? const [])
+        .map((e) => e.toString().trim())
         .where((e) => e.isNotEmpty)
         .toList();
     return ServerInfo(
@@ -784,11 +795,16 @@ class ServerInfo {
       jackettUrl: json['jackettUrl'] as String?,
       streamingResolution: json['streamingResolution'] as String? ?? '1080p',
       preferredLanguages: langs,
+      streamTrackers: trackers,
       jackettCatalog: JackettCatalogStatus.fromJson(
         json['jackettCatalog'] as Map<String, dynamic>? ?? const {},
       ),
       opensubtitlesEnabled: json['opensubtitlesEnabled'] as bool? ?? false,
       opensubtitlesConfigured: json['opensubtitlesConfigured'] as bool? ?? false,
+      wyzieConfigured: json['wyzieConfigured'] as bool? ?? false,
+      subtitlesConfigured: json['subtitlesConfigured'] as bool? ??
+          ((json['opensubtitlesConfigured'] as bool? ?? false) ||
+              (json['wyzieConfigured'] as bool? ?? false)),
     );
   }
 }

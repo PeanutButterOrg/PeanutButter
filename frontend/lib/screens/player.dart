@@ -34,7 +34,6 @@ import '../friendly_error.dart';
 import '../player_cache.dart';
 import '../stream_stats.dart';
 import '../widgets/cached_art.dart';
-import '../widgets/desktop_seek_preview.dart';
 import '../widgets/streaming_picker.dart';
 import '../widgets/subtitle_import.dart';
 import '../widgets/tv_chrome.dart';
@@ -130,12 +129,21 @@ class _SubtitleOption {
     required this.language,
     required this.label,
     required this.content,
+    this.downloadUrl,
+    this.source,
   });
 
   final String id;
   final String language;
   final String label;
   final String content;
+  /// Wyzie (and similar) — body is fetched only after the user picks this row.
+  final String? downloadUrl;
+  final String? source;
+
+  bool get needsDownload =>
+      (content.isEmpty || !content.contains('-->')) &&
+      (downloadUrl != null && downloadUrl!.isNotEmpty);
 }
 
 class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBindingObserver {
@@ -724,15 +732,23 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     final bool isAndroid = !kIsWeb && Platform.isAndroid;
     final bool isWindows = !kIsWeb && Platform.isWindows;
     final bool isMacOS = !kIsWeb && Platform.isMacOS;
-    // Platform-correct hwdec — vaapi on Windows/macOS caused streaming crashes.
-    final hwdec = isAndroid
-        ? 'mediacodec'
-        : isWindows
-            ? 'd3d11va,auto'
-            : isMacOS
-                ? 'videotoolbox,auto'
-                : 'vaapi,auto-safe';
+    // YouTube progressive streams often paint a solid blue frame with HW decode.
+    final youtube = _isTrailer ||
+        (widget.youtubeKey != null && widget.youtubeKey!.isNotEmpty);
+    final hwdec = youtube
+        ? 'no'
+        : isAndroid
+            ? 'mediacodec'
+            : isWindows
+                ? 'd3d11va,auto'
+                : isMacOS
+                    ? 'videotoolbox,auto'
+                    : 'vaapi,auto-safe';
     native.setProperty('hwdec', hwdec);
+    if (youtube) {
+      native.setProperty('vd-lavc-dr', 'no');
+      native.setProperty('hwdec-codecs', 'no');
+    }
     if (isAndroid) {
       // display-resample + interpolation desyncs audio on Android TV.
       native.setProperty('video-sync', 'audio');
@@ -2359,63 +2375,41 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     return code;
   }
 
-  Widget _pauseTitleOverlay() {
+  /// Title sits to the right of Back — no gradient panel.
+  Widget _playerTitleChrome() {
     final episode = _pauseTitleEpisode;
-    return Positioned(
-      left: 24,
-      right: 24,
-      top: 72,
-      child: IgnorePointer(
-        child: AnimatedOpacity(
-          opacity: 1,
-          duration: _chromeAnim,
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-                colors: [
-                  Colors.black.withValues(alpha: 0.55),
-                  Colors.black.withValues(alpha: 0.0),
-                ],
+    return Expanded(
+      child: Padding(
+        padding: const EdgeInsets.only(left: 4, right: 16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              _pauseTitleMain,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 18,
+                fontWeight: FontWeight.w600,
+                height: 1.15,
+                shadows: [Shadow(blurRadius: 8, color: Colors.black87)],
               ),
             ),
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(8, 8, 8, 48),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    _pauseTitleMain,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 28,
-                      fontWeight: FontWeight.w700,
-                      height: 1.2,
-                      shadows: [Shadow(blurRadius: 12, color: Colors.black87)],
-                    ),
-                  ),
-                  if (episode != null) ...[
-                    const SizedBox(height: 6),
-                    Text(
-                      episode,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        color: Colors.white.withValues(alpha: 0.88),
-                        fontSize: 18,
-                        fontWeight: FontWeight.w500,
-                        shadows: const [Shadow(blurRadius: 10, color: Colors.black87)],
-                      ),
-                    ),
-                  ],
-                ],
+            if (episode != null)
+              Text(
+                episode,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: Colors.white.withValues(alpha: 0.85),
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500,
+                  shadows: const [Shadow(blurRadius: 6, color: Colors.black87)],
+                ),
               ),
-            ),
-          ),
+          ],
         ),
       ),
     );
@@ -2433,18 +2427,25 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         : (local ? const <String, String>{} : mediaAuthHeaders(token));
     if (_useVlc) {
       await _openVlc(url, headers);
-      _loadSubtitles();
       return;
     }
     if (_useExo) {
       await _openExo(url, headers);
-      _loadSubtitles();
       return;
     }
     final native = _player?.platform;
     if (native is NativePlayer) {
       // Clear any leftover external-audio binding from older builds.
       await native.setProperty('audio-files', '');
+      if (isYoutube) {
+        // HW decode of progressive googlevideo often paints a solid blue frame.
+        await native.setProperty('hwdec', 'no');
+        await native.setProperty('vd-lavc-dr', 'no');
+        await native.setProperty(
+          'demuxer-lavf-o',
+          'protocol_whitelist=file,http,https,tcp,tls,crypto,data',
+        );
+      }
     }
     await _player?.open(Media(url, httpHeaders: headers));
     if (widget.startMs > 0) {
@@ -2453,7 +2454,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
       } catch (_) {}
       await _seekPlayback(Duration(milliseconds: widget.startMs), immediate: true);
     }
-    _loadSubtitles();
   }
 
   Future<void> _openVlc(String url, Map<String, String> headers) async {
@@ -2788,14 +2788,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     }
   }
 
-  Future<void> _loadSubtitles({String? language, bool applyFirst = true}) async {
+  Future<void> _loadOpenSubtitles({required String language, bool applyFirst = true}) async {
     final titleId = widget.titleId;
     if (_fileId == 'trailer' || titleId == null) return;
-    final preferred = language ??
-        preferredLanguageCodes(ref.read(settingsProvider).preferredLanguages).firstWhere(
-          (c) => c.isNotEmpty,
-          orElse: () => 'en',
-        );
     final fileId = widget.isStream || !_isUuid(_fileId) ? null : _fileId;
     setState(() => _subsLoading = true);
     try {
@@ -2805,7 +2800,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
           document: gql(FETCH_SUBTITLES),
           variables: {
             'titleId': titleId,
-            'language': preferred,
+            'language': language,
             'season': widget.season,
             'episode': widget.episode,
             'fileId': fileId,
@@ -2815,11 +2810,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
       if (!mounted) return;
       if (result.hasException) {
         setState(() => _subsLoading = false);
-        if (language != null && mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(result.exception.toString().replaceAll('\n', ' '))),
-          );
-        }
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(graphqlMessage(result))),
+        );
         return;
       }
       final rows = (result.data?['fetchSubtitles'] as List?) ?? const [];
@@ -2828,9 +2821,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
           .map(
             (e) => _SubtitleOption(
               id: e['id'] as String? ?? '',
-              language: e['language'] as String? ?? preferred,
+              language: e['language'] as String? ?? language,
               label: e['label'] as String? ?? 'Subtitle',
               content: e['content'] as String? ?? '',
+              source: 'opensubtitles',
             ),
           )
           .where((e) => e.content.contains('-->'))
@@ -2843,12 +2837,136 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         _subs = byId.values.toList();
         _subsLoading = false;
       });
-      if (applyFirst && next.isNotEmpty && (_activeSubId == null || language != null)) {
-        final match = next.where((s) => s.language == preferred);
+      if (applyFirst && next.isNotEmpty) {
+        final match = next.where((s) => s.language == language);
         await _applySubtitle(match.isNotEmpty ? match.first : next.first);
       }
-    } catch (_) {
-      if (mounted) setState(() => _subsLoading = false);
+    } catch (e) {
+      if (mounted) {
+        setState(() => _subsLoading = false);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+      }
+    }
+  }
+
+  /// Wyzie: search by TMDB + language only when the user asks — no download yet.
+  Future<void> _searchWyzieSubtitles(String language) async {
+    final titleId = widget.titleId;
+    if (_fileId == 'trailer' || titleId == null) return;
+    setState(() => _subsLoading = true);
+    try {
+      final client = ref.read(graphQLClientProvider);
+      final result = await client.mutate(
+        MutationOptions(
+          document: gql(SEARCH_SUBTITLES),
+          variables: {
+            'titleId': titleId,
+            'language': language,
+            'season': widget.season,
+            'episode': widget.episode,
+          },
+        ),
+      );
+      if (!mounted) return;
+      if (result.hasException) {
+        setState(() => _subsLoading = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(graphqlMessage(result))),
+        );
+        return;
+      }
+      final rows = (result.data?['searchSubtitles'] as List?) ?? const [];
+      final hits = rows
+          .whereType<Map<String, dynamic>>()
+          .map(
+            (e) => _SubtitleOption(
+              id: e['id'] as String? ?? '',
+              language: e['language'] as String? ?? language,
+              label: e['label'] as String? ?? 'Subtitle',
+              content: '',
+              downloadUrl: e['downloadUrl'] as String?,
+              source: e['source'] as String? ?? 'wyzie',
+            ),
+          )
+          .where((e) => e.downloadUrl != null && e.downloadUrl!.isNotEmpty)
+          .toList();
+      setState(() {
+        final byId = {for (final sub in _subs) sub.id: sub};
+        for (final sub in hits) {
+          byId[sub.id] = sub;
+        }
+        _subs = byId.values.toList();
+        _subsLoading = false;
+      });
+      if (hits.isEmpty && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No Wyzie captions for this title.')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _subsLoading = false);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+      }
+    }
+  }
+
+  Future<void> _downloadAndApplySubtitle(_SubtitleOption hit) async {
+    final url = hit.downloadUrl;
+    if (url == null || url.isEmpty) return;
+    setState(() => _subsLoading = true);
+    try {
+      final client = ref.read(graphQLClientProvider);
+      final result = await client.mutate(
+        MutationOptions(
+          document: gql(DOWNLOAD_SUBTITLE),
+          variables: {
+            'downloadUrl': url,
+            'language': hit.language,
+            'label': hit.label,
+            'format': 'srt',
+            'source': hit.source ?? 'wyzie',
+          },
+        ),
+      );
+      if (!mounted) return;
+      if (result.hasException) {
+        setState(() => _subsLoading = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(graphqlMessage(result))),
+        );
+        return;
+      }
+      final row = result.data?['downloadSubtitle'] as Map<String, dynamic>?;
+      final content = row?['content'] as String? ?? '';
+      if (!content.contains('-->')) {
+        setState(() => _subsLoading = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('That subtitle file was empty.')),
+        );
+        return;
+      }
+      final loaded = _SubtitleOption(
+        id: row?['id'] as String? ?? hit.id,
+        language: row?['language'] as String? ?? hit.language,
+        label: row?['label'] as String? ?? hit.label,
+        content: content,
+        source: hit.source ?? 'wyzie',
+      );
+      setState(() {
+        _subs = [
+          for (final s in _subs)
+            if (s.id == hit.id) loaded else s,
+        ];
+        if (!_subs.any((s) => s.id == loaded.id)) _subs = [..._subs, loaded];
+        _subsLoading = false;
+      });
+      await _applySubtitle(loaded);
+    } catch (e) {
+      if (mounted) {
+        setState(() => _subsLoading = false);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+      }
     }
   }
 
@@ -2859,10 +2977,15 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     }
     final existing = _subs.where((s) => s.id == code);
     if (existing.isNotEmpty) {
-      await _applySubtitle(existing.first);
+      final sub = existing.first;
+      if (sub.needsDownload) {
+        await _downloadAndApplySubtitle(sub);
+      } else {
+        await _applySubtitle(sub);
+      }
       return;
     }
-    await _loadSubtitles(language: code);
+    await _loadOpenSubtitles(language: code);
   }
 
   Future<void> _addImported(List<ImportedSubtitle> imported) async {
@@ -3152,21 +3275,26 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
               ),
             ),
           Positioned(
-            top: 12,
-            left: 8,
+            top: 8,
+            left: 4,
+            right: 12,
             child: _chromeLayer(
               hiddenOffset: const Offset(0, -0.35),
-              child: TvFocus(
-                child: IconButton(
-                  focusNode: _backFocus,
-                  onPressed: _onBackPressed,
-                  icon: const Icon(Icons.arrow_back, color: Colors.white),
-                ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  TvFocus(
+                    child: IconButton(
+                      focusNode: _backFocus,
+                      onPressed: _onBackPressed,
+                      icon: const Icon(Icons.arrow_back, color: Colors.white),
+                    ),
+                  ),
+                  if (!_isTrailer) _playerTitleChrome(),
+                ],
               ),
             ),
           ),
-          // Title / episode while paused (always visible when paused, not only with chrome).
-          if (!_playing && !_isTrailer) _pauseTitleOverlay(),
           if (_showSeekControls)
             Positioned(
               left: 24,
@@ -3361,8 +3489,13 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
             ),
             onPressed: () async {
               _bumpChrome();
-              final osReady =
-                  ref.read(serverInfoProvider).valueOrNull?.opensubtitlesConfigured ?? false;
+              final info = ref.read(serverInfoProvider).valueOrNull;
+              final osReady = info?.opensubtitlesConfigured ?? false;
+              final wyzieReady = info?.wyzieConfigured ?? false;
+              final subsReady = info?.subtitlesConfigured ?? (osReady || wyzieReady);
+              final preferred = preferredLanguageCodes(
+                ref.read(settingsProvider).preferredLanguages,
+              ).firstWhere((c) => c.isNotEmpty, orElse: () => 'en');
               final items = <PopupMenuEntry<String>>[
                 CheckedPopupMenuItem(
                   value: 'off',
@@ -3391,20 +3524,23 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
                   value: 'add_url',
                   child: Text('From link…'),
                 ),
-                if (osReady) ...[
+                if (subsReady) ...[
                   const PopupMenuDivider(),
-                  for (final lang in kContentLanguages)
-                    CheckedPopupMenuItem(
-                      value: 'download:${lang.code}',
-                      checked: preferredLanguageCodes(
-                        ref.read(settingsProvider).preferredLanguages,
-                      ).contains(lang.code),
-                      child: Text('Download ${lang.label}'),
+                  if (wyzieReady)
+                    PopupMenuItem(
+                      value: 'wyzie:$preferred',
+                      child: Text('Search Wyzie ($preferred)'),
                     ),
+                  if (osReady)
+                    for (final lang in kContentLanguages)
+                      PopupMenuItem(
+                        value: 'download:${lang.code}',
+                        child: Text('OpenSubtitles ${lang.label}'),
+                      ),
                 ] else
                   const PopupMenuItem(
                     value: 'settings',
-                    child: Text('Add OpenSubtitles API key'),
+                    child: Text('Add subtitle API key'),
                   ),
               ];
               final box = context.findRenderObject() as RenderBox?;
@@ -3447,8 +3583,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
                 }
                 return;
               }
+              if (value.startsWith('wyzie:')) {
+                unawaited(_searchWyzieSubtitles(value.substring('wyzie:'.length)));
+                return;
+              }
               if (value.startsWith('download:')) {
-                unawaited(_pickSubtitleLanguage(value.substring('download:'.length)));
+                unawaited(_loadOpenSubtitles(language: value.substring('download:'.length)));
                 return;
               }
               unawaited(_pickSubtitleLanguage(value));
@@ -3844,50 +3984,36 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         seekBarThumbSize: 12.8,
       ),
       child: MaterialDesktopVideoControlsTheme(
-        normal: MaterialDesktopVideoControlsThemeData(
-          displaySeekBar: false,
+        normal: const MaterialDesktopVideoControlsThemeData(
+          displaySeekBar: true,
           seekBarContainerHeight: 36.0,
           seekBarHeight: 3.2,
           seekBarHoverHeight: 5.6,
           seekBarThumbSize: 12.0,
           bottomButtonBar: [
-            const MaterialDesktopSkipPreviousButton(),
-            const MaterialDesktopPlayOrPauseButton(),
-            const MaterialDesktopSkipNextButton(),
-            const MaterialDesktopVolumeButton(),
-            const MaterialDesktopPositionIndicator(),
-            const SizedBox(width: 12),
-            Expanded(
-              child: DesktopSeekPreviewBar(
-                player: controller.player,
-                mediaUrl: _url.isNotEmpty ? _url : widget.playbackUrl,
-              ),
-            ),
-            const SizedBox(width: 12),
-            const MaterialDesktopFullscreenButton(),
+            MaterialDesktopSkipPreviousButton(),
+            MaterialDesktopPlayOrPauseButton(),
+            MaterialDesktopSkipNextButton(),
+            MaterialDesktopVolumeButton(),
+            MaterialDesktopPositionIndicator(),
+            Spacer(),
+            MaterialDesktopFullscreenButton(),
           ],
         ),
-        fullscreen: MaterialDesktopVideoControlsThemeData(
-          displaySeekBar: false,
+        fullscreen: const MaterialDesktopVideoControlsThemeData(
+          displaySeekBar: true,
           seekBarContainerHeight: 36.0,
           seekBarHeight: 3.2,
           seekBarHoverHeight: 5.6,
           seekBarThumbSize: 12.0,
           bottomButtonBar: [
-            const MaterialDesktopSkipPreviousButton(),
-            const MaterialDesktopPlayOrPauseButton(),
-            const MaterialDesktopSkipNextButton(),
-            const MaterialDesktopVolumeButton(),
-            const MaterialDesktopPositionIndicator(),
-            const SizedBox(width: 12),
-            Expanded(
-              child: DesktopSeekPreviewBar(
-                player: controller.player,
-                mediaUrl: _url.isNotEmpty ? _url : widget.playbackUrl,
-              ),
-            ),
-            const SizedBox(width: 12),
-            const MaterialDesktopFullscreenButton(),
+            MaterialDesktopSkipPreviousButton(),
+            MaterialDesktopPlayOrPauseButton(),
+            MaterialDesktopSkipNextButton(),
+            MaterialDesktopVolumeButton(),
+            MaterialDesktopPositionIndicator(),
+            Spacer(),
+            MaterialDesktopFullscreenButton(),
           ],
         ),
         child: Video(

@@ -25,6 +25,8 @@ pub struct AdminForm {
     pub new_password: Option<String>,
     pub tmdb_api_key: Option<String>,
     pub omdb_api_key: Option<String>,
+    pub opensubtitles_api_key: Option<String>,
+    pub wyzie_api_key: Option<String>,
     /// Language checkboxes use unique names (`lang_en`, `lang_hi`, …) so
     /// `serde_urlencoded` does not reject repeated `preferred_languages` keys.
     #[serde(flatten, default)]
@@ -648,6 +650,7 @@ pub async fn action(
                     None,
                     None,
                     None,
+                    None,
                 )
                 .await?;
                 state.app.config.live.apply(
@@ -667,6 +670,57 @@ pub async fn action(
                 }
                 notice = Some(
                     "Metadata keys saved. Cast & trailers will fill in as TMDB enrichment runs."
+                        .into(),
+                );
+            }
+        }
+        "save_subtitle_keys" => {
+            tab = Some("settings");
+            let opensub = form
+                .opensubtitles_api_key
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            let wyzie = form
+                .wyzie_api_key
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            if opensub.is_none() && wyzie.is_none() {
+                notice = Some("Paste an OpenSubtitles and/or Wyzie key to save.".into());
+            } else {
+                crate::db::save_settings(
+                    &state.app.pool,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    // Enabling OpenSubtitles when a key is provided so clients can use it.
+                    opensub.map(|_| true),
+                    opensub,
+                    None,
+                    wyzie,
+                )
+                .await?;
+                if opensub.is_some() {
+                    state.app.config.live.apply_opensubtitles(
+                        Some(true),
+                        Some(opensub.map(|s| s.to_string())),
+                    );
+                }
+                if wyzie.is_some() {
+                    state
+                        .app
+                        .config
+                        .live
+                        .apply_wyzie(Some(wyzie.map(|s| s.to_string())));
+                }
+                notice = Some(
+                    "Subtitle keys saved. Apps without a local key will use these server keys."
                         .into(),
                 );
             }
@@ -789,6 +843,7 @@ async fn save_jackett(state: &HttpState, form: &AdminForm) -> Result<String, App
         None,
         None,
         Some(langs.as_str()),
+        None,
     )
     .await?;
     state.app.config.live.apply_streaming(
@@ -1280,6 +1335,20 @@ async fn dashboard(
               <button type="submit">Save keys</button>
             </div>
           </form>
+          <h2 style="margin-top:1.6rem">Subtitle keys</h2>
+          <p class="lead">Stored on this server for every paired device. Apps use these when they have no key of their own. Wyzie: <a href="https://store.wyzie.io/" target="_blank" rel="noopener">store.wyzie.io</a> (search on demand, download only when the user picks a track).</p>
+          <form method="post" action="/" class="grid-form">
+            <input type="hidden" name="action" value="save_subtitle_keys" />
+            <label>OpenSubtitles API key
+              <input name="opensubtitles_api_key" type="password" autocomplete="off" placeholder="{opensub_ph}" />
+            </label>
+            <label>Wyzie API key
+              <input name="wyzie_api_key" type="password" autocomplete="off" placeholder="{wyzie_ph}" />
+            </label>
+            <div class="actions">
+              <button type="submit">Save subtitle keys</button>
+            </div>
+          </form>
           <h2 style="margin-top:1.6rem">Console password</h2>
           <form method="post" action="/" class="inline">
             <input type="hidden" name="action" value="set_password" />
@@ -1462,6 +1531,16 @@ async fn dashboard(
         },
         omdb_ph = if live.omdb_key().trim().is_empty() {
             "Get a free key at omdbapi.com/apikey.aspx"
+        } else {
+            "Configured — paste to replace"
+        },
+        opensub_ph = if live.opensubtitles_api_key().is_none() {
+            "OpenSubtitles.com API key"
+        } else {
+            "Configured — paste to replace"
+        },
+        wyzie_ph = if live.wyzie_api_key().is_none() {
+            "store.wyzie.io API key"
         } else {
             "Configured — paste to replace"
         },

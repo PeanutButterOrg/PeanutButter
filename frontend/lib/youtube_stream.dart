@@ -24,8 +24,12 @@ const Map<String, String> youtubeStreamHeaders = {
   'Origin': 'https://www.youtube.com',
 };
 
-/// Single Android client — much faster than the default multi-client fallback chain.
-const List<YoutubeApiClient> _fastYtClients = [YoutubeApiClient.android];
+/// Prefer Android (fast muxed), then iOS / web if that client returns nothing.
+const List<YoutubeApiClient> _fastYtClients = [
+  YoutubeApiClient.android,
+  YoutubeApiClient.ios,
+  YoutubeApiClient.safari,
+];
 
 MuxedStreamInfo? _bestMuxed(Iterable<MuxedStreamInfo> muxed, int preferHeight) {
   MuxedStreamInfo? bestAtOrUnder;

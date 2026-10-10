@@ -705,9 +705,16 @@ pub struct ServerInfo {
     pub jackett_url: Option<String>,
     pub streaming_resolution: String,
     pub preferred_languages: Vec<String>,
+    /// Announce URLs harvested from recent Jackett magnets (clients should prefer
+    /// trackers already on each magnet; this is the shared fallback list).
+    pub stream_trackers: Vec<String>,
     pub jackett_catalog: JackettCatalogStatus,
     pub opensubtitles_enabled: bool,
     pub opensubtitles_configured: bool,
+    /// Wyzie Subs (https://store.wyzie.io) — search/download on demand.
+    pub wyzie_configured: bool,
+    /// True when OpenSubtitles and/or Wyzie can serve subtitle requests.
+    pub subtitles_configured: bool,
 }
 
 #[derive(SimpleObject, Clone, Debug)]
@@ -798,6 +805,18 @@ pub struct Subtitle {
     pub label: String,
     pub format: String,
     pub content: String,
+}
+
+/// Search hit without body — download only after the user picks one.
+#[derive(SimpleObject, Clone, Debug)]
+pub struct SubtitleHit {
+    pub id: String,
+    pub language: String,
+    pub label: String,
+    pub format: String,
+    pub source: String,
+    /// Provider download URL (Wyzie tok link). Empty for already-fetched rows.
+    pub download_url: String,
 }
 
 /// Skip segment from TheIntroDB (intro / recap / credits / preview).

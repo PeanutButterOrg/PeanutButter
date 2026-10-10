@@ -282,6 +282,10 @@ data class ServerInfo(
     val preferredLanguages: List<String> = emptyList(),
     val opensubtitlesEnabled: Boolean = false,
     val opensubtitlesConfigured: Boolean = false,
+    val wyzieConfigured: Boolean = false,
+    val subtitlesConfigured: Boolean = false,
+    /** Jackett-harvested announce URLs; LocalTorrentEngine fallback only. */
+    val streamTrackers: List<String> = emptyList(),
 )
 
 data class FetchedSubtitle(
@@ -289,6 +293,15 @@ data class FetchedSubtitle(
     val language: String,
     val label: String,
     val content: String,
+)
+
+data class SubtitleHit(
+    val id: String,
+    val language: String,
+    val label: String,
+    val format: String,
+    val source: String,
+    val downloadUrl: String,
 )
 
 data class CatalogPage(

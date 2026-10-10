@@ -375,9 +375,12 @@ impl Query {
             jackett_url: state.config.live.jackett_url(),
             streaming_resolution: state.config.live.streaming_resolution(),
             preferred_languages: state.config.live.preferred_language_codes(),
+            stream_trackers: collect_stream_trackers(state).await,
             jackett_catalog: jackett_catalog_status(state).await?,
             opensubtitles_enabled: state.config.live.opensubtitles_enabled(),
             opensubtitles_configured: state.config.live.opensubtitles_configured(),
+            wyzie_configured: state.config.live.wyzie_configured(),
+            subtitles_configured: state.config.live.subtitles_configured(),
             sync_status: SyncStatus {
                 last_sync_at,
                 total_titles,
@@ -527,7 +530,7 @@ impl Query {
             crate::db::stream_search_cache_get_row(&state.pool, &cache_key).await
         {
             if let Ok(mut sources) = serde_json::from_value::<Vec<StreamSource>>(cached) {
-                sources.retain(|s| s.health != "dead");
+                sources = retain_tryable_sources(sources);
                 if !sources.is_empty() {
                     let strong = crate::jackett::cache_is_strong(&sources, &preferred_res);
                     let ttl = if strong { STRONG_TTL } else { WEAK_TTL };
@@ -601,10 +604,7 @@ impl Query {
             }
         };
 
-        let found: Vec<_> = found
-            .into_iter()
-            .filter(|s| s.health != "dead")
-            .collect();
+        let found = retain_tryable_sources(found);
 
         if found.is_empty() {
             // Live Jackett flaked — last resort: filtered expired cache.
@@ -1123,4 +1123,47 @@ fn matches_episode_name(name: &str, season: Option<i32>, episode: Option<i32>) -
     let tag = format!("s{:02}e{:02}", season, episode);
     let alt = format!("{}x{:02}", season, episode);
     n.contains(&tag) || n.contains(&alt)
+}
+
+/// Drop confirmed-dead rows, but never wipe the whole Jackett result set.
+fn retain_tryable_sources(sources: Vec<StreamSource>) -> Vec<StreamSource> {
+    let kept: Vec<_> = sources
+        .iter()
+        .filter(|s| s.health != "dead")
+        .cloned()
+        .collect();
+    if kept.is_empty() {
+        sources
+    } else {
+        kept
+    }
+}
+
+/// ngosang trackers_best (server-refreshed) — same list for every client.
+async fn collect_stream_trackers(state: &AppState) -> Vec<String> {
+    let mut out = state.trackers.list().await;
+    // Optionally append unique announces harvested from recent Jackett magnets.
+    if let Ok(rows) = crate::db::stream_search_cache_recent(&state.pool, 12).await {
+        for sources_json in rows {
+            let Ok(sources) = serde_json::from_value::<Vec<StreamSource>>(sources_json) else {
+                continue;
+            };
+            for tr in crate::jackett::harvest_trackers_from_sources(&sources) {
+                if !out
+                    .iter()
+                    .any(|existing| existing.eq_ignore_ascii_case(&tr))
+                {
+                    out.push(tr);
+                }
+                if out.len() >= 40 {
+                    return out;
+                }
+            }
+        }
+    }
+    if out.is_empty() {
+        out = crate::trackers::embedded_best();
+    }
+    out.truncate(40);
+    out
 }

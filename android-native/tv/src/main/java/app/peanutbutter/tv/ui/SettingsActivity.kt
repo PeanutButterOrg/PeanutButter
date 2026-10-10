@@ -61,6 +61,10 @@ class SettingsActivity : FragmentActivity() {
                     findViewById<EditText>(R.id.opensub_key).hint =
                         getString(R.string.subs_key_hint) + " — paste to replace"
                 }
+                if (info.wyzieConfigured) {
+                    findViewById<EditText>(R.id.wyzie_key).hint =
+                        getString(R.string.subs_wyzie_hint) + " — paste to replace"
+                }
                 if (info.jackettConfigured) {
                     jackett.text = getString(R.string.jackett_ok)
                     jackett.setTextColor(ContextCompat.getColor(this@SettingsActivity, R.color.pb_completed))
@@ -223,16 +227,23 @@ class SettingsActivity : FragmentActivity() {
                 chips.addView(chip)
             }
         key.isVisible = opensubEnabled
+        findViewById<EditText>(R.id.wyzie_key).isVisible = opensubEnabled
     }
 
     private fun saveOpenSubtitles() {
         val key = findViewById<EditText>(R.id.opensub_key).text?.toString()?.trim().orEmpty()
+        val wyzie = findViewById<EditText>(R.id.wyzie_key).text?.toString()?.trim().orEmpty()
         val status = findViewById<TextView>(R.id.opensub_status)
         lifecycleScope.launch {
             try {
-                application.asTv().api.updateOpenSubtitles(opensubEnabled, key.ifBlank { null })
+                application.asTv().api.updateSubtitleKeys(
+                    opensubtitlesEnabled = opensubEnabled,
+                    opensubtitlesApiKey = key.ifBlank { null },
+                    wyzieApiKey = wyzie.ifBlank { null },
+                )
                 status.text = getString(R.string.opensubtitles_saved)
                 findViewById<EditText>(R.id.opensub_key).text?.clear()
+                findViewById<EditText>(R.id.wyzie_key).text?.clear()
             } catch (e: Exception) {
                 status.text = e.message ?: getString(R.string.error_generic)
             }

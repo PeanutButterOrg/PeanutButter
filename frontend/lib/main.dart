@@ -28,20 +28,16 @@ import 'screens/pairing.dart';
 import 'screens/player.dart';
 import 'screens/search.dart';
 import 'screens/settings.dart';
-import 'screens/tv_lab.dart';
 import 'screens/unreachable.dart';
 import 'theme.dart';
-import 'tv.dart';
-import 'tv_device.dart';
-import 'tv_remote.dart';
 import 'widgets/cached_art.dart';
 import 'player_cache.dart';
 import 'local_torrent.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  installTvRemoteHandler();
-  await TvDevice.init();
+  // Android TV UX lives in the native Leanback app — Flutter is phone/desktop.
+  DeviceProfile.refresh();
   debugPrint('PeanutButter main() start Uri.base=${Uri.base}');
 
   FlutterError.onError = (details) {
@@ -286,10 +282,6 @@ GoRouter _buildRouter(SettingsState Function() readSettings) {
         path: '/settings',
         pageBuilder: (context, state) => pageFor(state, const SettingsScreen()),
       ),
-      GoRoute(
-        path: '/tv-lab',
-        pageBuilder: (context, state) => pageFor(state, const TvLabScreen()),
-      ),
     ],
   );
 }
@@ -455,7 +447,7 @@ class _PeanutButterAppState extends ConsumerState<PeanutButterApp> with WidgetsB
 
   Future<void> _clearCachesOnExit() async {
     final settings = ref.read(settingsProvider);
-    final wipe = settings.clearCacheOnExit || isAndroidTv;
+    final wipe = settings.clearCacheOnExit;
     try {
       if (wipe) {
         await LocalTorrentEngine.instance.purgeDownloads();

@@ -2,7 +2,9 @@ use async_graphql::{Context, InputObject, Object};
 use uuid::Uuid;
 
 use crate::error::AppError;
-use crate::graphql::types::{MutationResult, StreamSession, Subtitle, Title, TitleInput};
+use crate::graphql::types::{
+    MutationResult, StreamSession, Subtitle, SubtitleHit, Title, TitleInput,
+};
 use crate::ingest::{self, IngestContext};
 use crate::AppState;
 
@@ -155,6 +157,7 @@ impl Mutation {
             input.opensubtitles_enabled,
             input.opensubtitles_api_key.as_deref().filter(|s| !s.trim().is_empty()),
             langs.as_deref(),
+            input.wyzie_api_key.as_deref().filter(|s| !s.trim().is_empty()),
         )
         .await?;
         state.config.live.apply(
@@ -182,6 +185,13 @@ impl Mutation {
                 }
             }),
         );
+        state.config.live.apply_wyzie(input.wyzie_api_key.map(|s| {
+            if s.trim().is_empty() {
+                None
+            } else {
+                Some(s)
+            }
+        }));
         if let Some(langs) = langs {
             state.config.live.apply_streaming(None, None, None, None, Some(langs));
         }
@@ -232,9 +242,9 @@ impl Mutation {
     ) -> async_graphql::Result<Vec<Subtitle>> {
         let state = ctx.data::<AppState>()?;
         let lang = language.unwrap_or_else(|| "en".into());
-        if !state.config.live.opensubtitles_configured() && file_id.is_none() {
+        if !state.config.live.subtitles_configured() && file_id.is_none() {
             return Err(AppError::BadRequest(
-                "OpenSubtitles is off. Turn it on in Settings and add an API key.".into(),
+                "No subtitle provider is configured. Add an OpenSubtitles or Wyzie key in Settings.".into(),
             )
             .into());
         }
@@ -259,6 +269,72 @@ impl Mutation {
                 content: t.content,
             })
             .collect())
+    }
+
+    /// Search Wyzie (TMDB + language) — does not download bodies. Call when the user opens captions.
+    async fn search_subtitles(
+        &self,
+        ctx: &Context<'_>,
+        title_id: Uuid,
+        language: Option<String>,
+        season: Option<i32>,
+        episode: Option<i32>,
+    ) -> async_graphql::Result<Vec<SubtitleHit>> {
+        let state = ctx.data::<AppState>()?;
+        let lang = language.unwrap_or_else(|| "en".into());
+        if !state.config.live.wyzie_configured() {
+            return Ok(vec![]);
+        }
+        let hits = crate::subtitles::search_wyzie_for_title(
+            &state.pool,
+            &state.http,
+            &state.config.live,
+            title_id,
+            &lang,
+            season,
+            episode,
+        )
+        .await?;
+        Ok(hits
+            .into_iter()
+            .map(|h| SubtitleHit {
+                id: h.id,
+                language: h.language,
+                label: h.label,
+                format: h.format,
+                source: h.source,
+                download_url: h.download_url,
+            })
+            .collect())
+    }
+
+    /// Download one subtitle the user picked from [search_subtitles].
+    async fn download_subtitle(
+        &self,
+        ctx: &Context<'_>,
+        download_url: String,
+        language: Option<String>,
+        label: Option<String>,
+        format: Option<String>,
+        source: Option<String>,
+    ) -> async_graphql::Result<Subtitle> {
+        let state = ctx.data::<AppState>()?;
+        let track = crate::subtitles::download_remote_subtitle(
+            &state.http,
+            &download_url,
+            language.as_deref().unwrap_or("en"),
+            label.as_deref().unwrap_or(""),
+            format.as_deref().unwrap_or("srt"),
+            source.as_deref().unwrap_or("wyzie"),
+        )
+        .await?;
+        Ok(Subtitle {
+            id: track.id,
+            language: track.language,
+            label: track.label,
+            format: track.format,
+            content: track.content,
+        })
     }
 
     async fn set_favorite(
@@ -497,6 +573,8 @@ struct SettingsInput {
     streaming_resolution: Option<String>,
     opensubtitles_enabled: Option<bool>,
     opensubtitles_api_key: Option<String>,
+    /// Wyzie Subs API key from https://store.wyzie.io
+    wyzie_api_key: Option<String>,
     preferred_languages: Option<Vec<String>>,
 }
 

@@ -6,6 +6,10 @@ import 'package:libtorrent_flutter/libtorrent_flutter.dart';
 import 'package:path_provider/path_provider.dart';
 
 /// Device-side streaming. Backend only supplies magnets / metadata.
+///
+/// Trackers: always merge [ngosang/trackerslist](https://github.com/ngosang/trackerslist)
+/// best announces (serverInfo.streamTrackers + offline fallback + TrackerManager)
+/// into every Jackett magnet. Indexer `tr=` alone is not enough.
 class LocalTorrentEngine {
   LocalTorrentEngine._();
   static final LocalTorrentEngine instance = LocalTorrentEngine._();
@@ -15,12 +19,26 @@ class LocalTorrentEngine {
   int? _torrentId;
   int? _streamId;
   String? _savePath;
+  List<String> _extraTrackers = const [];
 
   bool get supported =>
       !_nativeUnavailable &&
       !kIsWeb &&
       (Platform.isAndroid || Platform.isLinux || Platform.isWindows || Platform.isMacOS);
   bool get isActive => _torrentId != null;
+
+  /// Live list from serverInfo.streamTrackers (ngosang + optional Jackett harvest).
+  void configureTrackers(List<String> trackers) {
+    _extraTrackers = trackers
+        .map((t) => t.trim())
+        .where((t) => t.isNotEmpty)
+        .toSet()
+        .take(40)
+        .toList(growable: false);
+  }
+
+  List<String> get _activeTrackers =>
+      _extraTrackers.isNotEmpty ? _extraTrackers : _fallbackBest;
 
   Future<void> ensureInit() async {
     if (!supported || _ready) return;
@@ -83,7 +101,8 @@ class LocalTorrentEngine {
     await stop(deleteFiles: false);
 
     final engine = LibtorrentFlutter.instance;
-    final magnetUri = TrackerManager.injectTrackers(_withPublicTrackers(magnet));
+    // Always merge public announces — Jackett magnets often only carry dead/private tr=.
+    final magnetUri = TrackerManager.injectTrackers(_mergeTrackers(magnet));
     final id = engine.addMagnet(magnetUri, _savePath, false);
     _torrentId = id;
 
@@ -427,33 +446,34 @@ class LocalTorrentEngine {
   }
 }
 
-const _publicTrackers = [
+/// Offline fallback matching ngosang trackers_best (same set the server embeds).
+const _fallbackBest = [
   'udp://tracker.opentrackr.org:1337/announce',
   'udp://open.stealth.si:80/announce',
-  'udp://tracker.openbittorrent.com:6969/announce',
-  'udp://explodie.org:6969/announce',
   'udp://tracker.torrent.eu.org:451/announce',
-  'udp://exodus.desync.com:6969/announce',
   'udp://open.demonii.com:1337/announce',
-  'udp://tracker.moeking.me:6969/announce',
-  'udp://tracker.tiny-vps.com:6969/announce',
-  'udp://tracker.dler.org:6969/announce',
-  'udp://tracker1.bt.moack.co.kr:80/announce',
-  'udp://tracker.theoks.net:6969/announce',
+  'udp://exodus.desync.com:6969/announce',
+  'udp://tracker.skynetcloud.site:6969/announce',
+  'udp://tracker.qu.ax:6969/announce',
+  'udp://tracker.tryhackx.org:6969/announce',
+  'udp://tracker.corpscorp.online:80/announce',
   'udp://tracker.bittor.pw:1337/announce',
-  'udp://tracker.filemail.com:6969/announce',
-  'udp://tracker.bitsearch.to:1337/announce',
-  'udp://bt1.archive.org:6969/announce',
-  'udp://bt2.archive.org:6969/announce',
-  'http://tracker.openbittorrent.com:80/announce',
-  'http://tracker.opentrackr.org:1337/announce',
-  'wss://tracker.openwebtorrent.com',
+  'udp://tracker.nyaa.vc:6969/announce',
+  'udp://tracker-udp.gbitt.info:80/announce',
+  'udp://tracker.ducks.party:1984/announce',
+  'udp://explodie.org:6969/announce',
+  'udp://tracker2.dler.org:80/announce',
+  'udp://tracker.gmi.gd:6969/announce',
+  'udp://tracker.dler.org:6969/announce',
+  'udp://retracker01-msk-virt.corbina.net:80/announce',
+  'http://tracker.dler.com:6969/announce',
+  'http://tracker.renfei.net:8080/announce',
 ];
 
-String _withPublicTrackers(String magnet) {
+String _mergeTrackers(String magnet) {
   var uri = magnet.trim();
   if (!uri.toLowerCase().startsWith('magnet:')) return uri;
-  for (final tr in _publicTrackers) {
+  for (final tr in LocalTorrentEngine.instance._activeTrackers.take(20)) {
     final enc = Uri.encodeComponent(tr);
     if (!uri.contains(enc) && !uri.contains(tr)) {
       uri = '$uri&tr=$enc';

@@ -2,8 +2,6 @@ import 'dart:io' show Platform;
 
 import 'package:flutter/foundation.dart';
 
-import '../tv_device.dart';
-
 /// Coarse device class used to pick playback + input + nav strategies.
 enum DeviceKind { desktop, phone, tv }
 
@@ -45,7 +43,7 @@ abstract class DeviceProfile {
     return _cached ??= resolve();
   }
 
-  /// Call after [TvDevice.init] so Leanback is known.
+  /// Warm [current] after app start (optional).
   static void refresh() {
     if (_override != null) return;
     _cached = resolve();
@@ -57,9 +55,7 @@ abstract class DeviceProfile {
       return const DesktopDeviceProfile();
     }
     if (Platform.isAndroid) {
-      if (TvDevice.ready && !TvDevice.isEmulator && TvDevice.isLeanback) {
-        return const AndroidTvProfile();
-      }
+      // Native Leanback owns Android TV — Flutter never enables TV UX here.
       return const AndroidPhoneProfile();
     }
     return const DesktopDeviceProfile();

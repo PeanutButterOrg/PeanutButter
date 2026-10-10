@@ -14,6 +14,7 @@ mod pin;
 mod search;
 mod stream;
 mod subtitles;
+mod trackers;
 
 use std::net::SocketAddr;
 use std::sync::atomic::AtomicBool;
@@ -54,6 +55,7 @@ pub struct AppState {
     pub streams: Arc<crate::stream::StreamService>,
     pub jackett_syncing: Arc<AtomicBool>,
     pub introdb: crate::introdb::IntroDb,
+    pub trackers: Arc<crate::trackers::TrackerList>,
 }
 
 impl From<&AppState> for IngestContext {
@@ -107,6 +109,9 @@ async fn main() -> Result<()> {
         .timeout(Duration::from_secs(30))
         .build()?;
 
+    let trackers = crate::trackers::TrackerList::new(http.clone());
+    trackers.spawn_refresh_loop();
+
     let app_state = AppState {
         pool: pool.clone(),
         ingest_pool: ingest_pool.clone(),
@@ -121,6 +126,7 @@ async fn main() -> Result<()> {
         )),
         jackett_syncing: jackett_syncing.clone(),
         introdb: crate::introdb::IntroDb::new(http.clone()),
+        trackers,
     };
     // Wipe any leftover stream download folders from a previous run.
     app_state.streams.cleanup_stale().await;

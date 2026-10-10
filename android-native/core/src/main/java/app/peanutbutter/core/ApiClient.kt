@@ -45,13 +45,25 @@ class ApiClient(
         val langs = info.getAsJsonArray("preferredLanguages")?.mapNotNull { el ->
             el.takeUnless { it.isJsonNull }?.asString?.trim()?.lowercase()?.takeIf { it.isNotEmpty() }
         }.orEmpty()
+        val trackers = info.getAsJsonArray("streamTrackers")?.mapNotNull { el ->
+            el.takeUnless { it.isJsonNull }?.asString?.trim()?.takeIf { it.isNotEmpty() }
+        }.orEmpty()
+        if (trackers.isNotEmpty()) {
+            LocalTorrentEngine.setExtraTrackers(trackers)
+        }
+        val osConfigured = info.getBooleanOr("opensubtitlesConfigured", false)
+        val wyzieConfigured = info.getBooleanOr("wyzieConfigured", false)
         ServerInfo(
             version = info.getStringOr("version", ""),
             totalTitles = sync?.getIntOr("totalTitles", 0) ?: 0,
             jackettConfigured = info.getBooleanOr("jackettConfigured", false),
             preferredLanguages = langs,
             opensubtitlesEnabled = info.getBooleanOr("opensubtitlesEnabled", false),
-            opensubtitlesConfigured = info.getBooleanOr("opensubtitlesConfigured", false),
+            opensubtitlesConfigured = osConfigured,
+            wyzieConfigured = wyzieConfigured,
+            subtitlesConfigured = info.getBooleanOr("subtitlesConfigured", false) ||
+                osConfigured || wyzieConfigured,
+            streamTrackers = trackers,
         )
     }
 
@@ -62,6 +74,17 @@ class ApiClient(
     suspend fun updateOpenSubtitles(enabled: Boolean, apiKey: String?): Unit = withContext(Dispatchers.IO) {
         val input = mutableMapOf<String, Any?>("opensubtitlesEnabled" to enabled)
         if (!apiKey.isNullOrBlank()) input["opensubtitlesApiKey"] = apiKey.trim()
+        gql(Gql.UPDATE_SETTINGS, mapOf("input" to input))
+    }
+
+    suspend fun updateSubtitleKeys(
+        opensubtitlesEnabled: Boolean,
+        opensubtitlesApiKey: String?,
+        wyzieApiKey: String?,
+    ): Unit = withContext(Dispatchers.IO) {
+        val input = mutableMapOf<String, Any?>("opensubtitlesEnabled" to opensubtitlesEnabled)
+        if (!opensubtitlesApiKey.isNullOrBlank()) input["opensubtitlesApiKey"] = opensubtitlesApiKey.trim()
+        if (!wyzieApiKey.isNullOrBlank()) input["wyzieApiKey"] = wyzieApiKey.trim()
         gql(Gql.UPDATE_SETTINGS, mapOf("input" to input))
     }
 
@@ -89,6 +112,57 @@ class ApiClient(
                 content = row.getStringOr("content", ""),
             )
         }.orEmpty()
+    }
+
+    suspend fun searchSubtitles(
+        titleId: String,
+        language: String,
+        season: Int?,
+        episode: Int?,
+    ): List<SubtitleHit> = withContext(Dispatchers.IO) {
+        val data = gql(
+            Gql.SEARCH_SUBTITLES,
+            mapOf(
+                "titleId" to titleId,
+                "language" to language,
+                "season" to season,
+                "episode" to episode,
+            ),
+        )
+        data.getAsJsonArray("searchSubtitles")?.mapNotNull { el ->
+            val row = el.takeUnless { it.isJsonNull }?.asJsonObject ?: return@mapNotNull null
+            val url = row.getStringOr("downloadUrl", "")
+            if (url.isBlank()) return@mapNotNull null
+            SubtitleHit(
+                id = row.getStringOr("id", ""),
+                language = row.getStringOr("language", language),
+                label = row.getStringOr("label", "Subtitle"),
+                format = row.getStringOr("format", "srt"),
+                source = row.getStringOr("source", "wyzie"),
+                downloadUrl = url,
+            )
+        }.orEmpty()
+    }
+
+    suspend fun downloadSubtitle(hit: SubtitleHit): FetchedSubtitle = withContext(Dispatchers.IO) {
+        val data = gql(
+            Gql.DOWNLOAD_SUBTITLE,
+            mapOf(
+                "downloadUrl" to hit.downloadUrl,
+                "language" to hit.language,
+                "label" to hit.label,
+                "format" to hit.format,
+                "source" to hit.source,
+            ),
+        )
+        val row = data.getAsJsonObject("downloadSubtitle")
+            ?: throw ApiException("Subtitle download failed.")
+        FetchedSubtitle(
+            id = row.getStringOr("id", hit.id),
+            language = row.getStringOr("language", hit.language),
+            label = row.getStringOr("label", hit.label),
+            content = row.getStringOr("content", ""),
+        )
     }
 
     suspend fun downloadBytes(url: String, maxBytes: Int = 5 * 1024 * 1024): ByteArray =

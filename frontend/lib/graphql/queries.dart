@@ -227,6 +227,7 @@ query GetServerInfo {
     jackettUrl
     streamingResolution
     preferredLanguages
+    streamTrackers
     jackettCatalog {
       ready
       syncing
@@ -236,6 +237,8 @@ query GetServerInfo {
     }
     opensubtitlesEnabled
     opensubtitlesConfigured
+    wyzieConfigured
+    subtitlesConfigured
     syncStatus {
       lastSyncAt
       totalTitles
@@ -534,6 +537,35 @@ mutation StartJackettCatalog {
 const String FETCH_SUBTITLES = r'''
 mutation FetchSubtitles($titleId: UUID!, $language: String, $season: Int, $episode: Int, $fileId: UUID) {
   fetchSubtitles(titleId: $titleId, language: $language, season: $season, episode: $episode, fileId: $fileId) {
+    id
+    language
+    label
+    format
+    content
+  }
+}
+''';
+
+const String SEARCH_SUBTITLES = r'''
+mutation SearchSubtitles($titleId: UUID!, $language: String, $season: Int, $episode: Int) {
+  searchSubtitles(titleId: $titleId, language: $language, season: $season, episode: $episode) {
+    id
+    language
+    label
+    format
+    source
+    downloadUrl
+  }
+}
+''';
+
+const String DOWNLOAD_SUBTITLE = r'''
+mutation DownloadSubtitle(
+  $downloadUrl: String!, $language: String, $label: String, $format: String, $source: String
+) {
+  downloadSubtitle(
+    downloadUrl: $downloadUrl, language: $language, label: $label, format: $format, source: $source
+  ) {
     id
     language
     label
