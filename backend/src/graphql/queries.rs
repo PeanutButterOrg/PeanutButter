@@ -699,7 +699,7 @@ impl Query {
         Ok(state.streams.status(&session_id).await)
     }
 
-    /// Magnet + file used last time for this title/episode — Resume skips the picker.
+    /// Magnet + file this device used last for this title/episode — Resume skips the picker.
     async fn stream_bookmark(
         &self,
         ctx: &Context<'_>,
@@ -708,8 +708,15 @@ impl Query {
         episode: Option<i32>,
     ) -> async_graphql::Result<Option<StreamBookmark>> {
         let state = ctx.data::<AppState>()?;
-        let row =
-            crate::db::load_stream_bookmark(&state.pool, title_id, season, episode).await?;
+        let auth = ctx.data::<crate::auth::AuthSession>()?;
+        let row = crate::db::load_stream_bookmark(
+            &state.pool,
+            auth.token_id,
+            title_id,
+            season,
+            episode,
+        )
+        .await?;
         Ok(row.map(|r| StreamBookmark {
             magnet: r.magnet,
             resume_position: r.resume_position.clamp(0, i32::MAX as i64) as i32,

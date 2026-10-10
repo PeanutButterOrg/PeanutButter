@@ -1362,6 +1362,8 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         if (complete) markedComplete = true
         val ep = episodeId
         val api = application.asTv().api
+        val mag = magnet
+        val sid = sessionId.orEmpty().ifBlank { "local" }
         val write = suspend {
             api.updateProgress(
                 titleId = id,
@@ -1370,6 +1372,18 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                 durationMs = dur,
                 complete = complete,
             )
+            if (!mag.isNullOrBlank()) {
+                api.streamResume(
+                    sessionId = sid,
+                    positionMs = if (complete) 0L else pos,
+                    titleId = id,
+                    title = titleView?.text?.toString(),
+                    magnet = mag,
+                    season = seasonNum,
+                    episode = episodeNum,
+                    fileIndex = fileIndex,
+                )
+            }
         }
         if (force) {
             // Blocking flush on pause/stop/destroy so sudden close still persists.

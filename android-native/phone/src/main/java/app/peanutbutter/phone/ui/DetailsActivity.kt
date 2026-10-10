@@ -108,6 +108,34 @@ class DetailsActivity : AppCompatActivity() {
         val lookup = sourceLookup(item)
         scope.launch {
             try {
+                val wantResume = item.positionMs > 2_000L
+                if (wantResume) {
+                    val bookmark = runCatching {
+                        app.api.streamBookmark(item.id, lookup.season, lookup.episode)
+                    }.getOrNull()
+                    if (bookmark != null && bookmark.magnet.isNotBlank()) {
+                        Toast.makeText(this@DetailsActivity, "Resuming…", Toast.LENGTH_SHORT).show()
+                        playSource(
+                            item,
+                            StreamSource(
+                                id = "bookmark",
+                                title = item.displayTitle,
+                                magnet = bookmark.magnet,
+                                seeders = 0,
+                                peers = 0,
+                                size = "",
+                                tracker = "",
+                                health = "",
+                                indexer = "",
+                                language = "",
+                            ),
+                            lookup,
+                            fileIndex = bookmark.fileIndex,
+                            resumeMs = item.positionMs.coerceAtLeast(bookmark.resumePosition.toLong()),
+                        )
+                        return@launch
+                    }
+                }
                 val sources = app.api.lookupSources(
                     query = lookup.query,
                     kind = item.kind.ifBlank { "MOVIE" },
@@ -144,7 +172,13 @@ class DetailsActivity : AppCompatActivity() {
         )
     }
 
-    private fun playSource(item: TitleItem, source: StreamSource, lookup: SourceLookup) {
+    private fun playSource(
+        item: TitleItem,
+        source: StreamSource,
+        lookup: SourceLookup,
+        fileIndex: Int? = null,
+        resumeMs: Long? = null,
+    ) {
         val app = application.asPhone()
         Toast.makeText(this, "Starting stream…", Toast.LENGTH_SHORT).show()
         scope.launch {
@@ -154,7 +188,8 @@ class DetailsActivity : AppCompatActivity() {
                     magnet = source.magnet,
                     season = lookup.season,
                     episode = lookup.episode,
-                    resumeMs = item.positionMs,
+                    fileIndex = fileIndex,
+                    resumeMs = resumeMs ?: item.positionMs,
                     durationMs = item.durationMs,
                 )
                 if (started.sessionId.isBlank() || started.url.isBlank()) {
@@ -168,7 +203,11 @@ class DetailsActivity : AppCompatActivity() {
                         .putExtra(PlayerActivity.EXTRA_URL, started.url)
                         .putExtra(PlayerActivity.EXTRA_LOCAL, true)
                         .putExtra(PlayerActivity.EXTRA_TITLE_ID, item.id)
-                        .putExtra(PlayerActivity.EXTRA_EPISODE_ID, lookup.episodeId),
+                        .putExtra(PlayerActivity.EXTRA_EPISODE_ID, lookup.episodeId)
+                        .putExtra(PlayerActivity.EXTRA_MAGNET, source.magnet)
+                        .putExtra(PlayerActivity.EXTRA_SEASON, lookup.season ?: -1)
+                        .putExtra(PlayerActivity.EXTRA_EPISODE, lookup.episode ?: -1)
+                        .putExtra(PlayerActivity.EXTRA_FILE_INDEX, fileIndex ?: started.fileIndex ?: -1),
                 )
             } catch (e: Exception) {
                 Toast.makeText(this@DetailsActivity, e.message, Toast.LENGTH_LONG).show()

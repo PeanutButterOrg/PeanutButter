@@ -433,6 +433,36 @@ class ApiClient(
         Unit
     }
 
+    /**
+     * Persist this device's torrent bookmark (magnet + file) so Resume picks the
+     * same source on this client only. Cleared when the device token is revoked.
+     */
+    suspend fun streamResume(
+        sessionId: String,
+        positionMs: Long,
+        titleId: String?,
+        title: String?,
+        magnet: String?,
+        season: Int? = null,
+        episode: Int? = null,
+        fileIndex: Int? = null,
+    ) = withContext(Dispatchers.IO) {
+        val mag = magnet?.trim().orEmpty()
+        if (mag.isBlank()) return@withContext
+        val vars = mutableMapOf<String, Any?>(
+            "sessionId" to sessionId.ifBlank { "local" },
+            "position" to positionMs.coerceIn(0L, Int.MAX_VALUE.toLong()).toInt(),
+            "magnet" to mag,
+        )
+        if (!titleId.isNullOrBlank()) vars["titleId"] = titleId
+        if (!title.isNullOrBlank()) vars["title"] = title
+        if (season != null) vars["season"] = season
+        if (episode != null) vars["episode"] = episode
+        if (fileIndex != null) vars["fileIndex"] = fileIndex
+        gql(Gql.STREAM_RESUME, vars)
+        Unit
+    }
+
     /** Rewrite host for emulator + append pairing key. */
     fun playableStreamUrl(url: String): String {
         val resolved = resolveMediaUrl(url) ?: url

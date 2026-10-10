@@ -36,6 +36,11 @@ class PlayerActivity : AppCompatActivity() {
     private var sessionId: String? = null
     private var titleId: String? = null
     private var episodeId: String? = null
+    private var playTitle: String = ""
+    private var magnet: String? = null
+    private var seasonNum: Int? = null
+    private var episodeNum: Int? = null
+    private var fileIndex: Int? = null
     private var lastSavedPosMs = -1L
     private var waitJob: Job? = null
     private var statusJob: Job? = null
@@ -64,16 +69,20 @@ class PlayerActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         app.peanutbutter.core.AuthEvents.playbackActive = true
         setContentView(R.layout.activity_player)
-        val title = intent.getStringExtra(EXTRA_TITLE).orEmpty()
+        playTitle = intent.getStringExtra(EXTRA_TITLE).orEmpty()
         val directUrl = intent.getStringExtra(EXTRA_URL).orEmpty()
         sessionId = intent.getStringExtra(EXTRA_SESSION)
         titleId = intent.getStringExtra(EXTRA_TITLE_ID)
         episodeId = intent.getStringExtra(EXTRA_EPISODE_ID)
+        magnet = intent.getStringExtra(EXTRA_MAGNET)
+        seasonNum = intent.getIntExtra(EXTRA_SEASON, -1).takeIf { it > 0 }
+        episodeNum = intent.getIntExtra(EXTRA_EPISODE, -1).takeIf { it > 0 }
+        fileIndex = intent.getIntExtra(EXTRA_FILE_INDEX, -1).takeIf { it >= 0 }
         localTorrent = intent.getBooleanExtra(EXTRA_LOCAL, false) ||
             sessionId?.startsWith("local-") == true ||
             directUrl.contains("127.0.0.1")
         application.asPhone().activeStreamSession = sessionId
-        findViewById<TextView>(R.id.title).text = title
+        findViewById<TextView>(R.id.title).text = playTitle
         statusView = findViewById(R.id.status)
         busy = findViewById(R.id.busy)
         val btnSkip = findViewById<TextView>(R.id.btn_skip)
@@ -396,6 +405,8 @@ class PlayerActivity : AppCompatActivity() {
         val dur = length.takeIf { it > 0L }
         val ep = episodeId
         val api = application.asPhone().api
+        val mag = magnet
+        val sid = sessionId.orEmpty().ifBlank { "local" }
         lifecycleScope.launch(Dispatchers.IO) {
             runCatching {
                 api.updateProgress(
@@ -405,6 +416,18 @@ class PlayerActivity : AppCompatActivity() {
                     durationMs = dur,
                     complete = complete,
                 )
+                if (!mag.isNullOrBlank()) {
+                    api.streamResume(
+                        sessionId = sid,
+                        positionMs = if (complete) 0L else pos,
+                        titleId = id,
+                        title = playTitle,
+                        magnet = mag,
+                        season = seasonNum,
+                        episode = episodeNum,
+                        fileIndex = fileIndex,
+                    )
+                }
             }
         }
     }
@@ -447,5 +470,9 @@ class PlayerActivity : AppCompatActivity() {
         const val EXTRA_LOCAL = "local_torrent"
         const val EXTRA_TITLE_ID = "title_id"
         const val EXTRA_EPISODE_ID = "episode_id"
+        const val EXTRA_MAGNET = "magnet"
+        const val EXTRA_SEASON = "season"
+        const val EXTRA_EPISODE = "episode"
+        const val EXTRA_FILE_INDEX = "file_index"
     }
 }

@@ -526,11 +526,13 @@ impl Mutation {
         file_index: Option<i32>,
     ) -> async_graphql::Result<bool> {
         let state = ctx.data::<AppState>()?;
+        let auth = ctx.data::<crate::auth::AuthSession>()?;
         let ok = state.streams.set_resume(&session_id, position as i64).await;
         if let Some(magnet) = magnet {
             let key = crate::stream::StreamService::magnet_key(&magnet);
             crate::db::save_stream_resume(
                 &state.pool,
+                auth.token_id,
                 &key,
                 title_id,
                 title.as_deref().unwrap_or(""),

@@ -125,6 +125,20 @@ query StreamBookmark(${'$'}titleId: UUID!, ${'$'}season: Int, ${'$'}episode: Int
 }
 """
 
+    const val STREAM_RESUME = """
+mutation StreamResume(
+  ${'$'}sessionId: String!, ${'$'}position: Int!, ${'$'}titleId: UUID,
+  ${'$'}title: String, ${'$'}magnet: String, ${'$'}season: Int,
+  ${'$'}episode: Int, ${'$'}fileIndex: Int
+) {
+  streamResume(
+    sessionId: ${'$'}sessionId, position: ${'$'}position, titleId: ${'$'}titleId,
+    title: ${'$'}title, magnet: ${'$'}magnet, season: ${'$'}season,
+    episode: ${'$'}episode, fileIndex: ${'$'}fileIndex
+  )
+}
+"""
+
     const val START_STREAM = """
 mutation StartStream(
   ${'$'}magnet: String!, ${'$'}title: String!, ${'$'}titleId: UUID,

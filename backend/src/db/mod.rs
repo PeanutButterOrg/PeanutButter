@@ -36,6 +36,7 @@ const EMBEDDED_MIGRATION_023: &str = include_str!("migrations/023_episode_progre
 const EMBEDDED_MIGRATION_024: &str = include_str!("migrations/024_stream_search_cache.sql");
 const EMBEDDED_MIGRATION_025: &str = include_str!("migrations/025_stream_bookmark.sql");
 const EMBEDDED_MIGRATION_026: &str = include_str!("migrations/026_wyzie_subtitles.sql");
+const EMBEDDED_MIGRATION_027: &str = include_str!("migrations/027_stream_progress_per_device.sql");
 
 pub async fn connect(database_url: &str) -> Result<PgPool> {
     connect_with(database_url, 40, 4, Duration::from_secs(15)).await
@@ -107,6 +108,7 @@ pub async fn run_migrations(pool: &PgPool, extra_dir: Option<&Path>) -> Result<(
     apply_one(pool, "024_stream_search_cache", EMBEDDED_MIGRATION_024).await?;
     apply_one(pool, "025_stream_bookmark", EMBEDDED_MIGRATION_025).await?;
     apply_one(pool, "026_wyzie_subtitles", EMBEDDED_MIGRATION_026).await?;
+    apply_one(pool, "027_stream_progress_per_device", EMBEDDED_MIGRATION_027).await?;
 
     if let Some(dir) = extra_dir {
         if dir.is_dir() {
@@ -939,10 +941,15 @@ pub async fn save_settings(
     Ok(())
 }
 
-pub async fn load_stream_resume(pool: &PgPool, magnet_key: &str) -> Result<i64> {
+pub async fn load_stream_resume(
+    pool: &PgPool,
+    token_id: Uuid,
+    magnet_key: &str,
+) -> Result<i64> {
     let pos: Option<i64> = sqlx::query_scalar(
-        "SELECT resume_position FROM stream_progress WHERE magnet_key = $1",
+        "SELECT resume_position FROM stream_progress WHERE token_id = $1 AND magnet_key = $2",
     )
+    .bind(token_id)
     .bind(magnet_key)
     .fetch_optional(pool)
     .await?;
@@ -985,22 +992,38 @@ pub async fn load_title_resume_for_token(
         .fetch_optional(pool)
         .await?
     };
-    let stream: Option<i64> = sqlx::query_scalar(
-        r#"
-        SELECT resume_position FROM stream_progress
-        WHERE title_id = $1
-        ORDER BY updated_at DESC
-        LIMIT 1
-        "#,
-    )
-    .bind(title_id)
-    .fetch_optional(pool)
-    .await?;
+    let stream: Option<i64> = if let Some(token_id) = token_id {
+        sqlx::query_scalar(
+            r#"
+            SELECT resume_position FROM stream_progress
+            WHERE token_id = $1 AND title_id = $2
+            ORDER BY updated_at DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(token_id)
+        .bind(title_id)
+        .fetch_optional(pool)
+        .await?
+    } else {
+        sqlx::query_scalar(
+            r#"
+            SELECT resume_position FROM stream_progress
+            WHERE title_id = $1
+            ORDER BY updated_at DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(title_id)
+        .fetch_optional(pool)
+        .await?
+    };
     Ok(user.unwrap_or(0).max(stream.unwrap_or(0)))
 }
 
 pub async fn save_stream_resume(
     pool: &PgPool,
+    token_id: Uuid,
     magnet_key: &str,
     title_id: Option<Uuid>,
     title: &str,
@@ -1014,11 +1037,11 @@ pub async fn save_stream_resume(
     sqlx::query(
         r#"
         INSERT INTO stream_progress (
-            magnet_key, title_id, title, resume_position, updated_at,
+            token_id, magnet_key, title_id, title, resume_position, updated_at,
             magnet, season, episode, file_index
         )
-        VALUES ($1, $2, $3, $4, now(), $5, $6, $7, $8)
-        ON CONFLICT (magnet_key) DO UPDATE SET
+        VALUES ($1, $2, $3, $4, $5, now(), $6, $7, $8, $9)
+        ON CONFLICT (token_id, magnet_key) DO UPDATE SET
             title_id = COALESCE(EXCLUDED.title_id, stream_progress.title_id),
             title = EXCLUDED.title,
             resume_position = EXCLUDED.resume_position,
@@ -1032,6 +1055,7 @@ pub async fn save_stream_resume(
             file_index = COALESCE(EXCLUDED.file_index, stream_progress.file_index)
         "#,
     )
+    .bind(token_id)
     .bind(magnet_key)
     .bind(title_id)
     .bind(title)
@@ -1054,9 +1078,10 @@ pub struct StreamBookmarkRow {
     pub file_index: Option<i32>,
 }
 
-/// Last torrent used for this title (and optional SxxExx). Empty magnet = none.
+/// Last torrent this device used for this title (and optional SxxExx).
 pub async fn load_stream_bookmark(
     pool: &PgPool,
+    token_id: Uuid,
     title_id: Uuid,
     season: Option<i32>,
     episode: Option<i32>,
@@ -1066,14 +1091,16 @@ pub async fn load_stream_bookmark(
         r#"
         SELECT magnet, resume_position, season, episode, file_index
         FROM stream_progress
-        WHERE title_id = $1
+        WHERE token_id = $1
+          AND title_id = $2
           AND COALESCE(magnet, '') <> ''
-          AND season IS NOT DISTINCT FROM $2
-          AND episode IS NOT DISTINCT FROM $3
+          AND season IS NOT DISTINCT FROM $3
+          AND episode IS NOT DISTINCT FROM $4
         ORDER BY updated_at DESC
         LIMIT 1
         "#,
     )
+    .bind(token_id)
     .bind(title_id)
     .bind(season)
     .bind(episode)
@@ -1090,12 +1117,14 @@ pub async fn load_stream_bookmark(
             r#"
             SELECT magnet, resume_position, season, episode, file_index
             FROM stream_progress
-            WHERE title_id = $1
+            WHERE token_id = $1
+              AND title_id = $2
               AND COALESCE(magnet, '') <> ''
             ORDER BY updated_at DESC
             LIMIT 1
             "#,
         )
+        .bind(token_id)
         .bind(title_id)
         .fetch_optional(pool)
         .await?;

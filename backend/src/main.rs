@@ -266,6 +266,7 @@ async fn graphql_handler(
             || q.contains("startstream")
             || q.contains("stopstream")
             || q.contains("streamresume")
+            || q.contains("streambookmark")
             || q.contains("testjackett")
             || q.contains("jackettcatalog")
             || q.contains("serverinfo")
