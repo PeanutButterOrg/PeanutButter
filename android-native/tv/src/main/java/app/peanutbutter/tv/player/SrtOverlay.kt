@@ -86,7 +86,19 @@ class SrtOverlay {
         if (text.isEmpty()) {
             v.setCues(emptyList())
         } else {
-            v.setCues(listOf(Cue.Builder().setText(text).build()))
+            // Explicit bottom line — default Cue placement can land mid-frame on TV.
+            v.setCues(
+                listOf(
+                    Cue.Builder()
+                        .setText(text)
+                        .setLine(1.0f, Cue.LINE_TYPE_FRACTION)
+                        .setLineAnchor(Cue.ANCHOR_TYPE_END)
+                        .setPosition(0.5f)
+                        .setPositionAnchor(Cue.ANCHOR_TYPE_MIDDLE)
+                        .setTextAlignment(android.text.Layout.Alignment.ALIGN_CENTER)
+                        .build(),
+                ),
+            )
         }
     }
 

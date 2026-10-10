@@ -25,11 +25,13 @@ const Map<String, String> youtubeStreamHeaders = {
 };
 
 /// Prefer Android (fast muxed), then iOS / web if that client returns nothing.
-final List<YoutubeApiClient> _fastYtClients = [
-  YoutubeApiClient.android,
-  YoutubeApiClient.ios,
-  YoutubeApiClient.safari,
-];
+/// Built at call time — [YoutubeApiClient.ios] is not a compile-time constant
+/// on newer youtube_explode_dart (CI `const` lists fail kernel_snapshot).
+List<YoutubeApiClient> _fastYtClients() => [
+      YoutubeApiClient.android,
+      YoutubeApiClient.ios,
+      YoutubeApiClient.safari,
+    ];
 
 MuxedStreamInfo? _bestMuxed(Iterable<MuxedStreamInfo> muxed, int preferHeight) {
   MuxedStreamInfo? bestAtOrUnder;
@@ -73,7 +75,7 @@ Future<YoutubeQualityOption?> youtubeFastMuxed(
   try {
     final manifest = await yt.videos.streamsClient.getManifest(
       videoId,
-      ytClients: _fastYtClients,
+      ytClients: _fastYtClients(),
     );
     final pick = _bestMuxed(manifest.muxed, preferHeight);
     return pick == null ? null : _optionFromMuxed(pick);
@@ -88,7 +90,7 @@ Future<List<YoutubeQualityOption>> youtubeQualityOptions(String videoId) async {
   try {
     final manifest = await yt.videos.streamsClient.getManifest(
       videoId,
-      ytClients: _fastYtClients,
+      ytClients: _fastYtClients(),
     );
     final byHeight = <int, MuxedStreamInfo>{};
     for (final s in manifest.muxed) {

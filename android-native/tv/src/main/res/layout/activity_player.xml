@@ -22,10 +22,13 @@
             android:layout_height="match_parent" />
     </androidx.media3.ui.AspectRatioFrameLayout>
 
+    <!-- Full-bleed captions (not letterboxed with the video) so they sit at the
+         bottom of the TV frame. Chrome layers below are elevated above this. -->
     <androidx.media3.ui.SubtitleView
         android:id="@+id/subtitles"
         android:layout_width="match_parent"
-        android:layout_height="match_parent" />
+        android:layout_height="match_parent"
+        android:elevation="2dp" />
 
     <FrameLayout
         android:id="@+id/poster_hud"
@@ -54,6 +57,7 @@
         android:layout_height="wrap_content"
         android:layout_gravity="top"
         android:background="@drawable/player_chrome_top_scrim"
+        android:elevation="8dp"
         android:orientation="vertical"
         android:paddingStart="36dp"
         android:paddingTop="28dp"
@@ -200,6 +204,7 @@
         android:layout_height="wrap_content"
         android:layout_gravity="bottom"
         android:background="@drawable/player_chrome_bottom_scrim"
+        android:elevation="8dp"
         android:gravity="center_horizontal"
         android:orientation="vertical"
         android:paddingHorizontal="40dp"

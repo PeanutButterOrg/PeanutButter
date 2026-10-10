@@ -1403,6 +1403,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             applyBufferingChrome()
             main.removeCallbacks(hideChrome)
             placeSkipButtons(false)
+            syncSubtitlePad()
             return
         }
         // Already showing — only refresh the auto-hide timer. Re-running the
@@ -1414,6 +1415,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             scheduleHideChrome()
             placeSkipButtons(true)
             updateOverlayFocusChain()
+            syncSubtitlePad()
             return
         }
         chromeVisible = true
@@ -1421,6 +1423,11 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         placeSkipButtons(true)
         updateOverlayFocusChain()
         scheduleHideChrome()
+        syncSubtitlePad()
+    }
+
+    private fun syncSubtitlePad() {
+        (player as? TvPlayback)?.setSubtitlesChromeVisible(chromeVisible && streamOpened)
     }
 
     /**
@@ -1475,6 +1482,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             btnSubs?.isVisible = false
         }
         syncActionChipVisibility()
+        syncSubtitlePad()
     }
 
     private fun syncActionChipVisibility() {

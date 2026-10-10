@@ -109,7 +109,8 @@ class TvPlayback(
         placedH = box.height
         placedMode = aspectMode
         VideoAspect.place(layout, box)
-        subtitles?.let { VideoAspect.place(it, box) }
+        // Keep SubtitleView full-screen — letterboxing it with the video put
+        // captions mid-frame on TV. Bottom padding is applied in bindSubtitles.
         layout.setAspectRatio(box.width.toFloat() / box.height)
         layout.resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FILL
         val scaling = if (aspectMode == "fill") {
@@ -123,8 +124,18 @@ class TvPlayback(
     override fun bindSubtitles(view: SubtitleView?) {
         subtitles = view
         view?.setApplyEmbeddedStyles(true)
-        view?.setBottomPaddingFraction(0.08f)
+        // Sit near the bottom of the TV frame, clear of the transport bar.
+        view?.setBottomPaddingFraction(SUBTITLE_PAD_IDLE)
+        view?.setUserDefaultStyle()
+        view?.setUserDefaultTextSize()
         srtOverlay.bind(view) { exo.currentPosition.coerceAtLeast(0L) }
+    }
+
+    /** Lift captions when transport chrome is up so they aren't under the seek bar. */
+    fun setSubtitlesChromeVisible(chromeVisible: Boolean) {
+        subtitles?.setBottomPaddingFraction(
+            if (chromeVisible) SUBTITLE_PAD_CHROME else SUBTITLE_PAD_IDLE,
+        )
     }
 
     override fun attachSurface(view: SurfaceView?) {
@@ -358,5 +369,8 @@ class TvPlayback(
 
     companion object {
         private const val TAG = "TvPlayback"
+        /** Fraction of view height reserved below captions (idle / chrome up). */
+        private const val SUBTITLE_PAD_IDLE = 0.10f
+        private const val SUBTITLE_PAD_CHROME = 0.22f
     }
 }
