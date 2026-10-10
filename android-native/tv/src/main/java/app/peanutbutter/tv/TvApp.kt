@@ -3,6 +3,9 @@ package app.peanutbutter.tv
 import android.app.ActivityManager
 import android.app.Application
 import android.content.Context
+import android.content.Intent
+import android.os.Handler
+import android.os.Looper
 import com.bumptech.glide.Glide
 import com.bumptech.glide.GlideBuilder
 import com.bumptech.glide.load.engine.cache.InternalCacheDiskCacheFactory
@@ -11,8 +14,10 @@ import com.bumptech.glide.load.engine.cache.MemorySizeCalculator
 import app.peanutbutter.core.ApiClient
 import app.peanutbutter.core.AppExitCleanup
 import app.peanutbutter.core.AppLog
+import app.peanutbutter.core.AuthEvents
 import app.peanutbutter.core.SessionStore
 import app.peanutbutter.core.TorrentClient
+import app.peanutbutter.tv.ui.PairingActivity
 
 class TvApp : Application() {
     lateinit var session: SessionStore
@@ -23,10 +28,15 @@ class TvApp : Application() {
     @Volatile
     var activeStreamSession: String? = null
 
+    private val mainHandler = Handler(Looper.getMainLooper())
+
     override fun onCreate() {
         super.onCreate()
         session = SessionStore(this)
         api = ApiClient(session)
+        AuthEvents.setUnpairedListener {
+            mainHandler.post { openPairingScreen() }
+        }
         configureGlide()
         // Torrents run in :torrent via TorrentService so a native crash can't kill UI.
         AppLog.init(this)
@@ -40,6 +50,16 @@ class TvApp : Application() {
             activeStreamSession = null
             runCatching { TorrentClient.stop(this, deleteFiles = deleteFiles) }
         }
+    }
+
+    private fun openPairingScreen() {
+        val intent = Intent(this, PairingActivity::class.java)
+            .addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP,
+            )
+        startActivity(intent)
     }
 
     /** Shrink Glide memory for low-end TV boxes (2–3GB devices). */

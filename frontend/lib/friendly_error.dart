@@ -82,8 +82,12 @@ String friendlyRequestError(
   if (lower.contains('401') ||
       lower.contains('unauthorized') ||
       lower.contains('api token') ||
-      lower.contains('missing api')) {
-    return 'This app is not authorized to talk to the server. Open Settings and fetch the token from this PC, or paste the token from the machine that runs the server.';
+      lower.contains('missing api') ||
+      lower.contains("isn't paired") ||
+      lower.contains('isn’t paired') ||
+      lower.contains('pairing code') ||
+      lower.contains('pairing screen')) {
+    return 'This pairing code is no longer valid. Create a new code in the server console.';
   }
   if (lower.contains('403') || lower.contains('forbidden') || lower.contains('access denied')) {
     return 'Access denied. Check the server token in Settings.';

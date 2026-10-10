@@ -1113,6 +1113,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   @override
   void deactivate() {
     playbackSessionActive = false;
+    ref.read(settingsProvider.notifier).flushPendingUnauthorized();
     super.deactivate();
   }
 
@@ -1134,6 +1135,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     playbackSessionActive = false;
+    ref.read(settingsProvider.notifier).flushPendingUnauthorized();
     HardwareKeyboard.instance.removeHandler(_onHardwareKey);
     _posSub?.cancel();
     _completedSub?.cancel();
@@ -2898,11 +2900,26 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         _subs = byId.values.toList();
         _subsLoading = false;
       });
-      if (hits.isEmpty && mounted) {
+      if (!mounted) return;
+      if (hits.isEmpty) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('No Wyzie captions for this title.')),
         );
+        return;
       }
+      // Show filtered hits immediately — download only after the user picks one.
+      final picked = await showMenu<String>(
+        context: context,
+        color: PtTheme.panel,
+        position: const RelativeRect.fromLTRB(80, 80, 80, 80),
+        items: [
+          for (final hit in hits)
+            PopupMenuItem(value: hit.id, child: Text(hit.label)),
+        ],
+      );
+      if (picked == null || !mounted) return;
+      final hit = hits.firstWhere((h) => h.id == picked, orElse: () => hits.first);
+      await _downloadAndApplySubtitle(hit);
     } catch (e) {
       if (mounted) {
         setState(() => _subsLoading = false);

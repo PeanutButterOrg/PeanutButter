@@ -47,6 +47,7 @@ class TvPlayback(
     private var placedMode = ""
     private var lastViewW = 0
     private var lastViewH = 0
+    private val srtOverlay = SrtOverlay()
 
     override val length: Long
         get() {
@@ -123,6 +124,7 @@ class TvPlayback(
         subtitles = view
         view?.setApplyEmbeddedStyles(true)
         view?.setBottomPaddingFraction(0.08f)
+        srtOverlay.bind(view) { exo.currentPosition.coerceAtLeast(0L) }
     }
 
     override fun attachSurface(view: SurfaceView?) {
@@ -177,6 +179,7 @@ class TvPlayback(
 
     override fun listTextTracks(): List<Pair<String, String>> {
         val out = ArrayList<Pair<String, String>>()
+        srtOverlay.listEntry()?.let { out += it }
         val groups = exo.currentTracks.groups
         for (gi in groups.indices) {
             val group = groups[gi]
@@ -193,47 +196,49 @@ class TvPlayback(
     }
 
     override fun selectTextTrack(id: String?) {
-        val builder = exo.trackSelectionParameters.buildUpon()
-            .clearOverridesOfType(C.TRACK_TYPE_TEXT)
         if (id == null) {
-            exo.trackSelectionParameters = builder
+            srtOverlay.clear()
+            exo.trackSelectionParameters = exo.trackSelectionParameters.buildUpon()
+                .clearOverridesOfType(C.TRACK_TYPE_TEXT)
                 .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
                 .build()
             subtitles?.setCues(emptyList())
             return
         }
+        if (id == "ext:sideload") {
+            // Prefer overlay; mute embedded text tracks so they don't fight us.
+            exo.trackSelectionParameters = exo.trackSelectionParameters.buildUpon()
+                .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+                .build()
+            srtOverlay.selectExternal()
+            return
+        }
+        srtOverlay.clear()
         val parts = id.split(':')
         val gi = parts.getOrNull(0)?.toIntOrNull() ?: return
         val ti = parts.getOrNull(1)?.toIntOrNull() ?: return
         val group = exo.currentTracks.groups.getOrNull(gi) ?: return
         if (group.type != C.TRACK_TYPE_TEXT || ti !in 0 until group.length) return
-        exo.trackSelectionParameters = builder
+        exo.trackSelectionParameters = exo.trackSelectionParameters.buildUpon()
+            .clearOverridesOfType(C.TRACK_TYPE_TEXT)
             .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
             .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, listOf(ti)))
             .build()
     }
 
     override fun addExternalSubtitle(file: File, label: String, mimeType: String) {
-        val item = exo.currentMediaItem ?: return
-        val mime = mimeType.ifBlank { MimeTypes.APPLICATION_SUBRIP }
-        val conf = MediaItem.SubtitleConfiguration.Builder(Uri.fromFile(file))
-            .setMimeType(mime)
-            .setLabel(label)
-            .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
-            .build()
-        val existing = item.localConfiguration?.subtitleConfigurations.orEmpty()
-        val next = item.buildUpon().setSubtitleConfigurations(existing + conf).build()
-        val pos = exo.currentPosition.coerceAtLeast(0L)
-        val play = exo.playWhenReady
-        exo.setMediaItem(next, pos)
-        exo.prepare()
-        exo.playWhenReady = play
+        // Never remount the progressive torrent MediaItem — that flash-kills captions
+        // and often the video pipeline on BeyondTV. Paint SRT from the playhead instead.
         exo.trackSelectionParameters = exo.trackSelectionParameters.buildUpon()
-            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+            .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
             .build()
+        srtOverlay.load(file, label.ifBlank { file.name })
     }
 
     override fun release() {
+        srtOverlay.clear()
         subtitles = null
         releasePlayerOnly()
     }
@@ -335,6 +340,8 @@ class TvPlayback(
                     }
 
                     override fun onCues(cueGroup: CueGroup) {
+                        // Sideloaded SRT owns the SubtitleView while active.
+                        if (srtOverlay.active) return
                         subtitles?.setCues(cueGroup.cues)
                     }
 

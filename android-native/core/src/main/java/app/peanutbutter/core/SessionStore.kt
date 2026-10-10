@@ -48,6 +48,11 @@ class SessionStore(context: Context) {
             prefs.edit().putString(KEY_LANGS, next.joinToString(",")).apply()
         }
 
+    /** Drop the pairing code only — keep [serverUrl] so rediscovery stays fast. */
+    fun clearToken() {
+        prefs.edit().remove(KEY_TOKEN).apply()
+    }
+
     fun clear() {
         prefs.edit().remove(KEY_URL).remove(KEY_TOKEN).apply()
     }

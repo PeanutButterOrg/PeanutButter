@@ -15,8 +15,10 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.core.view.isVisible
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.lifecycleScope
+import app.peanutbutter.core.HomeFeed
 import app.peanutbutter.tv.R
 import app.peanutbutter.tv.asTv
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 /**
@@ -25,8 +27,10 @@ import kotlinx.coroutines.launch
  */
 class MainActivity : FragmentActivity() {
     private var selectedKind: String = "MOVIE"
-    /** Skip the first onResume (onCreate already loads); refresh CW/watched after player. */
+    /** Skip the first onResume (onCreate already loads); soft-refresh CW after player. */
     private var refreshOnResume = false
+    private val feedCache = LinkedHashMap<String, HomeFeed>()
+    private var loadJob: Job? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -46,7 +50,9 @@ class MainActivity : FragmentActivity() {
         }
 
         wireHeader()
-        loadHome()
+        // Overlay must sit above the raised header so kind switches never flash shelves.
+        findViewById<View>(R.id.loading_overlay).elevation = 32f
+        loadHome(showOverlay = true, jumpToHero = true)
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() = onHomeBack()
         })
@@ -54,14 +60,17 @@ class MainActivity : FragmentActivity() {
 
     override fun onResume() {
         super.onResume()
-        if (refreshOnResume) loadHome(quiet = true)
+        if (refreshOnResume) {
+            // Keep shelves + focus — only refresh Continue watching in the background.
+            softRefreshContinueWatching()
+            browseFragment()?.restoreBrowseFocus()
+        }
         refreshOnResume = true
     }
 
     private fun onHomeBack() {
         if (!focusIsInHeader()) {
-            (supportFragmentManager.findFragmentById(R.id.main_browse_fragment) as? MainFragment)
-                ?.scrollToTop()
+            browseFragment()?.scrollToTop()
             val tab = if (selectedKind == "SERIES") R.id.kind_series else R.id.kind_movies
             findViewById<View>(tab).requestFocus()
             return
@@ -99,7 +108,15 @@ class MainActivity : FragmentActivity() {
             if (kind == selectedKind) return
             selectedKind = kind
             styleKind(movies, series, kind)
-            loadHome()
+            // Instant swap from cache when available — no empty/placeholder flash.
+            val cached = feedCache[kind]
+            if (cached != null) {
+                browseFragment()?.bindFeed(kind, cached, jumpToHero = true)
+                // Refresh quietly in the background.
+                loadHome(showOverlay = false, jumpToHero = false, fromCache = true)
+            } else {
+                loadHome(showOverlay = true, jumpToHero = true)
+            }
         }
 
         movies.setOnClickListener { select("MOVIE") }
@@ -108,6 +125,7 @@ class MainActivity : FragmentActivity() {
         series.setOnKeyListener(activateKey { select("SERIES") })
 
         fun open(intent: Intent) {
+            browseFragment()?.captureBrowseFocus()
             startActivity(intent)
         }
 
@@ -183,35 +201,89 @@ class MainActivity : FragmentActivity() {
         outState.putString(STATE_KIND, selectedKind)
     }
 
-    private fun loadHome(quiet: Boolean = false) {
+    private fun browseFragment(): MainFragment? =
+        supportFragmentManager.findFragmentById(R.id.main_browse_fragment) as? MainFragment
+
+    private fun setLoading(visible: Boolean) {
+        findViewById<View>(R.id.loading_overlay).apply {
+            isVisible = visible
+            isClickable = visible
+            isFocusable = visible
+            if (visible) bringToFront()
+        }
+    }
+
+    private fun loadHome(
+        showOverlay: Boolean,
+        jumpToHero: Boolean,
+        fromCache: Boolean = false,
+    ) {
         val app = application.asTv()
-        if (!quiet) findViewById<View>(R.id.loading_overlay).isVisible = true
-        lifecycleScope.launch {
+        val kind = selectedKind
+        if (showOverlay) setLoading(true)
+        loadJob?.cancel()
+        loadJob = lifecycleScope.launch {
             try {
-                val feed = app.api.homeFeed(selectedKind)
-                val fragment = supportFragmentManager
-                    .findFragmentById(R.id.main_browse_fragment) as? MainFragment
-                fragment?.bindFeed(selectedKind, feed, preserveFocus = quiet)
-                findViewById<View>(R.id.loading_overlay).apply {
-                    isVisible = false
-                    isClickable = false
-                    isFocusable = false
+                val feed = app.api.homeFeed(kind)
+                feedCache[kind] = feed
+                // Ignore stale responses if the user switched tabs mid-flight.
+                if (kind != selectedKind) return@launch
+                val fragment = browseFragment()
+                if (fromCache) {
+                    // Already painted from cache — update CW only (no wipe / blink).
+                    val ok = fragment?.updateContinueWatching(feed.continueWatching) == true
+                    if (!ok && feed.continueWatching.isNotEmpty()) {
+                        fragment?.captureBrowseFocus()
+                        fragment?.bindFeed(kind, feed, restoreFocus = true)
+                    }
+                } else {
+                    fragment?.bindFeed(kind, feed, jumpToHero = jumpToHero)
                 }
+                // Warm the other kind so Movie ↔ Series is instant next time.
+                prefetchOtherKind(kind)
             } catch (e: Exception) {
                 android.util.Log.e("MainActivity", "loadHome failed", e)
-                findViewById<View>(R.id.loading_overlay).apply {
-                    isVisible = false
-                    isClickable = false
-                    isFocusable = false
-                }
-                if (!quiet) {
+                if (showOverlay && !fromCache) {
                     Toast.makeText(
                         this@MainActivity,
                         e.message ?: getString(R.string.error_generic),
                         Toast.LENGTH_LONG,
                     ).show()
                 }
+            } finally {
+                if (kind == selectedKind) setLoading(false)
             }
+        }
+    }
+
+    private fun softRefreshContinueWatching() {
+        val app = application.asTv()
+        val kind = selectedKind
+        lifecycleScope.launch {
+            try {
+                val feed = app.api.homeFeed(kind)
+                feedCache[kind] = feed
+                if (kind != selectedKind) return@launch
+                val fragment = browseFragment() ?: return@launch
+                val updated = fragment.updateContinueWatching(feed.continueWatching)
+                if (!updated && feed.continueWatching.isNotEmpty()) {
+                    // CW shelf appeared for the first time — rebuild but restore focus.
+                    fragment.captureBrowseFocus()
+                    fragment.bindFeed(kind, feed, restoreFocus = true)
+                }
+            } catch (e: Exception) {
+                android.util.Log.w("MainActivity", "softRefresh failed", e)
+            }
+        }
+    }
+
+    private fun prefetchOtherKind(current: String) {
+        val other = if (current == "MOVIE") "SERIES" else "MOVIE"
+        if (feedCache.containsKey(other)) return
+        val app = application.asTv()
+        lifecycleScope.launch {
+            runCatching { app.api.homeFeed(other) }
+                .onSuccess { feedCache[other] = it }
         }
     }
 

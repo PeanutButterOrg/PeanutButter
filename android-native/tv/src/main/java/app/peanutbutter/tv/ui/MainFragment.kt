@@ -29,6 +29,11 @@ class MainFragment : RowsSupportFragment() {
     private lateinit var itemSelector: ClassPresenterSelector
     private var kind: String = "MOVIE"
 
+    /** Last focused shelf cell — restored after detail / soft refresh. */
+    private var savedRow = 0
+    private var savedItem = 0
+    private var savedKind: String? = null
+
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
         view.setBackgroundColor(0xFF0E0E12.toInt())
@@ -125,9 +130,53 @@ class MainFragment : RowsSupportFragment() {
         grid.setPadding(0, 0, 0, bottom)
     }
 
-    fun bindFeed(kind: String, feed: HomeFeed, preserveFocus: Boolean = false) {
+    /** Snapshot focused row + poster before leaving for Details. */
+    fun captureBrowseFocus() {
+        if (!::rowsAdapter.isInitialized) return
+        val row = selectedPosition.coerceAtLeast(0)
+        savedRow = row
+        savedItem = 0
+        savedKind = kind
+        val vh = runCatching { getRowViewHolder(row) }.getOrNull() as? ListRowPresenter.ViewHolder
+        savedItem = vh?.gridView?.selectedPosition?.coerceAtLeast(0) ?: 0
+    }
+
+    /** Restore focus after returning from Details (adapter unchanged). */
+    fun restoreBrowseFocus() {
+        if (!::rowsAdapter.isInitialized || rowsAdapter.size() == 0) return
+        if (savedKind != null && savedKind != kind) return
+        val row = savedRow.coerceIn(0, rowsAdapter.size() - 1)
+        setSelectedPosition(row, false)
+        view?.post {
+            alignFocusedRows()
+            val vh = runCatching { getRowViewHolder(row) }.getOrNull() as? ListRowPresenter.ViewHolder
+            val grid = vh?.gridView
+            if (grid != null && grid.adapter != null) {
+                val max = (grid.adapter?.itemCount ?: 1) - 1
+                val item = savedItem.coerceIn(0, max.coerceAtLeast(0))
+                grid.setSelectedPosition(item)
+                grid.requestFocus()
+            } else {
+                verticalGridView?.requestFocus()
+            }
+        }
+    }
+
+    /**
+     * @param restoreFocus restore previously captured cell after a rebuild
+     * @param jumpToHero when true (kind switch), select hero without scroll animation
+     */
+    fun bindFeed(
+        kind: String,
+        feed: HomeFeed,
+        restoreFocus: Boolean = false,
+        jumpToHero: Boolean = false,
+    ) {
         if (!::rowsAdapter.isInitialized) return
         this.kind = kind
+        // Hide shelves during rebuild so stale posters never flash under the new hero.
+        val grid = verticalGridView
+        grid?.alpha = 0f
         rowsAdapter.clear()
         var id = 2L
 
@@ -155,18 +204,56 @@ class MainFragment : RowsSupportFragment() {
         addShelf(getString(R.string.popular), feed.popular, "POPULARITY")
         addShelf(getString(R.string.last_added), feed.recent, "DATE_ADDED")
 
-        if (!preserveFocus) {
-            setSelectedPosition(0, true)
-            view?.post {
-                alignFocusedRows()
-                verticalGridView?.requestFocus()
+        when {
+            restoreFocus -> {
+                view?.post {
+                    restoreBrowseFocus()
+                    revealBrowse()
+                }
             }
-        } else {
-            view?.post { alignFocusedRows() }
+            jumpToHero -> {
+                setSelectedPosition(0, false)
+                view?.post {
+                    alignFocusedRows()
+                    revealBrowse()
+                }
+            }
+            else -> {
+                setSelectedPosition(0, false)
+                view?.post {
+                    alignFocusedRows()
+                    verticalGridView?.requestFocus()
+                    revealBrowse()
+                }
+            }
         }
     }
 
+    /** Update Continue watching in place — no adapter wipe, focus stays put. */
+    fun updateContinueWatching(items: List<TitleItem>): Boolean {
+        if (!::rowsAdapter.isInitialized) return false
+        for (i in 0 until rowsAdapter.size()) {
+            val row = rowsAdapter[i] as? ListRow ?: continue
+            val header = row.headerItem as? ShelfHeaderItem ?: continue
+            if (header.sort != "CONTINUE_WATCHING") continue
+            val list = row.adapter as? ArrayObjectAdapter ?: return false
+            list.clear()
+            items.take(18).forEach { list.add(it) }
+            return true
+        }
+        // Shelf missing (was empty) — caller should full-bind if items is non-empty.
+        return items.isEmpty()
+    }
+
+    private fun revealBrowse() {
+        val grid = verticalGridView ?: return
+        if (grid.alpha >= 0.99f) return
+        grid.animate().cancel()
+        grid.animate().alpha(1f).setDuration(160L).start()
+    }
+
     private fun openDetails(item: TitleItem) {
+        captureBrowseFocus()
         startActivity(
             Intent(requireContext(), DetailsActivity::class.java)
                 .putExtra(DetailsActivity.EXTRA_ID, item.id)
@@ -175,6 +262,7 @@ class MainFragment : RowsSupportFragment() {
     }
 
     private fun openCatalog(item: SeeAllItem) {
+        captureBrowseFocus()
         startActivity(
             Intent(requireContext(), CatalogActivity::class.java)
                 .putExtra(CatalogActivity.EXTRA_TITLE, item.title)

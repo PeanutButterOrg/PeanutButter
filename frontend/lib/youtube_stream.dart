@@ -25,7 +25,7 @@ const Map<String, String> youtubeStreamHeaders = {
 };
 
 /// Prefer Android (fast muxed), then iOS / web if that client returns nothing.
-const List<YoutubeApiClient> _fastYtClients = [
+final List<YoutubeApiClient> _fastYtClients = [
   YoutubeApiClient.android,
   YoutubeApiClient.ios,
   YoutubeApiClient.safari,

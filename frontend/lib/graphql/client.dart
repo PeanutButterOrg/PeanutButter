@@ -66,11 +66,7 @@ bool isUnauthorizedError(Object error) {
   if (error is ServerException && (error.statusCode == 401 || error.statusCode == 403)) {
     return true;
   }
-  final text = error.toString().toLowerCase();
-  return text.contains('unauthorized') ||
-      text.contains('invalid api token') ||
-      text.contains('missing api token') ||
-      text.contains('401');
+  return _unauthorizedText(error.toString());
 }
 
 bool _responseUnauthorized(Response response) {
@@ -80,8 +76,23 @@ bool _responseUnauthorized(Response response) {
 }
 
 bool _graphqlUnauthorized(GraphQLError error) {
-  final m = error.message.toLowerCase();
-  return m.contains('unauthorized') || m.contains('invalid api token') || m.contains('missing api token');
+  return _unauthorizedText(error.message);
+}
+
+/// Server 401 body is a friendly string ("This device isn't paired…"), not
+/// the raw "invalid API token" — match both.
+bool _unauthorizedText(String raw) {
+  final m = raw.toLowerCase();
+  return m.contains('unauthorized') ||
+      m.contains('invalid api token') ||
+      m.contains('missing api token') ||
+      m.contains("isn't paired") ||
+      m.contains('isn’t paired') ||
+      m.contains('not paired') ||
+      m.contains('pairing code') ||
+      m.contains('pairing screen') ||
+      m.contains('401') ||
+      m.contains('403');
 }
 
 String graphqlMessage(QueryResult result) {

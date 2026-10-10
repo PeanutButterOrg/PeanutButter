@@ -194,14 +194,36 @@ class SettingsNotifier extends StateNotifier<SettingsState> {
     state = state.copyWith(apiToken: '', connected: false, lastError: message);
   }
 
+  var _pendingUnauthorized = false;
+
+  static const _unauthMessage =
+      'This pairing code is no longer valid. Create a new code in the server console.';
+
   void noteUnauthorized() {
     if (_pairingAttempt) return;
-    if (state.apiToken.isEmpty) return;
-    // Don't yank pairing while a movie/series is playing.
+    if (state.apiToken.isEmpty && !_pendingUnauthorized) return;
+    // Drop the token on the API rejection itself. While a movie is playing,
+    // stay on the player (router skips /pair); flush after exit.
+    if (playbackSessionActive) {
+      _pendingUnauthorized = true;
+      unawaited(_prefs.remove(_kToken));
+      state = state.copyWith(apiToken: '', lastError: _unauthMessage);
+      return;
+    }
+    _pendingUnauthorized = false;
+    unawaited(forgetPairing(message: _unauthMessage));
+  }
+
+  /// Call when [playbackSessionActive] flips to false.
+  void flushPendingUnauthorized() {
+    if (!_pendingUnauthorized) return;
     if (playbackSessionActive) return;
-    unawaited(forgetPairing(
-      message: 'This pairing code is no longer valid. Create a new code in the server console.',
-    ));
+    _pendingUnauthorized = false;
+    state = state.copyWith(
+      apiToken: '',
+      connected: false,
+      lastError: _unauthMessage,
+    );
   }
 
   var _pairingAttempt = false;

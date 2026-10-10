@@ -62,6 +62,7 @@ class PlayerActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        app.peanutbutter.core.AuthEvents.playbackActive = true
         setContentView(R.layout.activity_player)
         val title = intent.getStringExtra(EXTRA_TITLE).orEmpty()
         val directUrl = intent.getStringExtra(EXTRA_URL).orEmpty()
@@ -420,6 +421,7 @@ class PlayerActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         stopped = true
+        app.peanutbutter.core.AuthEvents.onPlaybackEnded()
         main.removeCallbacks(progressTick)
         saveWatchProgress(force = true)
         cancelBufferStallWatch()

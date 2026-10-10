@@ -13,7 +13,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.concurrent.TimeUnit
 
-class ApiException(message: String) : Exception(message)
+open class ApiException(message: String) : Exception(message)
 
 /**
  * Thin GraphQL client for PeanutButter server.
@@ -519,7 +519,13 @@ class ApiClient(
         http.newCall(builder.build()).execute().use { res ->
             val text = res.body?.string().orEmpty()
             if (res.code == 401 || res.code == 403) {
-                throw ApiException("Pairing code rejected. Create a new code on the server.")
+                val detail = runCatching {
+                    JsonParser.parseString(text).asJsonObject.get("error")?.asString
+                }.getOrNull()
+                val msg = detail?.takeIf { it.isNotBlank() }
+                    ?: "Pairing code rejected. Create a new code on the server."
+                AuthEvents.noteUnauthorized(session)
+                throw UnauthorizedException(msg)
             }
             if (!res.isSuccessful) {
                 throw ApiException("Server error ${res.code}")
@@ -528,6 +534,10 @@ class ApiClient(
             val errors = root.getAsJsonArray("errors")
             if (errors != null && errors.size() > 0) {
                 val msg = errors[0].asJsonObject.get("message")?.asString ?: "GraphQL error"
+                if (AuthEvents.looksUnauthorized(msg)) {
+                    AuthEvents.noteUnauthorized(session)
+                    throw UnauthorizedException(msg)
+                }
                 throw ApiException(msg)
             }
             return root.getAsJsonObject("data")

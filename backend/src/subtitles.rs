@@ -585,14 +585,34 @@ pub async fn search_wyzie_for_title(
         if row_lang != lang && row_lang != "en" && lang != "en" {
             continue;
         }
-        let display = row
-            .get("display")
-            .or_else(|| row.get("release"))
-            .or_else(|| row.get("fileName"))
+        // `display` is just the language name ("English") — prefer release / file.
+        let release = row
+            .get("release")
+            .or_else(|| row.get("matchedRelease"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+        let file_name = row
+            .get("fileName")
             .or_else(|| row.get("filename"))
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .trim();
+        let origin = row
+            .get("origin")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+        let source = row
+            .get("source")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+        let hi = row
+            .get("isHearingImpaired")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let ai = row.get("ai").and_then(|v| v.as_bool()).unwrap_or(false);
         let format = row
             .get("format")
             .and_then(|v| v.as_str())
@@ -603,11 +623,34 @@ pub async fn search_wyzie_for_title(
             .map(|v| v.to_string().trim_matches('"').to_string())
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| format!("wyzie-{}", out.len() + 1));
-        let label = if display.is_empty() {
-            format!("{} · Wyzie", language_label(&row_lang))
+        let detail = if !release.is_empty() {
+            release.to_string()
+        } else if !file_name.is_empty() {
+            file_name
+                .trim_end_matches(".srt")
+                .trim_end_matches(".vtt")
+                .trim_end_matches(".ass")
+                .to_string()
+        } else if !origin.is_empty() || !source.is_empty() {
+            [origin, source]
+                .into_iter()
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+                .join(" · ")
         } else {
-            format!("{} · {display}", language_label(&row_lang))
+            String::new()
         };
+        let mut label = if detail.is_empty() {
+            language_label(&row_lang)
+        } else {
+            format!("{} · {detail}", language_label(&row_lang))
+        };
+        if hi {
+            label.push_str(" · HI");
+        }
+        if ai {
+            label.push_str(" · AI");
+        }
         out.push(SubtitleHit {
             id,
             language: row_lang,

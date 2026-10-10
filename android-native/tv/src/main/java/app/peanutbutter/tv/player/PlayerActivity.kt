@@ -136,6 +136,8 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Keep watching if the catalog API pairing is revoked mid-stream.
+        app.peanutbutter.core.AuthEvents.playbackActive = true
         setContentView(R.layout.activity_player)
         titleView = findViewById(R.id.title)
         statusView = findViewById(R.id.status)
@@ -1393,16 +1395,28 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
     }
 
     private fun showChrome() {
-        chromeVisible = true
         chromeTop?.animate()?.cancel()
         chromeBottom?.animate()?.cancel()
         if (!streamOpened) {
             // Pre-play only: title + buffer status (no transport).
+            chromeVisible = true
             applyBufferingChrome()
             main.removeCallbacks(hideChrome)
             placeSkipButtons(false)
             return
         }
+        // Already showing — only refresh the auto-hide timer. Re-running the
+        // fade-in (alpha 0→1) on every D-pad press made the bar blink.
+        if (chromeVisible &&
+            chromeBottom?.isVisible == true &&
+            (chromeBottom?.alpha ?: 0f) > 0.85f
+        ) {
+            scheduleHideChrome()
+            placeSkipButtons(true)
+            updateOverlayFocusChain()
+            return
+        }
+        chromeVisible = true
         applyPlayingChrome(showTransport = true)
         placeSkipButtons(true)
         updateOverlayFocusChain()
@@ -1430,15 +1444,27 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
     private fun applyPlayingChrome(showTransport: Boolean) {
         posterHud?.isVisible = false
         topProgress?.isVisible = false
+        chromeTop?.animate()?.cancel()
+        chromeBottom?.animate()?.cancel()
         if (showTransport) {
             chromeVisible = true
             chromeTop?.isVisible = true
-            chromeTop?.animate()?.alpha(1f)?.setDuration(180)?.start()
             chromeBottom?.isVisible = true
-            chromeBottom?.alpha = 0f
-            chromeBottom?.animate()?.alpha(1f)?.setDuration(180)?.start()
             btnAspect?.isVisible = true
             btnSubs?.isVisible = true
+            // Only fade in when coming from hidden — never reset alpha to 0 first.
+            val topA = chromeTop?.alpha ?: 0f
+            val botA = chromeBottom?.alpha ?: 0f
+            if (topA < 0.95f) {
+                chromeTop?.animate()?.alpha(1f)?.setDuration(180)?.start()
+            } else {
+                chromeTop?.alpha = 1f
+            }
+            if (botA < 0.95f) {
+                chromeBottom?.animate()?.alpha(1f)?.setDuration(180)?.start()
+            } else {
+                chromeBottom?.alpha = 1f
+            }
         } else {
             chromeVisible = false
             chromeTop?.animate()?.alpha(0f)?.setDuration(220)?.start()
@@ -1743,6 +1769,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         leaveDialog?.dismiss()
         leaveDialog = null
         stopped = true
+        app.peanutbutter.core.AuthEvents.onPlaybackEnded()
         saveWatchProgress(force = true)
         TorrentClient.onStatsUpdated = null
         waitJob?.cancel()

@@ -108,6 +108,7 @@ class _ExternalStreamingScreenState extends ConsumerState<ExternalStreamingScree
   @override
   void dispose() {
     playbackSessionActive = false;
+    ref.read(settingsProvider.notifier).flushPendingUnauthorized();
     _poll?.cancel();
     _reopenFocus.dispose();
     _backFocus.dispose();

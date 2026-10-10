@@ -197,8 +197,18 @@ class VlcPlayback(
     }
 
     override fun addExternalSubtitle(file: File, label: String, mimeType: String) {
-        // libvlc_media_slave_type_subtitle == 0
-        mp?.addSlave(0, Uri.fromFile(file), true)
+        val player = mp ?: return
+        // libvlc_media_slave_type_subtitle == 0; select=true asks VLC to enable it.
+        player.addSlave(0, Uri.fromFile(file), true)
+        // Indexing is async — pin the new SPU once it appears (otherwise it flashes off).
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            val tracks = player.spuTracks ?: return@postDelayed
+            val match = tracks.lastOrNull {
+                val n = it.name.orEmpty()
+                label.isNotBlank() && n.contains(label, ignoreCase = true)
+            } ?: tracks.lastOrNull { it.id >= 0 }
+            if (match != null) player.spuTrack = match.id
+        }, 450L)
     }
 
     override fun release() {
