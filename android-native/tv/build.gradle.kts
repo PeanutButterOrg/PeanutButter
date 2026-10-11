@@ -1,7 +1,22 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
 }
+
+// Optional real release key. Without android-native/keystore.properties the
+// release build keeps using the debug key (same as before), so existing
+// installs keep updating. See README "Release signing" before switching:
+// a different key means one uninstall/reinstall on each TV.
+val releaseKeystore = Properties().apply {
+    val file = rootProject.file("keystore.properties")
+    if (file.exists()) file.inputStream().use { load(it) }
+}
+
+// Opt-in R8 shrinking: ./gradlew :tv:assembleRelease -Ppb.minify=true
+// Off by default until a minified build has been smoke-tested on a TV.
+val minifyRelease = (project.findProperty("pb.minify") as String?)?.toBoolean() ?: false
 
 android {
     namespace = "app.peanutbutter.tv"
@@ -23,10 +38,46 @@ android {
         jvmTarget = "17"
     }
 
+    signingConfigs {
+        if (!releaseKeystore.isEmpty()) {
+            create("release") {
+                storeFile = rootProject.file(
+                    requireNotNull(releaseKeystore.getProperty("storeFile")) {
+                        "storeFile is missing from keystore.properties"
+                    },
+                )
+                storePassword = releaseKeystore.getProperty("storePassword")
+                keyAlias = releaseKeystore.getProperty("keyAlias")
+                keyPassword = releaseKeystore.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
-            isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("debug")
+            isMinifyEnabled = minifyRelease
+            isShrinkResources = minifyRelease
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
+            signingConfig = if (releaseKeystore.isEmpty()) {
+                signingConfigs.getByName("debug")
+            } else {
+                signingConfigs.getByName("release")
+            }
+        }
+    }
+
+    // One APK per CPU type (each ~1/4 of the universal size) plus the
+    // universal APK. TV boxes report their type via `ro.product.cpu.abi`
+    // (many 64-bit boxes run a 32-bit armeabi-v7a userspace).
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
+            isUniversalApk = true
         }
     }
 }

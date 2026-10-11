@@ -68,6 +68,7 @@ app.*.map.json
 
 # Native Android phone + TV (source stays; build output does not)
 android-native/.gradle/
+android-native/keystore.properties
 android-native/local.properties
 android-native/**/build/
 android-native/**/.cxx/

@@ -6,7 +6,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:graphql_flutter/graphql_flutter.dart';
 
-import '../android_playback.dart';
 import '../graphql/queries.dart';
 import '../models.dart';
 import '../providers/catalog.dart';
@@ -332,12 +331,6 @@ class _DetailBodyState extends ConsumerState<_DetailBody> {
           'posterUrl': item.posterUrl,
           'backdropUrl': item.backdropUrl,
         };
-        final backend = ref.read(settingsProvider).androidPlaybackBackend;
-        // Always use shared PlayerScreen chrome. VLC is the in-app decoder on
-        // Android TV — never hand off to an external player app.
-        if (AndroidPlayback.usesExternal(backend)) {
-          // Legacy prefs value: fall through to in-app PlayerScreen.
-        }
         context.push('/player/${started.session.id}', extra: extra);
       }
 

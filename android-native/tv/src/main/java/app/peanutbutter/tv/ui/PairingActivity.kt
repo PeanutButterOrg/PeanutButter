@@ -15,6 +15,7 @@ import app.peanutbutter.tv.asTv
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -84,12 +85,14 @@ class PairingActivity : FragmentActivity() {
                         throw IllegalStateException("Server not reachable. Check URL or Find on this network.")
                     }
                     base = resolved
+                    // Confirm the code with the server BEFORE saving anything —
+                    // a wrong or unchecked code must never be stored.
+                    withContext(Dispatchers.IO) {
+                        check(Discovery.isPeanutButter(base)) { "Server not reachable at $base" }
+                        app.api.verifyPairing(base, code)
+                    }
                     app.session.serverUrl = base
                     app.session.apiToken = code
-                    withContext(Dispatchers.IO) {
-                        check(app.api.healthOk()) { "Server not reachable at $base" }
-                        app.api.serverInfo()
-                    }
                     startActivity(Intent(this@PairingActivity, MainActivity::class.java))
                     finish()
                 } catch (e: Exception) {
@@ -100,6 +103,12 @@ class PairingActivity : FragmentActivity() {
                 }
             }
         }
+    }
+
+    override fun onDestroy() {
+        // Stop LAN scans / connect attempts that would otherwise outlive the screen.
+        scope.cancel()
+        super.onDestroy()
     }
 
     private fun autoFind(

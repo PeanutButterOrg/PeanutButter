@@ -3,7 +3,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:graphql_flutter/graphql_flutter.dart';
 
-import '../android_playback.dart';
 import '../content_languages.dart';
 import '../graphql/client.dart';
 import '../graphql/queries.dart';
@@ -172,44 +171,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   onSelected: (v) => ref.read(settingsProvider.notifier).setDefaultQuality(v),
                 ),
               ),
-              if (AndroidPlayback.isAndroid) ...[
-                const _Divider(),
-                _SimpleRow(
-                  label: 'Android player',
-                  trailing: AppMenuButton<String>(
-                    hint: 'Player',
-                    value: AndroidPlayback.toPrefs(
-                      settings.androidPlaybackBackend == AndroidPlaybackBackend.external
-                          ? AndroidPlaybackBackend.vlc
-                          : settings.androidPlaybackBackend,
-                    ),
-                    entries: const [
-                      AppMenuEntry(
-                        value: 'vlc',
-                        label: 'VLC (in-app, TV)',
-                      ),
-                      AppMenuEntry(
-                        value: 'inApp',
-                        label: 'Flutter (Exo / MediaKit)',
-                      ),
-                    ],
-                    onSelected: (v) => ref
-                        .read(settingsProvider.notifier)
-                        .setAndroidPlaybackBackend(AndroidPlayback.fromPrefs(v)),
-                  ),
-                ),
-                const _Divider(),
-                _SimpleRow(
-                  label: 'TV playback lab',
-                  subtitle: 'Phase 0 — SurfaceView LibVLC probe',
-                  trailing: TvFocus(
-                    child: FilledButton.tonal(
-                      onPressed: () => context.push('/tv-lab'),
-                      child: const Text('Open'),
-                    ),
-                  ),
-                ),
-              ],
               const _Divider(),
               _SimpleRow(
                 label: 'Theme',

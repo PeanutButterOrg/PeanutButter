@@ -89,7 +89,11 @@ class StreamHttpServer(
         val buf = ByteArray(64 * 1024)
         RandomAccessFile(file, "r").use { raf ->
             while (pos <= end && running.get()) {
-                waitForBytes(pos, min(pos + buf.size - 1, end))
+                // Throws if the bytes never arrive — closing the connection lets the
+                // player retry instead of decoding the zeros of a sparse file.
+                if (!waitForBytes(pos, min(pos + buf.size - 1, end))) {
+                    throw IOException("pieces for bytes $pos.. not available yet")
+                }
                 raf.seek(pos)
                 val want = min(buf.size.toLong(), end - pos + 1).toInt()
                 val got = raf.read(buf, 0, want)
@@ -104,9 +108,10 @@ class StreamHttpServer(
         }
     }
 
-    private fun waitForBytes(start: Long, end: Long) {
-        val handle = handleProvider()?.takeIf { it.isValid } ?: return
-        val info = runCatching { handle.torrentFile() }.getOrNull() ?: return
+    /** @return true when every piece covering [start]..[end] is on disk. */
+    private fun waitForBytes(start: Long, end: Long): Boolean {
+        val handle = handleProvider()?.takeIf { it.isValid } ?: return false
+        val info = runCatching { handle.torrentFile() }.getOrNull() ?: return false
         val pieceLength = info.pieceLength().coerceAtLeast(1)
         val fs = info.files()
         val fileOffset = fs.fileOffset(fileIndex)
@@ -140,10 +145,11 @@ class StreamHttpServer(
                     }
                 }
             }
-            if (!missing) return
+            if (!missing) return true
             // Short sleep — Exo is blocked on this read; wake ASAP when pieces land.
             Thread.sleep(40)
         }
+        return false
     }
 
     private fun writeHeaders(

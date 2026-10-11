@@ -6,7 +6,7 @@ Self-hosted media catalog for **your own legally owned files**. Metadata comes f
 - [OMDb](http://www.omdbapi.com/) — IMDb ratings only (IMDb is never scraped)
 - [AniList](https://anilist.co/) — anime metadata
 
-Local library files are served from a directory you mount (`MEDIA_PATH`). Jackett magnets are resolved by the API; **each client** (desktop / phone / Android TV) downloads and streams torrents itself via libtorrent.
+Local library files are served from a directory you mount (`MEDIA_PATH`). Jackett magnets are resolved by the API; **each client** (desktop / Android TV) downloads and streams torrents itself via libtorrent.
 
 ## Architecture
 
@@ -15,18 +15,18 @@ Local library files are served from a directory you mount (`MEDIA_PATH`). Jacket
 | **API** (Rust / Axum / async-graphql) | Catalog, ingest, Jackett, pairing, local file Range serving |
 | **Postgres 16** | Titles, progress, torrent listings |
 | **Meilisearch** | Typo-tolerant search |
-| **Flutter clients** (`frontend/`) | Linux / Windows / macOS (and legacy Flutter Android) |
-| **Native Android** (`android-native/`) | Leanback TV + phone companion (recommended on Android) |
+| **Flutter client** (`frontend/`) | Linux / Windows / macOS desktop, plus a web build |
+| **Native Android TV** (`android-native/`) | Leanback TV app (the only Android client) |
 
 Clients pick a playback backend by device profile:
 
 | Device | Default player |
 | --- | --- |
 | Linux / Windows / macOS | media_kit (libmpv) |
-| Android phone (native companion) | ExoPlayer (`android-native/phone`) |
+| Web | media_kit (browser `<video>`); no on-device torrents |
 | Android TV (native Leanback) | LibVLC SurfaceView (`android-native/tv`) |
 
-See [android-native/README.md](android-native/README.md) to build the Leanback TV and phone apps.
+See [android-native/README.md](android-native/README.md) to build the Leanback TV app.
 
 ## Prerequisites
 
@@ -82,15 +82,17 @@ docker pull ghcr.io/peanutbutterorg/peanutbutter-api:latest
 
 Then point compose `image:` at the pulled tag (or keep `build:` for local builds).
 
-## Native Flutter clients
+## Desktop (Flutter) and Android TV clients
 
 ```bash
 cd frontend
 flutter pub get
-flutter run -d linux          # or macos / windows / android
+flutter run -d linux          # or macos / windows / chrome
 ```
 
-Android TV: build/install an APK (`flutter build apk`) and launch from the Leanback row. Set the server URL in Settings (or **Discover on LAN**), then enter the 6-digit pairing code from the console.
+Android TV uses the native app in `android-native/` (`./scripts/update-apps.sh --tv` builds and installs it over adb). Set the server URL (or **Find server on LAN**), then enter the 6-digit pairing code from the console.
+
+Before pushing, `./scripts/verify.sh` runs the same checks as CI (analyze, tests, builds).
 
 More detail: [frontend/README.md](frontend/README.md) · [backend/README.md](backend/README.md) · [docs/DOCKER.md](docs/DOCKER.md)
 

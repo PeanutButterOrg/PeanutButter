@@ -430,6 +430,7 @@ class StreamSession {
     required this.resumePosition,
     required this.status,
     required this.streamUrl,
+    this.swarmActive = false,
   });
 
   final String id;
@@ -442,6 +443,9 @@ class StreamSession {
   final int resumePosition;
   final String status;
   final String streamUrl;
+  /// True once metadata / trackers / bytes prove the swarm is live — even when
+  /// peer counts are junk zeros from libtorrent_flutter.
+  final bool swarmActive;
 
   bool get isReady => status == 'ready' && streamUrl.isNotEmpty;
   bool get isError => status.startsWith('error');
@@ -458,6 +462,7 @@ class StreamSession {
       resumePosition: json['resumePosition'] as int? ?? 0,
       status: json['status'] as String? ?? '',
       streamUrl: json['streamUrl'] as String? ?? '',
+      swarmActive: json['swarmActive'] as bool? ?? false,
     );
   }
 }

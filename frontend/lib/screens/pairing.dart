@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:graphql_flutter/graphql_flutter.dart';
 
 import '../friendly_error.dart';
 import '../graphql/client.dart';
+import '../graphql/queries.dart';
 import '../providers/catalog.dart';
 import '../providers/settings.dart';
 import '../services/discovery.dart';
@@ -168,34 +170,43 @@ class _PairingScreenState extends ConsumerState<PairingScreen> {
       if (mounted && resolved != normalizeServerBase(typed)) {
         _url.text = '$resolved/';
       }
-      await notifier.setServerUrl(resolved);
-      await notifier.setApiToken(_token.text);
-      if (mounted) _token.text = ref.read(settingsProvider).apiToken;
-      final reachable = await notifier.probeCurrent();
-      if (!reachable) {
-        await notifier.clearPairingAttempt(
-          ref.read(settingsProvider).lastError ??
-              'Cannot reach that server. Check the address and try again.',
-        );
-        if (mounted) {
-          setState(() => _showUrlField = true);
+      // Confirm the code with the server BEFORE saving anything, using a
+      // throwaway client — a wrong or unchecked code is never stored.
+      const rejected =
+          'That pairing code was not accepted. Create a code in the server console and type it here.';
+      final code = _token.text.trim();
+      String? failure;
+      try {
+        final probe = createGraphQLClient(resolved, apiToken: code);
+        final result = await probe
+            .query(
+              QueryOptions(
+                document: gql(GET_SERVER_INFO),
+                fetchPolicy: FetchPolicy.networkOnly,
+              ),
+            )
+            .timeout(const Duration(seconds: 20));
+        if (result.hasException) {
+          failure = isUnauthorizedError(result.exception!)
+              ? rejected
+              : graphqlMessage(result);
         }
+      } catch (e) {
+        failure = isUnauthorizedError(e) ? rejected : friendlyRequestError(e);
+      }
+      if (failure != null) {
+        await notifier.clearPairingAttempt(failure);
         return;
       }
+      // Confirmed — only now persist the server and the code.
+      await notifier.setServerUrl(resolved);
+      await notifier.setApiToken(code);
+      if (mounted) _token.text = ref.read(settingsProvider).apiToken;
       ref.invalidate(serverInfoProvider);
-      try {
-        await ref.read(serverInfoProvider.future).timeout(const Duration(seconds: 20));
-        await notifier.markConnected();
-        ref.invalidate(homeFeedProvider('MOVIE'));
-        ref.invalidate(homeFeedProvider('SERIES'));
-        ref.invalidate(homeFeedProvider('ANIME'));
-      } catch (e) {
-        await notifier.clearPairingAttempt(
-          isUnauthorizedError(e)
-              ? 'That pairing code was not accepted. Create a code in the server console and type it here.'
-              : friendlyRequestError(e),
-        );
-      }
+      await notifier.markConnected();
+      ref.invalidate(homeFeedProvider('MOVIE'));
+      ref.invalidate(homeFeedProvider('SERIES'));
+      ref.invalidate(homeFeedProvider('ANIME'));
     });
     if (mounted) setState(() => _connecting = false);
   }

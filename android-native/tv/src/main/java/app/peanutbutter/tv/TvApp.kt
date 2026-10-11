@@ -18,6 +18,10 @@ import app.peanutbutter.core.AuthEvents
 import app.peanutbutter.core.SessionStore
 import app.peanutbutter.core.TorrentClient
 import app.peanutbutter.tv.ui.PairingActivity
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.asCoroutineDispatcher
+import java.util.concurrent.Executors
 
 class TvApp : Application() {
     lateinit var session: SessionStore
@@ -27,6 +31,20 @@ class TvApp : Application() {
 
     @Volatile
     var activeStreamSession: String? = null
+
+    /**
+     * App-lifetime queue for small network writes that must outlive an Activity
+     * (watch progress on pause / close). One thread keeps them in order and,
+     * unlike runBlocking on the main thread, can't freeze the UI when the
+     * server is slow or unreachable.
+     */
+    val backgroundWrites: CoroutineScope by lazy {
+        CoroutineScope(
+            SupervisorJob() + Executors.newSingleThreadExecutor { r ->
+                Thread(r, "pb-bg-writes").apply { isDaemon = true }
+            }.asCoroutineDispatcher(),
+        )
+    }
 
     private val mainHandler = Handler(Looper.getMainLooper())
 

@@ -6,6 +6,7 @@ import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -444,7 +445,8 @@ class ApiClient(
         var last = streamStatus(sessionId)
         onTick?.invoke(last)
         while (last.streamUrl.isBlank() && !last.isError && System.currentTimeMillis() < deadline) {
-            Thread.sleep(pollMs)
+            // delay (not Thread.sleep) so leaving the player cancels the poll.
+            delay(pollMs)
             last = streamStatus(sessionId)
             onTick?.invoke(last)
         }
@@ -581,6 +583,46 @@ class ApiClient(
                 parsed.fragment,
             ).toString()
         }.getOrDefault(raw)
+    }
+
+    /**
+     * Check a pairing code against [baseUrl] **without saving anything** and
+     * without touching [AuthEvents]. Throws [UnauthorizedException] when the
+     * server rejects the code, [ApiException] for other failures.
+     */
+    suspend fun verifyPairing(baseUrl: String, token: String): Unit = withContext(Dispatchers.IO) {
+        val base = baseUrl.trim().trimEnd('/')
+        require(base.isNotBlank()) { "Server URL is empty." }
+        val url = if (base.endsWith("/graphql")) base else "$base/graphql"
+        val body = JsonObject().apply { addProperty("query", Gql.SERVER_INFO) }.toString()
+        val req = Request.Builder()
+            .url(url)
+            .post(body.toRequestBody(jsonMedia))
+            .header("Accept", "application/json")
+            .header("Content-Type", "application/json")
+            .header("X-Api-Key", SessionStore.normalizeToken(token))
+            .build()
+        http.newCall(req).execute().use { res ->
+            val text = res.body?.string().orEmpty()
+            if (res.code == 401 || res.code == 403) {
+                val detail = runCatching {
+                    JsonParser.parseString(text).asJsonObject.get("error")?.asString
+                }.getOrNull()
+                throw UnauthorizedException(
+                    detail?.takeIf { it.isNotBlank() }
+                        ?: "Pairing code rejected. Create a new code on the server.",
+                )
+            }
+            if (!res.isSuccessful) throw ApiException("Server error ${res.code}")
+            val root = runCatching { JsonParser.parseString(text).asJsonObject }.getOrNull()
+                ?: throw ApiException("Unexpected response from the server.")
+            val errors = root.getAsJsonArray("errors")
+            if (errors != null && errors.size() > 0) {
+                throw ApiException(
+                    errors[0].asJsonObject.get("message")?.asString ?: "GraphQL error",
+                )
+            }
+        }
     }
 
     private fun gql(query: String, variables: Map<String, Any?> = emptyMap()): JsonObject {

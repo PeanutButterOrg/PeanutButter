@@ -3,7 +3,6 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:media_kit_libs_android_video/media_kit_libs_android_video.dart';
 
 import '../friendly_error.dart';
 import '../models.dart';
@@ -188,9 +187,6 @@ class _HomeBodyState extends ConsumerState<_HomeBody> {
     TvHomeScroll.toTop = _toTop;
     TvHomeScroll.toBanner = _toBanner;
     if (isAndroidTv) {
-      // libmpv preload still helps trailers/cache; Player warm skipped — Android
-      // playback uses ExoPlayer to avoid TV emulator ANRs on Player().
-      unawaited(MediaKitAndroidVideo.preload());
       TvHeaderFocus.bannerDetails.addListener(_onBannerFocus);
     }
     WidgetsBinding.instance.addPostFrameCallback((_) {

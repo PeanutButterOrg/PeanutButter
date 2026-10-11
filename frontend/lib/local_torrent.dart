@@ -6,10 +6,6 @@ import 'package:libtorrent_flutter/libtorrent_flutter.dart';
 import 'package:path_provider/path_provider.dart';
 
 /// Device-side streaming. Backend only supplies magnets / metadata.
-///
-/// Trackers: always merge [ngosang/trackerslist](https://github.com/ngosang/trackerslist)
-/// best announces (serverInfo.streamTrackers + offline fallback + TrackerManager)
-/// into every Jackett magnet. Indexer `tr=` alone is not enough.
 class LocalTorrentEngine {
   LocalTorrentEngine._();
   static final LocalTorrentEngine instance = LocalTorrentEngine._();
@@ -19,7 +15,6 @@ class LocalTorrentEngine {
   int? _torrentId;
   int? _streamId;
   String? _savePath;
-  List<String> _extraTrackers = const [];
 
   bool get supported =>
       !_nativeUnavailable &&
@@ -27,18 +22,15 @@ class LocalTorrentEngine {
       (Platform.isAndroid || Platform.isLinux || Platform.isWindows || Platform.isMacOS);
   bool get isActive => _torrentId != null;
 
-  /// Live list from serverInfo.streamTrackers (ngosang + optional Jackett harvest).
-  void configureTrackers(List<String> trackers) {
-    _extraTrackers = trackers
-        .map((t) => t.trim())
-        .where((t) => t.isNotEmpty)
-        .toSet()
-        .take(40)
-        .toList(growable: false);
-  }
+  /// Stub for newer settings/serverInfo callers; 9d785cb used TrackerManager only.
+  void configureTrackers(List<String> trackers) {}
 
-  List<String> get _activeTrackers =>
-      _extraTrackers.isNotEmpty ? _extraTrackers : _fallbackBest;
+  Future<void> prepareTrackers(List<String> serverTrackers) async {
+    configureTrackers(serverTrackers);
+    try {
+      await TrackerManager.fetchBestTrackers().timeout(const Duration(seconds: 4));
+    } catch (_) {}
+  }
 
   Future<void> ensureInit() async {
     if (!supported || _ready) return;
@@ -54,14 +46,12 @@ class LocalTorrentEngine {
         pollInterval: const Duration(milliseconds: 400),
       );
       final engine = LibtorrentFlutter.instance;
-      // Desktop (esp. macOS sandbox) needs DHT + UPnP + both transports.
-      // connectionsLimit here is piece-request fanout, not peer count.
       engine.configureSession(
         const BtConfig(
-          cacheSize: 256 * 1024 * 1024,
+          cacheSize: 512 * 1024 * 1024,
           readerReadAhead: 98,
           preloadCache: 90,
-          connectionsLimit: 80,
+          connectionsLimit: 200,
           // Without an HTTP reader, the plugin pauses the torrent after 30s.
           torrentDisconnectTimeout: 86400,
           disableTcp: false,
@@ -69,7 +59,6 @@ class LocalTorrentEngine {
           disableUpload: false,
           disableDht: false,
           disableUpnp: false,
-          enableIpv6: true,
           downloadRateLimit: 0,
           uploadRateLimit: 0,
           responsiveMode: true,
@@ -96,10 +85,6 @@ class LocalTorrentEngine {
     void Function(LocalStreamStats stats)? onStats,
   }) async {
     await ensureInit();
-    if (!_ready || _nativeUnavailable) {
-      throw 'On-device torrent streaming isn’t available on this device. '
-          'Update the app or try another platform build.';
-    }
     try {
       await TrackerManager.fetchBestTrackers().timeout(const Duration(seconds: 4));
     } catch (_) {}
@@ -108,7 +93,8 @@ class LocalTorrentEngine {
     await stop(deleteFiles: false);
 
     final engine = LibtorrentFlutter.instance;
-    final id = await _addSource(engine, magnet.trim());
+    final magnetUri = TrackerManager.injectTrackers(_withPublicTrackers(magnet));
+    final id = engine.addMagnet(magnetUri, _savePath, false);
     _torrentId = id;
 
     StreamSubscription<Map<int, TorrentInfo>>? updates;
@@ -118,26 +104,11 @@ class LocalTorrentEngine {
     });
 
     try {
-      // Hard ceiling; keep waiting past the soft deadline while peers/DHT are live.
-      // Desktop (macOS especially) often needs longer for DHT/UPnP bootstrap.
-      final softDeadline = DateTime.now().add(const Duration(seconds: 180));
-      final hardDeadline = DateTime.now().add(const Duration(seconds: 360));
-      var sawPeers = false;
-      var lastPeers = 0;
-      var lastSeeds = 0;
-      var ticks = 0;
-      while (DateTime.now().isBefore(hardDeadline)) {
+      final metaDeadline = DateTime.now().add(const Duration(seconds: 180));
+      while (DateTime.now().isBefore(metaDeadline)) {
         final info = engine.torrents[id];
         if (info != null && info.isPaused) {
           engine.resumeTorrent(id);
-        }
-        if (info != null) {
-          lastPeers = info.numPeers < 0 ? 0 : info.numPeers;
-          lastSeeds = info.numSeeds < 0 ? 0 : info.numSeeds;
-          if (lastPeers > 0 || lastSeeds > 0 || info.downloadRate > 0) {
-            sawPeers = true;
-          }
-          onStats?.call(_statsFrom(info, null));
         }
         if (info != null && info.hasMetadata) break;
         if (info?.state == TorrentState.error) {
@@ -146,26 +117,11 @@ class LocalTorrentEngine {
               ? info.errorMsg
               : 'Couldn’t start this stream. Try another result.';
         }
-        // Periodically re-inject trackers / resume — DHT can stall on first announce.
-        ticks++;
-        if (ticks % 40 == 0) {
-          try {
-            engine.resumeTorrent(id);
-          } catch (_) {}
-        }
-        // No swarm activity after soft deadline → fail fast with a clear reason.
-        if (DateTime.now().isAfter(softDeadline) && !sawPeers) {
-          break;
-        }
         await Future<void>.delayed(const Duration(milliseconds: 250));
       }
       final meta = engine.torrents[id];
       if (meta == null || !meta.hasMetadata) {
         await stop();
-        if (sawPeers || lastPeers > 0) {
-          throw 'Found peers but couldn’t fetch torrent metadata in time. '
-              'Try another result.';
-        }
         throw 'Couldn’t find enough peers to start this stream. Try another result.';
       }
       if (meta.isPaused) engine.resumeTorrent(id);
@@ -273,31 +229,33 @@ class LocalTorrentEngine {
 
   LocalStreamStats _statsFrom(TorrentInfo t, StreamInfo? s) {
     // Prefer torrent file progress for the HUD % (user-facing "downloaded").
-    // Fall back to stream readahead window when metadata is thin.
+    // Fall back to stream readahead window when metadata is thin — but never
+    // let a full readahead window report as 100% of the torrent.
     final torrentPct = (t.progress * 100).clamp(0.0, 100.0);
     final windowPct = ((s?.bufferPct ?? 0) * 100).clamp(0.0, 100.0);
     final complete = t.progress >= 0.99;
-    final streamReady = s?.isReady == true || complete;
-    // Once the HTTP stream can serve, report 100% readiness — capping at 99
-    // forever made Android sit on "99% buffering" after the pipe was open.
     double bufferPct;
-    if (streamReady || complete) {
+    if (complete) {
       bufferPct = 100.0;
-    } else if (windowPct >= torrentPct && windowPct > 0.5) {
-      bufferPct = windowPct.clamp(0.0, 99.0);
     } else if (torrentPct >= 1.0) {
       bufferPct = torrentPct.clamp(0.0, 99.0);
+    } else if (windowPct > torrentPct) {
+      // Window fill is useful early on; cap so it can't look finished.
+      bufferPct = windowPct.clamp(0.0, 95.0);
     } else {
       bufferPct = torrentPct.clamp(0.0, 99.0);
     }
+    final peers = t.numPeers < 0 ? 0 : t.numPeers;
+    final seeds = t.numSeeds < 0 ? 0 : t.numSeeds;
     return LocalStreamStats(
       bufferPct: bufferPct,
       downloadMbps: t.downloadRate / (1024 * 1024),
-      seeders: t.numSeeds < 0 ? 0 : t.numSeeds,
-      peers: t.numPeers < 0 ? 0 : t.numPeers,
-      ready: streamReady || t.progress >= 0.01,
+      seeders: seeds,
+      peers: peers,
+      ready: s?.isReady == true || t.progress >= 0.01 || complete,
       stateLabel: s?.streamState.name ?? (t.isPaused ? 'Paused' : t.state.label),
       torrentComplete: complete,
+      swarmActive: peers > 0 || seeds > 0 || t.downloadRate > 0,
     );
   }
 
@@ -409,8 +367,12 @@ class LocalTorrentEngine {
       final sid = _streamId;
       if (sid == null) return;
       final stream = engine.getStreamInfo(sid);
-      // Don't reset a 512MB cache on every scrub — that spikes RAM and can take
-      // down the Windows process while libmpv is also seeking.
+      engine.setCacheSettings(
+        sid,
+        capacity: 512 * 1024 * 1024,
+        readAheadPct: 95,
+        connectionsLimit: 200,
+      );
       final fileSize = stream?.fileSize ?? 0;
       final url = stream?.url ?? '';
       final dur = durationMs ?? 0;
@@ -442,52 +404,6 @@ class LocalTorrentEngine {
     } catch (_) {
     } finally {
       client?.close(force: true);
-    }
-  }
-
-  /// Magnets go through tracker injection. Jackett `.torrent` HTTP links are
-  /// downloaded then added via [addTorrentFile] (addMagnet can't resolve them).
-  Future<int> _addSource(LibtorrentFlutter engine, String source) async {
-    final lower = source.toLowerCase();
-    if (lower.startsWith('magnet:')) {
-      final magnetUri = TrackerManager.injectTrackers(_mergeTrackers(source));
-      return engine.addMagnet(magnetUri, _savePath, false);
-    }
-    if (lower.startsWith('http://') || lower.startsWith('https://')) {
-      final bytes = await _downloadTorrentBytes(source);
-      final dir = Directory(_savePath!);
-      if (!dir.existsSync()) dir.createSync(recursive: true);
-      final file = File(
-        '${dir.path}/src-${DateTime.now().millisecondsSinceEpoch}.torrent',
-      );
-      await file.writeAsBytes(bytes, flush: true);
-      return engine.addTorrentFile(file.path, _savePath, false);
-    }
-    throw 'Unsupported torrent source. Pick another result.';
-  }
-
-  Future<List<int>> _downloadTorrentBytes(String url) async {
-    final client = HttpClient()..connectionTimeout = const Duration(seconds: 12);
-    try {
-      final req = await client.getUrl(Uri.parse(url));
-      final res = await req.close().timeout(const Duration(seconds: 20));
-      if (res.statusCode < 200 || res.statusCode >= 300) {
-        throw 'Couldn’t download that torrent file (HTTP ${res.statusCode}). '
-            'Try another result.';
-      }
-      final bytes = await res.fold<List<int>>(<int>[], (a, b) {
-        a.addAll(b);
-        if (a.length > 8 * 1024 * 1024) {
-          throw 'Torrent file is too large. Try another result.';
-        }
-        return a;
-      }).timeout(const Duration(seconds: 25));
-      if (bytes.length < 16) {
-        throw 'That torrent download was empty. Try another result.';
-      }
-      return bytes;
-    } finally {
-      client.close(force: true);
     }
   }
 
@@ -524,48 +440,33 @@ class LocalTorrentEngine {
   }
 }
 
-/// Offline fallback matching ngosang trackers_best (same set the server embeds).
-const _fallbackBest = [
+const _publicTrackers = [
   'udp://tracker.opentrackr.org:1337/announce',
   'udp://open.stealth.si:80/announce',
-  'udp://tracker.torrent.eu.org:451/announce',
-  'udp://open.demonii.com:1337/announce',
-  'udp://exodus.desync.com:6969/announce',
-  'udp://tracker.skynetcloud.site:6969/announce',
-  'udp://tracker.qu.ax:6969/announce',
-  'udp://tracker.tryhackx.org:6969/announce',
-  'udp://tracker.corpscorp.online:80/announce',
-  'udp://tracker.bittor.pw:1337/announce',
-  'udp://tracker.nyaa.vc:6969/announce',
-  'udp://tracker-udp.gbitt.info:80/announce',
-  'udp://tracker.ducks.party:1984/announce',
+  'udp://tracker.openbittorrent.com:6969/announce',
   'udp://explodie.org:6969/announce',
-  'udp://tracker2.dler.org:80/announce',
-  'udp://tracker.gmi.gd:6969/announce',
+  'udp://tracker.torrent.eu.org:451/announce',
+  'udp://exodus.desync.com:6969/announce',
+  'udp://open.demonii.com:1337/announce',
+  'udp://tracker.moeking.me:6969/announce',
+  'udp://tracker.tiny-vps.com:6969/announce',
   'udp://tracker.dler.org:6969/announce',
-  'udp://retracker01-msk-virt.corbina.net:80/announce',
-  'http://tracker.dler.com:6969/announce',
-  'http://tracker.renfei.net:8080/announce',
-  'http://open.acgtracker.com:1096/announce',
-  'https://tracker.nanoha.org:443/announce',
-  'http://tracker.gbitt.info/announce',
-  'https://tracker.lilithraws.org/announce',
-  'http://t.overflow.biz/announce',
-  'https://tr.bangumi.moe:9696/announce',
+  'udp://tracker1.bt.moack.co.kr:80/announce',
+  'udp://tracker.theoks.net:6969/announce',
+  'udp://tracker.bittor.pw:1337/announce',
+  'udp://tracker.filemail.com:6969/announce',
+  'udp://tracker.bitsearch.to:1337/announce',
+  'udp://bt1.archive.org:6969/announce',
+  'udp://bt2.archive.org:6969/announce',
+  'http://tracker.openbittorrent.com:80/announce',
+  'http://tracker.opentrackr.org:1337/announce',
+  'wss://tracker.openwebtorrent.com',
 ];
 
-String _mergeTrackers(String magnet) {
+String _withPublicTrackers(String magnet) {
   var uri = magnet.trim();
   if (!uri.toLowerCase().startsWith('magnet:')) return uri;
-  // Prefer HTTP(S) announces first — some desktop networks (and macOS paths)
-  // drop UDP tracker traffic while TCP/HTTP still works.
-  final trackers = [
-    ...LocalTorrentEngine.instance._activeTrackers
-        .where((t) => t.startsWith('http://') || t.startsWith('https://')),
-    ...LocalTorrentEngine.instance._activeTrackers
-        .where((t) => !t.startsWith('http://') && !t.startsWith('https://')),
-  ].take(40);
-  for (final tr in trackers) {
+  for (final tr in _publicTrackers) {
     final enc = Uri.encodeComponent(tr);
     if (!uri.contains(enc) && !uri.contains(tr)) {
       uri = '$uri&tr=$enc';
@@ -588,6 +489,9 @@ class LocalStreamHandle {
   final String magnet;
 }
 
+/// Thrown when a newer [LocalTorrentEngine.start] supersedes this one.
+class LocalStreamCancelled implements Exception {}
+
 class LocalStreamStats {
   const LocalStreamStats({
     required this.bufferPct,
@@ -597,6 +501,7 @@ class LocalStreamStats {
     required this.ready,
     this.stateLabel = '',
     this.torrentComplete = false,
+    this.swarmActive = false,
   });
 
   final double bufferPct;
@@ -606,4 +511,5 @@ class LocalStreamStats {
   final bool ready;
   final String stateLabel;
   final bool torrentComplete;
+  final bool swarmActive;
 }

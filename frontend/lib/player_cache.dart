@@ -17,9 +17,11 @@ class PlayerCache {
     } catch (_) {}
 
     try {
+      // Only our own folder. The temp dir is shared with every other program
+      // on Linux (/tmp) and Windows (%TEMP%) — wiping all of it deleted other
+      // apps' files.
       final tmp = await getTemporaryDirectory();
       await _wipeTree(Directory('${tmp.path}/peanutbutter-streams'));
-      await _wipeChildren(tmp, skipNames: const {'.'});
     } catch (_) {}
 
     try {

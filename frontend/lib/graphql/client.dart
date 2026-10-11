@@ -51,23 +51,37 @@ const FetchPolicy catalogFetchPolicy = FetchPolicy.cacheAndNetwork;
 // result. A newer keystroke also has to be able to discard the older response.
 const FetchPolicy searchFetchPolicy = FetchPolicy.networkOnly;
 
+/// True only when the PeanutButter server rejected this device's token.
+///
+/// The server's auth gate answers 401 with `{"error": "This device isn’t
+/// paired…"}`. Anything else (timeouts, 5xx, upstream "401 Unauthorized"
+/// strings from OpenSubtitles/Jackett, our own friendly messages that mention
+/// the pairing code) must NOT clear the pairing.
 bool isUnauthorizedError(Object error) {
   if (error is OperationException) {
     final link = error.linkException;
-    if (link is ServerException && (link.statusCode == 401 || link.statusCode == 403)) {
-      return true;
+    if (link is ServerException) {
+      if (_isAuthStatus(link.statusCode)) return true;
+      final inner = link.originalException;
+      if (inner is HttpLinkServerException && _isAuthStatus(inner.response.statusCode)) {
+        return true;
+      }
     }
-    if (link is HttpLinkServerException &&
-        (link.response.statusCode == 401 || link.response.statusCode == 403)) {
+    if (link is HttpLinkServerException && _isAuthStatus(link.response.statusCode)) {
       return true;
     }
     if (error.graphqlErrors.any(_graphqlUnauthorized)) return true;
   }
-  if (error is ServerException && (error.statusCode == 401 || error.statusCode == 403)) {
-    return true;
+  if (error is ServerException) {
+    return _isAuthStatus(error.statusCode);
+  }
+  if (error is HttpLinkServerException) {
+    return _isAuthStatus(error.response.statusCode);
   }
   return _unauthorizedText(error.toString());
 }
+
+bool _isAuthStatus(int? status) => status == 401 || status == 403;
 
 bool _responseUnauthorized(Response response) {
   final errors = response.errors;
@@ -79,20 +93,17 @@ bool _graphqlUnauthorized(GraphQLError error) {
   return _unauthorizedText(error.message);
 }
 
-/// Server 401 body is a friendly string ("This device isn't paired…"), not
-/// the raw "invalid API token" — match both.
+/// Fallback for errors that arrive without an HTTP status. Matches only the
+/// server's own auth messages (backend `AppError::Unauthorized` and the raw
+/// gate reasons) — never generic words like "401", "unauthorized" or
+/// "pairing code", which also appear in upstream errors and in this app's
+/// own friendly messages and used to wipe a valid pairing.
 bool _unauthorizedText(String raw) {
   final m = raw.toLowerCase();
-  return m.contains('unauthorized') ||
-      m.contains('invalid api token') ||
+  return m.contains('invalid api token') ||
       m.contains('missing api token') ||
-      m.contains("isn't paired") ||
-      m.contains('isn’t paired') ||
-      m.contains('not paired') ||
-      m.contains('pairing code') ||
-      m.contains('pairing screen') ||
-      m.contains('401') ||
-      m.contains('403');
+      m.contains("device isn't paired") ||
+      m.contains('device isn’t paired');
 }
 
 String graphqlMessage(QueryResult result) {

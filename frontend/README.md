@@ -4,13 +4,16 @@ Flutter client for [PeanutButter](https://github.com/PeanutButterOrg/PeanutButte
 
 ## Supported platforms
 
-| Platform | Playback |
-| --- | --- |
-| Linux / Windows / macOS | media_kit (libmpv) |
-| Android phone / emulator | ExoPlayer (`video_player`) |
-| Android TV (Leanback) | Native LibVLC (Texture + soft decode) |
+| Platform | Playback | On-device torrents |
+| --- | --- | --- |
+| Linux / Windows / macOS | media_kit (libmpv) | yes (libtorrent) |
+| Web | media_kit (browser `<video>`) | no — `local_torrent_web.dart` stub |
 
-Device-specific behavior is selected through `lib/platform/` (`DeviceProfile`, `PlaybackBackendFactory`, `StreamSeekController`, TV input policy). Prefer those APIs over raw `Platform.isX` checks.
+Android TV is **not** built from this project any more — it is the native
+Leanback app in [`../android-native`](../android-native/README.md).
+
+Device-specific behavior is selected through `lib/platform/` (`DeviceProfile`, `StreamSeekController`, input policy). Prefer those APIs over raw `Platform.isX` checks.
+Some `tv_*` helpers are still used for desktop keyboard navigation (arrow keys / Esc).
 
 ## Setup
 
@@ -27,17 +30,7 @@ Optional: copy repo-root `.env` for desktop discovery defaults (not required whe
 flutter run -d linux
 flutter run -d macos
 flutter run -d windows
-flutter run -d android
-```
-
-Android TV:
-
-```bash
-flutter build apk --debug   # or --release
-adb connect TV_IP:5555
-adb install -r build/app/outputs/flutter-apk/app-debug.apk
-# Leanback launcher:
-adb shell monkey -p app.peanutbutter.peanutbutter -c android.intent.category.LEANBACK_LAUNCHER 1
+flutter run -d chrome
 ```
 
 ## Pairing
@@ -46,13 +39,12 @@ adb shell monkey -p app.peanutbutter.peanutbutter -c android.intent.category.LEA
 2. Create a device code
 3. In the app: set server URL (or **Discover on LAN**) → enter the 6-digit code
 
-Discovery probes saved URL, localhost / emulator gateway, LAN subnets, and optional mDNS `_peanutbutter._tcp`.
+Discovery probes the saved URL, the router/gateway, common hosts on each LAN subnet (full /24 sweep on desktop) on port 3001. (There is no mDNS discovery yet.)
 
 ## Streaming notes
 
 - Torrents are handled by **libtorrent_flutter** on the device (not the API)
 - Scrub / ±10s seeks on streams **debounce 3 seconds**, then Range-retarget the download window and seek the player
-- Android TV: seed/download HUD shows only while buffering; Skip Intro / Play Next are D-pad focusable; text fields open a fullscreen soft-keyboard screen
 
 ## Desktop CI packages
 
@@ -76,9 +68,7 @@ dart analyze lib
 
 ```
 lib/
-  platform/          # DeviceProfile, playback factory, seek settle, TV input
+  platform/          # DeviceProfile, seek settle, input policy
   screens/           # home, catalog, detail, player, settings, pairing, …
-  android_playback.dart
-  local_torrent.dart
-android/app/         # NativeVlcPlayer, jniLibs/libmla.so, Leanback manifest
+  local_torrent.dart # picks local_torrent_io.dart (FFI) or local_torrent_web.dart
 ```

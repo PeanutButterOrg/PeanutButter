@@ -88,11 +88,16 @@ class CatalogNotifier extends StateNotifier<CatalogState> {
   final String kind;
   Timer? _filterDebounce;
 
+  /// Bumped on every refresh; responses from an older generation are dropped
+  /// so a slow page for the previous filter can't overwrite the new results.
+  int _generation = 0;
+
   Future<void> refresh() async {
+    final generation = ++_generation;
     state = state.copyWith(loading: true, clearError: true);
-    await _load(page: 1, replace: true);
+    await _load(page: 1, replace: true, generation: generation);
     // Sort / open should land with a deep wall (at least 3 pages) before scroll.
-    await _prefetchPages(throughPage: 3);
+    await _prefetchPages(throughPage: 3, generation: generation);
   }
 
   void scheduleRefresh() {
@@ -103,16 +108,18 @@ class CatalogNotifier extends StateNotifier<CatalogState> {
   Future<void> loadMore() async {
     if (!state.hasNextPage || state.loadingMore || state.loading) return;
     state = state.copyWith(loadingMore: true);
-    await _load(page: state.page + 1, replace: false);
+    await _load(page: state.page + 1, replace: false, generation: _generation);
   }
 
-  Future<void> _prefetchPages({required int throughPage}) async {
-    while (state.hasNextPage &&
+  Future<void> _prefetchPages({required int throughPage, required int generation}) async {
+    while (mounted &&
+        generation == _generation &&
+        state.hasNextPage &&
         state.page < throughPage &&
         !state.loading &&
         state.error == null) {
       state = state.copyWith(loadingMore: true);
-      await _load(page: state.page + 1, replace: false);
+      await _load(page: state.page + 1, replace: false, generation: generation);
     }
   }
 
@@ -122,7 +129,7 @@ class CatalogNotifier extends StateNotifier<CatalogState> {
     super.dispose();
   }
 
-  Future<void> _load({required int page, required bool replace}) async {
+  Future<void> _load({required int page, required bool replace, required int generation}) async {
     final client = _ref.read(graphQLClientProvider);
     final filter = _ref.read(browseFilterProvider(kind));
     try {
@@ -133,6 +140,8 @@ class CatalogNotifier extends StateNotifier<CatalogState> {
           fetchPolicy: FetchPolicy.networkOnly,
         ),
       );
+      // Provider disposed or a newer refresh started while we waited.
+      if (!mounted || generation != _generation) return;
       if (result.hasException) {
         state = state.copyWith(
           loading: false,
@@ -161,6 +170,7 @@ class CatalogNotifier extends StateNotifier<CatalogState> {
         clearError: true,
       );
     } catch (e) {
+      if (!mounted || generation != _generation) return;
       state = state.copyWith(loading: false, loadingMore: false, error: e.toString());
     }
   }
@@ -183,11 +193,16 @@ class LibraryNotifier extends StateNotifier<CatalogState> {
   final Ref _ref;
   Timer? _filterDebounce;
 
+  /// Bumped on every refresh; responses from an older generation are dropped
+  /// so a slow page for the previous filter can't overwrite the new results.
+  int _generation = 0;
+
   Future<void> refresh() async {
+    final generation = ++_generation;
     state = state.copyWith(loading: true, clearError: true);
-    await _load(page: 1, replace: true);
+    await _load(page: 1, replace: true, generation: generation);
     // Sort / open should land with a deep wall (at least 3 pages) before scroll.
-    await _prefetchPages(throughPage: 3);
+    await _prefetchPages(throughPage: 3, generation: generation);
   }
 
   void scheduleRefresh() {
@@ -198,16 +213,18 @@ class LibraryNotifier extends StateNotifier<CatalogState> {
   Future<void> loadMore() async {
     if (!state.hasNextPage || state.loadingMore || state.loading) return;
     state = state.copyWith(loadingMore: true);
-    await _load(page: state.page + 1, replace: false);
+    await _load(page: state.page + 1, replace: false, generation: _generation);
   }
 
-  Future<void> _prefetchPages({required int throughPage}) async {
-    while (state.hasNextPage &&
+  Future<void> _prefetchPages({required int throughPage, required int generation}) async {
+    while (mounted &&
+        generation == _generation &&
+        state.hasNextPage &&
         state.page < throughPage &&
         !state.loading &&
         state.error == null) {
       state = state.copyWith(loadingMore: true);
-      await _load(page: state.page + 1, replace: false);
+      await _load(page: state.page + 1, replace: false, generation: generation);
     }
   }
 
@@ -217,7 +234,7 @@ class LibraryNotifier extends StateNotifier<CatalogState> {
     super.dispose();
   }
 
-  Future<void> _load({required int page, required bool replace}) async {
+  Future<void> _load({required int page, required bool replace, required int generation}) async {
     final client = _ref.read(graphQLClientProvider);
     final filter = _ref.read(catalogFilterProvider);
     try {
@@ -228,6 +245,8 @@ class LibraryNotifier extends StateNotifier<CatalogState> {
           fetchPolicy: FetchPolicy.networkOnly,
         ),
       );
+      // Provider disposed or a newer refresh started while we waited.
+      if (!mounted || generation != _generation) return;
       if (result.hasException) {
         state = state.copyWith(
           loading: false,
@@ -256,6 +275,7 @@ class LibraryNotifier extends StateNotifier<CatalogState> {
         clearError: true,
       );
     } catch (e) {
+      if (!mounted || generation != _generation) return;
       state = state.copyWith(loading: false, loadingMore: false, error: e.toString());
     }
   }

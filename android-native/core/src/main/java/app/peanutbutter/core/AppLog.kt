@@ -6,12 +6,18 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.Executors
 
 /** App-private crash/debug log — system logcat is empty on some TV boxes. */
 object AppLog {
     private const val TAG = "PeanutButter"
     private val fmt = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
     @Volatile private var file: File? = null
+
+    /** Info lines are appended off the caller's thread (often the UI thread). */
+    private val writer = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "AppLog").apply { isDaemon = true }
+    }
 
     fun init(context: Context) {
         if (file != null) return
@@ -34,13 +40,22 @@ object AppLog {
         runCatching { file?.writeText("") }
     }
 
-    @Synchronized
     private fun write(level: String, tag: String, msg: String, t: Throwable?) {
-        val line = "${fmt.format(Date())} $level/$tag: $msg"
+        val line = synchronized(fmt) { "${fmt.format(Date())} $level/$tag: $msg" }
         when (level) {
             "E" -> if (t != null) Log.e(TAG, "$tag: $msg", t) else Log.e(TAG, "$tag: $msg")
             else -> Log.i(TAG, "$tag: $msg")
         }
+        if (level == "E") {
+            // Errors are written synchronously so a crash log survives the process dying.
+            append(line, t)
+        } else {
+            runCatching { writer.execute { append(line, null) } }
+        }
+    }
+
+    @Synchronized
+    private fun append(line: String, t: Throwable?) {
         runCatching {
             val f = file ?: return
             f.appendText(line + "\n")

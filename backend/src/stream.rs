@@ -32,10 +32,16 @@ const ABSOLUTE_MIN_HEAD_BYTES: u64 = 24 * 1024; // last-resort floor when the sw
 const MIN_PLAYABLE_BYTES: u64 = 80 * 1024 * 1024;
 const STREAM_CHUNK: usize = 256 * 1024;        // 256 KB read chunks for smooth HTTP streaming
 const UPLOAD_BPS: u32 = 20 * 1024; // cap upload at 20 KB/s
+const EXTRA_TRACKERS: &[&str] = &[
+    "udp://tracker.opentrackr.org:1337/announce",
+    "udp://open.stealth.si:80/announce",
+    "udp://tracker.torrent.eu.org:451/announce",
+    "udp://exodus.desync.com:6969/announce",
+    "udp://open.demonii.com:1337/announce",
+    "udp://tracker.coppersurfer.tk:6969/announce",
+    "udp://tracker.leechers-paradise.org:6969/announce",
+];
 
-fn session_trackers() -> Vec<String> {
-    crate::trackers::current()
-}
 #[derive(Debug, Clone)]
 pub struct TorrentFileEntry {
     pub index: usize,
@@ -230,7 +236,7 @@ impl StreamService {
                     overwrite: true,
                     output_folder: Some(tmp.to_string_lossy().into_owned()),
                     force_tracker_interval: Some(Duration::from_secs(3)),
-                    trackers: Some(session_trackers()),
+                    trackers: Some(EXTRA_TRACKERS.iter().map(|s| (*s).to_string()).collect()),
                     ratelimits: torrent_limits(),
                     ..Default::default()
                 }),
@@ -250,7 +256,7 @@ impl StreamService {
                         overwrite: true,
                         output_folder: Some(tmp.to_string_lossy().into_owned()),
                         force_tracker_interval: Some(Duration::from_secs(3)),
-                        trackers: Some(session_trackers()),
+                        trackers: Some(EXTRA_TRACKERS.iter().map(|s| (*s).to_string()).collect()),
                         ratelimits: torrent_limits(),
                         ..Default::default()
                     }),
@@ -346,7 +352,7 @@ impl StreamService {
                     overwrite: true,
                     output_folder: Some(tmp.to_string_lossy().into_owned()),
                     force_tracker_interval: Some(Duration::from_secs(2)),
-                    trackers: Some(session_trackers()),
+                    trackers: Some(EXTRA_TRACKERS.iter().map(|s| (*s).to_string()).collect()),
                     ratelimits: torrent_limits(),
                     peer_opts: Some(PeerConnectionOptions {
                         connect_timeout: Some(Duration::from_secs(2)),
@@ -696,7 +702,7 @@ async fn bootstrap_torrent(
                     read_write_timeout: Some(Duration::from_secs(8)),
                     keep_alive_interval: Some(Duration::from_secs(8)),
                 }),
-                trackers: Some(session_trackers()),
+                trackers: Some(EXTRA_TRACKERS.iter().map(|s| (*s).to_string()).collect()),
                 ratelimits: torrent_limits(),
                 ..Default::default()
             }),
@@ -747,7 +753,7 @@ async fn bootstrap_torrent(
                             read_write_timeout: Some(Duration::from_secs(8)),
                             keep_alive_interval: Some(Duration::from_secs(8)),
                         }),
-                        trackers: Some(session_trackers()),
+                        trackers: Some(EXTRA_TRACKERS.iter().map(|s| (*s).to_string()).collect()),
                         ratelimits: torrent_limits(),
                         ..Default::default()
                     }),

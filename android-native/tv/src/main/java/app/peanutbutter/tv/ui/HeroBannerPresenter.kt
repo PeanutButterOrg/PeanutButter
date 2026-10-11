@@ -78,7 +78,11 @@ class HeroBannerPresenter(
             val tick = object : Runnable {
                 override fun run() {
                     val carousel = model
-                    if (view.isAttachedToWindow && carousel != null && carousel.items.size > 1) {
+                    // hasWindowFocus: pause while the player / another screen is on
+                    // top — attached-but-hidden banners kept reloading art every 5 s.
+                    if (view.isAttachedToWindow && view.hasWindowFocus() &&
+                        carousel != null && carousel.items.size > 1
+                    ) {
                         carousel.index = (carousel.index + 1) % carousel.items.size
                         bindCurrent(animate = true)
                     }

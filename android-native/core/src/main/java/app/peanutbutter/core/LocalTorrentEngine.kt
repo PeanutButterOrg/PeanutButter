@@ -1,4 +1,4 @@
- package app.peanutbutter.core
+package app.peanutbutter.core
 
 import android.content.Context
 import android.util.Log
@@ -31,43 +31,26 @@ import java.util.concurrent.atomic.AtomicReference
 /**
  * On-device libtorrent streaming (Flutter LocalTorrentEngine parity).
  * Server only supplies magnets — pieces never land on Zima.
- *
- * Trackers: always merge [ngosang/trackerslist](https://github.com/ngosang/trackerslist)
- * best announces (via serverInfo.streamTrackers, with offline fallback) into every
- * Jackett magnet. Indexer `tr=` alone is not enough for peer discovery.
  */
 object LocalTorrentEngine {
     private const val TAG = "LocalTorrent"
-
-    /**
-     * Offline fallback matching ngosang trackers_best (same set the server embeds).
-     * Used until serverInfo.streamTrackers arrives.
-     */
-    private val FALLBACK_BEST = listOf(
+    private val publicTrackers = listOf(
         "udp://tracker.opentrackr.org:1337/announce",
         "udp://open.stealth.si:80/announce",
-        "udp://tracker.torrent.eu.org:451/announce",
-        "udp://open.demonii.com:1337/announce",
-        "udp://exodus.desync.com:6969/announce",
-        "udp://tracker.skynetcloud.site:6969/announce",
-        "udp://tracker.qu.ax:6969/announce",
-        "udp://tracker.tryhackx.org:6969/announce",
-        "udp://tracker.corpscorp.online:80/announce",
-        "udp://tracker.bittor.pw:1337/announce",
-        "udp://tracker.nyaa.vc:6969/announce",
-        "udp://tracker-udp.gbitt.info:80/announce",
-        "udp://tracker.ducks.party:1984/announce",
+        "udp://tracker.openbittorrent.com:6969/announce",
         "udp://explodie.org:6969/announce",
-        "udp://tracker2.dler.org:80/announce",
-        "udp://tracker.gmi.gd:6969/announce",
+        "udp://tracker.torrent.eu.org:451/announce",
+        "udp://exodus.desync.com:6969/announce",
+        "udp://open.demonii.com:1337/announce",
+        "udp://tracker.moeking.me:6969/announce",
+        "udp://tracker.tiny-vps.com:6969/announce",
         "udp://tracker.dler.org:6969/announce",
-        "udp://retracker01-msk-virt.corbina.net:80/announce",
-        "http://tracker.dler.com:6969/announce",
-        "http://tracker.renfei.net:8080/announce",
+        "udp://tracker1.bt.moack.co.kr:80/announce",
+        "udp://bt1.archive.org:6969/announce",
+        "udp://bt2.archive.org:6969/announce",
+        "http://tracker.openbittorrent.com:80/announce",
+        "http://tracker.opentrackr.org:1337/announce",
     )
-
-    /** Live list from serverInfo.streamTrackers (ngosang + optional Jackett harvest). */
-    @Volatile private var extraTrackers: List<String> = emptyList()
 
     @Volatile private var ready = false
     @Volatile private var nativeUnavailable = false
@@ -85,10 +68,12 @@ object LocalTorrentEngine {
     /** Once the local HTTP stream is open, UI buffer is complete (100%). */
     @Volatile private var streamReadyLatched: Boolean = false
 
+    @Volatile private var extraTrackers: List<String> = emptyList()
+
     val isSupported: Boolean get() = !nativeUnavailable
     val isActive: Boolean get() = handleRef.get()?.isValid == true
 
-    /** Server-pushed ngosang list (clients always merge; offline uses FALLBACK_BEST). */
+    /** Optional Jackett-harvested announce URLs (kept for ApiClient compat). */
     fun setExtraTrackers(trackers: List<String>) {
         extraTrackers = trackers
             .map { it.trim() }
@@ -96,9 +81,6 @@ object LocalTorrentEngine {
             .distinct()
             .take(40)
     }
-
-    private fun activeTrackers(): List<String> =
-        extraTrackers.ifEmpty { FALLBACK_BEST }
 
     @Synchronized
     fun ensureInit(context: Context) {
@@ -411,11 +393,8 @@ object LocalTorrentEngine {
                 val complete = progress >= 0.99
                 val rate = st.downloadPayloadRate() / (1024.0 * 1024.0)
                 val headOk = headHave >= minHeadContiguous || playPiece <= firstPiece
-                // Accept a thinner playhead when the swarm is warm — waiting for
-                // every contiguous piece left the UI stuck at 99% for a long time.
                 val playOk = playHave >= minPlayContiguous ||
-                    (playHave >= 1 && rate >= 0.25) ||
-                    (playHave >= (minPlayContiguous / 2).coerceAtLeast(1) && rate >= 0.10)
+                    (playHave >= 1 && rate >= 0.35)
                 val headReady = complete || (headOk && playOk)
                 // Accurate 0–100%: bytes ready at head+playhead vs bytes needed to start.
                 val needBytes = (
@@ -612,15 +591,20 @@ object LocalTorrentEngine {
         return ((haveBytes / needBytes) * 100.0).coerceIn(0.0, 100.0)
     }
 
-    /** Light ease toward raw % so the HUD tracks piece completion closely. */
+    /** Ease toward raw %; snap to 100 when the stream is actually ready. */
     private fun smoothBuffer(raw: Double, snapComplete: Boolean = false): Double {
         if (snapComplete || raw >= 99.5) return 100.0
         val prev = smoothedBufferPct
-        // Prefer accuracy: follow raw closely; only soft-ease tiny upward ticks.
-        if (raw <= prev) return raw.coerceIn(0.0, 100.0)
-        val alpha = if (raw - prev > 8) 0.85 else 0.70
-        val next = prev + (raw - prev) * alpha
-        return if (raw - next < 0.75) raw.coerceIn(0.0, 100.0) else next.coerceIn(0.0, 100.0)
+        val alpha = when {
+            raw - prev > 15 -> 0.55 // catch up on big piece completes
+            else -> 0.40
+        }
+        val next = when {
+            raw <= prev -> raw
+            else -> prev + (raw - prev) * alpha
+        }
+        // Never stall forever just below the target.
+        return if (raw - next < 1.5) raw.coerceIn(0.0, 100.0) else next.coerceIn(0.0, 100.0)
     }
 
     /**
@@ -781,24 +765,26 @@ object LocalTorrentEngine {
     }
 
     private fun injectTrackers(handle: TorrentHandle) {
-        // Always merge public announces — Jackett magnets often only carry dead/private tr=.
-        for (tr in activeTrackers().take(20)) {
+        val list = (extraTrackers + publicTrackers).distinct().take(12)
+        for (tr in list) {
             runCatching { handle.addTracker(AnnounceEntry(tr)) }
         }
         // Do NOT forceReannounce here — native crash on BeyondTV after metadata.
     }
 
-    /** Keep magnet lean enough for ARM; always merge ngosang best announces. */
+    /** Keep magnet lean enough for ARM, but ensure enough public trackers for peers. */
     private fun slimMagnet(magnet: String): String {
         val uri = magnet.trim()
         if (!uri.lowercase().startsWith("magnet:")) return uri
-        return withExtraTrackers(uri)
+        val trCount = Regex("[?&]tr=").findAll(uri).count()
+        if (trCount >= 6) return uri
+        return withPublicTrackers(uri)
     }
 
-    private fun withExtraTrackers(magnet: String): String {
+    private fun withPublicTrackers(magnet: String): String {
         var uri = magnet.trim()
         if (!uri.lowercase().startsWith("magnet:")) return uri
-        for (tr in activeTrackers().take(20)) {
+        for (tr in publicTrackers.take(10)) {
             val enc = URLEncoder.encode(tr, "UTF-8")
             if (!uri.contains(enc) && !uri.contains(tr)) {
                 uri = "$uri&tr=$enc"

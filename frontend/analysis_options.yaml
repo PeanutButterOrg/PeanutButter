@@ -1,5 +1,12 @@
 include: package:flutter_lints/flutter.yaml
 
+analyzer:
+  exclude:
+    # Vendored third-party plugin sources and generated platform glue — not app code.
+    - linux/third_party/**
+    - "**/flutter/ephemeral/**"
+    - build/**
+
 linter:
   rules:
     prefer_const_constructors: true

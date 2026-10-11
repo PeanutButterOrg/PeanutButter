@@ -20,7 +20,6 @@ import 'providers/settings.dart';
 import 'screens/catalog.dart';
 import 'screens/detail.dart';
 import 'screens/edit_title.dart';
-import 'screens/external_streaming.dart';
 import 'screens/favourites.dart';
 import 'screens/watched.dart';
 import 'screens/home.dart';
@@ -61,7 +60,11 @@ Future<void> main() async {
           padding: const EdgeInsets.all(24),
           child: SingleChildScrollView(
             child: Text(
-              'UI error\n\n${details.exceptionAsString()}',
+              // Raw exception text only in debug builds; release users get a
+              // plain message (details still go to the log above).
+              kDebugMode
+                  ? 'UI error\n\n${details.exceptionAsString()}'
+                  : 'Something went wrong on this screen. Go back and try again.',
               style: const TextStyle(color: Color(0xFFFF6B6B), fontSize: 14, height: 1.4),
             ),
           ),
@@ -89,13 +92,14 @@ Future<void> main() async {
     prefs = await SharedPreferences.getInstance();
   }
   debugPrint('PeanutButter runApp');
-  // Fresh torrent pieces + player cache every launch.
-  try {
-    await LocalTorrentEngine.instance.purgeDownloads();
-  } catch (_) {}
-  try {
-    await PlayerCache.clear();
-  } catch (_) {}
+  // Downloaded stream pieces persist between launches. Only when Settings →
+  // Clear cache on exit is on do we wipe here too (covers a crash / force-quit
+  // that skipped the normal on-exit cleanup). Same key as SettingsNotifier.
+  if (prefs.getBool('clearCacheOnExit') ?? false) {
+    try {
+      await PlayerCache.clear(); // also purges torrent pieces
+    } catch (_) {}
+  }
   runApp(
     ProviderScope(
       overrides: [
@@ -126,9 +130,7 @@ GoRouter _buildRouter(SettingsState Function() readSettings) {
     redirect: (context, state) {
       final settings = readSettings();
       final path = state.uri.path;
-      final onPlayer = path.startsWith('/player') ||
-          path.startsWith('/external-stream') ||
-          path.startsWith('/vlc-player');
+      final onPlayer = path.startsWith('/player');
       final playing = playbackSessionActive;
 
       // Never yank the user off the player while a stream is active —
@@ -232,53 +234,6 @@ GoRouter _buildRouter(SettingsState Function() readSettings) {
         },
       ),
       GoRoute(
-        path: '/vlc-player/:sessionId',
-        pageBuilder: (context, state) {
-          final extra = state.extra as Map<String, dynamic>? ?? const {};
-          return pageFor(
-            state,
-            PlayerScreen(
-              fileId: extra['fileId'] as String? ?? 'stream',
-              playbackUrl: extra['url'] as String? ?? '',
-              title: extra['title'] as String? ?? 'Playback',
-              titleId: extra['titleId'] as String?,
-              startMs: extra['startMs'] as int? ?? 0,
-              isStream: true,
-              sessionId: state.pathParameters['sessionId'],
-              magnet: extra['magnet'] as String?,
-              localTorrent: extra['localTorrent'] as bool? ?? false,
-              listedSeeders: extra['listedSeeders'] as int? ?? 0,
-              listedPeers: extra['listedPeers'] as int? ?? 0,
-              catalogTitle: extra['catalogTitle'] as String?,
-              kind: extra['kind'] as String?,
-              posterUrl: extra['posterUrl'] as String?,
-              backdropUrl: extra['backdropUrl'] as String?,
-            ),
-          );
-        },
-      ),
-      GoRoute(
-        path: '/external-stream/:sessionId',
-        pageBuilder: (context, state) {
-          final extra = state.extra as Map<String, dynamic>? ?? const {};
-          return pageFor(
-            state,
-            ExternalStreamingScreen(
-              sessionId: state.pathParameters['sessionId']!,
-              streamUrl: extra['url'] as String? ?? '',
-              title: extra['title'] as String? ?? 'Playback',
-              titleId: extra['titleId'] as String?,
-              posterUrl: extra['posterUrl'] as String?,
-              backdropUrl: extra['backdropUrl'] as String?,
-              magnet: extra['magnet'] as String?,
-              localTorrent: extra['localTorrent'] as bool? ?? false,
-              listedSeeders: extra['listedSeeders'] as int? ?? 0,
-              listedPeers: extra['listedPeers'] as int? ?? 0,
-            ),
-          );
-        },
-      ),
-      GoRoute(
         path: '/settings',
         pageBuilder: (context, state) => pageFor(state, const SettingsScreen()),
       ),
@@ -295,6 +250,8 @@ class PeanutButterApp extends ConsumerStatefulWidget {
 
 class _PeanutButterAppState extends ConsumerState<PeanutButterApp> with WidgetsBindingObserver {
   Timer? _sessionWatch;
+  /// False while minimized / hidden — skip the 12 s session poll then.
+  bool _appInForeground = true;
   late final GoRouter _router;
 
   @override
@@ -399,6 +356,7 @@ class _PeanutButterAppState extends ConsumerState<PeanutButterApp> with WidgetsB
   }
 
   Future<void> _checkSession() async {
+    if (!mounted || !_appInForeground) return;
     final settings = ref.read(settingsProvider);
     if (settings.apiToken.isEmpty || settings.serverUrl.isEmpty) return;
     // While watching, ignore API blips — local/torrent streams keep playing.
@@ -468,12 +426,19 @@ class _PeanutButterAppState extends ConsumerState<PeanutButterApp> with WidgetsB
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state != AppLifecycleState.detached &&
-        state != AppLifecycleState.hidden &&
-        state != AppLifecycleState.paused) {
-      return;
+    final wasForeground = _appInForeground;
+    _appInForeground =
+        state == AppLifecycleState.resumed || state == AppLifecycleState.inactive;
+    if (state == AppLifecycleState.resumed && !wasForeground) {
+      // Back from minimized / hidden tab: re-check the session right away.
+      unawaited(_checkSession());
     }
-    // Mobile / TV often tear down without didRequestAppExit.
+    // Only tear down when the engine is really going away. `hidden`/`paused`
+    // fire when a desktop window is minimized or a web tab is hidden — stopping
+    // the torrent there killed playback that was still running. Desktop quit is
+    // handled by didRequestAppExit.
+    if (state != AppLifecycleState.detached) return;
+    if (playbackSessionActive) return;
     unawaited(_clearCachesOnExit());
   }
 

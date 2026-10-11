@@ -1,5 +1,5 @@
 import 'dart:async';
-import 'dart:io' show Directory, File, Platform;
+import 'dart:io' show Platform;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -8,12 +8,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:graphql_flutter/graphql_flutter.dart';
 import 'package:media_kit/media_kit.dart';
-import 'package:media_kit_libs_android_video/media_kit_libs_android_video.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:media_kit_video/media_kit_video_controls/media_kit_video_controls.dart';
-import 'package:video_player/video_player.dart';
 
-import '../android_playback.dart';
 import '../content_languages.dart';
 import '../graphql/client.dart';
 import '../graphql/queries.dart';
@@ -21,13 +18,11 @@ import '../local_torrent.dart';
 import '../models.dart';
 import '../platform/device_profile.dart';
 import '../platform/input_policy.dart';
-import '../platform/playback_backend.dart';
 import '../platform/stream_seek_controller.dart';
 import '../providers/catalog.dart';
 import '../providers/settings.dart';
 import '../theme.dart';
 import '../tv.dart';
-import '../tv_device.dart';
 import '../tv_nav.dart';
 import '../tv_remote.dart';
 import '../friendly_error.dart';
@@ -38,12 +33,6 @@ import '../widgets/streaming_picker.dart';
 import '../widgets/subtitle_import.dart';
 import '../widgets/tv_chrome.dart';
 import '../youtube_stream.dart';
-
-class _VlcTrack {
-  const _VlcTrack({required this.id, required this.label});
-  final int id;
-  final String label;
-}
 
 class _NextEpisodeTarget {
   const _NextEpisodeTarget({
@@ -149,23 +138,6 @@ class _SubtitleOption {
 class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBindingObserver {
   Player? _player;
   VideoController? _controller;
-  VideoPlayerController? _exo;
-  /// After Exo fails on this SoC, switch the rest of the session to MediaKit.
-  bool _useExoFallbackMediaKit = false;
-  Timer? _exoFrameWatch;
-  String? _exoOpenUrl;
-  Map<String, String>? _exoOpenHeaders;
-  /// Native LibVLC (Flutter Texture) — Android TV decoder path.
-  StreamSubscription<Map<String, dynamic>>? _vlcSub;
-  bool _vlcStarted = false;
-  bool _vlcReady = false;
-  int? _vlcTextureId;
-  int _vlcVideoW = 0;
-  int _vlcVideoH = 0;
-  Duration _vlcPosition = Duration.zero;
-  Duration _vlcDuration = Duration.zero;
-  List<_VlcTrack> _vlcAudio = const [];
-  List<_VlcTrack> _vlcSpu = const [];
   late String _url;
   late String _fileId;
   List<_SubtitleOption> _subs = const [];
@@ -180,6 +152,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   StreamSubscription<Tracks>? _tracksSub;
   StreamSubscription<bool>? _bufferingSub;
   StreamSubscription<Duration>? _bufferSub;
+  StreamSubscription<bool>? _playingSub;
+  StreamSubscription<int?>? _widthSub;
+  StreamSubscription<Duration>? _durationSub;
   Timer? _streamPoll;
   Timer? _pauseBufferTimer;
   Timer? _bufferStallTimer;
@@ -202,7 +177,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   /// Desktop/mouse + TV chrome: seek ±10s + audio/subs (auto-hide).
   bool _chromeVisible = true;
   Timer? _chromeHideTimer;
-  static const int _chromeHideSecs = 8;
+  static const int _chromeHideSecs = 4;
   static const Duration _chromeAnim = Duration(milliseconds: 280);
   final FocusNode _rootFocus = FocusNode(debugLabel: 'playerRoot');
   final FocusNode _backFocus = FocusNode(debugLabel: 'playerBack');
@@ -255,23 +230,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
 
   bool get _isTrailer => widget.fileId == 'trailer' || (widget.youtubeKey != null && widget.youtubeKey!.isNotEmpty && widget.fileId == 'trailer');
 
-  /// Physical Android TV: LibVLC. Phone: Exo. Desktop: media_kit.
-  bool get _useVlc {
-    if (_isTrailer) return false;
-    return PlaybackBackendFactory.usesVlc(
-      DeviceProfile.current,
-      ref.read(settingsProvider).androidPlaybackBackend,
-    );
-  }
-
-  /// Android phone / emulator ExoPlayer (or settings force).
-  bool get _useExo =>
-      !_useExoFallbackMediaKit &&
-      PlaybackBackendFactory.usesExo(
-        DeviceProfile.current,
-        ref.read(settingsProvider).androidPlaybackBackend,
-      );
-
   static bool _isUuid(String? value) {
     if (value == null || value.length != 36) return false;
     return RegExp(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$').hasMatch(value);
@@ -318,17 +276,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
       _ensureStreamPoll();
       unawaited(_prepareStream());
     }
-    if (_useVlc) {
-      _vlcSub = AndroidPlayback.vlcEvents.listen(_onVlcEvent);
-      _kickOffPlayback();
-    } else if (_useExo) {
-      // Android Exo path: no MediaKit Player() — open as soon as the URL is ready.
-      _kickOffPlayback();
-    } else {
-      // Linux / Windows / macOS: sync media_kit init (responsive buffering).
-      _initMediaKitPlayer();
-      _kickOffPlayback();
-    }
+    // media_kit is the only engine (libmpv on desktop, <video> on web).
+    _initMediaKitPlayer();
+    _kickOffPlayback();
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     // Register hardware key handler AFTER everything is set up.
     HardwareKeyboard.instance.addHandler(_onHardwareKey);
@@ -356,15 +306,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     if (_player != null) return;
     try {
       MediaKit.ensureInitialized();
-      // Tiny demuxer RAM on Android — large sync alloc freezes TV emulators.
       // Desktop streams: keep modest to avoid Windows OOM crashes.
-      final bufferBytes = (!kIsWeb && Platform.isAndroid)
-          ? 4 * 1024 * 1024
-          : (widget.isStream
-              ? ((!kIsWeb && (Platform.isWindows || Platform.isMacOS))
-                  ? 24 * 1024 * 1024
-                  : 48 * 1024 * 1024)
-              : 32 * 1024 * 1024);
+      final bufferBytes = widget.isStream
+          ? ((!kIsWeb && (Platform.isWindows || Platform.isMacOS))
+              ? 24 * 1024 * 1024
+              : 48 * 1024 * 1024)
+          : 32 * 1024 * 1024;
       final player = Player(
         configuration: PlayerConfiguration(
           bufferSize: bufferBytes,
@@ -386,12 +333,17 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     _bufferSub?.cancel();
     _tracksSub?.cancel();
     _completedSub?.cancel();
+    _playingSub?.cancel();
+    _widthSub?.cancel();
+    _durationSub?.cancel();
     _posSub = player.stream.position.listen(_onPosition);
     _bufferingSub = player.stream.buffering.listen((value) {
       if (!mounted) return;
       setState(() => _buffering = value);
       if (value) {
-        _bumpChrome();
+        // Don't keep bumping chrome on every underrun tick — that left the
+        // seekbar permanently visible on desktop during progressive streams.
+        if (!_streamOpened || !_playing) _bumpChrome();
         _armBufferStallWatch();
       } else {
         _bufferStallTimer?.cancel();
@@ -417,18 +369,21 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
       unawaited(_onPlaybackCompleted());
     });
     // While paused, keep demux/torrent prefetch warm for a smooth resume.
-    player.stream.playing.listen((playing) {
+    _playingSub = player.stream.playing.listen((playing) {
       if (!mounted) return;
       setState(() => _playing = playing);
-      if (!playing && (!widget.isStream || _streamOpened)) {
+      if (playing) {
+        // Start auto-hide once playback is actually moving.
+        _armChromeHideTimer();
+      } else if (!widget.isStream || _streamOpened) {
         _onPausedKeepBuffering();
       }
     });
     // Rebuild when video dimensions appear (torrent streams often start with no duration).
-    player.stream.width.listen((_) {
+    _widthSub = player.stream.width.listen((_) {
       if (mounted) setState(() {});
     });
-    player.stream.duration.listen((d) {
+    _durationSub = player.stream.duration.listen((d) {
       if (d.inMilliseconds <= 0) return;
       if (!_segmentsFetched ||
           (_lastSegmentFetchDuration >= 0 &&
@@ -440,7 +395,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
 
   void _kickOffPlayback() {
     _ensureStreamPoll();
-    if (_player != null || _useExo || _useVlc) {
+    if (_player != null) {
       if (_isTrailer) {
         _buffering = true;
         unawaited(_openTrailer());
@@ -650,7 +605,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   }
 
   Future<bool> _tryExitFullscreen() async {
-    if (_useExo || _useVlc) return false;
     final videoCtx = _videoKey.currentContext;
     if (videoCtx != null && videoCtx.mounted) {
       try {
@@ -731,7 +685,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   void _onPlayerReady() {
     final native = _player?.platform;
     if (native is! NativePlayer) return;
-    final bool isAndroid = !kIsWeb && Platform.isAndroid;
     final bool isWindows = !kIsWeb && Platform.isWindows;
     final bool isMacOS = !kIsWeb && Platform.isMacOS;
     // YouTube progressive streams often paint a solid blue frame with HW decode.
@@ -741,29 +694,20 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     // libmpv after buffer fills when seeking. Local files keep copy-mode HW.
     final hwdec = youtube
         ? 'no'
-        : isAndroid
-            ? 'mediacodec'
-            : isWindows
-                ? (widget.isStream ? 'no' : 'd3d11va-copy,auto')
-                : isMacOS
-                    ? 'videotoolbox,auto'
-                    : 'vaapi,auto-safe';
+        : isWindows
+            ? (widget.isStream ? 'no' : 'd3d11va-copy,auto')
+            : isMacOS
+                ? 'videotoolbox,auto'
+                : 'vaapi,auto-safe';
     native.setProperty('hwdec', hwdec);
     if (youtube) {
       native.setProperty('vd-lavc-dr', 'no');
       native.setProperty('hwdec-codecs', 'no');
     }
-    if (isAndroid) {
-      // display-resample + interpolation desyncs audio on Android TV.
-      native.setProperty('video-sync', 'audio');
-      native.setProperty('interpolation', 'no');
-      native.setProperty('audio-pitch-correction', 'yes');
-    } else {
-      // Safer defaults on desktop — display-resample + heavy interpolation OOMs some GPUs.
-      native.setProperty('video-sync', 'audio');
-      native.setProperty('interpolation', 'no');
-      native.setProperty('audio-pitch-correction', 'yes');
-    }
+    // Safer defaults on desktop — display-resample + heavy interpolation OOMs some GPUs.
+    native.setProperty('video-sync', 'audio');
+    native.setProperty('interpolation', 'no');
+    native.setProperty('audio-pitch-correction', 'yes');
     // Keep prefetching while paused so resume is smooth (mpv still demuxes into cache).
     native.setProperty('cache', 'yes');
     native.setProperty('demuxer-thread', 'yes');
@@ -802,7 +746,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   /// play (which often restarts at t=0 after keep-open EOF).
   void _armBufferStallWatch() {
     _bufferStallTimer?.cancel();
-    if (!widget.isStream || _useVlc || _useExo) return;
+    if (!widget.isStream) return;
     // Windows: automatic recover-seeks during buffer stalls crash libmpv.
     if (!kIsWeb && Platform.isWindows) return;
     _bufferStallTimer = Timer(const Duration(seconds: 12), () {
@@ -882,33 +826,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   }
 
   void _playOrPause() {
-    if (_useVlc) {
-      if (!_vlcStarted) return;
-      if (_playing) {
-        setState(() => _playing = false);
-        unawaited(AndroidPlayback.nativeVlcPause());
-        _onPausedKeepBuffering();
-        _bumpChrome();
-      } else {
-        setState(() => _playing = true);
-        unawaited(AndroidPlayback.nativeVlcPlay());
-      }
-      return;
-    }
-    if (_useExo) {
-      final exo = _exo;
-      if (exo == null || !exo.value.isInitialized) return;
-      if (exo.value.isPlaying) {
-        setState(() => _playing = false);
-        exo.pause();
-        _onPausedKeepBuffering();
-        _bumpChrome();
-      } else {
-        setState(() => _playing = true);
-        exo.play();
-      }
-      return;
-    }
     final player = _player;
     if (player == null) return;
     // Never touch libmpv play/pause until media is open — Windows crashes when
@@ -967,15 +884,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   /// Seek for movies/series once media is ready — allowed while paused or buffering.
   bool get _canSeek {
     if (_isTrailer) return false;
-    if (!_hasVideo && _player == null && _exo == null && !_vlcStarted) return false;
-    // Desktop: don't start a new scrub while libmpv is still filling — that
-    // races demuxer/HW and hard-crashes Windows after the first buffer settle.
-    if (_useDesktopSafeSeekBar && _buffering && !_seeking) return false;
-    if (_useVlc) return _vlcStarted && _vlcReady;
-    if (_useExo) {
-      final exo = _exo;
-      return exo != null && exo.value.isInitialized;
-    }
+    if (!_hasVideo && _player == null) return false;
     final player = _player;
     if (player == null) return false;
     // Need a real duration before scrubbing progressive torrents.
@@ -989,25 +898,18 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     if (_isTrailer) return false;
     // Streams: wait until open so custom play/pause can't hit an empty player.
     if (widget.isStream) {
-      return _streamOpened &&
-          (_hasVideo || _playing || _vlcStarted || (_exo?.value.isInitialized ?? false));
+      return _streamOpened && (_hasVideo || _playing);
     }
-    return _hasVideo ||
-        _player != null ||
-        _exo != null ||
-        _vlcStarted ||
-        (_useVlc && (_streamReady || _streamOpened));
+    return _hasVideo || _player != null;
   }
 
   /// Desktop media_kit: use our onChangeEnd scrubber instead of its drag-seek.
   bool get _useDesktopSafeSeekBar {
-    if (_useVlc || _useExo || kIsWeb) return false;
+    if (kIsWeb) return false;
     return Platform.isWindows || Platform.isLinux || Platform.isMacOS;
   }
 
   int get _currentDurationMs {
-    if (_useVlc) return _vlcDuration.inMilliseconds;
-    if (_useExo) return _exo?.value.duration.inMilliseconds ?? 0;
     return _player?.state.duration.inMilliseconds ?? 0;
   }
 
@@ -1017,22 +919,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
 
   Future<void> _seekRelativeAsync(int seconds) async {
     if (!_canSeek) return;
-    Duration pos;
-    Duration dur;
-    if (_useVlc) {
-      pos = _vlcPosition.inMilliseconds > 0 ? _vlcPosition : _lastGoodPos;
-      dur = _vlcDuration;
-    } else if (_useExo) {
-      final exo = _exo;
-      if (exo == null || !exo.value.isInitialized) return;
-      pos = exo.value.position;
-      dur = exo.value.duration;
-    } else {
-      final player = _player;
-      if (player == null) return;
-      pos = player.state.position.inMilliseconds > 0 ? player.state.position : _lastGoodPos;
-      dur = player.state.duration;
-    }
+    final player = _player;
+    if (player == null) return;
+    final pos =
+        player.state.position.inMilliseconds > 0 ? player.state.position : _lastGoodPos;
+    final dur = player.state.duration;
     var target = pos + Duration(seconds: seconds);
     if (target < Duration.zero) target = Duration.zero;
     if (dur > Duration.zero && target > dur) target = dur;
@@ -1044,7 +935,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     if (target < Duration.zero) target = Duration.zero;
     _lastSeekTarget = target;
     _lastGoodPos = target;
-    if (_useVlc) _vlcPosition = target;
     if (mounted) {
       setState(() {
         _buffering = true;
@@ -1054,13 +944,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     // Pause while settling so the old frame doesn't keep playing.
     if (widget.isStream) {
       try {
-        if (_useVlc) {
-          await AndroidPlayback.nativeVlcPause();
-        } else if (_useExo) {
-          await _exo?.pause();
-        } else {
-          await _player?.pause();
-        }
+        await _player?.pause();
       } catch (_) {}
     }
     if (widget.isStream && !immediate) {
@@ -1093,42 +977,27 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     if (token != _seekToken) return;
 
     // Instant play from the new position — do not wait for a full file buffer.
-    if (_useVlc) {
-      try {
-        await AndroidPlayback.nativeVlcSeek(target.inMilliseconds);
-        await AndroidPlayback.nativeVlcPlay();
-      } catch (_) {}
-    } else if (_useExo) {
-      final exo = _exo;
-      if (exo == null || !exo.value.isInitialized) return;
-      try {
-        await exo.seekTo(target);
+    final player = _player;
+    if (player == null) return;
+    // Don't flip hr-seek / demuxer props mid-seek — unlocked setProperty races
+    // the seek command and hard-crashes libmpv on Windows.
+    try {
+      // Brief pause lets the demuxer drop in-flight reads before the seek.
+      if (!kIsWeb && Platform.isWindows) {
+        try {
+          await player.pause();
+        } catch (_) {}
+        await Future<void>.delayed(const Duration(milliseconds: 80));
         if (token != _seekToken) return;
-        await exo.play();
-      } catch (_) {}
-    } else {
-      final player = _player;
-      if (player == null) return;
-      // Don't flip hr-seek / demuxer props mid-seek — unlocked setProperty races
-      // the seek command and hard-crashes libmpv on Windows.
-      try {
-        // Brief pause lets the demuxer drop in-flight reads before the seek.
-        if (!kIsWeb && Platform.isWindows) {
-          try {
-            await player.pause();
-          } catch (_) {}
-          await Future<void>.delayed(const Duration(milliseconds: 80));
-          if (token != _seekToken) return;
-        }
-        await player.seek(target);
-        if (token != _seekToken) return;
-        await Future<void>.delayed(
-          Duration(milliseconds: (!kIsWeb && Platform.isWindows) ? 120 : 0),
-        );
-        if (token != _seekToken) return;
-        await player.play();
-      } catch (_) {}
-    }
+      }
+      await player.seek(target);
+      if (token != _seekToken) return;
+      await Future<void>.delayed(
+        Duration(milliseconds: (!kIsWeb && Platform.isWindows) ? 120 : 0),
+      );
+      if (token != _seekToken) return;
+      await player.play();
+    } catch (_) {}
 
     Future<void>.delayed(const Duration(milliseconds: 2000), () {
       if (!mounted || token != _seekToken) return;
@@ -1189,12 +1058,14 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     _tracksSub?.cancel();
     _bufferingSub?.cancel();
     _bufferSub?.cancel();
+    _playingSub?.cancel();
+    _widthSub?.cancel();
+    _durationSub?.cancel();
     _streamPoll?.cancel();
     _playNextTick?.cancel();
     _pauseBufferTimer?.cancel();
     _bufferStallTimer?.cancel();
     _chromeHideTimer?.cancel();
-    _exoFrameWatch?.cancel();
     _overlayEpoch.dispose();
     _rootFocus.dispose();
     _backFocus.dispose();
@@ -1206,49 +1077,34 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     _skipFocus.dispose();
     _playNextFocus.dispose();
     _seekCtl.dispose();
-    unawaited(_vlcSub?.cancel() ?? Future<void>.value());
-    _vlcSub = null;
-    if (!_playerReleased) {
-      final position = _useVlc
-          ? _vlcPosition
-          : _useExo
-              ? _exo?.value.position
-              : _player?.state.position;
-      final duration = _useVlc
-          ? _vlcDuration
-          : _useExo
-              ? _exo?.value.duration
-              : _player?.state.duration;
+    // _closePlayer already owns ordered teardown (player → then torrent).
+    // Doing sync dispose + parallel torrent stop here hard-crashes Windows.
+    if (!_closing && !_playerReleased) {
+      _closing = true;
+      final position = _player?.state.position;
+      final duration = _player?.state.duration;
+      // Read settings now: `ref` must not be used once dispose() returns, and
+      // the teardown below finishes asynchronously.
+      final wipe = ref.read(settingsProvider).clearCacheOnExit;
       unawaited(_saveProgress(
         position: position,
         duration: duration,
         closing: true,
         invalidateHome: true,
       ));
-      _exo?.removeListener(_onExoTick);
-      unawaited(_exo?.dispose());
-      if (_vlcStarted) {
-        unawaited(AndroidPlayback.stopNativeVlc());
-        _vlcStarted = false;
-      }
-      try {
-        _player?.dispose();
-      } catch (_) {}
-      _player = null;
-      _controller = null;
-      _exo = null;
-      // Prefer the explicit stop in _closePlayer; keep dispose as a safety net.
-      if (!_closing) {
-        unawaited(_releaseStreamResources(wipeIfEnabled: true));
-      }
+      unawaited(() async {
+        await _disposePlaybackEngines();
+        await _releaseStreamResources(wipe: wipe);
+      }());
     }
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     super.dispose();
   }
 
-  /// Stop torrent / stream; wipe pieces when Settings → Clear cache on exit is on.
-  Future<void> _releaseStreamResources({required bool wipeIfEnabled}) async {
-    final wipe = wipeIfEnabled && ref.read(settingsProvider).clearCacheOnExit;
+  /// Stop torrent / stream; [wipe] = Settings → Clear cache on exit.
+  ///
+  /// Doesn't touch `ref` — it also runs after dispose().
+  Future<void> _releaseStreamResources({required bool wipe}) async {
     final sessionId = widget.sessionId;
     if (widget.isStream &&
         sessionId != null &&
@@ -1283,12 +1139,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     if (_playerReleased) return;
     _playerReleased = true;
     final player = _player;
-    final exo = _exo;
-    final vlc = _vlcStarted;
     _player = null;
     _controller = null;
-    _exo = null;
-    _vlcStarted = false;
     // Unmount Video/Texture before native dispose — avoids desktop leave crashes.
     if (mounted) {
       try {
@@ -1302,25 +1154,13 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     try {
       await player?.dispose();
     } catch (_) {}
-    try {
-      await exo?.pause();
-    } catch (_) {}
-    try {
-      exo?.removeListener(_onExoTick);
-    } catch (_) {}
-    try {
-      await exo?.dispose();
-    } catch (_) {}
-    if (vlc) {
-      try {
-        await AndroidPlayback.stopNativeVlc();
-      } catch (_) {}
-    }
   }
 
   Future<void> _closePlayer() async {
     if (_closing) return;
     _closing = true;
+    // Read before any await — the widget may be disposed while we wait.
+    final wipe = mounted && ref.read(settingsProvider).clearCacheOnExit;
     _playNextTick?.cancel();
     _pauseBufferTimer?.cancel();
     try {
@@ -1328,7 +1168,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
           .timeout(const Duration(seconds: 2), onTimeout: () {});
     } catch (_) {}
     await _disposePlaybackEngines();
-    await _releaseStreamResources(wipeIfEnabled: true);
+    await _releaseStreamResources(wipe: wipe);
     if (!mounted) return;
     // PopScope keeps canPop=false while playing, so context.canPop() stays false
     // unless we flip this flag — otherwise Leave appears to do nothing.
@@ -1467,10 +1307,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   }
 
   int _playbackDurationMs() {
-    if (_useVlc) return _vlcDuration.inMilliseconds;
-    if (_useExo) {
-      return _exo?.value.duration.inMilliseconds ?? 0;
-    }
     return _player?.state.duration.inMilliseconds ?? 0;
   }
 
@@ -1888,11 +1724,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         _segmentsFetched = true;
         _lastSegmentFetchDuration = dur > 0 ? dur : _lastSegmentFetchDuration;
       });
-      final pos = _useVlc
-          ? _vlcPosition.inMilliseconds
-          : _useExo
-              ? (_exo?.value.position.inMilliseconds ?? 0)
-              : (_player?.state.position.inMilliseconds ?? 0);
+      final pos = _player?.state.position.inMilliseconds ?? 0;
       final stablePos =
           pos < 1500 && _lastGoodPos.inMilliseconds > 5000 ? _lastGoodPos.inMilliseconds : pos;
       _updateActiveSegment(stablePos);
@@ -1967,13 +1799,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     await _seekPlayback(target, immediate: true);
     // Keep playing after the skip — progressive streams can pause on seek.
     try {
-      if (_useVlc) {
-        await AndroidPlayback.nativeVlcPlay();
-      } else if (_useExo) {
-        await _exo?.play();
-      } else {
-        await _player?.play();
-      }
+      await _player?.play();
     } catch (_) {}
   }
 
@@ -1988,19 +1814,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     if (titleId == null || _isTrailer) return;
     if (_progressFlushed) return;
     final player = _player;
-    final pos = position ??
-        (_useVlc
-            ? _vlcPosition
-            : _useExo
-                ? _exo?.value.position
-                : player?.state.position) ??
-        Duration.zero;
-    final dur = duration ??
-        (_useVlc
-            ? _vlcDuration
-            : _useExo
-                ? _exo?.value.duration
-                : player?.state.duration);
+    final pos = position ?? player?.state.position ?? Duration.zero;
+    final dur = duration ?? player?.state.duration;
     if (!complete && pos.inMilliseconds < 2000) {
       if (closing) _progressFlushed = true;
       return;
@@ -2155,12 +1970,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         });
       }
       try {
-        // Refresh trackers from server before magnet announce (macOS/desktop).
+        // Refresh trackers from server before magnet announce (all desktops).
         final trackers =
             ref.read(serverInfoProvider).valueOrNull?.streamTrackers ?? const [];
-        if (trackers.isNotEmpty) {
-          LocalTorrentEngine.instance.configureTrackers(trackers);
-        }
+        await LocalTorrentEngine.instance.prepareTrackers(trackers);
         final handle = await LocalTorrentEngine.instance.start(
           magnet: magnet,
           season: widget.season,
@@ -2168,37 +1981,44 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
           fileIndex: widget.streamFileIndex,
           onStats: (local) {
             if (!mounted) return;
-            setState(() {
-              _streamInfo = StreamSession(
-                id: widget.sessionId ?? 'local',
-                title: widget.title,
-                progress: (local.bufferPct / 100).clamp(0, 1),
-                bufferProgress: (local.bufferPct / 100).clamp(0, 1),
-                downloadMbps: local.downloadMbps,
-                seeders: local.seeders,
-                peers: local.peers,
-                resumePosition: widget.startMs,
-                status: local.ready || local.torrentComplete ? 'ready' : 'buffering',
-                streamUrl: _url,
-              );
-            });
-            if (!_streamOpened &&
-                _url.isNotEmpty &&
-                (local.ready || local.torrentComplete)) {
-              _streamReady = true;
-              unawaited(_tryOpenPreparedStream());
+            // HUD only while start() buffers — do NOT open the player here.
+            // Opening early left media_kit on an empty pipe (KB/s, no peers).
+            final peers = local.peers > 0 ? local.peers : widget.listedPeers;
+            final seeds =
+                local.seeders > 0 ? local.seeders : widget.listedSeeders;
+            try {
+              setState(() {
+                _streamInfo = StreamSession(
+                  id: widget.sessionId ?? 'local',
+                  title: widget.title,
+                  progress: (local.bufferPct / 100).clamp(0, 1),
+                  bufferProgress: (local.bufferPct / 100).clamp(0, 1),
+                  downloadMbps: local.downloadMbps,
+                  seeders: seeds,
+                  peers: peers,
+                  resumePosition: widget.startMs,
+                  status: local.ready || local.torrentComplete ? 'ready' : 'buffering',
+                  streamUrl: _url,
+                  swarmActive: local.swarmActive || peers > 0 || seeds > 0,
+                );
+              });
+            } catch (_) {
+              // Widget may be disposing while the engine still ticks.
             }
           },
         );
         if (!mounted) return;
+        // start() already waited for a real head runway — open now.
         _url = handle.url;
         _streamReady = true;
-        // Retry a few times — native player may still be attaching.
         for (var i = 0; i < 8 && mounted && !_streamOpened; i++) {
           await _tryOpenPreparedStream();
           if (_streamOpened) break;
           await Future<void>.delayed(const Duration(milliseconds: 250));
         }
+      } on LocalStreamCancelled {
+        // Superseded by a newer stream or the player is closing — not an error.
+        return;
       } catch (e) {
         if (!mounted) return;
         setState(() {
@@ -2276,12 +2096,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   Future<void> _tryOpenPreparedStream() async {
     if (!widget.isStream || !_streamReady || _streamOpened || !mounted) return;
     if (_url.isEmpty) return;
-    if (!_useExo && !_useVlc && _player == null) return;
+    if (_player == null) return;
     await _open(_url, fileId: _fileId);
     if (!mounted) return;
-    if (!_useExo && !_useVlc) {
-      await _player?.play();
-    }
+    await _player?.play();
     if (!mounted) return;
     setState(() {
       _streamOpened = true;
@@ -2298,6 +2116,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     if (widget.localTorrent || (widget.sessionId?.startsWith('local-') ?? false)) {
       final local = LocalTorrentEngine.instance.currentStats();
       if (local == null || !mounted) return;
+      final peers = local.peers > 0 ? local.peers : widget.listedPeers;
+      final seeds = local.seeders > 0 ? local.seeders : widget.listedSeeders;
       setState(() {
         _streamInfo = StreamSession(
           id: widget.sessionId ?? 'local',
@@ -2305,20 +2125,20 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
           progress: (local.bufferPct / 100).clamp(0, 1),
           bufferProgress: (local.bufferPct / 100).clamp(0, 1),
           downloadMbps: local.downloadMbps,
-          seeders: local.seeders,
-          peers: local.peers,
+          seeders: seeds,
+          peers: peers,
           resumePosition: widget.startMs,
           status: local.ready || local.torrentComplete ? 'ready' : 'buffering',
           streamUrl: _url,
+          swarmActive: local.swarmActive || peers > 0 || seeds > 0,
         );
       });
-      // Fully buffered / ready but player never opened (common when the
-      // download finishes before MediaKit/Exo attaches) — open now.
+      // Only open after a real head runway (same bar as LocalTorrentEngine).
       if (!_streamOpened &&
           _url.isNotEmpty &&
           (local.ready ||
               local.torrentComplete ||
-              local.bufferPct >= 99.0)) {
+              local.bufferPct >= 15.0)) {
         _streamReady = true;
         unawaited(_tryOpenPreparedStream());
       }
@@ -2351,6 +2171,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
               resumePosition: session.resumePosition,
               status: session.status,
               streamUrl: _rewriteMediaUrl(session.streamUrl),
+              swarmActive: session.swarmActive ||
+                  session.peers > 0 ||
+                  session.seeders > 0 ||
+                  session.downloadMbps > 0,
             );
       setState(() => _streamInfo = rewritten);
       if (!_streamReady && rewritten.isReady && rewritten.streamUrl.isNotEmpty) {
@@ -2367,18 +2191,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   }
 
   bool get _hasVideo {
-    if (_useVlc) {
-      return _vlcReady && (_playing || _vlcPosition > Duration.zero || _streamOpened);
-    }
-    if (_useExo) {
-      final exo = _exo;
-      if (exo == null || !exo.value.isInitialized || exo.value.hasError) return false;
-      // Size OR active playback — PlatformView on Realtek sometimes reports 0×0
-      // briefly while frames are already on the SurfaceView.
-      return exo.value.size.width > 1 ||
-          exo.value.isPlaying ||
-          (exo.value.position > Duration.zero && _streamOpened);
-    }
     final player = _player;
     if (player == null) return false;
     if ((player.state.width ?? 0) > 0 && (player.state.height ?? 0) > 0) return true;
@@ -2484,14 +2296,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     final headers = isYoutube
         ? youtubeStreamHeaders
         : (local ? const <String, String>{} : mediaAuthHeaders(token));
-    if (_useVlc) {
-      await _openVlc(url, headers);
-      return;
-    }
-    if (_useExo) {
-      await _openExo(url, headers);
-      return;
-    }
     final native = _player?.platform;
     if (native is NativePlayer) {
       // Clear any leftover external-audio binding from older builds.
@@ -2512,348 +2316,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         await _player!.stream.duration.firstWhere((d) => d.inMilliseconds > 0).timeout(const Duration(seconds: 20));
       } catch (_) {}
       await _seekPlayback(Duration(milliseconds: widget.startMs), immediate: true);
-    }
-  }
-
-  Future<void> _openVlc(String url, Map<String, String> headers) async {
-    if (mounted) {
-      setState(() {
-        _buffering = true;
-        _streamError = null;
-        _vlcReady = false;
-        _vlcTextureId = null;
-      });
-    }
-    final playUrl = AndroidPlayback.urlWithAuth(url, ref.read(settingsProvider).apiToken);
-    final textureId = await AndroidPlayback.startNativeVlc(
-      url: playUrl,
-      startMs: widget.startMs,
-      headers: headers,
-    );
-    _vlcStarted = textureId != null;
-    _vlcTextureId = textureId;
-    if (!mounted) return;
-    if (textureId == null) {
-      setState(() {
-        _buffering = false;
-        _streamError = 'Couldn’t start the in-app VLC player on this device.';
-      });
-      return;
-    }
-    setState(() {
-      _streamOpened = true;
-      _buffering = true;
-      _vlcTextureId = textureId;
-    });
-  }
-
-  void _onVlcEvent(Map<String, dynamic> event) {
-    if (!mounted) return;
-    final kind = event['event']?.toString() ?? '';
-    final pos = event['position'];
-    final dur = event['duration'];
-    if (pos is num) {
-      _vlcPosition = Duration(milliseconds: pos.toInt());
-      _onPosition(_vlcPosition);
-    }
-    if (dur is num && dur.toInt() > 0) {
-      _vlcDuration = Duration(milliseconds: dur.toInt());
-    }
-    switch (kind) {
-      case 'opening':
-        setState(() {
-          _buffering = true;
-          _streamError = null;
-        });
-      case 'layout':
-        final lw = event['width'];
-        final lh = event['height'];
-        setState(() {
-          if (lw is num) _vlcVideoW = lw.toInt();
-          if (lh is num) _vlcVideoH = lh.toInt();
-        });
-      case 'playing':
-      case 'vout':
-        setState(() {
-          _vlcReady = true;
-          _playing = true;
-          _buffering = false;
-          _streamOpened = true;
-          _streamError = null;
-          _seeking = false;
-          final w = event['width'];
-          final h = event['height'];
-          if (w is num && w.toInt() > 0) _vlcVideoW = w.toInt();
-          if (h is num && h.toInt() > 0) _vlcVideoH = h.toInt();
-        });
-        final durMs = _vlcDuration.inMilliseconds;
-        if (durMs > 30000 &&
-            (!_segmentsFetched ||
-                (_lastSegmentFetchDuration >= 0 &&
-                    (durMs - _lastSegmentFetchDuration).abs() > 5000))) {
-          unawaited(_loadMediaSegments(durationMs: durMs));
-        }
-      case 'paused':
-        setState(() => _playing = false);
-      case 'buffering':
-        final b = event['buffering'];
-        final pct = b is num ? b.toDouble() : 0.0;
-        final vlcPlaying = event['playing'] == true;
-        setState(() {
-          if (vlcPlaying) _playing = true;
-          if (event['playing'] == false) _playing = false;
-          // libVLC often sits at ~99% forever on progressive torrents even
-          // while frames are decoding — treat near-full / playing as ready.
-          if (vlcPlaying || _playing || pct >= 99.0 || (_vlcReady && pct >= 90)) {
-            _buffering = false;
-            _vlcReady = true;
-            if (pct >= 90 || vlcPlaying) _streamOpened = true;
-          } else {
-            _buffering = true;
-          }
-        });
-        if (_buffering) _bumpChrome();
-      case 'timeChanged':
-        setState(() {
-          // Prefer the native flag — `|| _playing` kept pause stuck as "playing"
-          // so the title overlay never appeared.
-          if (event.containsKey('playing')) {
-            _playing = event['playing'] == true;
-          }
-          if (_playing) {
-            _vlcReady = true;
-            // Buffering flag is owned by Buffering events — clearing it here
-            // hid the download stats HUD during mid-play rebuffers.
-            _seeking = false;
-          }
-        });
-      case 'tracks':
-        _ingestVlcTracks(event);
-      case 'ended':
-        setState(() => _playing = false);
-        unawaited(_saveProgress(
-          position: _vlcPosition,
-          duration: _vlcDuration,
-          complete: true,
-        ));
-        if (widget.isStream && _nextEpisode != null && !_playNextDismissed) {
-          _armPlayNextPrompt(force: true);
-        } else {
-          unawaited(_endPlaybackAndExit());
-        }
-      case 'error':
-        setState(() {
-          _streamError = event['message']?.toString() ?? 'libVLC playback error';
-          _buffering = false;
-          _playing = false;
-        });
-      case 'stopped':
-        setState(() => _playing = false);
-    }
-  }
-
-  void _ingestVlcTracks(Map<String, dynamic> event) {
-    List<_VlcTrack> parse(dynamic raw) {
-      if (raw is! List) return const [];
-      return raw
-          .whereType<Map>()
-          .map((e) {
-            final id = e['id'];
-            final name = e['name']?.toString() ?? 'Track';
-            final n = id is num ? id.toInt() : int.tryParse('$id') ?? -999;
-            return _VlcTrack(id: n, label: name);
-          })
-          .where((t) => t.id != -999)
-          .toList();
-    }
-
-    final audio = parse(event['audio']);
-    final spu = parse(event['spu']).where((t) => t.id >= 0).toList();
-    final audioId = event['audioId'];
-    final spuId = event['spuId'];
-    setState(() {
-      _vlcAudio = audio;
-      _vlcSpu = spu;
-      if (audioId is num) _activeAudioId = '${audioId.toInt()}';
-      if (spuId is num && spuId.toInt() >= 0) {
-        _activeSubId = 'vlc:${spuId.toInt()}';
-      }
-    });
-    if (!_audioLanguagePicked && audio.isNotEmpty) {
-      unawaited(_applyPreferredVlcAudio(audio));
-    }
-  }
-
-  Future<void> _applyPreferredVlcAudio(List<_VlcTrack> audio) async {
-    if (_audioLanguagePicked || audio.isEmpty) return;
-    final preferred = preferredLanguageCodes(
-      ref.read(serverInfoProvider).valueOrNull?.preferredLanguages ??
-          ref.read(settingsProvider).preferredLanguages,
-    );
-    if (preferred.isEmpty) return;
-    _VlcTrack? match;
-    for (final code in preferred) {
-      for (final track in audio) {
-        final label = track.label.toLowerCase();
-        if (label.contains(code) ||
-            label.contains(languageDisplayName(code).toLowerCase())) {
-          match = track;
-          break;
-        }
-      }
-      if (match != null) break;
-    }
-    if (match == null) return;
-    await AndroidPlayback.nativeVlcSetAudioTrack(match.id);
-    if (!mounted) return;
-    _audioLanguagePicked = true;
-    setState(() => _activeAudioId = '${match!.id}');
-  }
-
-  Future<void> _openExo(String url, Map<String, String> headers) async {
-    final previous = _exo;
-    previous?.removeListener(_onExoTick);
-    _exoFrameWatch?.cancel();
-    _exoOpenUrl = url;
-    _exoOpenHeaders = headers;
-    // Popcorn/Butter TV attached VLC to Leanback's native SurfaceView.
-    // On physical ARM TVs, Flutter TextureView often stays black for HEVC while
-    // PlatformView (SurfaceView) actually paints. Emulator keeps TextureView —
-    // PlatformView + Flutter embedding is flaky there, and D-pad is fine either way
-    // now that we no longer swallow unhandled keys.
-    final usePlatformSurface =
-        isAndroidTv && TvDevice.ready && !TvDevice.isEmulator;
-    final next = VideoPlayerController.networkUrl(
-      Uri.parse(url),
-      httpHeaders: headers,
-      videoPlayerOptions: VideoPlayerOptions(mixWithOthers: false),
-      viewType:
-          usePlatformSurface ? VideoViewType.platformView : VideoViewType.textureView,
-    );
-    next.addListener(_onExoTick);
-    _exo = next;
-    await previous?.dispose();
-    if (mounted) setState(() => _buffering = true);
-    try {
-      await next.initialize();
-      if (next.value.hasError) {
-        throw next.value.errorDescription ?? 'Video player error';
-      }
-      if (widget.startMs > 0) {
-        await next.seekTo(Duration(milliseconds: widget.startMs));
-      }
-      await next.play();
-      if (mounted) {
-        setState(() {
-          _buffering = false;
-          _streamOpened = true;
-          _streamError = null;
-        });
-      }
-      _armExoFrameWatch();
-    } catch (e) {
-      debugPrint('PeanutButter Exo open failed: $e');
-      if (!mounted) return;
-      await _fallbackExoToMediaKit(url, headers, reason: e.toString());
-    }
-  }
-
-  void _armExoFrameWatch() {
-    _exoFrameWatch?.cancel();
-    // Exo can "succeed" with a black TextureView on some SoCs. PlatformView may
-    // paint without reporting size — only fall back to MediaKit when clearly dead
-    // (MediaKit Player() SIGSEGVs on BeyondTV/rtd285o if forced too early).
-    _exoFrameWatch = Timer(const Duration(seconds: 6), () {
-      if (!mounted || !_useExo) return;
-      final exo = _exo;
-      if (exo == null || !exo.value.isInitialized) return;
-      final size = exo.value.size;
-      if (size.width > 1 && size.height > 1) return;
-      if (exo.value.isPlaying && exo.value.position > const Duration(seconds: 2)) {
-        return; // Surface likely painting without size metadata
-      }
-      final url = _exoOpenUrl;
-      final headers = _exoOpenHeaders;
-      if (url == null || headers == null) return;
-      debugPrint(
-        'PeanutButter Exo produced no frames (${size.width}x${size.height}) — MediaKit fallback',
-      );
-      unawaited(_fallbackExoToMediaKit(url, headers, reason: 'no video frames'));
-    });
-  }
-
-  Future<void> _fallbackExoToMediaKit(
-    String url,
-    Map<String, String> headers, {
-    String? reason,
-  }) async {
-    _exoFrameWatch?.cancel();
-    final doomed = _exo;
-    doomed?.removeListener(_onExoTick);
-    try {
-      await doomed?.dispose();
-    } catch (_) {}
-    if (identical(_exo, doomed)) _exo = null;
-    _useExoFallbackMediaKit = true;
-    // Soft-wait for libmpv; never block forever on Realtek load hangs.
-    if (!kIsWeb && Platform.isAndroid) {
-      try {
-        await MediaKitAndroidVideo.preload()
-            .timeout(const Duration(seconds: 12));
-      } catch (_) {}
-    }
-    _initMediaKitPlayer();
-    if (_player == null) {
-      if (mounted) {
-        setState(() {
-          _buffering = false;
-          _streamError =
-              'Couldn’t play video on this TV.${reason != null ? '\n$reason' : ''}';
-        });
-      }
-      return;
-    }
-    try {
-      await _open(url, fileId: _fileId);
-      if (mounted) {
-        setState(() {
-          _buffering = false;
-          _streamOpened = true;
-          _streamError = null;
-        });
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() {
-          _buffering = false;
-          _streamError = 'Couldn’t play video on this TV.\n$e';
-        });
-      }
-    }
-  }
-
-  void _onExoTick() {
-    final exo = _exo;
-    if (exo == null || !mounted) return;
-    final v = exo.value;
-    if (v.size.width > 1 && v.size.height > 1) {
-      _exoFrameWatch?.cancel();
-      _exoFrameWatch = null;
-    }
-    final buffered = v.buffered.isEmpty ? Duration.zero : v.buffered.last.end;
-    setState(() {
-      _buffering = v.isBuffering || !v.isInitialized;
-      _playing = v.isPlaying;
-      _buffered = buffered;
-    });
-    _onPosition(v.position);
-    if (v.isCompleted) {
-      unawaited(_saveProgress(position: v.position, duration: v.duration, complete: true));
-      if (widget.isStream && _nextEpisode != null && !_playNextDismissed) {
-        _armPlayNextPrompt(force: true);
-      } else {
-        unawaited(_endPlaybackAndExit());
-      }
     }
   }
 
@@ -3107,18 +2569,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   }
 
   Future<void> _applySubtitle(_SubtitleOption sub) async {
-    if (_useVlc) {
-      try {
-        final dir = await Directory.systemTemp.createTemp('pb_sub_');
-        final file = File('${dir.path}/${sub.id}.srt');
-        await file.writeAsString(sub.content);
-        final ok = await AndroidPlayback.nativeVlcAddSubtitle(file.uri.toString());
-        if (ok && mounted) setState(() => _activeSubId = sub.id);
-      } catch (e) {
-        debugPrint('PeanutButter VLC subtitle failed: $e');
-      }
-      return;
-    }
     await _player?.setSubtitleTrack(
       SubtitleTrack.data(sub.content, title: sub.label, language: sub.language),
     );
@@ -3126,11 +2576,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   }
 
   Future<void> _disableSubtitles() async {
-    if (_useVlc) {
-      await AndroidPlayback.nativeVlcSetSpuTrack(-1);
-      if (mounted) setState(() => _activeSubId = null);
-      return;
-    }
     await _player?.setSubtitleTrack(SubtitleTrack.no());
     if (mounted) setState(() => _activeSubId = null);
   }
@@ -3265,41 +2710,47 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   Widget _bufferOverlay() {
     final info = _streamInfo;
     final local = LocalTorrentEngine.instance.currentStats();
-    final speed = info?.downloadMbps ?? local?.downloadMbps ?? 0;
-    final peers = info?.peers ?? local?.peers ?? 0;
-    final seeders = info?.seeders ?? local?.seeders ?? 0;
-    final rawFrac = () {
-      final b = info?.bufferProgress ?? 0;
-      final p = info?.progress ?? 0;
-      // Stream readiness (readahead window) can hit ~1.0 long before the
-      // whole torrent finishes — treat that as a full pre-roll bar.
-      if (b >= 0.99) return 1.0;
-      if (b > 0.001) return b;
-      if (p >= 0.99) return 1.0;
-      if (p > 0.001) return p;
+    final speed = local?.downloadMbps ?? info?.downloadMbps ?? 0;
+    var peers = local?.peers ?? info?.peers ?? 0;
+    if (peers <= 0 || peers >= 10000) {
+      peers = widget.listedPeers > 0 ? widget.listedPeers : 0;
+    }
+    final seeders = local?.seeders ?? info?.seeders ?? 0;
+    // Prefer 0–100 local stats; StreamSession.bufferProgress is 0–1.
+    final rawPct = () {
+      if (local != null) return local.bufferPct.clamp(0.0, 100.0);
+      final b = (info?.bufferProgress ?? 0) * 100;
+      final p = (info?.progress ?? 0) * 100;
+      if (b > 0.1) return b.clamp(0.0, 100.0);
+      if (p > 0.1) return p.clamp(0.0, 100.0);
       return 0.0;
     }();
-    final rawPct = (rawFrac * 100).clamp(0.0, 100.0);
-    final ready = (info?.status == 'ready') ||
-        (local?.ready ?? false) ||
-        (local?.torrentComplete ?? false) ||
-        rawPct >= 99.5;
-    // Don't pin the pre-roll bar at 99% once the stream is ready to open.
-    final pct = ready
-        ? 100.0
+    final starting = _streamReady && _url.isNotEmpty && (local?.ready == true);
+    final pct = starting
+        ? rawPct.clamp(1.0, 100.0)
         : ((rawPct >= 99.5 && speed >= 0.05) ? 99.0 : rawPct);
     final barValue = pct > 0 ? (pct / 100).clamp(0.0, 1.0) : null;
     final art = widget.backdropUrl ?? widget.posterUrl;
     final showPoster = art != null && art.isNotEmpty;
-    final status = ready
-        ? 'Starting playback…'
-        : (peers > 0 || seeders > 0
-            ? 'Buffering ${pct.round()}%…'
-            : 'Finding peers…');
+    // Prefer engine swarmActive — peer counts are often junk zeros on desktop.
+    final swarmActive = local?.swarmActive == true ||
+        info?.swarmActive == true ||
+        peers > 0 ||
+        seeders > 0 ||
+        speed >= 0.01 ||
+        starting;
+    // Always show Buffering X% · speed · peers (never hide peers).
+    final status = streamStatsLine(
+      pct: pct,
+      speed: speed,
+      seeders: seeders,
+      peers: peers,
+      hasVideo: false,
+      playing: false,
+      swarmActive: swarmActive,
+    );
 
     return Stack(fit: StackFit.expand, children: [
-      // Always paint a pre-roll layer so we never sit on a bare black scaffold
-      // while the Video surface is still hidden / empty.
       const ColoredBox(color: Color(0xFF0A0A0E)),
       if (showPoster)
         CachedArt(
@@ -3307,21 +2758,27 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
           fallbackUrl: widget.posterUrl,
           fit: BoxFit.cover,
         ),
+      // Full-screen dark drop so % / speed / peers stay readable on any poster.
+      const ColoredBox(color: Color(0xB3000000)),
       Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             Text(
               status,
+              textAlign: TextAlign.center,
               style: const TextStyle(
-                color: Colors.white70,
-                fontSize: 14,
-                fontWeight: FontWeight.w500,
+                color: Colors.white,
+                fontSize: 15,
+                fontWeight: FontWeight.w600,
+                shadows: [
+                  Shadow(color: Colors.black87, blurRadius: 8),
+                ],
               ),
             ),
             const SizedBox(height: 14),
             SizedBox(
-              width: 220,
+              width: 240,
               child: LinearProgressIndicator(
                 value: barValue,
                 minHeight: 4,
@@ -3330,17 +2787,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
                 borderRadius: BorderRadius.circular(2),
               ),
             ),
-            if (peers > 0 || seeders > 0 || speed > 0.01) ...[
-              const SizedBox(height: 10),
-              Text(
-                [
-                  if (seeders > 0) '$seeders seeders',
-                  if (peers > 0) '$peers peers',
-                  if (speed > 0.01) '${speed.toStringAsFixed(1)} MB/s',
-                ].join(' · '),
-                style: const TextStyle(color: Colors.white54, fontSize: 12),
-              ),
-            ],
           ],
         ),
       ),
@@ -3361,10 +2807,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         descendantsAreFocusable: true,
         onKeyEvent: _onFocusKey,
         child: MouseRegion(
-          onHover: (_) => _bumpChrome(),
+          // Only reveal when hidden — continuous hover/move used to reset the
+          // hide timer forever so the seekbar never went away on desktop.
+          onHover: (_) {
+            if (!_chromeVisible) _bumpChrome();
+          },
           child: Listener(
-            onPointerHover: (_) => _bumpChrome(),
-            onPointerMove: (_) => _bumpChrome(),
             onPointerDown: (_) => _bumpChrome(),
             child: Scaffold(
       backgroundColor: Colors.black,
@@ -3407,24 +2855,21 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
               ),
             ),
           ),
-          // Custom scrubber for VLC/Exo, and for desktop media_kit streams
-          // (media_kit seeks on every pointer-move and hard-crashes Windows).
-          // Keep ±10/play only for VLC/Exo — media_kit already has its bottom bar.
-          if (_showSeekControls && (_useVlc || _useExo || _useDesktopSafeSeekBar))
+          // Same transport chrome on Win/Linux/mac: scrubber + ±10/play.
+          // Auto-hides with the rest of the player chrome.
+          if (_showSeekControls && _useDesktopSafeSeekBar && _showChrome)
             Positioned(
               left: 24,
               right: 24,
-              bottom: _useDesktopSafeSeekBar ? 72 : 28,
+              bottom: 28,
               child: _chromeLayer(
                 hiddenOffset: const Offset(0, 0.45),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     _playbackSeekBar(),
-                    if (_useVlc || _useExo) ...[
-                      const SizedBox(height: 10),
-                      _seekSkipBar(),
-                    ],
+                    const SizedBox(height: 10),
+                    _seekSkipBar(),
                   ],
                 ),
               ),
@@ -3432,11 +2877,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
           // Windowed: align with the seeding chip on the scaffold. Fullscreen
           // copies live inside media_kit controls (native fullscreen route).
           if (!_inFullscreen) ..._skipAndPlayNextOverlays(),
-          // Stats + bar while buffering (chip when HUD is poster-less mid-play).
+          // Stats chip while buffering — sit above the seekbar, never over it.
           if (_showStreamChip)
             Positioned(
               right: _actionChipInset,
-              bottom: _actionChipBottom,
+              bottom: _streamStatsChipBottom,
               child: _streamStatsChip(),
             ),
           Positioned(
@@ -3518,27 +2963,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
             onPressed: () async {
               _bumpChrome();
               final items = <PopupMenuEntry<String>>[];
-              if (_useVlc) {
-                if (_vlcAudio.isEmpty) {
-                  items.add(
-                    const PopupMenuItem<String>(
-                      enabled: false,
-                      value: 'none',
-                      child: Text('Audio tracks appear after playback starts'),
-                    ),
-                  );
-                } else {
-                  for (final track in _vlcAudio) {
-                    items.add(
-                      CheckedPopupMenuItem<String>(
-                        value: '${track.id}',
-                        checked: _activeAudioId == '${track.id}',
-                        child: Text(track.label),
-                      ),
-                    );
-                  }
-                }
-              } else if (_audioTracks.isEmpty) {
+              if (_audioTracks.isEmpty) {
                 items.add(
                   const PopupMenuItem<String>(
                     enabled: false,
@@ -3573,14 +2998,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
               );
               if (id == null || !mounted) return;
               _bumpChrome();
-              if (_useVlc) {
-                final trackId = int.tryParse(id);
-                if (trackId == null) return;
-                _audioLanguagePicked = true;
-                unawaited(AndroidPlayback.nativeVlcSetAudioTrack(trackId));
-                setState(() => _activeAudioId = id);
-                return;
-              }
               final match = _audioTracks.where((t) => t.id == id);
               if (match.isEmpty) return;
               _audioLanguagePicked = true;
@@ -3651,13 +3068,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
           checked: _activeSubId == null,
           child: const Text('Off'),
         ),
-        if (_useVlc)
-          for (final track in _vlcSpu)
-            CheckedPopupMenuItem(
-              value: 'vlc:${track.id}',
-              checked: _activeSubId == 'vlc:${track.id}',
-              child: Text(track.label),
-            ),
         for (final sub in _subs)
           CheckedPopupMenuItem(
             value: sub.id,
@@ -3733,14 +3143,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         await _disableSubtitles();
         return;
       }
-      if (value.startsWith('vlc:')) {
-        final id = int.tryParse(value.substring(4));
-        if (id != null) {
-          await AndroidPlayback.nativeVlcSetSpuTrack(id);
-          if (mounted) setState(() => _activeSubId = value);
-        }
-        return;
-      }
       if (value.startsWith('wyzie_hit:')) {
         final id = value.substring('wyzie_hit:'.length);
         _SubtitleOption? hit;
@@ -3769,15 +3171,26 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     }
   }
 
-  // Match the seeding chip: 16px from the side, 72px from the bottom.
+  // Match the seeding chip: 16px from the side.
   static const double _actionChipInset = 16;
   static const double _actionChipBottom = 72;
+  // Seekbar (bottom:28) + seek row (~48) + skip row (~48) + gap — keep clear.
+  static const double _streamChipAboveSeekBar = 156;
   // When the seed chip is visible, lift Skip / Play Next one chip row above it.
   static const double _actionChipStackLift = 52;
 
+  /// Buffer/speed/peers chip must never cover the seekbar.
+  double get _streamStatsChipBottom {
+    if (_showChrome && _showSeekControls && _useDesktopSafeSeekBar) {
+      return _streamChipAboveSeekBar;
+    }
+    return _actionChipBottom;
+  }
+
   double get _skipPlayNextBottom {
     final seedVisible = _showStreamChip && !_showStreamHud && widget.isStream;
-    return seedVisible ? _actionChipBottom + _actionChipStackLift : _actionChipBottom;
+    final base = seedVisible ? _streamStatsChipBottom : _actionChipBottom;
+    return seedVisible ? base + _actionChipStackLift : base;
   }
 
   List<Widget> _skipAndPlayNextOverlays() {
@@ -3825,12 +3238,24 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
                   fit: StackFit.expand,
                   children: [
                     ..._skipAndPlayNextOverlays(),
-                    if (_showSeekControls && _useDesktopSafeSeekBar)
+                    if (_showSeekControls &&
+                        _useDesktopSafeSeekBar &&
+                        _showChrome)
                       Positioned(
                         left: 24,
                         right: 24,
-                        bottom: 72,
-                        child: _playbackSeekBar(),
+                        bottom: 28,
+                        child: _chromeLayer(
+                          hiddenOffset: const Offset(0, 0.45),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              _playbackSeekBar(),
+                              const SizedBox(height: 10),
+                              _seekSkipBar(),
+                            ],
+                          ),
+                        ),
                       ),
                   ],
                 );
@@ -3844,13 +3269,17 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   Widget _streamStatsChip() {
     final info = _streamInfo;
     final local = LocalTorrentEngine.instance.currentStats();
-    final speed = info?.downloadMbps ?? local?.downloadMbps ?? 0;
-    final seeders = info?.seeders ?? local?.seeders ?? 0;
-    final peers = info?.peers ?? local?.peers ?? 0;
+    final speed = local?.downloadMbps ?? info?.downloadMbps ?? 0;
+    final seeders = local?.seeders ?? info?.seeders ?? 0;
+    // Prefer live engine peers; fall back to Jackett listing when FFI is junk/0.
+    var peers = local?.peers ?? info?.peers ?? 0;
+    if (peers <= 0 || peers >= 10000) {
+      peers = widget.listedPeers > 0 ? widget.listedPeers : 0;
+    }
     // StreamSession.bufferProgress is 0–1; LocalStreamStats.bufferPct is 0–100.
-    final pct = info != null
-        ? (info.bufferProgress * 100).clamp(0.0, 100.0)
-        : (local?.bufferPct ?? 0).clamp(0.0, 100.0);
+    final pct = local != null
+        ? local.bufferPct.clamp(0.0, 100.0)
+        : ((info?.bufferProgress ?? 0) * 100).clamp(0.0, 100.0);
     final line = streamStatsLine(
       pct: pct,
       speed: speed,
@@ -3858,6 +3287,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
       peers: peers,
       hasVideo: _hasVideo,
       playing: _playing,
+      swarmActive: local?.swarmActive == true ||
+          info?.swarmActive == true ||
+          peers > 0 ||
+          seeders > 0 ||
+          speed >= 0.001,
     );
     return SafeArea(
       child: DecoratedBox(
@@ -4042,14 +3476,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
       return p.inMilliseconds > 0 ? p : _lastGoodPos;
     }
 
-    final pos = _useVlc
-        ? _vlcPosition
-        : (_useExo ? (_exo?.value.position ?? Duration.zero) : mediaKitPos());
-    final dur = _useVlc
-        ? _vlcDuration
-        : (_useExo
-            ? (_exo?.value.duration ?? Duration.zero)
-            : (_player?.state.duration ?? Duration.zero));
+    final pos = mediaKitPos();
+    final dur = _player?.state.duration ?? Duration.zero;
     final maxMs = dur.inMilliseconds > 0 ? dur.inMilliseconds.toDouble() : 1.0;
     final value = pos.inMilliseconds.clamp(0, maxMs.toInt()).toDouble();
 
@@ -4085,9 +3513,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
                     onChanged: _canSeek
                         ? (v) {
                             setState(() {
-                              if (_useVlc) {
-                                _vlcPosition = Duration(milliseconds: v.round());
-                              }
                               _lastGoodPos = Duration(milliseconds: v.round());
                             });
                           }
@@ -4110,49 +3535,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   }
 
   Widget _videoSurface() {
-    if (_useVlc) {
-      final id = _vlcTextureId;
-      if (id == null) return const ColoredBox(color: Colors.black);
-      return LayoutBuilder(
-        builder: (context, constraints) {
-          final cw = constraints.maxWidth.isFinite && constraints.maxWidth > 0
-              ? constraints.maxWidth.round()
-              : 1920;
-          final ch = constraints.maxHeight.isFinite && constraints.maxHeight > 0
-              ? constraints.maxHeight.round()
-              : 1080;
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            unawaited(AndroidPlayback.nativeVlcSetSurfaceSize(cw, ch));
-          });
-          // Texture has 0×0 intrinsic size — must be forced to fill.
-          return ColoredBox(
-            color: Colors.black,
-            child: SizedBox.expand(
-              child: Texture(textureId: id),
-            ),
-          );
-        },
-      );
-    }
-    if (_useExo) {
-      final exo = _exo;
-      if (exo == null || !exo.value.isInitialized) return const SizedBox.shrink();
-      // Some TV SoCs report 0×0 until the first frame — don't collapse the surface.
-      final raw = exo.value.size;
-      final w = raw.width > 1 ? raw.width : 1920.0;
-      final h = raw.height > 1 ? raw.height : 1080.0;
-      final video = SizedBox.expand(
-        child: FittedBox(
-          fit: BoxFit.contain,
-          child: SizedBox(
-            width: w,
-            height: h,
-            child: VideoPlayer(exo),
-          ),
-        ),
-      );
-      return isAndroidTv ? IgnorePointer(child: video) : video;
-    }
     final controller = _controller;
     if (controller == null) return const SizedBox.shrink();
     // Desktop: no swipe/double-tap seeks (bypass our safe scrubber and crash Windows).
@@ -4177,37 +3559,45 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         // Hide media_kit's drag-seek bar on desktop — it calls seek() on every
         // pointer move and crashes Windows (hr-seek + d3d11va). We render our
         // own onChangeEnd scrubber above the bottom bar instead.
+        // Desktop: our chrome owns seek/play — keep only volume + fullscreen
+        // in media_kit so Win/Linux/mac look the same and nothing stays stuck on.
         normal: MaterialDesktopVideoControlsThemeData(
-          displaySeekBar: !_useDesktopSafeSeekBar,
-          seekBarContainerHeight: 36.0,
-          seekBarHeight: 3.2,
-          seekBarHoverHeight: 5.6,
-          seekBarThumbSize: 12.0,
-          bottomButtonBar: const [
-            MaterialDesktopSkipPreviousButton(),
-            MaterialDesktopPlayOrPauseButton(),
-            MaterialDesktopSkipNextButton(),
-            MaterialDesktopVolumeButton(),
-            MaterialDesktopPositionIndicator(),
-            Spacer(),
-            MaterialDesktopFullscreenButton(),
-          ],
+          displaySeekBar: false,
+          controlsHoverDuration: const Duration(seconds: 3),
+          bottomButtonBar: _useDesktopSafeSeekBar
+              ? const [
+                  MaterialDesktopVolumeButton(),
+                  Spacer(),
+                  MaterialDesktopFullscreenButton(),
+                ]
+              : const [
+                  MaterialDesktopSkipPreviousButton(),
+                  MaterialDesktopPlayOrPauseButton(),
+                  MaterialDesktopSkipNextButton(),
+                  MaterialDesktopVolumeButton(),
+                  MaterialDesktopPositionIndicator(),
+                  Spacer(),
+                  MaterialDesktopFullscreenButton(),
+                ],
         ),
         fullscreen: MaterialDesktopVideoControlsThemeData(
-          displaySeekBar: !_useDesktopSafeSeekBar,
-          seekBarContainerHeight: 36.0,
-          seekBarHeight: 3.2,
-          seekBarHoverHeight: 5.6,
-          seekBarThumbSize: 12.0,
-          bottomButtonBar: const [
-            MaterialDesktopSkipPreviousButton(),
-            MaterialDesktopPlayOrPauseButton(),
-            MaterialDesktopSkipNextButton(),
-            MaterialDesktopVolumeButton(),
-            MaterialDesktopPositionIndicator(),
-            Spacer(),
-            MaterialDesktopFullscreenButton(),
-          ],
+          displaySeekBar: false,
+          controlsHoverDuration: const Duration(seconds: 3),
+          bottomButtonBar: _useDesktopSafeSeekBar
+              ? const [
+                  MaterialDesktopVolumeButton(),
+                  Spacer(),
+                  MaterialDesktopFullscreenButton(),
+                ]
+              : const [
+                  MaterialDesktopSkipPreviousButton(),
+                  MaterialDesktopPlayOrPauseButton(),
+                  MaterialDesktopSkipNextButton(),
+                  MaterialDesktopVolumeButton(),
+                  MaterialDesktopPositionIndicator(),
+                  Spacer(),
+                  MaterialDesktopFullscreenButton(),
+                ],
         ),
         child: Video(
           key: _videoKey,

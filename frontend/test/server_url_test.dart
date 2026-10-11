@@ -60,49 +60,63 @@ void main() {
     test('shows finding peers when swarm is empty', () {
       expect(
         streamStatsLine(pct: 0, speed: 0, seeders: 0, peers: 0),
-        '0%  ·  finding peers…',
+        'Finding peers…',
       );
     });
 
-    test('shows connected when peers exist but no bytes yet', () {
+    test('shows Buffering like Android TV when peers exist but no bytes yet', () {
       expect(
         streamStatsLine(pct: 0, speed: 0, seeders: 0, peers: 12),
-        '0%  ·  connected · waiting for data…  ·  12 peers',
+        'Buffering 1%  ·  12 peers',
       );
     });
 
     test('shows ready when progress is complete and video is playing', () {
       expect(
         streamStatsLine(pct: 100, speed: 0, seeders: 5, peers: 5, hasVideo: true, playing: true),
-        '100%  ·  ready  ·  5 seeds',
+        '100%  ·  ready  ·  5 peers',
       );
     });
 
     test('shows true readiness once video is playing even while seeding', () {
       expect(
         streamStatsLine(pct: 100, speed: 1.2, seeders: 5, peers: 5, hasVideo: true, playing: true),
-        '100%  ·  1.2 MB/s  ·  5 seeds',
+        '100%  ·  1.2 MB/s  ·  5 peers',
       );
     });
 
     test('does not claim complete pre-play while still downloading', () {
       expect(
         streamStatsLine(pct: 100, speed: 1.2, seeders: 5, peers: 5),
-        '99%  ·  1.2 MB/s  ·  5 seeds',
+        'Buffering 99%  ·  1.2 MB/s  ·  5 peers',
       );
     });
 
     test('ignores fake 100% with empty swarm before playback', () {
       expect(
         streamStatsLine(pct: 100, speed: 0, seeders: 0, peers: 0),
-        '0%  ·  finding peers…',
+        'Finding peers…',
       );
     });
 
     test('keeps real 100% when peers exist even before video', () {
       expect(
         streamStatsLine(pct: 100, speed: 0, seeders: 0, peers: 3),
-        '100%  ·  downloaded  ·  3 peers',
+        'Buffering 100%  ·  3 peers',
+      );
+    });
+
+    test('shows Buffering with KB/s like TV-style progress', () {
+      expect(
+        streamStatsLine(pct: 12, speed: 0.02, seeders: 0, peers: 4),
+        'Buffering 12%  ·  20 KB/s  ·  4 peers',
+      );
+    });
+
+    test('labels seeders as peers like Android TV', () {
+      expect(
+        streamStatsLine(pct: 12, speed: 0.02, seeders: 7, peers: 0),
+        'Buffering 12%  ·  20 KB/s  ·  7 peers',
       );
     });
   });

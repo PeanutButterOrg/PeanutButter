@@ -172,7 +172,8 @@ object Discovery {
         preferred: String? = null,
         cancel: AtomicBoolean = AtomicBoolean(false),
     ): List<DiscoveredServer> = withContext(Dispatchers.IO) {
-        val found = LinkedHashMap<String, DiscoveredServer>()
+        // Filled from many parallel probes below — must be thread-safe.
+        val found = Collections.synchronizedMap(LinkedHashMap<String, DiscoveredServer>())
 
         suspend fun tryBase(base: String, label: String) {
             if (cancel.get()) return
@@ -224,6 +225,6 @@ object Discovery {
                 }
             }
         }
-        found.values.toList()
+        synchronized(found) { found.values.toList() }
     }
 }

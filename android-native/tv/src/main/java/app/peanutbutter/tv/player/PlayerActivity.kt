@@ -38,9 +38,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * ExoPlayer / Media3 torrent player (Jellyfin Android TV approach):
@@ -54,6 +52,9 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
     private var pendingUrl: String? = null
     private var mediaAttached = false
     private var streamOpened = false
+    /** Wall-clock when media was last attached — recover stuck pre-play. */
+    private var mediaAttachAtMs = 0L
+    private var prePlayRecoveries = 0
     private var sessionId: String? = null
     private var titleId: String? = null
     private var episodeId: String? = null
@@ -66,6 +67,8 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
     private var waitJob: Job? = null
     private var statusPollJob: Job? = null
     private var stopped = false
+    /** Set when "Play next" launched a new player that now owns the torrent. */
+    private var handedOffToNext = false
     private var chromeVisible = true
     private var isStream = false
     private var localTorrent = false
@@ -137,7 +140,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // Keep watching if the catalog API pairing is revoked mid-stream.
-        app.peanutbutter.core.AuthEvents.playbackActive = true
+        app.peanutbutter.core.AuthEvents.onPlaybackStarted()
         setContentView(R.layout.activity_player)
         titleView = findViewById(R.id.title)
         statusView = findViewById(R.id.status)
@@ -203,6 +206,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         application.asTv().activeStreamSession = sessionId
         titleView?.text = title
         statusView?.text = getString(R.string.finding_peers)
+        // Pre-play HUD: center spinner + top buffer bar while finding peers / buffering.
         busy?.isVisible = true
         topProgress?.isVisible = true
         topProgress?.progress = 0
@@ -332,6 +336,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         AppLog.i(TAG, "startLocalTorrent season=$seasonNum episode=$episodeNum")
         statusView?.text = getString(R.string.finding_peers)
         busy?.isVisible = true
+        topProgress?.isVisible = true
         // Build Exo while the swarm fills so attach isn't delayed after 100%.
         ensurePlayer(forceExo = true)
         try {
@@ -393,8 +398,11 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
 
     private fun handleLocalStatsTick(tick: LocalStreamStats) {
         showLocalTorrentStatus(tick)
-        if (!mediaAttached && !pendingUrl.isNullOrBlank() &&
-            (tick.ready || tick.torrentComplete)
+        // URL ready / file complete but Exo never reached onPlaying — keep
+        // attaching and recover stuck pre-play (common when download hits 100%
+        // while the demuxer is still opening).
+        if (!streamOpened && !pendingUrl.isNullOrBlank() &&
+            (tick.ready || tick.torrentComplete || tick.bufferPct >= 99.0)
         ) {
             attachAndPlay()
         }
@@ -426,8 +434,8 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
 
     /**
      * Buffer % for the HUD.
-     * Pre-play: torrent piece-window readiness. Once latched ready / URL exists,
-     * allow 100% so we don't sit on "99% buffering" forever.
+     * Pre-play: show real torrent readiness (don't lie at 100% just because a
+     * URL exists — that stuck the UI at "100% buffering" with no frames).
      * After open: Exo's bufferedPercent for underrun.
      */
     private fun displayBufferPct(torrentFrac: Double, exoPercent: Int = -1): Int {
@@ -436,12 +444,15 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                 exoPercent in 0..100 -> exoPercent
                 else -> player?.bufferedPercent?.coerceIn(0, 100) ?: 100
             }
-            // Exo/VLC often stick at 99 while already playing frames.
             return if (exo >= 99) 100 else exo.coerceIn(0, 100)
         }
+        // Allow 100 once the engine latched ready / URL — don't pin at 99 forever.
         val pct = (torrentFrac.coerceIn(0.0, 1.0) * 100.0).toInt().coerceIn(0, 100)
-        if (torrentReadyLatched || !pendingUrl.isNullOrBlank() || pct >= 99) return 100
-        return pct
+        return if (torrentReadyLatched || !pendingUrl.isNullOrBlank()) {
+            pct.coerceAtLeast(1)
+        } else {
+            pct.coerceIn(0, 99)
+        }
     }
 
     private fun showTorrentStatus(session: StreamSession) {
@@ -451,17 +462,12 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         }
         // bufferProgress from torrent is capped ≤0.92; blend Exo while opening.
         val bufPct = displayBufferPct(session.bufferProgress)
-        val speed = when {
-            session.downloadMbps >= 1 -> String.format("%.1f MB/s", session.downloadMbps)
-            session.downloadMbps > 0 -> String.format("%.0f KB/s", session.downloadMbps * 1024)
-            else -> null
-        }
         // Pre-play only: never re-open the top buffer bar after playback starts
         // (status polls + brief Exo BUFFERING were flashing it randomly).
         if (!streamOpened) {
             topProgress?.isVisible = true
-            topProgress?.progress = bufPct
-            topProgress?.secondaryProgress = bufPct
+            topProgress?.progress = bufPct.coerceIn(0, 100)
+            topProgress?.secondaryProgress = bufPct.coerceIn(0, 100)
             applyBufferingChrome()
         } else {
             topProgress?.isVisible = false
@@ -480,30 +486,28 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             return
         }
 
-        val line = buildString {
-            when {
-                session.isError -> append(session.status)
-                userPaused -> append("Paused")
-                streamOpened && exoBuffering && chromeVisible ->
-                    append(String.format("Buffering… · %.1f MB/s", session.downloadMbps))
-                streamOpened && session.downloadMbps < 0.05 && !exoBuffering ->
-                    append("Playing")
-                streamOpened && session.downloadMbps >= 0.05 ->
-                    append(getString(R.string.playing_with_speed, bufPct.coerceIn(0, 100), session.downloadMbps))
-                !streamOpened && (ready || hasSwarm || bufPct > 0) -> {
-                    append(getString(R.string.buffering_pct, bufPct.coerceAtLeast(1), session.downloadMbps))
-                    if (!ready && session.peers > 0) append("  ·  ${session.peers} peers")
-                    else if (!ready && session.seeders > 0) append("  ·  ${session.seeders} seeds")
-                }
-                !streamOpened -> append(getString(R.string.finding_peers))
-                else -> append("Playing")
-            }
-            if (session.downloadMbps <= 0.01 && !ready && !streamOpened) {
-                speed?.let { append("  ·  $it") }
-            }
+        // Match 6ee3433: keep Buffering X% · speed · peers until Exo is actually
+        // playing — do not swap to a bare "Starting stream" once the URL exists.
+        val line = when {
+            session.isError -> session.status
+            userPaused -> "Paused"
+            streamOpened && exoBuffering && chromeVisible ->
+                underrunBufferLine(session.downloadMbps)
+            streamOpened && session.downloadMbps < 0.05 && !exoBuffering ->
+                "Playing"
+            streamOpened && session.downloadMbps >= 0.05 ->
+                getString(R.string.playing_with_speed, bufPct.coerceIn(0, 100), session.downloadMbps)
+            !streamOpened && (ready || hasSwarm || bufPct > 0) ->
+                prePlayBufferLine(
+                    pct = bufPct.coerceAtLeast(1).coerceIn(0, 99),
+                    downloadMbps = session.downloadMbps,
+                    peers = session.peers,
+                )
+            !streamOpened -> getString(R.string.finding_peers)
+            else -> "Playing"
         }
         applyStatusLine(line)
-        // Spinner only while waiting for first playable data — never on user pause.
+        // Spinner while waiting for first playable data — never on user pause.
         busy?.isVisible = (!streamOpened) && !userSeeking && !userPaused
         if (userPaused || streamOpened) {
             topProgress?.isVisible = false
@@ -516,15 +520,34 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         statusView?.text = line
     }
 
-    private fun torrentStatusLine(bufferPct: Int, downloadMbps: Double): String {
+    /** Buffering X% · download · peers — never upload, never duplicate 0.0 KB/s. */
+    private fun prePlayBufferLine(pct: Int, downloadMbps: Double, peers: Int = 0): String {
+        val shown = pct.coerceIn(0, 100)
+        return buildString {
+            if (downloadMbps >= 0.05) {
+                append(getString(R.string.buffering_pct_speed, shown.coerceAtLeast(1), downloadMbps))
+            } else {
+                append(getString(R.string.buffering_pct, shown.coerceAtLeast(1)))
+            }
+            if (peers > 0) append("  ·  $peers peers")
+        }
+    }
+
+    private fun underrunBufferLine(downloadMbps: Double): String =
+        if (downloadMbps >= 0.05) {
+            String.format("Buffering… · %.1f MB/s", downloadMbps)
+        } else {
+            "Buffering…"
+        }
+
+    private fun torrentStatusLine(bufferPct: Int, downloadMbps: Double, peers: Int = 0): String {
         val pct = bufferPct.coerceIn(0, 100)
         return when {
-            streamOpened && exoBuffering ->
-                String.format("Buffering… · %.1f MB/s", downloadMbps)
+            streamOpened && exoBuffering -> underrunBufferLine(downloadMbps)
             streamOpened && downloadMbps >= 0.05 ->
                 getString(R.string.playing_with_speed, pct, downloadMbps)
             else ->
-                getString(R.string.buffering_pct, pct.coerceAtLeast(1), downloadMbps)
+                prePlayBufferLine(pct.coerceAtLeast(1), downloadMbps, peers)
         }
     }
 
@@ -645,37 +668,42 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
 
             override fun onBuffering(percent: Int) {
                 main.post {
-                    // 99% from Exo/VLC on progressive HTTP is "essentially ready".
-                    exoBuffering = percent in 0 until 99
+                    // Match 6ee3433: keep torrent HUD % while attaching. Using Exo's
+                    // percent here reset the bar to 0% and looked stuck at "Starting…".
+                    exoBuffering = percent < 100
                     if (!streamOpened) {
                         val tick = lastSession
                         val mbps = tick?.downloadMbps ?: 0.0
                         val torrentFrac = tick?.bufferProgress ?: 0.0
+                        val fileDone = (tick?.progress ?: 0.0) >= 0.99
                         val buf = displayBufferPct(torrentFrac, exoPercent = percent)
                         if (!userSeeking) {
-                            applyStatusLine(torrentStatusLine(buf, mbps))
+                            applyStatusLine(
+                                torrentStatusLine(buf, mbps, tick?.peers ?: 0),
+                            )
                             topProgress?.isVisible = true
                             topProgress?.progress = buf
                             topProgress?.secondaryProgress = buf
                         }
                         busy?.isVisible = true
                         applyBufferingChrome()
-                        // Near-full player buffer but never got onPlaying — nudge play.
-                        if (percent >= 99 && !pendingUrl.isNullOrBlank() && !mediaAttached) {
-                            attachAndPlay()
-                        } else if (percent >= 99 && mediaAttached) {
+                        // File already on disk / torrent ready but demuxer idle —
+                        // nudge play so we don't sit at Buffering 100% forever.
+                        if (mediaAttached &&
+                            (fileDone || torrentReadyLatched || buf >= 99) &&
+                            !userPaused
+                        ) {
                             runCatching { player?.play() }
                         }
                     } else {
                         busy?.isVisible = false
                         topProgress?.isVisible = false
-                        // Never treat intentional pause as an underrun buffer banner.
-                        if (chromeVisible && !userSeeking && !userPaused && percent < 99) {
+                        if (chromeVisible && !userSeeking && !userPaused && percent < 100) {
                             val mbps = lastSession?.downloadMbps ?: 0.0
-                            applyStatusLine(String.format("Buffering… · %.1f MB/s", mbps))
+                            applyStatusLine(underrunBufferLine(mbps))
                         }
                     }
-                    if (isStream && !userSeeking && percent < 99) {
+                    if (isStream && !userSeeking && percent < 100) {
                         nudgeTorrentAtPlayhead()
                         if (streamOpened && lastGoodPosMs > 5_000L) {
                             armBufferStallWatch()
@@ -695,6 +723,8 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                     falseEofCount = 0
                     stallRecoverCount = 0
                     softErrorCount = 0
+                    prePlayRecoveries = 0
+                    mediaAttachAtMs = 0L
                     cancelBufferStallWatch()
                     topProgress?.progress = 100
                     topProgress?.secondaryProgress = 100
@@ -929,7 +959,30 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             if (surfaceReady) {
                 player?.attachSurface(findViewById(R.id.surface))
             }
-            return
+            if (!streamOpened && !userPaused) {
+                runCatching { player?.play() }
+                val stuckMs =
+                    if (mediaAttachAtMs > 0) System.currentTimeMillis() - mediaAttachAtMs else 0L
+                // Torrent may already be 100% while Exo never leaves BUFFERING —
+                // force a clean reopen a few times instead of spinning forever.
+                // 6 s was shorter than a normal container probe (MKV cues / MP4
+                // moov live at the END of the file and must come from the swarm),
+                // so healthy streams were torn down and restarted up to 4 times
+                // and sometimes never started. Give the first open real time.
+                if (stuckMs > PRE_PLAY_REOPEN_MS && prePlayRecoveries < 3) {
+                    prePlayRecoveries++
+                    Log.w(TAG, "pre-play stuck ${stuckMs}ms — reopening (#$prePlayRecoveries)")
+                    AppLog.i(TAG, "pre-play reopen #$prePlayRecoveries after ${stuckMs}ms")
+                    mediaAttached = false
+                    mediaAttachAtMs = 0L
+                    runCatching { player?.stop() }
+                    // Fall through to open again.
+                } else {
+                    return
+                }
+            } else {
+                return
+            }
         }
         if (!surfaceReady) {
             Log.i(TAG, "attachAndPlay waiting for surface")
@@ -948,13 +1001,24 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                 TorrentClient.retargetPlayhead(start, lastKnownDurationMs)
             }
             mediaAttached = true
+            mediaAttachAtMs = System.currentTimeMillis()
             mp.open(url, start, preferSoftware = !hwDecode)
+            runCatching { mp.play() }
             statusView?.text = getString(R.string.starting_stream)
+            // Watchdog: if onPlaying never fires, reopen from the next stats tick.
+            main.postDelayed({
+                if (stopped || streamOpened || userPaused) return@postDelayed
+                if (mediaAttached && !pendingUrl.isNullOrBlank()) {
+                    Log.w(TAG, "pre-play watchdog — nudge attachAndPlay")
+                    attachAndPlay()
+                }
+            }, 7_000L)
         } catch (e: Exception) {
             Log.e(TAG, "attachAndPlay failed", e)
             statusView?.text = e.message ?: getString(R.string.playback_error)
             busy?.isVisible = false
             mediaAttached = false
+            mediaAttachAtMs = 0L
         }
     }
 
@@ -1261,6 +1325,9 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                     return@launch
                 }
                 val startedSession = "local-${System.currentTimeMillis()}"
+                // The new player starts its torrent before this one is destroyed;
+                // onDestroy must not stop/wipe it (TorrentClient is process-wide).
+                handedOffToNext = true
                 startActivity(
                     Intent(this@PlayerActivity, PlayerActivity::class.java)
                         .putExtra(EXTRA_TITLE, label)
@@ -1375,6 +1442,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         val api = application.asTv().api
         val mag = magnet
         val sid = sessionId.orEmpty().ifBlank { "local" }
+        val titleText = titleView?.text?.toString()
         val write = suspend {
             api.updateProgress(
                 titleId = id,
@@ -1388,7 +1456,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                     sessionId = sid,
                     positionMs = if (complete) 0L else pos,
                     titleId = id,
-                    title = titleView?.text?.toString(),
+                    title = titleText,
                     magnet = mag,
                     season = seasonNum,
                     episode = episodeNum,
@@ -1397,11 +1465,12 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             }
         }
         if (force) {
-            // Blocking flush on pause/stop/destroy so sudden close still persists.
-            runCatching {
-                runBlocking {
-                    withTimeoutOrNull(1_800L) { write() }
-                }
+            // Pause / stop / destroy / episode end. This used to runBlocking on the
+            // main thread; OkHttp ignores coroutine timeouts, so an unreachable
+            // server froze the UI for the full connect timeout (ANR on exit).
+            // The app-scoped queue outlives this Activity and keeps writes ordered.
+            application.asTv().backgroundWrites.launch {
+                runCatching { write() }
             }
         } else {
             lifecycleScope.launch(Dispatchers.IO) {
@@ -1813,15 +1882,26 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         main.removeCallbacks(bufferStallRecover)
         val sid = sessionId
         if (localTorrent || sid?.startsWith("local-") == true) {
-            // Stop playback engine first; wipe pieces only when the setting is on.
-            maybeWipeStreamCache()
+            // Closing the player always stops the torrent. Downloaded pieces are
+            // deleted only when Settings → Clear cache on exit is on; otherwise
+            // they stay on disk for a fast resume. After "Play next" the torrent
+            // belongs to the new player — leave it alone.
+            if (!handedOffToNext) {
+                if (application.asTv().session.clearCacheOnExit) {
+                    maybeWipeStreamCache()
+                } else {
+                    runCatching { TorrentClient.stop(this, deleteFiles = false) }
+                }
+            }
         } else if (!sid.isNullOrBlank()) {
             val api = application.asTv().api
             Thread {
                 runCatching { kotlinx.coroutines.runBlocking { api.stopStream(sid) } }
             }.start()
         }
-        application.asTv().activeStreamSession = null
+        // Don't clear the session a newer player (Play next) already registered.
+        val tvApp = application.asTv()
+        if (tvApp.activeStreamSession == sid) tvApp.activeStreamSession = null
         runCatching {
             player?.stop()
             player?.release()
@@ -1853,6 +1933,8 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
     companion object {
         private const val TAG = "PlayerActivity"
         private const val SEEK_MAX = 1000
+        /** Exo stuck in BUFFERING this long before the first frame → reopen. */
+        private const val PRE_PLAY_REOPEN_MS = 25_000L
         const val EXTRA_URL = "url"
         const val EXTRA_TITLE = "title"
         const val EXTRA_SESSION = "session"

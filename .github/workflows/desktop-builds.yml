@@ -8,7 +8,8 @@
 #   PeanutButter/                          (Windows portable folder)
 #   PeanutButter-windows-x64-setup.exe
 #   PeanutButter-macos-universal.zip       (ditto zip → PeanutButter.app; compression-level 0)
-#   PeanutButter-android-tv.apk
+#   PeanutButter-android-tv.apk            (universal — any TV box)
+#   PeanutButter-android-tv-arm64-v8a.apk / -armeabi-v7a.apk (smaller, per CPU)
 #
 # macOS: never upload a raw .app directory — Actions' zip breaks Frameworks
 # symlinks. We ditto-zip the bundle, then upload with compression-level: 0 so
@@ -57,6 +58,24 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Fast correctness gate for the Flutter client. Fails only on analyzer
+  # *errors* and failing tests (existing warnings/infos are reported, not fatal).
+  flutter-checks:
+    name: Flutter analyze + test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: flutter analyze --no-fatal-infos --no-fatal-warnings
+      - run: flutter test
+
   linux:
     name: Linux (deb + AppImage + portable)
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.linux }}
@@ -370,12 +389,14 @@ jobs:
         run: |
           chmod +x ./gradlew
           ./gradlew :tv:assembleRelease --stacktrace
-          cp -f tv/build/outputs/apk/release/tv-release.apk \
-            "$GITHUB_WORKSPACE/PeanutButter-android-tv.apk"
-          ls -lh "$GITHUB_WORKSPACE/PeanutButter-android-tv.apk"
+          out=tv/build/outputs/apk/release
+          cp -f "$out/tv-universal-release.apk" "$GITHUB_WORKSPACE/PeanutButter-android-tv.apk"
+          cp -f "$out/tv-arm64-v8a-release.apk" "$GITHUB_WORKSPACE/PeanutButter-android-tv-arm64-v8a.apk"
+          cp -f "$out/tv-armeabi-v7a-release.apk" "$GITHUB_WORKSPACE/PeanutButter-android-tv-armeabi-v7a.apk"
+          ls -lh "$GITHUB_WORKSPACE"/PeanutButter-android-tv*.apk
 
       - uses: actions/upload-artifact@v4
         with:
           name: PeanutButter-android-tv
-          path: PeanutButter-android-tv.apk
+          path: PeanutButter-android-tv*.apk
           if-no-files-found: error

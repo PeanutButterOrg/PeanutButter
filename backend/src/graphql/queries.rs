@@ -375,7 +375,7 @@ impl Query {
             jackett_url: state.config.live.jackett_url(),
             streaming_resolution: state.config.live.streaming_resolution(),
             preferred_languages: state.config.live.preferred_language_codes(),
-            stream_trackers: collect_stream_trackers(state).await,
+            stream_trackers: Vec::new(),
             jackett_catalog: jackett_catalog_status(state).await?,
             opensubtitles_enabled: state.config.live.opensubtitles_enabled(),
             opensubtitles_configured: state.config.live.opensubtitles_configured(),
@@ -1144,33 +1144,4 @@ fn retain_tryable_sources(sources: Vec<StreamSource>) -> Vec<StreamSource> {
     } else {
         kept
     }
-}
-
-/// ngosang trackers_best (server-refreshed) — same list for every client.
-async fn collect_stream_trackers(state: &AppState) -> Vec<String> {
-    let mut out = state.trackers.list().await;
-    // Optionally append unique announces harvested from recent Jackett magnets.
-    if let Ok(rows) = crate::db::stream_search_cache_recent(&state.pool, 12).await {
-        for sources_json in rows {
-            let Ok(sources) = serde_json::from_value::<Vec<StreamSource>>(sources_json) else {
-                continue;
-            };
-            for tr in crate::jackett::harvest_trackers_from_sources(&sources) {
-                if !out
-                    .iter()
-                    .any(|existing| existing.eq_ignore_ascii_case(&tr))
-                {
-                    out.push(tr);
-                }
-                if out.len() >= 40 {
-                    return out;
-                }
-            }
-        }
-    }
-    if out.is_empty() {
-        out = crate::trackers::embedded_best();
-    }
-    out.truncate(40);
-    out
 }

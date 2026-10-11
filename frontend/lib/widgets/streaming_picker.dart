@@ -2,7 +2,6 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:graphql_flutter/graphql_flutter.dart';
-import 'package:media_kit_libs_android_video/media_kit_libs_android_video.dart';
 
 import '../content_languages.dart';
 import '../graphql/client.dart';
@@ -511,6 +510,7 @@ Future<StreamStart?> _showStreamingPickerDialogs({
       context: context,
       barrierDismissible: true,
       builder: (ctx) => _BusyDialog(
+        message: 'Finding streams…',
         onCancel: () => Navigator.of(ctx).pop(),
       ),
     ).whenComplete(() {
@@ -541,8 +541,11 @@ Future<StreamStart?> _showStreamingPickerDialogs({
       return null;
     }
     groups = found;
-    // Cache miss / empty Jackett flake: one forced live refresh before giving up.
-    if (groups.isEmpty && !searchCancel.isCompleted) {
+    // Cache miss, or cache full of 0-seeder / dead rows while Jackett was
+    // unreachable: force one live Jackett pass before giving up.
+    final cacheLooksDead = groups.isNotEmpty &&
+        !groups.any((g) => g.sources.any((s) => s.seeders >= 2));
+    if ((groups.isEmpty || cacheLooksDead) && !searchCancel.isCompleted) {
       try {
         final liveGroups = await searchStreamingSourcesGrouped(
           client: client,
@@ -554,10 +557,13 @@ Future<StreamStart?> _showStreamingPickerDialogs({
           preferredLanguages: preferredLanguages,
           live: true,
         );
-        if (!searchCancel.isCompleted) {
+        if (!searchCancel.isCompleted &&
+            (liveGroups.isNotEmpty || groups.isEmpty)) {
           groups = liveGroups;
         }
-      } catch (_) {}
+      } catch (_) {
+        // Keep weak cache only if live Jackett threw; empty stays empty.
+      }
     }
   } catch (e) {
     if (searchCancel.isCompleted) return null;
@@ -580,7 +586,7 @@ Future<StreamStart?> _showStreamingPickerDialogs({
   if (groups.isEmpty) {
     await _alert(
       context,
-      'No healthy sources with enough seeders were found. Try again later, or check Jackett on the server console.',
+      'No healthy sources found. Jackett may be down or only returning dead/cached torrents — check Jackett on the server console, then tap Refresh.',
     );
     return null;
   }
@@ -814,8 +820,6 @@ class _TvStreamingPickerPageState extends State<_TvStreamingPickerPage> {
   @override
   void initState() {
     super.initState();
-    // Load libmpv on a Java worker while Jackett search runs — must not block UI.
-    unawaited(MediaKitAndroidVideo.preload());
     unawaited(_runSearch(live: false));
   }
 
@@ -840,9 +844,15 @@ class _TvStreamingPickerPageState extends State<_TvStreamingPickerPage> {
         setState(() {
           _phase = _phaseError;
           _error =
-              'No healthy sources with enough seeders were found. Try again later, or check Jackett on the server console.';
+              'No healthy sources found. Jackett may be down or only returning dead/cached torrents — check Jackett on the server console, then tap Refresh.';
         });
         return;
+      }
+      // Cached 0-seeder rows while Jackett is flaky — one live pass.
+      final cacheLooksDead =
+          !groups.any((g) => g.sources.any((s) => s.seeders >= 2));
+      if (cacheLooksDead && !live) {
+        await _runSearch(live: true);
       }
       setState(() {
         _groups = groups;
@@ -923,10 +933,6 @@ class _TvStreamingPickerPageState extends State<_TvStreamingPickerPage> {
     await Future<void>.delayed(const Duration(milliseconds: 50));
     if (!mounted) return;
     try {
-      // Never await libmpv here — System.loadLibrary can hang indefinitely on
-      // some Realtek boxes and left the UI stuck on "Starting stream…".
-      // Player init awaits preload with its own timeout.
-      unawaited(MediaKitAndroidVideo.preload());
       final previous = widget.stopPreviousSessionId?.trim();
       if (previous != null &&
           previous.isNotEmpty &&
@@ -1015,6 +1021,9 @@ class _TvStreamingPickerPageState extends State<_TvStreamingPickerPage> {
                   ],
                 ),
               _ => _BusyDialog(
+                  message: _phase == _phaseStarting
+                      ? 'Starting stream…'
+                      : 'Finding streams…',
                   onCancel: _phase == _phaseStarting
                       ? null
                       : () => Navigator.of(context).pop(),
@@ -1028,15 +1037,20 @@ class _TvStreamingPickerPageState extends State<_TvStreamingPickerPage> {
 }
 
 class _BusyDialog extends StatelessWidget {
-  const _BusyDialog({this.onCancel});
+  const _BusyDialog({
+    this.message = 'Please wait…',
+    this.onCancel,
+  });
+  final String message;
   final VoidCallback? onCancel;
 
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
     return AlertDialog(
-      contentPadding: const EdgeInsets.fromLTRB(28, 28, 28, 28),
+      contentPadding: const EdgeInsets.fromLTRB(28, 24, 28, 28),
       content: SizedBox(
-        width: 160,
+        width: 280,
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -1058,6 +1072,17 @@ class _BusyDialog extends StatelessWidget {
               width: 36,
               height: 36,
               child: CircularProgressIndicator(strokeWidth: 3),
+            ),
+            const SizedBox(height: 18),
+            Text(
+              message,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: scheme.onSurface,
+                fontSize: 15,
+                height: 1.35,
+                fontWeight: FontWeight.w500,
+              ),
             ),
           ],
         ),
