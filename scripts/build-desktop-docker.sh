@@ -94,6 +94,11 @@ run_linux_docker() {
       chmod +x /work/scripts/package-linux.sh
       mkdir -p dist/PeanutButter
       cp -a build/linux/x64/release/bundle/. dist/PeanutButter/
+      # Incomplete vendored libmpv alone prevents the app from starting on hosts
+      # without matching FFmpeg 6 — pull transitive .so from this image.
+      chmod +x /work/scripts/bundle-mpv-runtime.sh
+      /work/scripts/bundle-mpv-runtime.sh dist/PeanutButter/lib
+      /work/scripts/bundle-mpv-runtime.sh build/linux/x64/release/bundle/lib
       printf "%s\n" "#!/usr/bin/env bash" "cd \"\$(dirname \"\$0\")\"" \
         "export LD_LIBRARY_PATH=\"\$PWD/lib\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}\"" \
         "exec ./peanutbutter \"\$@\"" > dist/PeanutButter/run.sh

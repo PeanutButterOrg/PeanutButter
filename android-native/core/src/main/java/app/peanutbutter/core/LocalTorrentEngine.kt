@@ -411,8 +411,11 @@ object LocalTorrentEngine {
                 val complete = progress >= 0.99
                 val rate = st.downloadPayloadRate() / (1024.0 * 1024.0)
                 val headOk = headHave >= minHeadContiguous || playPiece <= firstPiece
+                // Accept a thinner playhead when the swarm is warm — waiting for
+                // every contiguous piece left the UI stuck at 99% for a long time.
                 val playOk = playHave >= minPlayContiguous ||
-                    (playHave >= 1 && rate >= 0.35)
+                    (playHave >= 1 && rate >= 0.25) ||
+                    (playHave >= (minPlayContiguous / 2).coerceAtLeast(1) && rate >= 0.10)
                 val headReady = complete || (headOk && playOk)
                 // Accurate 0–100%: bytes ready at head+playhead vs bytes needed to start.
                 val needBytes = (

@@ -92,9 +92,11 @@ jobs:
       - name: Package portable / deb / AppImage
         working-directory: .
         run: |
-          chmod +x scripts/package-linux.sh
+          chmod +x scripts/package-linux.sh scripts/bundle-mpv-runtime.sh
           mkdir -p frontend/dist/PeanutButter
           cp -a frontend/build/linux/x64/release/bundle/. frontend/dist/PeanutButter/
+          ./scripts/bundle-mpv-runtime.sh frontend/dist/PeanutButter/lib
+          ./scripts/bundle-mpv-runtime.sh frontend/build/linux/x64/release/bundle/lib
           printf '%s\n' '#!/usr/bin/env bash' 'cd "$(dirname "$0")"' \
             'export LD_LIBRARY_PATH="$PWD/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"' \
             'exec ./peanutbutter "$@"' > frontend/dist/PeanutButter/run.sh

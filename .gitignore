@@ -1,6 +1,11 @@
-# Environment
+# Environment / secrets
 .env
+.env.*
+!.env.example
 *.pem
+*.keystore
+*.jks
+key.properties
 
 # Rust
 backend/target/
@@ -24,23 +29,42 @@ frontend/.idea/
 frontend/android/.gradle/
 frontend/android/local.properties
 frontend/android/app/build/
+frontend/android/**/.cxx/
 frontend/ios/Pods/
 frontend/ios/.symlinks/
+frontend/ios/Flutter/Flutter.framework/
+frontend/ios/Flutter/Flutter.podspec
 frontend/macos/Flutter/ephemeral/
+frontend/macos/Pods/
+frontend/macos/**/xcuserdata/
 frontend/windows/flutter/ephemeral/
+frontend/windows/x64/
+frontend/windows/x86/
 frontend/linux/flutter/ephemeral/
 
 # Media library (user files at repo root only — not backend/src/media)
 /media/
 !/media/.gitkeep
 
-# Dist binaries (too large for git; build or download separately)
-dist/*.apk
-dist/*.zip
-dist/*.tar.gz
-dist/*.tar
+# Catch-all build / package outputs
+**/build/
+!**/build.gradle
+!**/build.gradle.kts
+**/target/
+frontend/dist/
+/dist/
 *.apk
 *.aab
+*.deb
+*.AppImage
+*.msi
+*.dmg
+*.zip
+*.tar
+*.tar.gz
+*.7z
+app.*.symbols
+app.*.map.json
 
 # Native Android phone + TV (source stays; build output does not)
 android-native/.gradle/
@@ -51,21 +75,23 @@ android-native/captures/
 android-native/.idea/
 android-native/**/*.iml
 
-# Signing keys
-*.keystore
-*.jks
-key.properties
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.vscode/
+.cursor/
+*.iml
+*.ipr
+*.iws
 
 # Local screenshots and UI dumps
 /pb_*.png
 /ui_dump*.xml
 
-# OS / editor
-.DS_Store
-*.swp
-*.swo
-.vscode/
-.cursor/
-
-# Docker / logs
+# Docker / logs / caches
 *.log
+*.tmp
+*.temp
+.cache/

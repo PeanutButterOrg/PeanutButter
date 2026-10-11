@@ -20,11 +20,16 @@ String streamStatsLine({
       seeders == 0 &&
       peers == 0;
   final sane = likelyFakeComplete ? 0.0 : raw;
-  // While bytes are still arriving, never present the transfer as finished.
-  final shown = (sane >= 99.5 && speed >= 0.05) ? 99.0 : sane.clamp(0, 100);
+  // Once video is on screen, show true readiness (don't pin at 99% forever
+  // while the swarm keeps seeding). Pre-play still avoids a fake "100% done".
+  final shown = (sane >= 99.5 && speed >= 0.05 && !hasVideo && !playing)
+      ? 99.0
+      : sane.clamp(0, 100);
   final String speedStr;
-  if (shown >= 99.5 && speed < 0.05) {
-    speedStr = 'downloaded';
+  if (shown >= 99.5 && (hasVideo || playing || speed < 0.05)) {
+    speedStr = speed >= 0.05
+        ? '${speed.toStringAsFixed(1)} MB/s'
+        : (hasVideo || playing ? 'ready' : 'downloaded');
   } else if (speed >= 0.05) {
     speedStr = '${speed.toStringAsFixed(1)} MB/s';
   } else if (shown >= 2 && (hasVideo || playing)) {

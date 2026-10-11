@@ -40,6 +40,9 @@ mkdir -p \
   "$DEB_ROOT/usr/share/icons/hicolor/512x512/apps"
 
 rsync -a "$BUNDLE/" "$DEB_ROOT/usr/lib/$BIN_NAME/"
+# Vendored libmpv needs FFmpeg 6 / libplacebo — copy them next to it so
+# LD_LIBRARY_PATH does not point at an incomplete lib/ that fails to start.
+bash "$ROOT/scripts/bundle-mpv-runtime.sh" "$DEB_ROOT/usr/lib/$BIN_NAME/lib"
 cat > "$DEB_ROOT/usr/bin/$BIN_NAME" <<EOF
 #!/usr/bin/env bash
 export LD_LIBRARY_PATH="/usr/lib/$BIN_NAME/lib\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
@@ -99,6 +102,7 @@ mkdir -p \
   "$APPDIR/usr/share/applications" \
   "$APPDIR/usr/share/icons/hicolor/256x256/apps"
 rsync -a "$BUNDLE/" "$APPDIR/usr/bin/peanutbutter-bundle/"
+bash "$ROOT/scripts/bundle-mpv-runtime.sh" "$APPDIR/usr/bin/peanutbutter-bundle/lib"
 cat > "$APPDIR/AppRun" <<'EOF'
 #!/usr/bin/env bash
 HERE="$(dirname "$(readlink -f "$0")")"

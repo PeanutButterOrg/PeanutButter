@@ -426,8 +426,9 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
 
     /**
      * Buffer % for the HUD.
-     * Pre-play: trust the torrent engine's piece-window readiness (0–99).
-     * After open: Exo's bufferedPercent for underrun (not a fake 100).
+     * Pre-play: torrent piece-window readiness. Once latched ready / URL exists,
+     * allow 100% so we don't sit on "99% buffering" forever.
+     * After open: Exo's bufferedPercent for underrun.
      */
     private fun displayBufferPct(torrentFrac: Double, exoPercent: Int = -1): Int {
         if (streamOpened) {
@@ -435,9 +436,12 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                 exoPercent in 0..100 -> exoPercent
                 else -> player?.bufferedPercent?.coerceIn(0, 100) ?: 100
             }
-            return exo.coerceIn(0, 100)
+            // Exo/VLC often stick at 99 while already playing frames.
+            return if (exo >= 99) 100 else exo.coerceIn(0, 100)
         }
-        return (torrentFrac.coerceIn(0.0, 1.0) * 100.0).toInt().coerceIn(0, 99)
+        val pct = (torrentFrac.coerceIn(0.0, 1.0) * 100.0).toInt().coerceIn(0, 100)
+        if (torrentReadyLatched || !pendingUrl.isNullOrBlank() || pct >= 99) return 100
+        return pct
     }
 
     private fun showTorrentStatus(session: StreamSession) {
@@ -641,7 +645,8 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
 
             override fun onBuffering(percent: Int) {
                 main.post {
-                    exoBuffering = percent < 100
+                    // 99% from Exo/VLC on progressive HTTP is "essentially ready".
+                    exoBuffering = percent in 0 until 99
                     if (!streamOpened) {
                         val tick = lastSession
                         val mbps = tick?.downloadMbps ?: 0.0
@@ -655,16 +660,22 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                         }
                         busy?.isVisible = true
                         applyBufferingChrome()
+                        // Near-full player buffer but never got onPlaying — nudge play.
+                        if (percent >= 99 && !pendingUrl.isNullOrBlank() && !mediaAttached) {
+                            attachAndPlay()
+                        } else if (percent >= 99 && mediaAttached) {
+                            runCatching { player?.play() }
+                        }
                     } else {
                         busy?.isVisible = false
                         topProgress?.isVisible = false
                         // Never treat intentional pause as an underrun buffer banner.
-                        if (chromeVisible && !userSeeking && !userPaused && percent < 100) {
+                        if (chromeVisible && !userSeeking && !userPaused && percent < 99) {
                             val mbps = lastSession?.downloadMbps ?: 0.0
                             applyStatusLine(String.format("Buffering… · %.1f MB/s", mbps))
                         }
                     }
-                    if (isStream && !userSeeking && percent < 100) {
+                    if (isStream && !userSeeking && percent < 99) {
                         nudgeTorrentAtPlayhead()
                         if (streamOpened && lastGoodPosMs > 5_000L) {
                             armBufferStallWatch()

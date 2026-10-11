@@ -71,16 +71,23 @@ void main() {
       );
     });
 
-    test('shows downloaded when progress is complete', () {
+    test('shows ready when progress is complete and video is playing', () {
       expect(
         streamStatsLine(pct: 100, speed: 0, seeders: 5, peers: 5, hasVideo: true, playing: true),
-        '100%  ·  downloaded  ·  5 seeds',
+        '100%  ·  ready  ·  5 seeds',
       );
     });
 
-    test('does not claim complete while still downloading', () {
+    test('shows true readiness once video is playing even while seeding', () {
       expect(
         streamStatsLine(pct: 100, speed: 1.2, seeders: 5, peers: 5, hasVideo: true, playing: true),
+        '100%  ·  1.2 MB/s  ·  5 seeds',
+      );
+    });
+
+    test('does not claim complete pre-play while still downloading', () {
+      expect(
+        streamStatsLine(pct: 100, speed: 1.2, seeders: 5, peers: 5),
         '99%  ·  1.2 MB/s  ·  5 seeds',
       );
     });

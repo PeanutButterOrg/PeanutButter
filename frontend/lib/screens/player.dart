@@ -169,6 +169,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   late String _url;
   late String _fileId;
   List<_SubtitleOption> _subs = const [];
+  /// Pending Wyzie search hits shown inline in the subtitle menu (same dropdown).
+  List<_SubtitleOption> _wyzieHits = const [];
   String? _activeSubId;
   bool _subsLoading = false;
   List<AudioTrack> _audioTracks = const [];
@@ -735,12 +737,14 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     // YouTube progressive streams often paint a solid blue frame with HW decode.
     final youtube = _isTrailer ||
         (widget.youtubeKey != null && widget.youtubeKey!.isNotEmpty);
+    // Windows streams: software decode — d3d11va(+copy) still hard-crashes
+    // libmpv after buffer fills when seeking. Local files keep copy-mode HW.
     final hwdec = youtube
         ? 'no'
         : isAndroid
             ? 'mediacodec'
             : isWindows
-                ? 'd3d11va,auto'
+                ? (widget.isStream ? 'no' : 'd3d11va-copy,auto')
                 : isMacOS
                     ? 'videotoolbox,auto'
                     : 'vaapi,auto-safe';
@@ -778,8 +782,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     if (!widget.isStream) {
       native.setProperty('cache-pause-wait', '3');
     }
-    // Make scrubbing / ±10s seeks work while paused.
-    native.setProperty('hr-seek', 'yes');
+    // Accurate seeks while paused are nice, but hr-seek=yes + D3D11VA hard-crashes
+    // Windows on scrub. Keyframe seeks are stable; other desktops keep accurate seeks.
+    native.setProperty('hr-seek', isWindows ? 'no' : 'yes');
     native.setProperty('force-seekable', 'yes');
     // Progressive HTTP/torrent streams hit EOF when the next piece isn't ready.
     // Keep the file open so we can resume instead of restarting at 0.
@@ -798,6 +803,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   void _armBufferStallWatch() {
     _bufferStallTimer?.cancel();
     if (!widget.isStream || _useVlc || _useExo) return;
+    // Windows: automatic recover-seeks during buffer stalls crash libmpv.
+    if (!kIsWeb && Platform.isWindows) return;
     _bufferStallTimer = Timer(const Duration(seconds: 12), () {
       if (!mounted || !_buffering) return;
       final player = _player;
@@ -961,12 +968,21 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   bool get _canSeek {
     if (_isTrailer) return false;
     if (!_hasVideo && _player == null && _exo == null && !_vlcStarted) return false;
+    // Desktop: don't start a new scrub while libmpv is still filling — that
+    // races demuxer/HW and hard-crashes Windows after the first buffer settle.
+    if (_useDesktopSafeSeekBar && _buffering && !_seeking) return false;
     if (_useVlc) return _vlcStarted && _vlcReady;
     if (_useExo) {
       final exo = _exo;
       return exo != null && exo.value.isInitialized;
     }
-    return _player != null;
+    final player = _player;
+    if (player == null) return false;
+    // Need a real duration before scrubbing progressive torrents.
+    if (widget.isStream && player.state.duration.inMilliseconds < 1000) {
+      return false;
+    }
+    return true;
   }
 
   bool get _showSeekControls {
@@ -981,6 +997,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         _exo != null ||
         _vlcStarted ||
         (_useVlc && (_streamReady || _streamOpened));
+  }
+
+  /// Desktop media_kit: use our onChangeEnd scrubber instead of its drag-seek.
+  bool get _useDesktopSafeSeekBar {
+    if (_useVlc || _useExo || kIsWeb) return false;
+    return Platform.isWindows || Platform.isLinux || Platform.isMacOS;
   }
 
   int get _currentDurationMs {
@@ -1087,17 +1109,22 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     } else {
       final player = _player;
       if (player == null) return;
+      // Don't flip hr-seek / demuxer props mid-seek — unlocked setProperty races
+      // the seek command and hard-crashes libmpv on Windows.
       try {
-        // Stream: prefer accurate keyframe seek without demuxer-filling forever.
-        if (widget.isStream) {
-          final native = player.platform;
-          if (native is NativePlayer) {
-            unawaited(native.setProperty('hr-seek', 'yes'));
-            unawaited(native.setProperty('demuxer-readahead-secs', '15'));
-            unawaited(native.setProperty('cache-secs', '20'));
-          }
+        // Brief pause lets the demuxer drop in-flight reads before the seek.
+        if (!kIsWeb && Platform.isWindows) {
+          try {
+            await player.pause();
+          } catch (_) {}
+          await Future<void>.delayed(const Duration(milliseconds: 80));
+          if (token != _seekToken) return;
         }
         await player.seek(target);
+        if (token != _seekToken) return;
+        await Future<void>.delayed(
+          Duration(milliseconds: (!kIsWeb && Platform.isWindows) ? 120 : 0),
+        );
         if (token != _seekToken) return;
         await player.play();
       } catch (_) {}
@@ -2093,6 +2120,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   Future<void> _prepareStream() async {
     if (!widget.isStream || _streamOpening) return;
     _streamOpening = true;
+    _wyzieHits = const [];
     if (mounted) setState(() => _buffering = true);
 
     // Device-side torrent: this device fetches pieces. Backend is not involved.
@@ -2127,6 +2155,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         });
       }
       try {
+        // Refresh trackers from server before magnet announce (macOS/desktop).
+        final trackers =
+            ref.read(serverInfoProvider).valueOrNull?.streamTrackers ?? const [];
+        if (trackers.isNotEmpty) {
+          LocalTorrentEngine.instance.configureTrackers(trackers);
+        }
         final handle = await LocalTorrentEngine.instance.start(
           magnet: magnet,
           season: widget.season,
@@ -2282,7 +2316,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
       // download finishes before MediaKit/Exo attaches) — open now.
       if (!_streamOpened &&
           _url.isNotEmpty &&
-          (local.ready || local.torrentComplete || local.bufferPct >= 1.0)) {
+          (local.ready ||
+              local.torrentComplete ||
+              local.bufferPct >= 99.0)) {
         _streamReady = true;
         unawaited(_tryOpenPreparedStream());
       }
@@ -2561,10 +2597,20 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         setState(() => _playing = false);
       case 'buffering':
         final b = event['buffering'];
+        final pct = b is num ? b.toDouble() : 0.0;
+        final vlcPlaying = event['playing'] == true;
         setState(() {
-          _buffering = b is num ? b.toDouble() < 99.5 : true;
-          if (event['playing'] == true) _playing = true;
+          if (vlcPlaying) _playing = true;
           if (event['playing'] == false) _playing = false;
+          // libVLC often sits at ~99% forever on progressive torrents even
+          // while frames are decoding — treat near-full / playing as ready.
+          if (vlcPlaying || _playing || pct >= 99.0 || (_vlcReady && pct >= 90)) {
+            _buffering = false;
+            _vlcReady = true;
+            if (pct >= 90 || vlcPlaying) _streamOpened = true;
+          } else {
+            _buffering = true;
+          }
         });
         if (_buffering) _bumpChrome();
       case 'timeChanged':
@@ -2872,10 +2918,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     }
   }
 
-  /// Wyzie: search by TMDB + language only when the user asks — no download yet.
-  Future<void> _searchWyzieSubtitles(String language) async {
+  /// Wyzie: search by TMDB + language — results stay in the subtitle menu.
+  Future<List<_SubtitleOption>> _searchWyzieSubtitles(String language) async {
     final titleId = widget.titleId;
-    if (_fileId == 'trailer' || titleId == null) return;
+    if (_fileId == 'trailer' || titleId == null) return const [];
     setState(() => _subsLoading = true);
     try {
       final client = ref.read(graphQLClientProvider);
@@ -2890,13 +2936,16 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
           },
         ),
       );
-      if (!mounted) return;
+      if (!mounted) return const [];
       if (result.hasException) {
-        setState(() => _subsLoading = false);
+        setState(() {
+          _subsLoading = false;
+          _wyzieHits = const [];
+        });
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(graphqlMessage(result))),
         );
-        return;
+        return const [];
       }
       final rows = (result.data?['searchSubtitles'] as List?) ?? const [];
       final hits = rows
@@ -2914,38 +2963,24 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
           .where((e) => e.downloadUrl != null && e.downloadUrl!.isNotEmpty)
           .toList();
       setState(() {
-        final byId = {for (final sub in _subs) sub.id: sub};
-        for (final sub in hits) {
-          byId[sub.id] = sub;
-        }
-        _subs = byId.values.toList();
+        _wyzieHits = hits;
         _subsLoading = false;
       });
-      if (!mounted) return;
-      if (hits.isEmpty) {
+      if (hits.isEmpty && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('No Wyzie captions for this title.')),
         );
-        return;
       }
-      // Show filtered hits immediately — download only after the user picks one.
-      final picked = await showMenu<String>(
-        context: context,
-        color: PtTheme.panel,
-        position: const RelativeRect.fromLTRB(80, 80, 80, 80),
-        items: [
-          for (final hit in hits)
-            PopupMenuItem(value: hit.id, child: Text(hit.label)),
-        ],
-      );
-      if (picked == null || !mounted) return;
-      final hit = hits.firstWhere((h) => h.id == picked, orElse: () => hits.first);
-      await _downloadAndApplySubtitle(hit);
+      return hits;
     } catch (e) {
       if (mounted) {
-        setState(() => _subsLoading = false);
+        setState(() {
+          _subsLoading = false;
+          _wyzieHits = const [];
+        });
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
       }
+      return const [];
     }
   }
 
@@ -3236,19 +3271,31 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     final rawFrac = () {
       final b = info?.bufferProgress ?? 0;
       final p = info?.progress ?? 0;
-      if (b > 0.001 && b < 0.999) return b;
-      if (b >= 0.999 && p >= 0.999) return 1.0;
-      if (p > 0.001 && p < 0.999) return p;
+      // Stream readiness (readahead window) can hit ~1.0 long before the
+      // whole torrent finishes — treat that as a full pre-roll bar.
+      if (b >= 0.99) return 1.0;
+      if (b > 0.001) return b;
+      if (p >= 0.99) return 1.0;
+      if (p > 0.001) return p;
       return 0.0;
     }();
     final rawPct = (rawFrac * 100).clamp(0.0, 100.0);
-    final pct = (rawPct >= 99.5 && speed >= 0.05) ? 99.0 : rawPct;
+    final ready = (info?.status == 'ready') ||
+        (local?.ready ?? false) ||
+        (local?.torrentComplete ?? false) ||
+        rawPct >= 99.5;
+    // Don't pin the pre-roll bar at 99% once the stream is ready to open.
+    final pct = ready
+        ? 100.0
+        : ((rawPct >= 99.5 && speed >= 0.05) ? 99.0 : rawPct);
     final barValue = pct > 0 ? (pct / 100).clamp(0.0, 1.0) : null;
     final art = widget.backdropUrl ?? widget.posterUrl;
     final showPoster = art != null && art.isNotEmpty;
-    final status = peers > 0 || seeders > 0
-        ? 'Connecting to peers…'
-        : 'Finding peers…';
+    final status = ready
+        ? 'Starting playback…'
+        : (peers > 0 || seeders > 0
+            ? 'Buffering ${pct.round()}%…'
+            : 'Finding peers…');
 
     return Stack(fit: StackFit.expand, children: [
       // Always paint a pre-roll layer so we never sit on a bare black scaffold
@@ -3360,21 +3407,24 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
               ),
             ),
           ),
-          // Custom ±10 / play only for VLC/Exo — desktop media_kit already has
-          // its own bottom bar (dual play buttons raced and crashed on Windows).
-          if (_showSeekControls && (_useVlc || _useExo))
+          // Custom scrubber for VLC/Exo, and for desktop media_kit streams
+          // (media_kit seeks on every pointer-move and hard-crashes Windows).
+          // Keep ±10/play only for VLC/Exo — media_kit already has its bottom bar.
+          if (_showSeekControls && (_useVlc || _useExo || _useDesktopSafeSeekBar))
             Positioned(
               left: 24,
               right: 24,
-              bottom: 28,
+              bottom: _useDesktopSafeSeekBar ? 72 : 28,
               child: _chromeLayer(
                 hiddenOffset: const Offset(0, 0.45),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     _playbackSeekBar(),
-                    const SizedBox(height: 10),
-                    _seekSkipBar(),
+                    if (_useVlc || _useExo) ...[
+                      const SizedBox(height: 10),
+                      _seekSkipBar(),
+                    ],
                   ],
                 ),
               ),
@@ -3554,116 +3604,169 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
               _activeSubId == null ? Icons.closed_caption_off : Icons.closed_caption,
               color: Colors.white,
             ),
-            onPressed: () async {
-              _bumpChrome();
-              final info = ref.read(serverInfoProvider).valueOrNull;
-              final osReady = info?.opensubtitlesConfigured ?? false;
-              final wyzieReady = info?.wyzieConfigured ?? false;
-              final subsReady = info?.subtitlesConfigured ?? (osReady || wyzieReady);
-              final preferred = preferredLanguageCodes(
-                ref.read(settingsProvider).preferredLanguages,
-              ).firstWhere((c) => c.isNotEmpty, orElse: () => 'en');
-              final items = <PopupMenuEntry<String>>[
-                CheckedPopupMenuItem(
-                  value: 'off',
-                  checked: _activeSubId == null,
-                  child: const Text('Off'),
-                ),
-                if (_useVlc)
-                  for (final track in _vlcSpu)
-                    CheckedPopupMenuItem(
-                      value: 'vlc:${track.id}',
-                      checked: _activeSubId == 'vlc:${track.id}',
-                      child: Text(track.label),
-                    ),
-                for (final sub in _subs)
-                  CheckedPopupMenuItem(
-                    value: sub.id,
-                    checked: _activeSubId == sub.id,
-                    child: Text(sub.label),
-                  ),
-                const PopupMenuDivider(),
-                const PopupMenuItem(
-                  value: 'add_file',
-                  child: Text('From storage…'),
-                ),
-                const PopupMenuItem(
-                  value: 'add_url',
-                  child: Text('From link…'),
-                ),
-                if (subsReady) ...[
-                  const PopupMenuDivider(),
-                  if (wyzieReady)
-                    PopupMenuItem(
-                      value: 'wyzie:$preferred',
-                      child: Text('Search Wyzie ($preferred)'),
-                    ),
-                  if (osReady)
-                    for (final lang in kContentLanguages)
-                      PopupMenuItem(
-                        value: 'download:${lang.code}',
-                        child: Text('OpenSubtitles ${lang.label}'),
-                      ),
-                ] else
-                  const PopupMenuItem(
-                    value: 'settings',
-                    child: Text('Add subtitle API key'),
-                  ),
-              ];
-              final box = context.findRenderObject() as RenderBox?;
-              if (box == null || !context.mounted) return;
-              final origin = box.localToGlobal(Offset.zero);
-              final value = await showMenu<String>(
-                context: context,
-                color: PtTheme.panel,
-                position: RelativeRect.fromLTRB(
-                  origin.dx,
-                  origin.dy + box.size.height,
-                  origin.dx + box.size.width,
-                  origin.dy,
-                ),
-                items: items,
-              );
-              if (value == null || !mounted) return;
-              _bumpChrome();
-              if (value == 'settings') {
-                unawaited(_promptOpenSubtitlesKey());
-                return;
-              }
-              if (value == 'add_file') {
-                unawaited(_addSubtitleFromFile());
-                return;
-              }
-              if (value == 'add_url') {
-                unawaited(_addSubtitleFromUrl());
-                return;
-              }
-              if (value == 'off') {
-                unawaited(_disableSubtitles());
-                return;
-              }
-              if (value.startsWith('vlc:')) {
-                final id = int.tryParse(value.substring(4));
-                if (id != null) {
-                  unawaited(AndroidPlayback.nativeVlcSetSpuTrack(id));
-                  setState(() => _activeSubId = value);
-                }
-                return;
-              }
-              if (value.startsWith('wyzie:')) {
-                unawaited(_searchWyzieSubtitles(value.substring('wyzie:'.length)));
-                return;
-              }
-              if (value.startsWith('download:')) {
-                unawaited(_loadOpenSubtitles(language: value.substring('download:'.length)));
-                return;
-              }
-              unawaited(_pickSubtitleLanguage(value));
-            },
+            onPressed: () => unawaited(_openSubtitleMenu(context)),
           ),
         );
       },
     );
+  }
+
+  /// Desktop/mobile subtitle picker. OpenSubtitles rows are limited to server
+  /// preferred languages; Wyzie results reopen this same menu (no second popup).
+  Future<void> _openSubtitleMenu(BuildContext buttonContext) async {
+    _bumpChrome();
+    final box = buttonContext.findRenderObject() as RenderBox?;
+    if (box == null || !buttonContext.mounted) return;
+    final origin = box.localToGlobal(Offset.zero);
+    final position = RelativeRect.fromLTRB(
+      origin.dx,
+      origin.dy + box.size.height,
+      origin.dx + box.size.width,
+      origin.dy,
+    );
+
+    // Loop so Wyzie search can refresh items in the same dropdown.
+    while (mounted) {
+      final info = ref.read(serverInfoProvider).valueOrNull;
+      final osReady = info?.opensubtitlesConfigured ?? false;
+      final wyzieReady = info?.wyzieConfigured ?? false;
+      final subsReady = info?.subtitlesConfigured ?? (osReady || wyzieReady);
+      final preferredCodes = preferredLanguageCodes(
+        info?.preferredLanguages ??
+            ref.read(settingsProvider).preferredLanguages,
+      );
+      final langs = preferredCodes.isNotEmpty ? preferredCodes : const ['en'];
+      final preferred = langs.first;
+      final osLangs = [
+        for (final code in langs)
+          kContentLanguages.firstWhere(
+            (l) => l.code == code,
+            orElse: () => ContentLanguage(code, languageDisplayName(code)),
+          ),
+      ];
+
+      final items = <PopupMenuEntry<String>>[
+        CheckedPopupMenuItem(
+          value: 'off',
+          checked: _activeSubId == null,
+          child: const Text('Off'),
+        ),
+        if (_useVlc)
+          for (final track in _vlcSpu)
+            CheckedPopupMenuItem(
+              value: 'vlc:${track.id}',
+              checked: _activeSubId == 'vlc:${track.id}',
+              child: Text(track.label),
+            ),
+        for (final sub in _subs)
+          CheckedPopupMenuItem(
+            value: sub.id,
+            checked: _activeSubId == sub.id,
+            child: Text(sub.label),
+          ),
+        if (_wyzieHits.isNotEmpty) ...[
+          const PopupMenuDivider(),
+          const PopupMenuItem(
+            enabled: false,
+            child: Text('Wyzie results', style: TextStyle(color: Colors.white54)),
+          ),
+          for (final hit in _wyzieHits)
+            PopupMenuItem(
+              value: 'wyzie_hit:${hit.id}',
+              child: Text(hit.label),
+            ),
+        ],
+        const PopupMenuDivider(),
+        const PopupMenuItem(
+          value: 'add_file',
+          child: Text('From storage…'),
+        ),
+        const PopupMenuItem(
+          value: 'add_url',
+          child: Text('From link…'),
+        ),
+        if (subsReady) ...[
+          const PopupMenuDivider(),
+          if (wyzieReady)
+            PopupMenuItem(
+              value: 'wyzie:$preferred',
+              child: Text(
+                _subsLoading ? 'Searching Wyzie…' : 'Search Wyzie ($preferred)',
+              ),
+            ),
+          if (osReady)
+            for (final lang in osLangs)
+              PopupMenuItem(
+                value: 'download:${lang.code}',
+                child: Text('OpenSubtitles ${lang.label}'),
+              ),
+        ] else
+          const PopupMenuItem(
+            value: 'settings',
+            child: Text('Add subtitle API key'),
+          ),
+      ];
+
+      if (!buttonContext.mounted) return;
+      final value = await showMenu<String>(
+        context: buttonContext,
+        color: PtTheme.panel,
+        position: position,
+        items: items,
+      );
+      if (value == null || !mounted) return;
+      _bumpChrome();
+
+      if (value == 'settings') {
+        await _promptOpenSubtitlesKey();
+        return;
+      }
+      if (value == 'add_file') {
+        await _addSubtitleFromFile();
+        return;
+      }
+      if (value == 'add_url') {
+        await _addSubtitleFromUrl();
+        return;
+      }
+      if (value == 'off') {
+        await _disableSubtitles();
+        return;
+      }
+      if (value.startsWith('vlc:')) {
+        final id = int.tryParse(value.substring(4));
+        if (id != null) {
+          await AndroidPlayback.nativeVlcSetSpuTrack(id);
+          if (mounted) setState(() => _activeSubId = value);
+        }
+        return;
+      }
+      if (value.startsWith('wyzie_hit:')) {
+        final id = value.substring('wyzie_hit:'.length);
+        _SubtitleOption? hit;
+        for (final h in _wyzieHits) {
+          if (h.id == id) {
+            hit = h;
+            break;
+          }
+        }
+        if (hit != null) await _downloadAndApplySubtitle(hit);
+        return;
+      }
+      if (value.startsWith('wyzie:')) {
+        final lang = value.substring('wyzie:'.length);
+        await _searchWyzieSubtitles(lang);
+        if (!mounted) return;
+        // Re-open the same dropdown with results inline.
+        continue;
+      }
+      if (value.startsWith('download:')) {
+        await _loadOpenSubtitles(language: value.substring('download:'.length));
+        return;
+      }
+      await _pickSubtitleLanguage(value);
+      return;
+    }
   }
 
   // Match the seeding chip: 16px from the side, 72px from the bottom.
@@ -3712,7 +3815,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
           child: AdaptiveVideoControls(state),
         ),
         // Native fullscreen uses a separate route; scaffold chips won't show.
-        // ValueListenableBuilder keeps countdown / skip state fresh there.
+        // ValueListenableBuilder keeps countdown / skip / scrubber state fresh.
         if (fullscreen)
           Positioned.fill(
             child: ValueListenableBuilder<int>(
@@ -3720,7 +3823,16 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
               builder: (context, _, __) {
                 return Stack(
                   fit: StackFit.expand,
-                  children: _skipAndPlayNextOverlays(),
+                  children: [
+                    ..._skipAndPlayNextOverlays(),
+                    if (_showSeekControls && _useDesktopSafeSeekBar)
+                      Positioned(
+                        left: 24,
+                        right: 24,
+                        bottom: 72,
+                        child: _playbackSeekBar(),
+                      ),
+                  ],
                 );
               },
             ),
@@ -3735,8 +3847,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     final speed = info?.downloadMbps ?? local?.downloadMbps ?? 0;
     final seeders = info?.seeders ?? local?.seeders ?? 0;
     final peers = info?.peers ?? local?.peers ?? 0;
-    final rawPct = ((info?.bufferProgress ?? 0) * 100).clamp(0.0, 100.0);
-    final pct = (rawPct >= 99.5 && speed >= 0.05) ? 99.0 : rawPct;
+    // StreamSession.bufferProgress is 0–1; LocalStreamStats.bufferPct is 0–100.
+    final pct = info != null
+        ? (info.bufferProgress * 100).clamp(0.0, 100.0)
+        : (local?.bufferPct ?? 0).clamp(0.0, 100.0);
     final line = streamStatsLine(
       pct: pct,
       speed: speed,
@@ -3920,14 +4034,22 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     return h > 0 ? '$h:$m:$s' : '$m:$s';
   }
 
-  /// Scrubber for Exo / VLC paths (media_kit brings its own seekbar).
+  /// Scrubber that seeks only on release (safe for Windows libmpv).
   Widget _playbackSeekBar() {
+    Duration mediaKitPos() {
+      if (_seeking) return _lastGoodPos;
+      final p = _player?.state.position ?? Duration.zero;
+      return p.inMilliseconds > 0 ? p : _lastGoodPos;
+    }
+
     final pos = _useVlc
         ? _vlcPosition
-        : (_useExo ? (_exo?.value.position ?? Duration.zero) : Duration.zero);
+        : (_useExo ? (_exo?.value.position ?? Duration.zero) : mediaKitPos());
     final dur = _useVlc
         ? _vlcDuration
-        : (_useExo ? (_exo?.value.duration ?? Duration.zero) : Duration.zero);
+        : (_useExo
+            ? (_exo?.value.duration ?? Duration.zero)
+            : (_player?.state.duration ?? Duration.zero));
     final maxMs = dur.inMilliseconds > 0 ? dur.inMilliseconds.toDouble() : 1.0;
     final value = pos.inMilliseconds.clamp(0, maxMs.toInt()).toDouble();
 
@@ -4033,8 +4155,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     }
     final controller = _controller;
     if (controller == null) return const SizedBox.shrink();
-    // Scrubber / ±10s stay available whenever seek is allowed (including paused).
-    final seekOk = _canSeek || _showSeekControls;
+    // Desktop: no swipe/double-tap seeks (bypass our safe scrubber and crash Windows).
+    final seekOk =
+        !_useDesktopSafeSeekBar && (_canSeek || _showSeekControls);
     final video = MaterialVideoControlsTheme(
       normal: MaterialVideoControlsThemeData(
         seekGesture: seekOk,
@@ -4051,13 +4174,16 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         seekBarThumbSize: 12.8,
       ),
       child: MaterialDesktopVideoControlsTheme(
-        normal: const MaterialDesktopVideoControlsThemeData(
-          displaySeekBar: true,
+        // Hide media_kit's drag-seek bar on desktop — it calls seek() on every
+        // pointer move and crashes Windows (hr-seek + d3d11va). We render our
+        // own onChangeEnd scrubber above the bottom bar instead.
+        normal: MaterialDesktopVideoControlsThemeData(
+          displaySeekBar: !_useDesktopSafeSeekBar,
           seekBarContainerHeight: 36.0,
           seekBarHeight: 3.2,
           seekBarHoverHeight: 5.6,
           seekBarThumbSize: 12.0,
-          bottomButtonBar: [
+          bottomButtonBar: const [
             MaterialDesktopSkipPreviousButton(),
             MaterialDesktopPlayOrPauseButton(),
             MaterialDesktopSkipNextButton(),
@@ -4067,13 +4193,13 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
             MaterialDesktopFullscreenButton(),
           ],
         ),
-        fullscreen: const MaterialDesktopVideoControlsThemeData(
-          displaySeekBar: true,
+        fullscreen: MaterialDesktopVideoControlsThemeData(
+          displaySeekBar: !_useDesktopSafeSeekBar,
           seekBarContainerHeight: 36.0,
           seekBarHeight: 3.2,
           seekBarHoverHeight: 5.6,
           seekBarThumbSize: 12.0,
-          bottomButtonBar: [
+          bottomButtonBar: const [
             MaterialDesktopSkipPreviousButton(),
             MaterialDesktopPlayOrPauseButton(),
             MaterialDesktopSkipNextButton(),

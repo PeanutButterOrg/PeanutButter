@@ -54,12 +54,14 @@ class LocalTorrentEngine {
         pollInterval: const Duration(milliseconds: 400),
       );
       final engine = LibtorrentFlutter.instance;
+      // Desktop (esp. macOS sandbox) needs DHT + UPnP + both transports.
+      // connectionsLimit here is piece-request fanout, not peer count.
       engine.configureSession(
         const BtConfig(
-          cacheSize: 512 * 1024 * 1024,
+          cacheSize: 256 * 1024 * 1024,
           readerReadAhead: 98,
           preloadCache: 90,
-          connectionsLimit: 200,
+          connectionsLimit: 80,
           // Without an HTTP reader, the plugin pauses the torrent after 30s.
           torrentDisconnectTimeout: 86400,
           disableTcp: false,
@@ -67,6 +69,7 @@ class LocalTorrentEngine {
           disableUpload: false,
           disableDht: false,
           disableUpnp: false,
+          enableIpv6: true,
           downloadRateLimit: 0,
           uploadRateLimit: 0,
           responsiveMode: true,
@@ -116,10 +119,13 @@ class LocalTorrentEngine {
 
     try {
       // Hard ceiling; keep waiting past the soft deadline while peers/DHT are live.
-      final softDeadline = DateTime.now().add(const Duration(seconds: 120));
-      final hardDeadline = DateTime.now().add(const Duration(seconds: 300));
+      // Desktop (macOS especially) often needs longer for DHT/UPnP bootstrap.
+      final softDeadline = DateTime.now().add(const Duration(seconds: 180));
+      final hardDeadline = DateTime.now().add(const Duration(seconds: 360));
       var sawPeers = false;
       var lastPeers = 0;
+      var lastSeeds = 0;
+      var ticks = 0;
       while (DateTime.now().isBefore(hardDeadline)) {
         final info = engine.torrents[id];
         if (info != null && info.isPaused) {
@@ -127,7 +133,10 @@ class LocalTorrentEngine {
         }
         if (info != null) {
           lastPeers = info.numPeers < 0 ? 0 : info.numPeers;
-          if (lastPeers > 0 || info.downloadRate > 0) sawPeers = true;
+          lastSeeds = info.numSeeds < 0 ? 0 : info.numSeeds;
+          if (lastPeers > 0 || lastSeeds > 0 || info.downloadRate > 0) {
+            sawPeers = true;
+          }
           onStats?.call(_statsFrom(info, null));
         }
         if (info != null && info.hasMetadata) break;
@@ -136,6 +145,13 @@ class LocalTorrentEngine {
           throw info!.errorMsg.isNotEmpty
               ? info.errorMsg
               : 'Couldn’t start this stream. Try another result.';
+        }
+        // Periodically re-inject trackers / resume — DHT can stall on first announce.
+        ticks++;
+        if (ticks % 40 == 0) {
+          try {
+            engine.resumeTorrent(id);
+          } catch (_) {}
         }
         // No swarm activity after soft deadline → fail fast with a clear reason.
         if (DateTime.now().isAfter(softDeadline) && !sawPeers) {
@@ -257,19 +273,20 @@ class LocalTorrentEngine {
 
   LocalStreamStats _statsFrom(TorrentInfo t, StreamInfo? s) {
     // Prefer torrent file progress for the HUD % (user-facing "downloaded").
-    // Fall back to stream readahead window when metadata is thin — but never
-    // let a full readahead window report as 100% of the torrent.
+    // Fall back to stream readahead window when metadata is thin.
     final torrentPct = (t.progress * 100).clamp(0.0, 100.0);
     final windowPct = ((s?.bufferPct ?? 0) * 100).clamp(0.0, 100.0);
     final complete = t.progress >= 0.99;
+    final streamReady = s?.isReady == true || complete;
+    // Once the HTTP stream can serve, report 100% readiness — capping at 99
+    // forever made Android sit on "99% buffering" after the pipe was open.
     double bufferPct;
-    if (complete) {
+    if (streamReady || complete) {
       bufferPct = 100.0;
+    } else if (windowPct >= torrentPct && windowPct > 0.5) {
+      bufferPct = windowPct.clamp(0.0, 99.0);
     } else if (torrentPct >= 1.0) {
       bufferPct = torrentPct.clamp(0.0, 99.0);
-    } else if (windowPct > torrentPct) {
-      // Window fill is useful early on; cap so it can't look finished.
-      bufferPct = windowPct.clamp(0.0, 95.0);
     } else {
       bufferPct = torrentPct.clamp(0.0, 99.0);
     }
@@ -278,7 +295,7 @@ class LocalTorrentEngine {
       downloadMbps: t.downloadRate / (1024 * 1024),
       seeders: t.numSeeds < 0 ? 0 : t.numSeeds,
       peers: t.numPeers < 0 ? 0 : t.numPeers,
-      ready: s?.isReady == true || t.progress >= 0.01 || complete,
+      ready: streamReady || t.progress >= 0.01,
       stateLabel: s?.streamState.name ?? (t.isPaused ? 'Paused' : t.state.label),
       torrentComplete: complete,
     );
@@ -392,12 +409,8 @@ class LocalTorrentEngine {
       final sid = _streamId;
       if (sid == null) return;
       final stream = engine.getStreamInfo(sid);
-      engine.setCacheSettings(
-        sid,
-        capacity: 512 * 1024 * 1024,
-        readAheadPct: 95,
-        connectionsLimit: 200,
-      );
+      // Don't reset a 512MB cache on every scrub — that spikes RAM and can take
+      // down the Windows process while libmpv is also seeking.
       final fileSize = stream?.fileSize ?? 0;
       final url = stream?.url ?? '';
       final dur = durationMs ?? 0;
@@ -533,12 +546,26 @@ const _fallbackBest = [
   'udp://retracker01-msk-virt.corbina.net:80/announce',
   'http://tracker.dler.com:6969/announce',
   'http://tracker.renfei.net:8080/announce',
+  'http://open.acgtracker.com:1096/announce',
+  'https://tracker.nanoha.org:443/announce',
+  'http://tracker.gbitt.info/announce',
+  'https://tracker.lilithraws.org/announce',
+  'http://t.overflow.biz/announce',
+  'https://tr.bangumi.moe:9696/announce',
 ];
 
 String _mergeTrackers(String magnet) {
   var uri = magnet.trim();
   if (!uri.toLowerCase().startsWith('magnet:')) return uri;
-  for (final tr in LocalTorrentEngine.instance._activeTrackers.take(20)) {
+  // Prefer HTTP(S) announces first — some desktop networks (and macOS paths)
+  // drop UDP tracker traffic while TCP/HTTP still works.
+  final trackers = [
+    ...LocalTorrentEngine.instance._activeTrackers
+        .where((t) => t.startsWith('http://') || t.startsWith('https://')),
+    ...LocalTorrentEngine.instance._activeTrackers
+        .where((t) => !t.startsWith('http://') && !t.startsWith('https://')),
+  ].take(40);
+  for (final tr in trackers) {
     final enc = Uri.encodeComponent(tr);
     if (!uri.contains(enc) && !uri.contains(tr)) {
       uri = '$uri&tr=$enc';
