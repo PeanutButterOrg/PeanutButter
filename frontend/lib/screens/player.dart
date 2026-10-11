@@ -690,17 +690,23 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     // YouTube progressive streams often paint a solid blue frame with HW decode.
     final youtube = _isTrailer ||
         (widget.youtubeKey != null && widget.youtubeKey!.isNotEmpty);
-    // Windows streams: software decode — d3d11va(+copy) still hard-crashes
-    // libmpv after buffer fills when seeking. Local files keep copy-mode HW.
-    final hwdec = youtube
+    // Desktop streams: software decode on every desktop OS. HW paths
+    // (d3d11va / vaapi / videotoolbox) often fail on progressive HTTP/torrent
+    // — black frames, stalls, or libmpv crashes. Local files keep platform HW.
+    final bool isLinux = !kIsWeb && Platform.isLinux;
+    final bool desktopStream =
+        widget.isStream && (isWindows || isLinux || isMacOS);
+    final hwdec = youtube || desktopStream
         ? 'no'
         : isWindows
-            ? (widget.isStream ? 'no' : 'd3d11va-copy,auto')
+            ? 'd3d11va-copy,auto'
             : isMacOS
                 ? 'videotoolbox,auto'
-                : 'vaapi,auto-safe';
+                : isLinux
+                    ? 'vaapi,auto-safe'
+                    : 'auto';
     native.setProperty('hwdec', hwdec);
-    if (youtube) {
+    if (youtube || desktopStream) {
       native.setProperty('vd-lavc-dr', 'no');
       native.setProperty('hwdec-codecs', 'no');
     }
@@ -726,9 +732,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     if (!widget.isStream) {
       native.setProperty('cache-pause-wait', '3');
     }
-    // Accurate seeks while paused are nice, but hr-seek=yes + D3D11VA hard-crashes
-    // Windows on scrub. Keyframe seeks are stable; other desktops keep accurate seeks.
-    native.setProperty('hr-seek', isWindows ? 'no' : 'yes');
+    // Accurate seeks + HW/progressive streams hard-crash libmpv on scrub
+    // (seen on Windows; same stack on macOS/Linux). Keyframe seeks are stable.
+    native.setProperty(
+      'hr-seek',
+      (isWindows || widget.isStream) ? 'no' : 'yes',
+    );
     native.setProperty('force-seekable', 'yes');
     // Progressive HTTP/torrent streams hit EOF when the next piece isn't ready.
     // Keep the file open so we can resume instead of restarting at 0.
@@ -747,8 +756,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   void _armBufferStallWatch() {
     _bufferStallTimer?.cancel();
     if (!widget.isStream) return;
-    // Windows: automatic recover-seeks during buffer stalls crash libmpv.
-    if (!kIsWeb && Platform.isWindows) return;
+    // Desktop libmpv: automatic recover-seeks during buffer stalls crash or
+    // restart playback at t=0. Windows already proved stable without this.
+    if (!kIsWeb &&
+        (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+      return;
+    }
     _bufferStallTimer = Timer(const Duration(seconds: 12), () {
       if (!mounted || !_buffering) return;
       final player = _player;

@@ -59,6 +59,10 @@ class LocalTorrentEngine {
           disableUpload: false,
           disableDht: false,
           disableUpnp: false,
+          // libtorrent_flutter pins listen to 0.0.0.0:6881 when this is false,
+          // which collides with other BitTorrent clients (e.g. Motrix) and hurts
+          // macOS/Linux NAT mapping. true keeps createSession's random ports.
+          enableIpv6: true,
           downloadRateLimit: 0,
           uploadRateLimit: 0,
           responsiveMode: true,
