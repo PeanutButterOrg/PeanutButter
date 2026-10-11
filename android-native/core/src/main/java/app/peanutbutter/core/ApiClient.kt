@@ -249,6 +249,7 @@ class ApiClient(
         titleId: String?,
         season: Int? = null,
         episode: Int? = null,
+        language: String? = null,
         live: Boolean = false,
     ): List<StreamSource> = withContext(Dispatchers.IO) {
         val vars = mutableMapOf<String, Any?>(
@@ -259,6 +260,7 @@ class ApiClient(
             "episode" to episode,
             "live" to live,
         )
+        if (!language.isNullOrBlank()) vars["language"] = language
         val data = gql(Gql.STREAMING_SEARCH, vars)
         val arr = data.getAsJsonArray("streamingSearch") ?: JsonArray()
         arr.mapNotNull { el ->
@@ -279,9 +281,8 @@ class ApiClient(
     }
 
     /**
-     * Cache first, then one live Jackett refresh when the cache is empty.
-     * Always passing live=true deleted a good cache and showed "no sources"
-     * whenever an indexer timed out.
+     * Cache first (per preferred language, like desktop), then one live Jackett
+     * refresh when every language bucket is empty.
      */
     suspend fun lookupSources(
         query: String,
@@ -290,7 +291,9 @@ class ApiClient(
         season: Int? = null,
         episode: Int? = null,
     ): List<StreamSource> {
-        val cached = streamingSearch(
+        val langs = session.preferredLanguages.toList().ifEmpty { listOf(null) }
+        val cached = searchLanguages(
+            langs = langs,
             query = query,
             kind = kind,
             titleId = titleId,
@@ -299,7 +302,8 @@ class ApiClient(
             live = false,
         )
         if (cached.isNotEmpty()) return cached
-        return streamingSearch(
+        return searchLanguages(
+            langs = langs,
             query = query,
             kind = kind,
             titleId = titleId,
@@ -307,6 +311,56 @@ class ApiClient(
             episode = episode,
             live = true,
         )
+    }
+
+    private suspend fun searchLanguages(
+        langs: List<String?>,
+        query: String,
+        kind: String,
+        titleId: String?,
+        season: Int?,
+        episode: Int?,
+        live: Boolean,
+    ): List<StreamSource> {
+        // Prefer English first so a Hindi-only miss never blocks older EN packs.
+        val ordered = langs.sortedWith(
+            compareBy { code ->
+                when (code?.lowercase()) {
+                    "en", null -> 0
+                    else -> 1
+                }
+            },
+        )
+        val seen = linkedSetOf<String>()
+        val out = ArrayList<StreamSource>()
+        var lastError: Exception? = null
+        for (lang in ordered) {
+            val batch = try {
+                streamingSearch(
+                    query = query,
+                    kind = kind,
+                    titleId = titleId,
+                    season = season,
+                    episode = episode,
+                    language = lang,
+                    live = live,
+                )
+            } catch (e: UnauthorizedException) {
+                throw e
+            } catch (e: Exception) {
+                // One language bucket failing (no Hindi hits, etc.) must not
+                // abort English / other languages for the same title.
+                lastError = e
+                emptyList()
+            }
+            for (src in batch) {
+                val key = src.magnet.trim().ifBlank { src.id }
+                if (key.isBlank() || !seen.add(key)) continue
+                out.add(src)
+            }
+        }
+        if (out.isEmpty() && lastError != null) throw lastError
+        return out
     }
 
     /** Last magnet used for this title/episode. Resume replays it without the picker. */

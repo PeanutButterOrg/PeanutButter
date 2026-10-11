@@ -64,6 +64,7 @@ class PosterCardPresenter(
         val scoreStar = root.findViewById<ImageView>(R.id.score_star)
         val progress = root.findViewById<ViewGroup>(R.id.progress)
         val progressFill = root.findViewById<View>(R.id.progress_fill)
+        val watchedBadge = root.findViewById<ImageView>(R.id.watched_badge)
 
         titleView.text = title.displayTitle
         // Flutter: year only under title (no rating / genres / runtime)
@@ -87,9 +88,12 @@ class PosterCardPresenter(
             )
         }
 
+        watchedBadge.isVisible = title.watched
+
         val p = title.watchProgress
         // Continue-watching / resume items often sit at ~1% — still show a clear bar.
-        if (p > 0.0 || title.canResume) {
+        // Watched titles use the check badge instead of a full bar.
+        if (!title.watched && (p > 0.0 || title.canResume)) {
             val fraction = when {
                 p <= 0.0 -> 0.08
                 p < 0.08 -> 0.08 // minimum visible chunk on 10-foot UI

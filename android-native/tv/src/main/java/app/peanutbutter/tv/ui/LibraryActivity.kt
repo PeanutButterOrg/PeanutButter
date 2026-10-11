@@ -52,12 +52,15 @@ class LibraryFragment : VerticalGridSupportFragment() {
     private var columns = 0
     private var cardWidth = 0
     private var cardHeight = 0
+    private var sort = "FAVORITES"
+    private var mode = LibraryActivity.MODE_FAVOURITES
+    private var loadedOnce = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val mode = requireActivity().intent.getStringExtra(LibraryActivity.EXTRA_MODE)
+        mode = requireActivity().intent.getStringExtra(LibraryActivity.EXTRA_MODE)
             ?: LibraryActivity.MODE_FAVOURITES
-        val sort = if (mode == LibraryActivity.MODE_WATCHED) "WATCHED" else "FAVORITES"
+        sort = if (mode == LibraryActivity.MODE_WATCHED) "WATCHED" else "FAVORITES"
         showTitle(false)
         val host = activity as? LibraryActivity
         host?.findViewById<View>(R.id.catalog_header)?.isVisible = true
@@ -97,21 +100,39 @@ class LibraryFragment : VerticalGridSupportFragment() {
             }
         }
 
-        host?.setLoading(true)
+        reload(showOverlay = true)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Re-fetch after returning from details so the last card + header both clear.
+        if (loadedOnce && ::gridAdapter.isInitialized) reload(showOverlay = false)
+    }
+
+    private fun reload(showOverlay: Boolean) {
+        val host = activity as? LibraryActivity
+        if (showOverlay) host?.setLoading(true)
         val app = requireActivity().application.asTv()
         lifecycleScope.launch {
             try {
                 val movies = async { app.api.catalog(kind = "MOVIE", sort = sort, perPage = 48) }
                 val series = async { app.api.catalog(kind = "SERIES", sort = sort, perPage = 48) }
-                (movies.await().items + series.await().items).forEach {
-                    loaded.add(it)
-                    gridAdapter.add(it)
+                val items = movies.await().items + series.await().items
+                loaded.clear()
+                loaded.addAll(items)
+                if (::gridAdapter.isInitialized) {
+                    gridAdapter.clear()
+                    items.forEach { gridAdapter.add(it) }
                 }
+                host?.findViewById<View>(R.id.catalog_header)?.isVisible = items.isNotEmpty()
                 view?.post { view?.let { refit(it) } }
             } catch (e: Exception) {
-                Toast.makeText(requireContext(), e.message, Toast.LENGTH_LONG).show()
+                if (showOverlay) {
+                    Toast.makeText(requireContext(), e.message, Toast.LENGTH_LONG).show()
+                }
             } finally {
-                host?.setLoading(false)
+                loadedOnce = true
+                if (showOverlay) host?.setLoading(false)
             }
         }
     }

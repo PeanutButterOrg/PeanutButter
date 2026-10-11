@@ -111,8 +111,8 @@ class MainActivity : FragmentActivity() {
             // Instant swap from cache when available — no empty/placeholder flash.
             val cached = feedCache[kind]
             if (cached != null) {
-                browseFragment()?.bindFeed(kind, cached, jumpToHero = true)
-                // Refresh quietly in the background.
+                browseFragment()?.bindFeed(kind, cached, jumpToHero = true, keepVisible = true)
+                // Refresh quietly in the background — CW only, no second full rebuild.
                 loadHome(showOverlay = false, jumpToHero = false, fromCache = true)
             } else {
                 loadHome(showOverlay = true, jumpToHero = true)

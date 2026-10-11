@@ -56,9 +56,13 @@ String friendlyRequestError(
       (lower.contains('rate') || sourceLower.contains('rate'))) {
     return 'Jackett is being rate-limited. Wait a minute and try again.';
   }
+  if (lower.contains('found peers but') && lower.contains('metadata')) {
+    return 'Found peers but couldn’t fetch torrent metadata in time. Try another result.';
+  }
   if (lower.contains('enough peers') ||
       lower.contains('waiting for torrent') ||
-      (lower.contains('torrent') && (lower.contains('timed out') || lower.contains('timeout')))) {
+      (lower.contains('torrent') &&
+          (lower.contains('timed out') || lower.contains('timeout')))) {
     return 'Couldn’t find enough peers to start this stream. Try another result.';
   }
   if (lower.contains('playable video') || lower.contains('no video file')) {

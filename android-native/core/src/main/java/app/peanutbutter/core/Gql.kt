@@ -102,11 +102,11 @@ mutation UpdateSettings(${'$'}input: SettingsInput!) {
     const val STREAMING_SEARCH = """
 query StreamingSearch(
   ${'$'}query: String!, ${'$'}kind: TitleKind!, ${'$'}titleId: UUID,
-  ${'$'}season: Int, ${'$'}episode: Int, ${'$'}live: Boolean
+  ${'$'}season: Int, ${'$'}episode: Int, ${'$'}language: String, ${'$'}live: Boolean
 ) {
   streamingSearch(
     query: ${'$'}query, kind: ${'$'}kind, titleId: ${'$'}titleId,
-    season: ${'$'}season, episode: ${'$'}episode, live: ${'$'}live
+    season: ${'$'}season, episode: ${'$'}episode, language: ${'$'}language, live: ${'$'}live
   ) {
     id title magnet seeders peers size tracker health indexer language
   }

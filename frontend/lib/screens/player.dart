@@ -418,7 +418,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     player.stream.playing.listen((playing) {
       if (!mounted) return;
       setState(() => _playing = playing);
-      if (!playing) {
+      if (!playing && (!widget.isStream || _streamOpened)) {
         _onPausedKeepBuffering();
       }
     });
@@ -904,9 +904,17 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     }
     final player = _player;
     if (player == null) return;
+    // Never touch libmpv play/pause until media is open — Windows crashes when
+    // play() runs against an empty playlist (custom chrome used to enable early).
+    if (widget.isStream && !_streamOpened) return;
+    if (player.state.playlist.medias.isEmpty &&
+        player.state.duration <= Duration.zero) {
+      return;
+    }
     if (player.state.playing) {
       setState(() => _playing = false);
-      unawaited(player.playOrPause().then((_) {
+      unawaited(player.pause().then((_) {
+        if (!mounted) return;
         _onPausedKeepBuffering();
         _bumpChrome();
       }));
@@ -918,12 +926,18 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
 
   /// Keep filling the demuxer / torrent cache while the UI is paused.
   void _onPausedKeepBuffering() {
+    // Skip until media is live — early playing:false events used to thrash mpv
+    // properties (and OOM Windows stream demux caps).
+    if (widget.isStream && !_streamOpened) return;
     final native = _player?.platform;
     if (!_pauseBufferBoosted && native is NativePlayer) {
       _pauseBufferBoosted = true;
-      // Expand forward window once; mpv continues demuxing while paused.
-      unawaited(native.setProperty('demuxer-readahead-secs', widget.isStream ? '600' : '180'));
-      unawaited(native.setProperty('cache-secs', widget.isStream ? '600' : '180'));
+      // Modest boost on Windows/macOS streams — 600s + small demux RAM OOMs.
+      final secs = widget.isStream
+          ? ((!kIsWeb && (Platform.isWindows || Platform.isMacOS)) ? '90' : '180')
+          : '120';
+      unawaited(native.setProperty('demuxer-readahead-secs', secs));
+      unawaited(native.setProperty('cache-secs', secs));
     }
     if (widget.localTorrent || (widget.isStream && (widget.sessionId?.startsWith('local-') ?? false))) {
       LocalTorrentEngine.instance.keepDownloading();
@@ -955,13 +969,19 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     return _player != null;
   }
 
-  bool get _showSeekControls =>
-      !_isTrailer &&
-      (_hasVideo ||
-          _player != null ||
-          _exo != null ||
-          _vlcStarted ||
-          (_useVlc && (_streamReady || _streamOpened)));
+  bool get _showSeekControls {
+    if (_isTrailer) return false;
+    // Streams: wait until open so custom play/pause can't hit an empty player.
+    if (widget.isStream) {
+      return _streamOpened &&
+          (_hasVideo || _playing || _vlcStarted || (_exo?.value.isInitialized ?? false));
+    }
+    return _hasVideo ||
+        _player != null ||
+        _exo != null ||
+        _vlcStarted ||
+        (_useVlc && (_streamReady || _streamOpened));
+  }
 
   int get _currentDurationMs {
     if (_useVlc) return _vlcDuration.inMilliseconds;
@@ -2076,7 +2096,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     if (mounted) setState(() => _buffering = true);
 
     // Device-side torrent: this device fetches pieces. Backend is not involved.
-    if (widget.localTorrent) {
+    // Also treat local-* session ids — route extras sometimes drop localTorrent.
+    final isLocal = widget.localTorrent ||
+        (widget.sessionId?.startsWith('local-') ?? false);
+    if (isLocal) {
       final magnet = widget.magnet;
       if (magnet == null || magnet.isEmpty) {
         if (mounted) {
@@ -2341,12 +2364,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
 
   bool get _showStreamHud {
     if (!widget.isStream || _streamError != null) return false;
-    // Keep the poster / peer HUD until real playback starts — media_kit can
-    // report a size (and look "has video") while still painting a black box.
-    if (!_streamOpened && !_playing) return true;
-    if (!_hasVideo) return true;
-    // Always show while seeking / settling so the user sees download move.
-    if (_buffering || _seeking || _seekSettling) return true;
+    // Poster / peer HUD only before first open — mid-play rebuffers use the
+    // corner chip so the torrent bar never stacks on media_kit's seekbar.
+    if (!_streamOpened) return true;
+    if (!_hasVideo && !_playing) return true;
     return false;
   }
 
@@ -3210,6 +3231,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     final info = _streamInfo;
     final local = LocalTorrentEngine.instance.currentStats();
     final speed = info?.downloadMbps ?? local?.downloadMbps ?? 0;
+    final peers = info?.peers ?? local?.peers ?? 0;
+    final seeders = info?.seeders ?? local?.seeders ?? 0;
     final rawFrac = () {
       final b = info?.bufferProgress ?? 0;
       final p = info?.progress ?? 0;
@@ -3222,30 +3245,56 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     final pct = (rawPct >= 99.5 && speed >= 0.05) ? 99.0 : rawPct;
     final barValue = pct > 0 ? (pct / 100).clamp(0.0, 1.0) : null;
     final art = widget.backdropUrl ?? widget.posterUrl;
-    // Poster only while waiting for first start — never over mid-playback rebuffers.
-    final showPoster = !_streamOpened && art != null && art.isNotEmpty;
+    final showPoster = art != null && art.isNotEmpty;
+    final status = peers > 0 || seeders > 0
+        ? 'Connecting to peers…'
+        : 'Finding peers…';
 
     return Stack(fit: StackFit.expand, children: [
-      if (showPoster) ...[
-        const ColoredBox(color: Colors.black),
+      // Always paint a pre-roll layer so we never sit on a bare black scaffold
+      // while the Video surface is still hidden / empty.
+      const ColoredBox(color: Color(0xFF0A0A0E)),
+      if (showPoster)
         CachedArt(
           url: art,
           fallbackUrl: widget.posterUrl,
-          fit: BoxFit.fill,
+          fit: BoxFit.cover,
         ),
-        // No black gradient scrim — keep the art clean before play.
-      ],
-      // Single centered progress — no text, no second chip elsewhere.
       Center(
-        child: SizedBox(
-          width: 220,
-          child: LinearProgressIndicator(
-            value: barValue,
-            minHeight: 4,
-            backgroundColor: Colors.white24,
-            color: AppTheme.seed,
-            borderRadius: BorderRadius.circular(2),
-          ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              status,
+              style: const TextStyle(
+                color: Colors.white70,
+                fontSize: 14,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+            const SizedBox(height: 14),
+            SizedBox(
+              width: 220,
+              child: LinearProgressIndicator(
+                value: barValue,
+                minHeight: 4,
+                backgroundColor: Colors.white24,
+                color: AppTheme.seed,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            if (peers > 0 || seeders > 0 || speed > 0.01) ...[
+              const SizedBox(height: 10),
+              Text(
+                [
+                  if (seeders > 0) '$seeders seeders',
+                  if (peers > 0) '$peers peers',
+                  if (speed > 0.01) '${speed.toStringAsFixed(1)} MB/s',
+                ].join(' · '),
+                style: const TextStyle(color: Colors.white54, fontSize: 12),
+              ),
+            ],
+          ],
         ),
       ),
     ]);
@@ -3275,10 +3324,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
       body: Stack(
         fit: StackFit.expand,
         children: [
-          if (_useVlc)
-            Positioned.fill(child: _videoSurface())
-          else
-            Center(child: _videoSurface()),
+          // Full-bleed on every platform so media_kit's seekbar sits at the
+          // window bottom (Center letterboxing stacked it on the torrent bar).
+          Positioned.fill(child: _videoSurface()),
           if (widget.isStream && _showStreamHud) Positioned.fill(child: _bufferOverlay()),
           if (_streamError != null)
             Center(
@@ -3312,17 +3360,19 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
               ),
             ),
           ),
-          if (_showSeekControls)
+          // Custom ±10 / play only for VLC/Exo — desktop media_kit already has
+          // its own bottom bar (dual play buttons raced and crashed on Windows).
+          if (_showSeekControls && (_useVlc || _useExo))
             Positioned(
               left: 24,
               right: 24,
-              bottom: widget.isStream ? 96 : 28,
+              bottom: 28,
               child: _chromeLayer(
                 hiddenOffset: const Offset(0, 0.45),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    if (_useVlc || _useExo) _playbackSeekBar(),
+                    _playbackSeekBar(),
                     const SizedBox(height: 10),
                     _seekSkipBar(),
                   ],
@@ -4049,9 +4099,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         ),
       ),
     );
-    // Keep the Video widget mounted so media_kit can decode, but hide the empty
-    // black surface until the stream has really opened / started playing.
-    final hideEmpty = !_playing && !_streamOpened && widget.isStream;
+    // Keep Video mounted for decode, but don't paint a black empty surface —
+    // the pre-roll HUD covers the scaffold until the stream opens.
+    final hideEmpty = !_streamOpened && widget.isStream;
     if (hideEmpty) {
       return Opacity(opacity: 0, child: IgnorePointer(child: video));
     }

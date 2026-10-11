@@ -93,6 +93,10 @@ class LocalTorrentEngine {
     void Function(LocalStreamStats stats)? onStats,
   }) async {
     await ensureInit();
+    if (!_ready || _nativeUnavailable) {
+      throw 'On-device torrent streaming isn’t available on this device. '
+          'Update the app or try another platform build.';
+    }
     try {
       await TrackerManager.fetchBestTrackers().timeout(const Duration(seconds: 4));
     } catch (_) {}
@@ -101,9 +105,7 @@ class LocalTorrentEngine {
     await stop(deleteFiles: false);
 
     final engine = LibtorrentFlutter.instance;
-    // Always merge public announces — Jackett magnets often only carry dead/private tr=.
-    final magnetUri = TrackerManager.injectTrackers(_mergeTrackers(magnet));
-    final id = engine.addMagnet(magnetUri, _savePath, false);
+    final id = await _addSource(engine, magnet.trim());
     _torrentId = id;
 
     StreamSubscription<Map<int, TorrentInfo>>? updates;
@@ -113,11 +115,20 @@ class LocalTorrentEngine {
     });
 
     try {
-      final metaDeadline = DateTime.now().add(const Duration(seconds: 180));
-      while (DateTime.now().isBefore(metaDeadline)) {
+      // Hard ceiling; keep waiting past the soft deadline while peers/DHT are live.
+      final softDeadline = DateTime.now().add(const Duration(seconds: 120));
+      final hardDeadline = DateTime.now().add(const Duration(seconds: 300));
+      var sawPeers = false;
+      var lastPeers = 0;
+      while (DateTime.now().isBefore(hardDeadline)) {
         final info = engine.torrents[id];
         if (info != null && info.isPaused) {
           engine.resumeTorrent(id);
+        }
+        if (info != null) {
+          lastPeers = info.numPeers < 0 ? 0 : info.numPeers;
+          if (lastPeers > 0 || info.downloadRate > 0) sawPeers = true;
+          onStats?.call(_statsFrom(info, null));
         }
         if (info != null && info.hasMetadata) break;
         if (info?.state == TorrentState.error) {
@@ -126,11 +137,19 @@ class LocalTorrentEngine {
               ? info.errorMsg
               : 'Couldn’t start this stream. Try another result.';
         }
+        // No swarm activity after soft deadline → fail fast with a clear reason.
+        if (DateTime.now().isAfter(softDeadline) && !sawPeers) {
+          break;
+        }
         await Future<void>.delayed(const Duration(milliseconds: 250));
       }
       final meta = engine.torrents[id];
       if (meta == null || !meta.hasMetadata) {
         await stop();
+        if (sawPeers || lastPeers > 0) {
+          throw 'Found peers but couldn’t fetch torrent metadata in time. '
+              'Try another result.';
+        }
         throw 'Couldn’t find enough peers to start this stream. Try another result.';
       }
       if (meta.isPaused) engine.resumeTorrent(id);
@@ -410,6 +429,52 @@ class LocalTorrentEngine {
     } catch (_) {
     } finally {
       client?.close(force: true);
+    }
+  }
+
+  /// Magnets go through tracker injection. Jackett `.torrent` HTTP links are
+  /// downloaded then added via [addTorrentFile] (addMagnet can't resolve them).
+  Future<int> _addSource(LibtorrentFlutter engine, String source) async {
+    final lower = source.toLowerCase();
+    if (lower.startsWith('magnet:')) {
+      final magnetUri = TrackerManager.injectTrackers(_mergeTrackers(source));
+      return engine.addMagnet(magnetUri, _savePath, false);
+    }
+    if (lower.startsWith('http://') || lower.startsWith('https://')) {
+      final bytes = await _downloadTorrentBytes(source);
+      final dir = Directory(_savePath!);
+      if (!dir.existsSync()) dir.createSync(recursive: true);
+      final file = File(
+        '${dir.path}/src-${DateTime.now().millisecondsSinceEpoch}.torrent',
+      );
+      await file.writeAsBytes(bytes, flush: true);
+      return engine.addTorrentFile(file.path, _savePath, false);
+    }
+    throw 'Unsupported torrent source. Pick another result.';
+  }
+
+  Future<List<int>> _downloadTorrentBytes(String url) async {
+    final client = HttpClient()..connectionTimeout = const Duration(seconds: 12);
+    try {
+      final req = await client.getUrl(Uri.parse(url));
+      final res = await req.close().timeout(const Duration(seconds: 20));
+      if (res.statusCode < 200 || res.statusCode >= 300) {
+        throw 'Couldn’t download that torrent file (HTTP ${res.statusCode}). '
+            'Try another result.';
+      }
+      final bytes = await res.fold<List<int>>(<int>[], (a, b) {
+        a.addAll(b);
+        if (a.length > 8 * 1024 * 1024) {
+          throw 'Torrent file is too large. Try another result.';
+        }
+        return a;
+      }).timeout(const Duration(seconds: 25));
+      if (bytes.length < 16) {
+        throw 'That torrent download was empty. Try another result.';
+      }
+      return bytes;
+    } finally {
+      client.close(force: true);
     }
   }
 

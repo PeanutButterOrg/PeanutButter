@@ -164,9 +164,33 @@ impl JackettClient {
             return Ok(vec![]);
         }
 
-        // Fast path only: parallel Torznab against a small ranked indexer set.
-        // Do NOT race `/all/results` at the same time — that hammered Jackett and
-        // made every search wait on the slowest indexer (20–50s).
+        // Some Jackett installs redirect `/indexers` to the login UI even with a
+        // valid apikey, so Torznab never gets a target list. Prefer `/all/results`
+        // whenever we can't list indexers — that endpoint still authenticates via
+        // apikey and is what the picker actually needs.
+        let indexer_ids = self.stream_indexer_ids(kind).await;
+        if indexer_ids.is_empty() {
+            let all = match tokio::time::timeout(
+                Duration::from_secs(60),
+                self.search_all_results(&q, kind, preferred_resolution, preferred_language),
+            )
+            .await
+            {
+                Ok(Ok(v)) => Self::filter_episode(v, season, episode),
+                Ok(Err(e)) => return Err(e),
+                Err(_) => {
+                    return Err(jackett_err(
+                        "Jackett took too long to respond. Try again in a moment.",
+                    ));
+                }
+            };
+            // Empty is normal for obscure / old titles or a language with no hits —
+            // callers (multi-language search) treat [] as "try the next bucket".
+            return Ok(all);
+        }
+
+        // Fast path: parallel Torznab against a small ranked indexer set.
+        // Do NOT race `/all/results` at the same time — that hammered Jackett.
         let torznab = self
             .search_torznab_all(
                 &q,
@@ -199,15 +223,16 @@ impl JackettClient {
             return Ok(found);
         }
 
-        // Last resort: aggregate search with a short budget (not 75s).
+        // Aggregate search — cold Jackett often needs 20–40s; keep any Torznab hits
+        // if the aggregate call times out so the picker is never emptied.
         let all = match tokio::time::timeout(
-            Duration::from_secs(18),
+            Duration::from_secs(60),
             self.search_all_results(&q, kind, preferred_resolution, preferred_language),
         )
         .await
         {
             Ok(Ok(v)) => Self::filter_episode(v, season, episode),
-            _ => Vec::new(),
+            Ok(Err(_)) | Err(_) => Vec::new(),
         };
         Ok(merge_ranked(found, all, preferred_resolution))
     }
@@ -229,7 +254,8 @@ impl JackettClient {
         for cat in kind_category_ids(kind) {
             req = req.query(&[("Category", cat.to_string())]);
         }
-        let res = match tokio::time::timeout(Duration::from_secs(18), req.send()).await {
+        // Include body read in the budget — cold `/all/results` often needs 20–40s.
+        let res = match tokio::time::timeout(Duration::from_secs(55), req.send()).await {
             Ok(Ok(res)) => res,
             Ok(Err(e)) => return Err(self.redact_err(e)),
             Err(_) => {
@@ -239,15 +265,28 @@ impl JackettClient {
             }
         };
         if res.status().is_success() {
-            let body: JackettResponse = res.json().await.map_err(|e| {
-                if e.is_decode() {
-                    jackett_err(
-                        "Jackett returned a response we couldn’t read. Check the URL in Settings.",
-                    )
-                } else {
-                    self.redact_err(e)
+            let body: JackettResponse = match tokio::time::timeout(
+                Duration::from_secs(55),
+                res.json(),
+            )
+            .await
+            {
+                Ok(Ok(body)) => body,
+                Ok(Err(e)) => {
+                    return Err(if e.is_decode() {
+                        jackett_err(
+                            "Jackett returned a response we couldn’t read. Check the URL in Settings.",
+                        )
+                    } else {
+                        self.redact_err(e)
+                    });
                 }
-            })?;
+                Err(_) => {
+                    return Err(jackett_err(
+                        "Jackett took too long to respond. Try again in a moment.",
+                    ));
+                }
+            };
             let results = self.transform_results(
                 body.results,
                 preferred_resolution,
@@ -569,10 +608,13 @@ impl JackettClient {
             return rows;
         }
         let url = format!("{}/api/v2.0/indexers", self.base_url);
+        // Prefer API-key header — some Jackett builds redirect query-key requests
+        // for `/indexers` to the login UI (302), which leaves Torznab with no targets.
         let res = match self
             .http
             .get(&url)
             .header("accept", "application/json")
+            .header("X-Api-Key", self.api_key.as_str())
             .query(&[("apikey", self.api_key.as_str()), ("configured", "true")])
             .send()
             .await
@@ -748,7 +790,7 @@ impl JackettClient {
         let mut out: Vec<StreamSource> = results
             .into_iter()
             .filter_map(|hit| {
-                let magnet = torrent_locator(&hit)?;
+                let magnet = torrent_locator(&hit, &self.base_url)?;
                 if looks_like_sample(&hit.title) || looks_like_cam(&padded(&hit.title)) {
                     return None;
                 }
@@ -814,8 +856,8 @@ impl JackettClient {
             .collect();
         if !preferred_lang.is_empty() && preferred_lang != "all" {
             // Preferred languages + multi. Untagged Western releases ≈ English.
-            out = out
-                .into_iter()
+            let filtered: Vec<StreamSource> = out
+                .iter()
                 .filter(|src| {
                     let found: Vec<&str> = src
                         .language
@@ -825,7 +867,13 @@ impl JackettClient {
                         .collect();
                     language_matches(&found, &preferred_lang, kind)
                 })
+                .cloned()
                 .collect();
+            // Older / niche titles often lack language tags that match Hindi (etc.).
+            // Prefer the filtered set, but never wipe a usable Jackett result list.
+            if !filtered.is_empty() {
+                out = filtered;
+            }
         }
         rank_sources(out, &preferred_res)
     }
@@ -951,12 +999,14 @@ fn indexer_priority(id: &str, name: &str, kind: &str) -> i32 {
 
 fn healthy_hit_count(hits: &[JackettHit]) -> usize {
     hits.iter()
-        .filter(|hit| hit.seeders.unwrap_or(0) >= 3 && torrent_locator(hit).is_some())
+        .filter(|hit| hit.seeders.unwrap_or(0) >= 3 && torrent_locator(hit, "").is_some())
         .count()
 }
 
 fn magnet_hit_count(hits: &[JackettHit]) -> usize {
-    hits.iter().filter(|hit| torrent_locator(hit).is_some()).count()
+    hits.iter()
+        .filter(|hit| torrent_locator(hit, "").is_some())
+        .count()
 }
 
 /// Enough results to show the picker without waiting on slower indexers.
@@ -1258,11 +1308,11 @@ fn size_plausible(bytes: u64, kind: &str, title: &str) -> bool {
     const MB: u64 = 1024 * 1024;
     const GB: u64 = 1024 * MB;
     match kind {
-        // Keep small 720p encodes; still drop tiny fakes / enormous dumps.
-        "movie" => bytes >= 250 * MB && bytes <= 50 * GB,
-        "series" | "anime" if season_pack => bytes >= 150 * MB && bytes <= 120 * GB,
-        "series" | "anime" => bytes >= 60 * MB && bytes <= 10 * GB,
-        _ => bytes >= 60 * MB && bytes <= 50 * GB,
+        // Older DVDRip/XviD encodes are often ~150–700 MB — don't demand 250 MB.
+        "movie" => bytes >= 80 * MB && bytes <= 50 * GB,
+        "series" | "anime" if season_pack => bytes >= 100 * MB && bytes <= 120 * GB,
+        "series" | "anime" => bytes >= 40 * MB && bytes <= 10 * GB,
+        _ => bytes >= 40 * MB && bytes <= 50 * GB,
     }
 }
 
@@ -1342,7 +1392,7 @@ fn primary_language_term(language: &str) -> Option<&'static str> {
     None
 }
 
-fn torrent_locator(hit: &JackettHit) -> Option<String> {
+fn torrent_locator(hit: &JackettHit, jackett_base: &str) -> Option<String> {
     for raw in [hit.magnet_uri.as_deref(), hit.link.as_deref()]
         .into_iter()
         .flatten()
@@ -1352,12 +1402,39 @@ fn torrent_locator(hit: &JackettHit) -> Option<String> {
             continue;
         }
         let lower = trimmed.to_ascii_lowercase();
-        if lower.starts_with("magnet:") || lower.starts_with("http://") || lower.starts_with("https://")
-        {
+        if lower.starts_with("magnet:") {
             return Some(trimmed.to_string());
+        }
+        if lower.starts_with("http://") || lower.starts_with("https://") {
+            // Jackett often emits http://127.0.0.1:9117/dl/... which only works
+            // on the Jackett host. Rewrite to the configured public base so TV /
+            // phone / desktop can fetch the .torrent for older releases.
+            return Some(rewrite_jackett_local_url(trimmed, jackett_base));
         }
     }
     None
+}
+
+/// Point Jackett download links at the configured Jackett host (not loopback).
+fn rewrite_jackett_local_url(url: &str, jackett_base: &str) -> String {
+    let Ok(parsed) = reqwest::Url::parse(url) else {
+        return url.to_string();
+    };
+    let host = parsed.host_str().unwrap_or("").to_ascii_lowercase();
+    let is_loopback = host == "127.0.0.1"
+        || host == "localhost"
+        || host == "::1"
+        || host == "0.0.0.0";
+    if !is_loopback {
+        return url.to_string();
+    }
+    let Ok(mut base) = reqwest::Url::parse(jackett_base) else {
+        return url.to_string();
+    };
+    base.set_path(parsed.path());
+    base.set_query(parsed.query());
+    base.set_fragment(parsed.fragment());
+    base.to_string()
 }
 
 fn looks_like_sample(title: &str) -> bool {
@@ -1636,18 +1713,33 @@ pub fn harvest_trackers_from_sources(sources: &[StreamSource]) -> Vec<String> {
 /// Rank playable torrents: most seeders first (peers are only a weak tiebreak).
 pub fn rank_sources(mut out: Vec<StreamSource>, preferred_resolution: &str) -> Vec<StreamSource> {
     let preferred_res = preferred_resolution.trim().to_ascii_lowercase();
-    // Prefer real magnets when any exist — but don't throw away the whole list
-    // if every magnet has unknown seeders while .torrent links would remain.
+    // Prefer real magnets when they survive ranking — older indexers often only
+    // expose Jackett `.torrent` download links, so keep those if magnets empty out.
     let magnets: Vec<StreamSource> = out
         .iter()
         .filter(|s| s.magnet.to_ascii_lowercase().starts_with("magnet:"))
         .cloned()
         .collect();
     if !magnets.is_empty() {
-        out = magnets;
+        let magnet_ok: Vec<StreamSource> = magnets
+            .iter()
+            .filter(|s| source_quality_score(&s.title) >= 2)
+            .cloned()
+            .collect();
+        if !magnet_ok.is_empty() {
+            out = magnet_ok;
+        }
+        // else keep http/.torrent rows below
     }
 
-    out.retain(|s| source_quality_score(&s.title) >= 2);
+    let quality_ok: Vec<StreamSource> = out
+        .iter()
+        .filter(|s| source_quality_score(&s.title) >= 2)
+        .cloned()
+        .collect();
+    if !quality_ok.is_empty() {
+        out = quality_ok;
+    }
 
     // Prefer known healthy swarms when available. Public indexers often report
     // Seeders=0 for live torrents — fall back to those rather than showing nothing.
@@ -1762,6 +1854,21 @@ fn source_quality_score(title: &str) -> i32 {
 }
 
 fn looks_like_cam(padded_title: &str) -> bool {
+    // Proper encodes win over bare ts/tc tokens (too many false positives on
+    // older releases that also say BRRip / BluRay / WEB).
+    let proper = has_token(padded_title, "bluray")
+        || has_token(padded_title, "bdrip")
+        || has_token(padded_title, "webdl")
+        || has_token(padded_title, "webrip")
+        || has_token(padded_title, "hdtv")
+        || has_token(padded_title, "web")
+        || has_token(padded_title, "remux")
+        || has_token(padded_title, "dvdrip")
+        || has_token(padded_title, "brrip")
+        || (has_token(padded_title, "blu") && has_token(padded_title, "ray"));
+    if proper {
+        return false;
+    }
     [
         "cam", "camrip", "hdcam", "hdts", "telesync", "telecine", "hd-ts", "hd-tc", "screener",
         "dvdscr", "r5",

@@ -171,12 +171,16 @@ class MainFragment : RowsSupportFragment() {
         feed: HomeFeed,
         restoreFocus: Boolean = false,
         jumpToHero: Boolean = false,
+        /** Cached Movie↔Series swap — keep grid visible so the hero doesn't fade thrice. */
+        keepVisible: Boolean = false,
     ) {
         if (!::rowsAdapter.isInitialized) return
         this.kind = kind
-        // Hide shelves during rebuild so stale posters never flash under the new hero.
         val grid = verticalGridView
-        grid?.alpha = 0f
+        if (!keepVisible) {
+            // Hide shelves during cold rebuild so stale posters never flash under the new hero.
+            grid?.alpha = 0f
+        }
         rowsAdapter.clear()
         var id = 2L
 
@@ -208,14 +212,14 @@ class MainFragment : RowsSupportFragment() {
             restoreFocus -> {
                 view?.post {
                     restoreBrowseFocus()
-                    revealBrowse()
+                    if (!keepVisible) revealBrowse()
                 }
             }
             jumpToHero -> {
                 setSelectedPosition(0, false)
                 view?.post {
                     alignFocusedRows()
-                    revealBrowse()
+                    if (!keepVisible) revealBrowse()
                 }
             }
             else -> {
@@ -223,19 +227,30 @@ class MainFragment : RowsSupportFragment() {
                 view?.post {
                     alignFocusedRows()
                     verticalGridView?.requestFocus()
-                    revealBrowse()
+                    if (!keepVisible) revealBrowse()
                 }
             }
         }
+        if (keepVisible) {
+            grid?.animate()?.cancel()
+            grid?.alpha = 1f
+        }
     }
 
-    /** Update Continue watching in place — no adapter wipe, focus stays put. */
+    /**
+     * Update Continue watching in place — no adapter wipe, focus stays put.
+     * Removes the shelf (and its header) when the list becomes empty.
+     */
     fun updateContinueWatching(items: List<TitleItem>): Boolean {
         if (!::rowsAdapter.isInitialized) return false
         for (i in 0 until rowsAdapter.size()) {
             val row = rowsAdapter[i] as? ListRow ?: continue
             val header = row.headerItem as? ShelfHeaderItem ?: continue
             if (header.sort != "CONTINUE_WATCHING") continue
+            if (items.isEmpty()) {
+                rowsAdapter.remove(row)
+                return true
+            }
             val list = row.adapter as? ArrayObjectAdapter ?: return false
             list.clear()
             items.take(18).forEach { list.add(it) }
