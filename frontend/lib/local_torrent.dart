@@ -144,16 +144,12 @@ class LocalTorrentEngine {
         throw 'That file isn’t in this torrent anymore. Pick another file.';
       }
 
-      final priorities = List<int>.filled(files.length, 0);
-      for (final f in files) {
-        if (f.index >= 0 && f.index < priorities.length) {
-          priorities[f.index] = f.index == chosen ? 7 : 0;
-        }
-      }
-      if (priorities.isNotEmpty) {
-        engine.setFilePriorities(id, priorities);
-      }
-      engine.resumeTorrent(id);
+      // Do NOT call setFilePriorities() here. prioritize_files() is async in
+      // libtorrent and finishes *after* startStream()'s prioritize_pieces(),
+      // wiping head/deadline priorities. That race downloads rarest mid-file
+      // pieces while the playable head stays empty → HUD stuck at 0% / ~KB/s.
+      // startStream() already marks non-selected pieces dont_download and
+      // drives head/tail via piece priorities + deadlines.
 
       final stream = engine.startStream(
         id,
