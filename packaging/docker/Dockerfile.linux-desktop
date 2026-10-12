@@ -17,6 +17,8 @@ RUN apt-get update -y \
       libgtk-3-dev liblzma-dev libstdc++-12-dev \
       libmpv-dev mpv \
       libwebkit2gtk-4.1-dev \
+      libtorrent-rasterbar-dev \
+      libboost-system-dev libssl-dev \
       dpkg-dev rsync curl file zip unzip \
       python3-pil ca-certificates \
  && rm -rf /var/lib/apt/lists/*

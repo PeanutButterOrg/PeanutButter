@@ -365,23 +365,15 @@ Future<StreamStart?> beginStreaming({
   if (!showPicker && bookmark != null && bookmark.hasMagnet) {
     if (!context.mounted) return null;
     final nav = Navigator.of(context, rootNavigator: true);
-    // Brief opaque cover while the previous torrent restarts (no source list).
+    // Brief dialog while the previous torrent restarts (no source list).
+    // Must use AlertDialog/Material — a bare Column under showDialog flashes
+    // the red "No Material widget" error + yellow overflow stripes on desktop.
     final loading = _showPickerOverlay<void>(
       context: context,
       barrierDismissible: false,
       builder: (ctx) => const PopScope(
         canPop: false,
-        child: Padding(
-          padding: EdgeInsets.all(28),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              CircularProgressIndicator(),
-              SizedBox(height: 16),
-              Text('Resuming previous stream…'),
-            ],
-          ),
-        ),
+        child: _BusyDialog(message: 'Resuming previous stream…'),
       ),
     );
     try {

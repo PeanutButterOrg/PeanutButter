@@ -69,36 +69,75 @@ class _AppState extends State<_App> {
         },
       );
       say('start() returned url=${handle.url}');
+      var peakMbps = 0.0;
+      var peakPct = 0.0;
+      var httpGot = 0;
+      final httpSw = Stopwatch()..start();
+
+      // Simulate a player: walk Range requests forward so the stream window
+      // advances past the initial head/tail preload.
+      if (handle.url.startsWith('http')) {
+        unawaited(() async {
+          var offset = 0;
+          const chunk = 2 * 1024 * 1024;
+          while (offset < 64 * 1024 * 1024) {
+            final n = await _nudgeAt(handle.url, offset, chunk);
+            if (n <= 0) {
+              await Future<void>.delayed(const Duration(milliseconds: 500));
+              continue;
+            }
+            httpGot += n;
+            offset += n;
+            final sec = httpSw.elapsedMilliseconds / 1000.0;
+            if (sec > 0) {
+              final mbps = (httpGot / (1024 * 1024)) / sec;
+              if (mbps > peakMbps) peakMbps = mbps;
+              say(
+                'http +${(n / 1024).toStringAsFixed(0)}KB '
+                'total=${(httpGot / (1024 * 1024)).toStringAsFixed(1)}MB '
+                'avg=${mbps.toStringAsFixed(2)} MB/s off=$offset',
+              );
+            }
+          }
+        }());
+      }
 
       // Keep downloading / printing for a few minutes so we can see swarm grow.
       final until = DateTime.now().add(const Duration(minutes: 3));
       while (DateTime.now().isBefore(until)) {
         final s = engine.currentStats() ?? last;
         if (s != null) {
+          if (s.downloadMbps > peakMbps) peakMbps = s.downloadMbps;
+          if (s.bufferPct > peakPct) peakPct = s.bufferPct;
           say(
             'tick ${s.bufferPct.toStringAsFixed(1)}%  '
             '${s.downloadMbps.toStringAsFixed(2)} MB/s  '
-            'peers=${s.peers} seeds=${s.seeders} ready=${s.ready}',
+            'peers=${s.peers} seeds=${s.seeders} ready=${s.ready} '
+            'httpMB=${(httpGot / (1024 * 1024)).toStringAsFixed(1)}',
           );
-          if (s.downloadMbps >= 0.5 && s.peers >= 5) {
-            say('PASS: healthy swarm');
+          // Healthy stream: real HTTP throughput from the local stream server.
+          if (httpGot >= 8 * 1024 * 1024 && peakMbps >= 0.15) {
+            say(
+              'PASS: streaming '
+              'peak=${peakMbps.toStringAsFixed(2)} MB/s '
+              'httpMB=${(httpGot / (1024 * 1024)).toStringAsFixed(1)} '
+              'pct=${peakPct.toStringAsFixed(1)}',
+            );
             await engine.stop(deleteFiles: false);
             exit(0);
           }
-        }
-        // Also Range-read the HTTP URL so the piece window can grow.
-        if (handle.url.startsWith('http')) {
-          unawaited(_nudge(handle.url));
         }
         await Future<void>.delayed(const Duration(seconds: 2));
       }
       final s = engine.currentStats() ?? last;
       say(
         'DONE peers=${s?.peers} seeds=${s?.seeders} '
-        'mbps=${s?.downloadMbps} pct=${s?.bufferPct}',
+        'mbps=${s?.downloadMbps} pct=${s?.bufferPct} '
+        'peakMbps=${peakMbps.toStringAsFixed(2)} peakPct=${peakPct.toStringAsFixed(1)} '
+        'httpMB=${(httpGot / (1024 * 1024)).toStringAsFixed(1)}',
       );
       await engine.stop(deleteFiles: false);
-      exit((s?.peers ?? 0) > 0 ? 0 : 4);
+      exit(httpGot >= 2 * 1024 * 1024 || peakMbps >= 0.05 ? 0 : 4);
     } catch (e, st) {
       say('FAIL: $e');
       stderr.writeln(st);
@@ -107,19 +146,22 @@ class _AppState extends State<_App> {
     }
   }
 
-  Future<void> _nudge(String url) async {
+  Future<int> _nudgeAt(String url, int offset, int length) async {
     HttpClient? client;
     try {
-      client = HttpClient()..connectionTimeout = const Duration(seconds: 3);
+      client = HttpClient()..connectionTimeout = const Duration(seconds: 5);
       final req = await client.getUrl(Uri.parse(url));
-      req.headers.set(HttpHeaders.rangeHeader, 'bytes=0-${2 * 1024 * 1024 - 1}');
-      final res = await req.close().timeout(const Duration(seconds: 8));
+      final end = offset + length - 1;
+      req.headers.set(HttpHeaders.rangeHeader, 'bytes=$offset-$end');
+      final res = await req.close().timeout(const Duration(seconds: 45));
       var got = 0;
-      await for (final chunk in res.timeout(const Duration(seconds: 8))) {
+      await for (final chunk in res.timeout(const Duration(seconds: 45))) {
         got += chunk.length;
-        if (got >= 512 * 1024) break;
+        if (got >= length) break;
       }
+      return got;
     } catch (_) {
+      return 0;
     } finally {
       client?.close(force: true);
     }

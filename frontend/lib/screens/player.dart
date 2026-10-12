@@ -158,7 +158,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   Timer? _streamPoll;
   Timer? _pauseBufferTimer;
   Timer? _bufferStallTimer;
-  bool _pauseBufferBoosted = false;
   bool _seeking = false;
   int _seekToken = 0;
   Duration _lastGoodPos = Duration.zero;
@@ -200,6 +199,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   bool _savedOnce = false;
   bool _closing = false;
   bool _playerReleased = false;
+  bool _playPauseBusy = false;
+  /// Guards concurrent [_tryOpenPreparedStream] (poll + prepare race).
+  bool _openingStream = false;
   bool _allowLeave = false;
   bool _confirmExitOpen = false;
   DateTime? _confirmOpenedAt;
@@ -322,7 +324,24 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
           ready: _onPlayerReady,
         ),
       );
-      _attachMediaKitPlayer(player, VideoController(player));
+      // VideoController defaults hwdec=auto and overwrites _onPlayerReady.
+      // Force software *decode* for Linux + streams (VAAPI/d3d11va progressive
+      // HTTP often paints solid blue). Keep OpenGL/D3D *texture* path —
+      // enableHardwareAcceleration:false (S/W pixel buffer) aborted libmpv on
+      // Linux once real frames arrived ("terminate called…", seekbar blink).
+      final isLinux = !kIsWeb && Platform.isLinux;
+      final softDecode = isLinux ||
+          widget.isStream ||
+          _isTrailer ||
+          (widget.youtubeKey != null && widget.youtubeKey!.isNotEmpty);
+      final controller = VideoController(
+        player,
+        configuration: VideoControllerConfiguration(
+          enableHardwareAcceleration: true,
+          hwdec: softDecode ? 'no' : null,
+        ),
+      );
+      _attachMediaKitPlayer(player, controller);
     } catch (e, st) {
       debugPrint('PeanutButter player init failed: $e\n$st');
       _streamError = 'Couldn’t start the video player on this device.\n$e';
@@ -700,21 +719,21 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         (widget.youtubeKey != null && widget.youtubeKey!.isNotEmpty);
     // Desktop streams: software decode on every desktop OS. HW paths
     // (d3d11va / vaapi / videotoolbox) often fail on progressive HTTP/torrent
-    // — black frames, stalls, or libmpv crashes. Local files keep platform HW.
+    // — black frames, stalls, or libmpv crashes. Local files keep platform HW
+    // except Linux, where VAAPI+Flutter GL textures commonly paint solid blue.
     final bool isLinux = !kIsWeb && Platform.isLinux;
     final bool desktopStream =
         widget.isStream && (isWindows || isLinux || isMacOS);
-    final hwdec = youtube || desktopStream
+    final softDecode = youtube || desktopStream || isLinux;
+    final hwdec = softDecode
         ? 'no'
         : isWindows
             ? 'd3d11va-copy,auto'
             : isMacOS
                 ? 'videotoolbox,auto'
-                : isLinux
-                    ? 'vaapi,auto-safe'
-                    : 'auto';
+                : 'auto';
     native.setProperty('hwdec', hwdec);
-    if (youtube || desktopStream) {
+    if (softDecode) {
       native.setProperty('vd-lavc-dr', 'no');
       native.setProperty('hwdec-codecs', 'no');
     }
@@ -738,10 +757,13 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     if (!widget.isStream) {
       native.setProperty('cache-pause-wait', '3');
     }
-    // Linux Wayland: force a predictable GL path for the Flutter texture VO.
+    // Linux: software decode into the Flutter GL texture — disable hwdec
+    // interop (VAAPI-EGL blue frames) without switching to the fragile S/W VO.
     if (isLinux) {
+      native.setProperty('gpu-hwdec-interop', 'no');
       native.setProperty('gpu-context', 'auto');
-      native.setProperty('opengl-es', 'auto');
+      native.setProperty('opengl-es', 'no');
+      native.setProperty('vd-lavc-dr', 'no');
     }
     // Accurate seeks + HW/progressive streams hard-crash libmpv on scrub
     // (seen on Windows; same stack on macOS/Linux). Keyframe seeks are stable.
@@ -851,7 +873,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
 
   void _playOrPause() {
     final player = _player;
-    if (player == null) return;
+    if (player == null || _closing || _playerReleased || _playPauseBusy) return;
     // Never touch libmpv play/pause until media is open — Windows crashes when
     // play() runs against an empty playlist (custom chrome used to enable early).
     if (widget.isStream && !_streamOpened) return;
@@ -859,42 +881,47 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         player.state.duration <= Duration.zero) {
       return;
     }
-    if (player.state.playing) {
-      setState(() => _playing = false);
-      unawaited(player.pause().then((_) {
-        if (!mounted) return;
-        _onPausedKeepBuffering();
-        _bumpChrome();
-      }));
-      return;
-    }
-    setState(() => _playing = true);
-    unawaited(player.play());
+    _playPauseBusy = true;
+    final shouldPause = player.state.playing;
+    if (mounted) setState(() => _playing = !shouldPause);
+    unawaited(() async {
+      try {
+        if (shouldPause) {
+          await player.pause();
+          if (!mounted || _closing || _playerReleased) return;
+          // Torrent-only warm keep — no libmpv setProperty (races pause/play).
+          _onPausedKeepBuffering();
+          _bumpChrome();
+        } else {
+          await player.play();
+        }
+      } catch (e, st) {
+        debugPrint('PeanutButter play/pause failed: $e\n$st');
+      } finally {
+        _playPauseBusy = false;
+      }
+    }());
   }
 
-  /// Keep filling the demuxer / torrent cache while the UI is paused.
+  /// Keep filling the torrent cache while the UI is paused.
+  ///
+  /// Do **not** flip demuxer/cache props here — unlocked `setProperty` during
+  /// play/pause hard-crashes libmpv on desktop (same class of bug as mid-seek).
   void _onPausedKeepBuffering() {
-    // Skip until media is live — early playing:false events used to thrash mpv
-    // properties (and OOM Windows stream demux caps).
+    // Skip until media is live — early playing:false events used to thrash.
+    if (_closing || _playerReleased) return;
     if (widget.isStream && !_streamOpened) return;
-    final native = _player?.platform;
-    if (!_pauseBufferBoosted && native is NativePlayer) {
-      _pauseBufferBoosted = true;
-      // Modest boost on Windows/macOS streams — 600s + small demux RAM OOMs.
-      final secs = widget.isStream ? '90' : '120';
-      unawaited(native.setProperty('demuxer-readahead-secs', secs));
-      unawaited(native.setProperty('cache-secs', secs));
-    }
-    if (widget.localTorrent || (widget.isStream && (widget.sessionId?.startsWith('local-') ?? false))) {
+    if (widget.localTorrent ||
+        (widget.isStream && (widget.sessionId?.startsWith('local-') ?? false)) ||
+        LocalTorrentEngine.instance.isActive) {
       LocalTorrentEngine.instance.keepDownloading();
     }
     _pauseBufferTimer?.cancel();
     _pauseBufferTimer = Timer.periodic(const Duration(seconds: 2), (_) {
-      if (!mounted) return;
+      if (!mounted || _closing || _playerReleased) return;
       if (_player?.state.playing == true) {
         _pauseBufferTimer?.cancel();
         _pauseBufferTimer = null;
-        _pauseBufferBoosted = false;
         return;
       }
       if (widget.localTorrent || LocalTorrentEngine.instance.isActive) {
@@ -918,9 +945,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
 
   bool get _showSeekControls {
     if (_isTrailer) return false;
-    // Streams: wait until open so custom play/pause can't hit an empty player.
+    // Streams: wait for a real duration so the bar doesn't blink on open
+    // (width/playing flicker while demuxer attaches) and invite early seeks.
     if (widget.isStream) {
-      return _streamOpened && (_hasVideo || _playing);
+      final dur = _player?.state.duration.inMilliseconds ?? 0;
+      return _streamOpened && dur >= 1000 && (_hasVideo || _playing);
     }
     return _hasVideo || _player != null;
   }
@@ -1171,6 +1200,22 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   Future<void> _disposePlaybackEngines() async {
     if (_playerReleased) return;
     _playerReleased = true;
+    // Stop listener callbacks before native teardown — playing/position events
+    // calling into a disposing Player abort libmpv on desktop.
+    _posSub?.cancel();
+    _completedSub?.cancel();
+    _tracksSub?.cancel();
+    _bufferingSub?.cancel();
+    _bufferSub?.cancel();
+    _playingSub?.cancel();
+    _widthSub?.cancel();
+    _durationSub?.cancel();
+    _streamPoll?.cancel();
+    _streamPoll = null;
+    _pauseBufferTimer?.cancel();
+    _pauseBufferTimer = null;
+    _bufferStallTimer?.cancel();
+    _bufferStallTimer = null;
     final player = _player;
     _player = null;
     _controller = null;
@@ -1179,14 +1224,29 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
       try {
         setState(() {});
       } catch (_) {}
-      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
     }
     try {
       await player?.pause();
     } catch (_) {}
     try {
+      await player?.stop();
+    } catch (_) {}
+    // Let demuxer HTTP drop the torrent stream socket before dispose +
+    // stopStream. Removing the torrent under an active reader aborts with
+    // "terminate called without an active exception" on Linux (and can
+    // hard-crash Windows/macOS the same way).
+    if (!kIsWeb &&
+        (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+    }
+    try {
       await player?.dispose();
     } catch (_) {}
+    if (!kIsWeb &&
+        (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+    }
   }
 
   Future<void> _closePlayer() async {
@@ -1196,6 +1256,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     final wipe = mounted && ref.read(settingsProvider).clearCacheOnExit;
     _playNextTick?.cancel();
     _pauseBufferTimer?.cancel();
+    _bufferStallTimer?.cancel();
+    _streamPoll?.cancel();
     try {
       await _saveProgress(closing: true, invalidateHome: true)
           .timeout(const Duration(seconds: 2), onTimeout: () {});
@@ -2125,17 +2187,42 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   /// Open media once both the torrent URL and the native player exist.
   Future<void> _tryOpenPreparedStream() async {
     if (!widget.isStream || !_streamReady || _streamOpened || !mounted) return;
+    if (_openingStream || _closing || _playerReleased) return;
     if (_url.isEmpty) return;
-    if (_player == null) return;
-    await _open(_url, fileId: _fileId);
-    if (!mounted) return;
-    await _player?.play();
-    if (!mounted) return;
-    setState(() {
-      _streamOpened = true;
-      _streamError = null;
-      _buffering = true;
-    });
+    final player = _player;
+    if (player == null) return;
+    _openingStream = true;
+    try {
+      // Texture must exist before open/play — racing VideoOutput create aborts
+      // libmpv on desktop (seekbar flickers, then "terminate called…").
+      try {
+        await player.platform?.waitForVideoControllerInitializationIfAttached
+            .timeout(const Duration(seconds: 8));
+      } catch (_) {}
+      if (!mounted || _streamOpened || _closing || _playerReleased) return;
+      await _open(_url, fileId: _fileId);
+      if (!mounted || _closing || _playerReleased) return;
+      // Brief settle so demuxer attaches before play() on progressive HTTP.
+      await Future<void>.delayed(const Duration(milliseconds: 120));
+      if (!mounted || _closing || _playerReleased) return;
+      await player.play();
+      if (!mounted) return;
+      setState(() {
+        _streamOpened = true;
+        _streamError = null;
+        _buffering = true;
+      });
+    } catch (e, st) {
+      debugPrint('PeanutButter open stream failed: $e\n$st');
+      if (mounted && !_streamOpened) {
+        setState(() {
+          _streamError = 'Couldn’t start playback.\n$e';
+          _buffering = false;
+        });
+      }
+    } finally {
+      _openingStream = false;
+    }
   }
 
   Future<void> _pollStream() async {

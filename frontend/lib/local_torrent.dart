@@ -15,6 +15,9 @@ class LocalTorrentEngine {
   int? _torrentId;
   int? _streamId;
   String? _savePath;
+  /// Active Range probe from [seekTo]; closed in [stop] so leave can't abort.
+  HttpClient? _rangeClient;
+  int _pullGen = 0;
 
   bool get supported =>
       !_nativeUnavailable &&
@@ -30,6 +33,27 @@ class LocalTorrentEngine {
     try {
       await TrackerManager.fetchBestTrackers().timeout(const Duration(seconds: 4));
     } catch (_) {}
+  }
+
+  Future<void> _clearSaveDir() async {
+    final root = _savePath;
+    if (root == null || root.isEmpty) return;
+    final dir = Directory(root);
+    try {
+      if (!await dir.exists()) {
+        await dir.create(recursive: true);
+        return;
+      }
+      await for (final entity in dir.list(recursive: false)) {
+        try {
+          await entity.delete(recursive: true);
+        } catch (_) {}
+      }
+    } catch (_) {
+      try {
+        await dir.create(recursive: true);
+      } catch (_) {}
+    }
   }
 
   Future<void> ensureInit() async {
@@ -95,18 +119,19 @@ class LocalTorrentEngine {
     try {
       await TrackerManager.fetchBestTrackers().timeout(const Duration(seconds: 4));
     } catch (_) {}
-    // Keep pieces on disk by default so resume / clear-cache-off works.
-    // Callers that want a wipe pass deleteFiles via stop() or purgeDownloads().
-    await stop(deleteFiles: false);
+    // Wipe the previous stream's pieces. Leaving partial rarest-first data
+    // forces a long "checking files" pass, hash-fails, and peer bans that
+    // collapse download rate to a few KB/s on the next play.
+    await stop(deleteFiles: true);
+    await _clearSaveDir();
 
     final engine = LibtorrentFlutter.instance;
     final magnetUri = TrackerManager.injectTrackers(_withPublicTrackers(magnet));
-    // streamOnly=true: sparse + stop_when_ready. After metadata the native
-    // bridge pauses and zeroes file priorities so rarest-first cannot fill
-    // mid-file before startStream() applies head deadlines. With false, this
-    // Linux box downloaded ~hundreds of MB of random pieces while buffer
-    // stayed 0% (no playable head).
-    final id = engine.addMagnet(magnetUri, _savePath, true);
+    // streamOnly=false: streamOnly=true zeroes every file priority after
+    // metadata, libtorrent marks the torrent "finished", and the session
+    // sticks paused (~0 KB/s). Pause ourselves right after metadata instead,
+    // then let startStream() apply head piece deadlines + resume.
+    final id = engine.addMagnet(magnetUri, _savePath, false);
     _torrentId = id;
 
     StreamSubscription<Map<int, TorrentInfo>>? updates;
@@ -117,14 +142,20 @@ class LocalTorrentEngine {
 
     try {
       final metaDeadline = DateTime.now().add(const Duration(seconds: 180));
+      List<FileInfo> files = const [];
       while (DateTime.now().isBefore(metaDeadline)) {
         final info = engine.torrents[id];
-        // Resume only to fetch metadata. Once metadata lands, streamOnly
-        // pauses the torrent — do NOT resume until startStream().
         if (info != null && !info.hasMetadata && info.isPaused) {
           engine.resumeTorrent(id);
         }
-        if (info != null && info.hasMetadata) break;
+        // Prefer getFiles(): FFI hasMetadata can stay false after the native
+        // metadata_received alert while status is stuck on checking_files.
+        try {
+          files = engine.getFiles(id);
+        } catch (_) {
+          files = const [];
+        }
+        if (files.isNotEmpty || info?.hasMetadata == true) break;
         if (info?.state == TorrentState.error) {
           await stop();
           throw info!.errorMsg.isNotEmpty
@@ -133,13 +164,21 @@ class LocalTorrentEngine {
         }
         await Future<void>.delayed(const Duration(milliseconds: 250));
       }
+      if (files.isEmpty) {
+        try {
+          files = engine.getFiles(id);
+        } catch (_) {}
+      }
       final meta = engine.torrents[id];
-      if (meta == null || !meta.hasMetadata) {
+      if (meta == null || (files.isEmpty && !meta.hasMetadata)) {
         await stop();
         throw 'Couldn’t find enough peers to start this stream. Try another result.';
       }
 
-      final files = engine.getFiles(id);
+      // Do not pause here — startStream() sets dont_download + head deadlines
+      // then resume() atomically. An extra pause left the torrent "finished"
+      // (wanted=0) and stalled peer connections for minutes on Linux.
+
       final chosen = fileIndex ?? _pickFile(files, season: season, episode: episode);
       if (chosen == null) {
         await stop();
@@ -150,10 +189,8 @@ class LocalTorrentEngine {
         throw 'That file isn’t in this torrent anymore. Pick another file.';
       }
 
-      // Let streamOnly's async prioritize_files(dont_download) settle before
-      // startStream()'s prioritize_pieces() — otherwise the file-prio reset
-      // can wipe head deadlines (same race as Dart setFilePriorities).
-      await Future<void>.delayed(const Duration(milliseconds: 500));
+      // Do NOT call setFilePriorities() — async prioritize_files races and
+      // wipes startStream() piece deadlines (head starvation / 0% buffer).
 
       final stream = engine.startStream(
         id,
@@ -161,13 +198,18 @@ class LocalTorrentEngine {
         maxCacheBytes: 512 * 1024 * 1024,
       );
       _streamId = stream.id;
+      // Cap per-torrent peers (TorrServer uses ~25). 200 fans requests across
+      // slow peers and stalls the critical head pieces.
       engine.setCacheSettings(
         stream.id,
         capacity: 512 * 1024 * 1024,
         readAheadPct: 95,
-        connectionsLimit: 200,
+        connectionsLimit: 25,
       );
       engine.preloadStream(stream.id, preloadBytes: 32 * 1024 * 1024);
+      try {
+        engine.resumeTorrent(id);
+      } catch (_) {}
 
       // Wait until the HTTP stream URL exists AND we have a little head data
       // (or live download), so the player doesn't open an empty pipe.
@@ -194,10 +236,15 @@ class LocalTorrentEngine {
         if (live != null && live.isPaused) engine.resumeTorrent(id);
         final info = engine.getStreamInfo(stream.id);
         if (live != null) onStats?.call(_statsFrom(live, info));
-        final complete = (live?.progress ?? 0) >= 0.99;
+        final bytes = live?.totalDone ?? 0;
+        // progress=1.0 with wanted=0 (dont_download) is NOT complete.
+        final complete = (live?.progress ?? 0) >= 0.99 &&
+            (live?.totalWanted ?? 0) > 0 &&
+            bytes >= (live?.totalWanted ?? 0) &&
+            bytes > 8 * 1024 * 1024;
         final ready = info?.isReady == true || complete;
         // Stream window fill (head readahead), not whole-torrent progress.
-        final headBuffered = (info?.bufferPct ?? 0) > 0.02;
+        final headBuffered = (info?.bufferPct ?? 0) > 0.02 || bytes > 512 * 1024;
         if (ready || headBuffered || complete) break;
         if (live?.state == TorrentState.error) {
           await stop();
@@ -225,8 +272,15 @@ class LocalTorrentEngine {
     if (tid == null || !_ready) return null;
     final engine = LibtorrentFlutter.instance;
     var t = engine.torrents[tid];
-    if (t != null && t.isPaused) {
-      engine.resumeTorrent(tid);
+    // Head/tail "finished" auto-pauses the torrent and drops peers. Keep it
+    // running while a stream is active so the player can pull the next window.
+    if (t != null &&
+        (t.isPaused ||
+            t.state == TorrentState.finished ||
+            t.state == TorrentState.seeding)) {
+      try {
+        engine.resumeTorrent(tid);
+      } catch (_) {}
       t = engine.torrents[tid] ?? t;
     }
     if (t == null) return null;
@@ -238,38 +292,66 @@ class LocalTorrentEngine {
     // Prefer torrent file progress for the HUD % (user-facing "downloaded").
     // Fall back to stream readahead window when metadata is thin — but never
     // let a full readahead window report as 100% of the torrent.
-    final torrentPct = (t.progress * 100).clamp(0.0, 100.0);
+    final rawProgress = t.progress.isFinite ? t.progress : 0.0;
     final windowPct = ((s?.bufferPct ?? 0) * 100).clamp(0.0, 100.0);
-    final complete = t.progress >= 0.99;
+    final fileSize = s?.fileSize ?? 0;
+    // startStream() only "wants" head+tail. When those finish, libtorrent
+    // reports progress=1.0 / state=finished even though ~98% of the movie
+    // is still dont_download — that used to flash "100%" and auto-pause.
+    final doneOfFile =
+        fileSize > 0 ? (t.totalDone / fileSize).clamp(0.0, 1.0) : 0.0;
+    final complete = fileSize > 0
+        ? doneOfFile >= 0.98
+        : (rawProgress >= 0.99 &&
+            t.totalWanted > 64 * 1024 * 1024 &&
+            t.totalDone >= t.totalWanted);
     double bufferPct;
     if (complete) {
       bufferPct = 100.0;
-    } else if (torrentPct >= 1.0) {
-      bufferPct = torrentPct.clamp(0.0, 99.0);
-    } else if (windowPct > torrentPct) {
-      // Window fill is useful early on; cap so it can't look finished.
+    } else if (fileSize > 0 && t.totalDone > 0) {
+      // Whole-file % so head-only completion can't look finished.
+      final filePct = (doneOfFile * 100).clamp(0.0, 99.0);
+      bufferPct =
+          windowPct > filePct ? windowPct.clamp(0.0, 95.0) : filePct;
+    } else if (windowPct >= 1.0) {
       bufferPct = windowPct.clamp(0.0, 95.0);
+    } else if (t.totalDone > 0) {
+      bufferPct = ((t.totalDone / (32 * 1024 * 1024)) * 100).clamp(0.0, 40.0);
     } else {
-      bufferPct = torrentPct.clamp(0.0, 99.0);
+      bufferPct = 0.0;
     }
     // libtorrent sometimes reports junk sizes (e.g. 16384). Treat as unknown.
     final rawPeers = t.numPeers;
     final rawSeeds = t.numSeeds;
-    final peers = (rawPeers <= 0 || rawPeers >= 10000) ? 0 : rawPeers;
+    final streamPeers = s?.activePeers ?? 0;
+    final peers = (rawPeers > 0 && rawPeers < 10000)
+        ? rawPeers
+        : (streamPeers > 0 && streamPeers < 10000 ? streamPeers : 0);
     final seeds = (rawSeeds <= 0 || rawSeeds >= 10000) ? 0 : rawSeeds;
-    final rate = t.downloadRate;
+    final torrentRate = t.downloadRate < 0 ? 0 : t.downloadRate;
+    final streamRate = (s?.downloadRate ?? 0) < 0 ? 0 : (s?.downloadRate ?? 0);
+    final rate = torrentRate > 0 ? torrentRate : streamRate;
     return LocalStreamStats(
       bufferPct: bufferPct,
       downloadMbps: rate / (1024 * 1024),
       seeders: seeds,
       peers: peers,
-      ready: s?.isReady == true || t.progress >= 0.01 || complete,
-      stateLabel: s?.streamState.name ?? (t.isPaused ? 'Paused' : t.state.label),
+      ready: s?.isReady == true ||
+          t.totalDone > 256 * 1024 ||
+          (doneOfFile >= 0.002 && t.totalDone > 0),
+      // Prefer libtorrent state while pieces are moving — isPaused can stick
+      // true in FFI status even as piece_finished alerts keep firing.
+      stateLabel: s?.streamState.name ??
+          ((t.downloadRate > 0 || t.totalDone > 0) &&
+                  t.state != TorrentState.error
+              ? t.state.label
+              : (t.isPaused ? 'Paused' : t.state.label)),
       torrentComplete: complete,
       // Connected if we have sane peer counts OR bytes are moving / FFI junk.
       swarmActive: peers > 0 ||
           seeds > 0 ||
           rate > 0 ||
+          t.totalDone > 0 ||
           rawPeers >= 10000 ||
           rawSeeds >= 10000,
     );
@@ -282,11 +364,27 @@ class LocalTorrentEngine {
     final tid = _torrentId;
     _streamId = null;
     _torrentId = null;
+    // Kill seek Range probes first — they hold the stream HTTP open.
+    _pullGen++;
+    try {
+      _rangeClient?.close(force: true);
+    } catch (_) {}
+    _rangeClient = null;
+    // Pause before stopStream so peers/readers quiet down.
+    if (tid != null) {
+      try {
+        engine.pauseTorrent(tid);
+      } catch (_) {}
+    }
     if (sid != null) {
       try {
         engine.stopStream(sid);
       } catch (_) {}
     }
+    // Let HTTP readers / libmpv drop the socket before we tear down the
+    // torrent handle. Removing under an active reader aborts the process
+    // ("terminate called without an active exception") on Linux/desktop.
+    await Future<void>.delayed(const Duration(milliseconds: 500));
     if (tid != null) {
       try {
         if (deleteFiles) {
@@ -351,7 +449,10 @@ class LocalTorrentEngine {
     try {
       final engine = LibtorrentFlutter.instance;
       final info = engine.torrents[id];
-      if (info != null && info.isPaused) {
+      if (info != null &&
+          (info.isPaused ||
+              info.state == TorrentState.finished ||
+              info.state == TorrentState.seeding)) {
         engine.resumeTorrent(id);
       }
       final sid = _streamId;
@@ -387,7 +488,7 @@ class LocalTorrentEngine {
         sid,
         capacity: 512 * 1024 * 1024,
         readAheadPct: 95,
-        connectionsLimit: 200,
+        connectionsLimit: 25,
       );
       final fileSize = stream?.fileSize ?? 0;
       final url = stream?.url ?? '';
@@ -404,22 +505,34 @@ class LocalTorrentEngine {
   /// Open a lasting Range reader at [offset] so libtorrent's piece window
   /// follows playback instead of buffering the whole file from byte 0.
   Future<void> _pullFromOffset(String url, int offset, int fileSize) async {
+    final gen = ++_pullGen;
+    try {
+      _rangeClient?.close(force: true);
+    } catch (_) {}
+    _rangeClient = null;
     HttpClient? client;
     try {
       client = HttpClient()..connectionTimeout = const Duration(seconds: 4);
+      if (gen != _pullGen) return;
+      _rangeClient = client;
       final end = (offset + (4 * 1024 * 1024) - 1).clamp(offset, fileSize - 1);
       final req = await client.getUrl(Uri.parse(url));
       req.headers.set(HttpHeaders.rangeHeader, 'bytes=$offset-$end');
       final res = await req.close().timeout(const Duration(seconds: 8));
+      if (gen != _pullGen) return;
       // Drain up to ~2 MB so the reader advances and peers send those pieces.
       var got = 0;
       await for (final chunk in res.timeout(const Duration(seconds: 12))) {
+        if (gen != _pullGen) break;
         got += chunk.length;
         if (got >= 2 * 1024 * 1024) break;
       }
     } catch (_) {
     } finally {
-      client?.close(force: true);
+      if (identical(_rangeClient, client)) _rangeClient = null;
+      try {
+        client?.close(force: true);
+      } catch (_) {}
     }
   }
 

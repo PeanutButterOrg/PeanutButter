@@ -88,6 +88,19 @@ set_target_properties(${BINARY_NAME}
 )
 
 
+# libtorrent_flutter ships a prebuilt .so that can be months stale and breaks
+# the local HTTP stream server on Linux (0-byte Range responses). Force a
+# source build against system libtorrent-rasterbar instead of re-downloading.
+set(LIBTORRENT_FLUTTER_SKIP_DOWNLOAD ON CACHE BOOL
+  "Do not fetch libtorrent_flutter GitHub prebuilt; build from source" FORCE)
+file(GLOB _LTF_PREBUILT_SOS
+  "${CMAKE_CURRENT_SOURCE_DIR}/flutter/ephemeral/.plugin_symlinks/libtorrent_flutter/prebuilt/linux/*/liblibtorrent_flutter.so")
+foreach(_so IN LISTS _LTF_PREBUILT_SOS)
+  if(EXISTS "${_so}")
+    file(RENAME "${_so}" "${_so}.stale-prebuilt")
+  endif()
+endforeach()
+
 # Generated plugin build rules, which manage building the plugins and adding
 # them to the application.
 include(flutter/generated_plugins.cmake)
