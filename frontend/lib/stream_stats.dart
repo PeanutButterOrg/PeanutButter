@@ -66,9 +66,13 @@ String streamStatsLine({
     return '$shownInt%  ·  $mid$swarm';
   }
 
-  // Pre-play — match Android TV wording.
+  // Pre-play — peer find often takes several seconds; don't jump to
+  // "Buffering 1%" until live peers exist or bytes are moving.
   if (!connected && shownInt <= 0) {
     return 'Finding peers…';
+  }
+  if (connected && shownInt <= 0 && speedLabel.isEmpty) {
+    return 'Connecting to peers…$swarm';
   }
   if (shown >= 99.5 && speed < 0.05) {
     return 'Buffering $shownInt%$swarm';
@@ -76,8 +80,8 @@ String streamStatsLine({
   if (speedLabel.isNotEmpty) {
     return 'Buffering $shownInt%  ·  $speedLabel$swarm';
   }
-  if (connected || shownInt > 0) {
-    return 'Buffering ${shownInt.clamp(1, 100)}%$swarm';
+  if (shownInt > 0) {
+    return 'Buffering $shownInt%$swarm';
   }
   return 'Finding peers…';
 }

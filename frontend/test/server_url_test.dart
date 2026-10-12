@@ -64,10 +64,10 @@ void main() {
       );
     });
 
-    test('shows Buffering like Android TV when peers exist but no bytes yet', () {
+    test('shows Connecting when peers exist but no bytes yet', () {
       expect(
         streamStatsLine(pct: 0, speed: 0, seeders: 0, peers: 12),
-        'Buffering 1%  ·  12 peers',
+        'Connecting to peers…  ·  12 peers',
       );
     });
 

@@ -2015,10 +2015,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
           onStats: (local) {
             if (!mounted) return;
             // HUD only while start() buffers — do NOT open the player here.
-            // Opening early left media_kit on an empty pipe (KB/s, no peers).
-            final peers = local.peers > 0 ? local.peers : widget.listedPeers;
-            final seeds =
-                local.seeders > 0 ? local.seeders : widget.listedSeeders;
+            // Live libtorrent peers only (never Jackett/backend listing counts).
             try {
               setState(() {
                 _streamInfo = StreamSession(
@@ -2027,12 +2024,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
                   progress: (local.bufferPct / 100).clamp(0, 1),
                   bufferProgress: (local.bufferPct / 100).clamp(0, 1),
                   downloadMbps: local.downloadMbps,
-                  seeders: seeds,
-                  peers: peers,
+                  seeders: local.seeders,
+                  peers: local.peers,
                   resumePosition: widget.startMs,
                   status: local.ready || local.torrentComplete ? 'ready' : 'buffering',
                   streamUrl: _url,
-                  swarmActive: local.swarmActive || peers > 0 || seeds > 0,
+                  swarmActive: local.swarmActive,
                 );
               });
             } catch (_) {
@@ -2149,8 +2146,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     if (widget.localTorrent || (widget.sessionId?.startsWith('local-') ?? false)) {
       final local = LocalTorrentEngine.instance.currentStats();
       if (local == null || !mounted) return;
-      final peers = local.peers > 0 ? local.peers : widget.listedPeers;
-      final seeds = local.seeders > 0 ? local.seeders : widget.listedSeeders;
       setState(() {
         _streamInfo = StreamSession(
           id: widget.sessionId ?? 'local',
@@ -2158,12 +2153,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
           progress: (local.bufferPct / 100).clamp(0, 1),
           bufferProgress: (local.bufferPct / 100).clamp(0, 1),
           downloadMbps: local.downloadMbps,
-          seeders: seeds,
-          peers: peers,
+          seeders: local.seeders,
+          peers: local.peers,
           resumePosition: widget.startMs,
           status: local.ready || local.torrentComplete ? 'ready' : 'buffering',
           streamUrl: _url,
-          swarmActive: local.swarmActive || peers > 0 || seeds > 0,
+          swarmActive: local.swarmActive,
         );
       });
       // Only open after a real head runway (same bar as LocalTorrentEngine).
@@ -2245,10 +2240,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
 
   bool get _showStreamHud {
     if (!widget.isStream || _streamError != null) return false;
-    // Poster / peer HUD only before first open — mid-play rebuffers use the
-    // corner chip so the torrent bar never stacks on media_kit's seekbar.
-    if (!_streamOpened) return true;
-    if (!_hasVideo && !_playing) return true;
+    // Keep the full poster HUD until real video frames exist. Opening the
+    // HTTP pipe / calling play() early used to hide "Finding peers…" after
+    // ~1s while the swarm was still connecting (peer find takes longer).
+    // Mid-play rebuffers use the corner chip once [_hasVideo] is true.
+    if (!_hasVideo) return true;
     return false;
   }
 
@@ -2744,11 +2740,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     final info = _streamInfo;
     final local = LocalTorrentEngine.instance.currentStats();
     final speed = local?.downloadMbps ?? info?.downloadMbps ?? 0;
+    // Live engine peers only — Jackett "listedPeers" is a catalog estimate and
+    // made "Finding peers…" disappear after ~1s before anyone actually connected.
     var peers = local?.peers ?? info?.peers ?? 0;
-    if (peers <= 0 || peers >= 10000) {
-      peers = widget.listedPeers > 0 ? widget.listedPeers : 0;
-    }
-    final seeders = local?.seeders ?? info?.seeders ?? 0;
+    if (peers < 0 || peers >= 10000) peers = 0;
+    var seeders = local?.seeders ?? info?.seeders ?? 0;
+    if (seeders < 0 || seeders >= 10000) seeders = 0;
     // Prefer 0–100 local stats; StreamSession.bufferProgress is 0–1.
     final rawPct = () {
       if (local != null) return local.bufferPct.clamp(0.0, 100.0);
@@ -2758,21 +2755,15 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
       if (p > 0.1) return p.clamp(0.0, 100.0);
       return 0.0;
     }();
-    final starting = _streamReady && _url.isNotEmpty && (local?.ready == true);
-    final pct = starting
-        ? rawPct.clamp(1.0, 100.0)
-        : ((rawPct >= 99.5 && speed >= 0.05) ? 99.0 : rawPct);
+    final pct = (rawPct >= 99.5 && speed >= 0.05) ? 99.0 : rawPct;
     final barValue = pct > 0 ? (pct / 100).clamp(0.0, 1.0) : null;
     final art = widget.backdropUrl ?? widget.posterUrl;
     final showPoster = art != null && art.isNotEmpty;
-    // Prefer engine swarmActive — peer counts are often junk zeros on desktop.
     final swarmActive = local?.swarmActive == true ||
         info?.swarmActive == true ||
         peers > 0 ||
         seeders > 0 ||
-        speed >= 0.01 ||
-        starting;
-    // Always show Buffering X% · speed · peers (never hide peers).
+        speed >= 0.001;
     final status = streamStatsLine(
       pct: pct,
       speed: speed,
@@ -3375,12 +3366,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     final info = _streamInfo;
     final local = LocalTorrentEngine.instance.currentStats();
     final speed = local?.downloadMbps ?? info?.downloadMbps ?? 0;
-    final seeders = local?.seeders ?? info?.seeders ?? 0;
-    // Prefer live engine peers; fall back to Jackett listing when FFI is junk/0.
+    // Device-local swarm only — never Jackett/backend peer estimates.
+    var seeders = local?.seeders ?? info?.seeders ?? 0;
     var peers = local?.peers ?? info?.peers ?? 0;
-    if (peers <= 0 || peers >= 10000) {
-      peers = widget.listedPeers > 0 ? widget.listedPeers : 0;
-    }
+    if (seeders < 0 || seeders >= 10000) seeders = 0;
+    if (peers < 0 || peers >= 10000) peers = 0;
     // StreamSession.bufferProgress is 0–1; LocalStreamStats.bufferPct is 0–100.
     final pct = local != null
         ? local.bufferPct.clamp(0.0, 100.0)

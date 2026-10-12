@@ -182,7 +182,9 @@ class LocalTorrentEngine {
         throw 'Couldn’t start this stream. Try another result.';
       }
 
-      final headDeadline = DateTime.now().add(const Duration(seconds: 90));
+      // Wait for a real stream head — not mere mid-file download rate.
+      // Opening on "any download" hid the peer HUD and played an empty pipe.
+      final headDeadline = DateTime.now().add(const Duration(seconds: 120));
       while (DateTime.now().isBefore(headDeadline)) {
         final live = engine.torrents[id];
         if (live != null && live.isPaused) engine.resumeTorrent(id);
@@ -190,11 +192,9 @@ class LocalTorrentEngine {
         if (live != null) onStats?.call(_statsFrom(live, info));
         final complete = (live?.progress ?? 0) >= 0.99;
         final ready = info?.isReady == true || complete;
-        final buffered = (info?.bufferPct ?? live?.progress ?? 0) > 0.002;
-        final downloading = (live?.downloadRate ?? 0) > 16 * 1024;
-        // Open as soon as the HTTP pipe exists and we have any head data,
-        // or the whole file is already on disk (100% complete case).
-        if (ready || buffered || downloading || complete) break;
+        // Stream window fill (head readahead), not whole-torrent progress.
+        final headBuffered = (info?.bufferPct ?? 0) > 0.02;
+        if (ready || headBuffered || complete) break;
         if (live?.state == TorrentState.error) {
           await stop();
           throw live!.errorMsg.isNotEmpty
@@ -248,17 +248,26 @@ class LocalTorrentEngine {
     } else {
       bufferPct = torrentPct.clamp(0.0, 99.0);
     }
-    final peers = t.numPeers < 0 ? 0 : t.numPeers;
-    final seeds = t.numSeeds < 0 ? 0 : t.numSeeds;
+    // libtorrent sometimes reports junk sizes (e.g. 16384). Treat as unknown.
+    final rawPeers = t.numPeers;
+    final rawSeeds = t.numSeeds;
+    final peers = (rawPeers <= 0 || rawPeers >= 10000) ? 0 : rawPeers;
+    final seeds = (rawSeeds <= 0 || rawSeeds >= 10000) ? 0 : rawSeeds;
+    final rate = t.downloadRate;
     return LocalStreamStats(
       bufferPct: bufferPct,
-      downloadMbps: t.downloadRate / (1024 * 1024),
+      downloadMbps: rate / (1024 * 1024),
       seeders: seeds,
       peers: peers,
       ready: s?.isReady == true || t.progress >= 0.01 || complete,
       stateLabel: s?.streamState.name ?? (t.isPaused ? 'Paused' : t.state.label),
       torrentComplete: complete,
-      swarmActive: peers > 0 || seeds > 0 || t.downloadRate > 0,
+      // Connected if we have sane peer counts OR bytes are moving / FFI junk.
+      swarmActive: peers > 0 ||
+          seeds > 0 ||
+          rate > 0 ||
+          rawPeers >= 10000 ||
+          rawSeeds >= 10000,
     );
   }
 
