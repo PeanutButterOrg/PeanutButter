@@ -50,8 +50,12 @@ String streamStatsLine({
 
   final speedLabel = formatSpeed(speed);
   // Match Android TV: always label the swarm as "N peers" (seeds ⊆ peers).
+  // When FFI peer counts are 0/junk but bytes are moving, still show that the
+  // local swarm is alive (never invent backend/Jackett peer numbers).
   final swarmN = peerN > 0 ? peerN : seeds;
-  final swarm = swarmN > 0 ? '  ·  $swarmN peers' : '';
+  final swarm = swarmN > 0
+      ? '  ·  $swarmN peers'
+      : (connected && speedLabel.isNotEmpty ? '  ·  downloading' : '');
 
   // Mid-play chip — keep the compact "12% · 1.2 MB/s · peers" form.
   if (hasVideo || playing) {

@@ -101,7 +101,12 @@ class LocalTorrentEngine {
 
     final engine = LibtorrentFlutter.instance;
     final magnetUri = TrackerManager.injectTrackers(_withPublicTrackers(magnet));
-    final id = engine.addMagnet(magnetUri, _savePath, false);
+    // streamOnly=true: sparse + stop_when_ready. After metadata the native
+    // bridge pauses and zeroes file priorities so rarest-first cannot fill
+    // mid-file before startStream() applies head deadlines. With false, this
+    // Linux box downloaded ~hundreds of MB of random pieces while buffer
+    // stayed 0% (no playable head).
+    final id = engine.addMagnet(magnetUri, _savePath, true);
     _torrentId = id;
 
     StreamSubscription<Map<int, TorrentInfo>>? updates;
@@ -114,7 +119,9 @@ class LocalTorrentEngine {
       final metaDeadline = DateTime.now().add(const Duration(seconds: 180));
       while (DateTime.now().isBefore(metaDeadline)) {
         final info = engine.torrents[id];
-        if (info != null && info.isPaused) {
+        // Resume only to fetch metadata. Once metadata lands, streamOnly
+        // pauses the torrent — do NOT resume until startStream().
+        if (info != null && !info.hasMetadata && info.isPaused) {
           engine.resumeTorrent(id);
         }
         if (info != null && info.hasMetadata) break;
@@ -131,7 +138,6 @@ class LocalTorrentEngine {
         await stop();
         throw 'Couldn’t find enough peers to start this stream. Try another result.';
       }
-      if (meta.isPaused) engine.resumeTorrent(id);
 
       final files = engine.getFiles(id);
       final chosen = fileIndex ?? _pickFile(files, season: season, episode: episode);
@@ -144,12 +150,10 @@ class LocalTorrentEngine {
         throw 'That file isn’t in this torrent anymore. Pick another file.';
       }
 
-      // Do NOT call setFilePriorities() here. prioritize_files() is async in
-      // libtorrent and finishes *after* startStream()'s prioritize_pieces(),
-      // wiping head/deadline priorities. That race downloads rarest mid-file
-      // pieces while the playable head stays empty → HUD stuck at 0% / ~KB/s.
-      // startStream() already marks non-selected pieces dont_download and
-      // drives head/tail via piece priorities + deadlines.
+      // Let streamOnly's async prioritize_files(dont_download) settle before
+      // startStream()'s prioritize_pieces() — otherwise the file-prio reset
+      // can wipe head deadlines (same race as Dart setFilePriorities).
+      await Future<void>.delayed(const Duration(milliseconds: 500));
 
       final stream = engine.startStream(
         id,
