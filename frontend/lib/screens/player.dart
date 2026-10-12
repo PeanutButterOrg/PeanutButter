@@ -183,11 +183,15 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   final FocusNode _backFocus = FocusNode(debugLabel: 'playerBack');
   final FocusNode _audioFocus = FocusNode(debugLabel: 'playerAudio');
   final FocusNode _subsFocus = FocusNode(debugLabel: 'playerSubs');
+  final FocusNode _volumeFocus = FocusNode(debugLabel: 'playerVolume');
+  final FocusNode _fullscreenFocus = FocusNode(debugLabel: 'playerFullscreen');
   final FocusNode _rewindFocus = FocusNode(debugLabel: 'playerRewind');
   final FocusNode _playFocus = FocusNode(debugLabel: 'playerPlay');
   final FocusNode _forwardFocus = FocusNode(debugLabel: 'playerForward');
   final FocusNode _skipFocus = FocusNode(debugLabel: 'playerSkip');
   final FocusNode _playNextFocus = FocusNode(debugLabel: 'playerPlayNext');
+  double _volumeBeforeMute = 100;
+  bool _muted = false;
   late final StreamSeekController _seekCtl;
   bool _seekSettling = false;
   bool _episodeMarkedComplete = false;
@@ -307,10 +311,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     try {
       MediaKit.ensureInitialized();
       // Desktop streams: keep modest to avoid Windows OOM crashes.
+      // Same buffer budget as Windows on every desktop — larger Linux caps
+      // OOMed / stalled progressive torrents on some hosts.
       final bufferBytes = widget.isStream
-          ? ((!kIsWeb && (Platform.isWindows || Platform.isMacOS))
-              ? 24 * 1024 * 1024
-              : 48 * 1024 * 1024)
+          ? 24 * 1024 * 1024
           : 32 * 1024 * 1024;
       final player = Player(
         configuration: PlayerConfiguration(
@@ -485,6 +489,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     return primary == _backFocus ||
         primary == _audioFocus ||
         primary == _subsFocus ||
+        primary == _volumeFocus ||
+        primary == _fullscreenFocus ||
         primary == _rewindFocus ||
         primary == _playFocus ||
         primary == _forwardFocus ||
@@ -493,6 +499,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         _backFocus.hasFocus ||
         _audioFocus.hasFocus ||
         _subsFocus.hasFocus ||
+        _volumeFocus.hasFocus ||
+        _fullscreenFocus.hasFocus ||
         _rewindFocus.hasFocus ||
         _playFocus.hasFocus ||
         _forwardFocus.hasFocus ||
@@ -717,10 +725,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     // Keep prefetching while paused so resume is smooth (mpv still demuxes into cache).
     native.setProperty('cache', 'yes');
     native.setProperty('demuxer-thread', 'yes');
-    // Cap demuxer RAM — 512MiB was crashing Windows while streaming.
-    final demuxCap = widget.isStream
-        ? (isWindows || isMacOS ? '96MiB' : '192MiB')
-        : (isWindows || isMacOS ? '64MiB' : '128MiB');
+    // Cap demuxer RAM — match Windows stream caps on every desktop.
+    final demuxCap = widget.isStream ? '96MiB' : '64MiB';
     native.setProperty('demuxer-max-bytes', demuxCap);
     native.setProperty('demuxer-max-back-bytes', '32MiB');
     // Keep readahead modest for streams so seeks don't wait for a huge demuxer fill.
@@ -731,6 +737,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     native.setProperty('cache-pause', widget.isStream ? 'no' : 'yes');
     if (!widget.isStream) {
       native.setProperty('cache-pause-wait', '3');
+    }
+    // Linux Wayland: force a predictable GL path for the Flutter texture VO.
+    if (isLinux) {
+      native.setProperty('gpu-context', 'auto');
+      native.setProperty('opengl-es', 'auto');
     }
     // Accurate seeks + HW/progressive streams hard-crash libmpv on scrub
     // (seen on Windows; same stack on macOS/Linux). Keyframe seeks are stable.
@@ -870,9 +881,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     if (!_pauseBufferBoosted && native is NativePlayer) {
       _pauseBufferBoosted = true;
       // Modest boost on Windows/macOS streams — 600s + small demux RAM OOMs.
-      final secs = widget.isStream
-          ? ((!kIsWeb && (Platform.isWindows || Platform.isMacOS)) ? '90' : '180')
-          : '120';
+      final secs = widget.isStream ? '90' : '120';
       unawaited(native.setProperty('demuxer-readahead-secs', secs));
       unawaited(native.setProperty('cache-secs', secs));
     }
@@ -996,7 +1005,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     // the seek command and hard-crashes libmpv on Windows.
     try {
       // Brief pause lets the demuxer drop in-flight reads before the seek.
-      if (!kIsWeb && Platform.isWindows) {
+      // Windows-proven; same libmpv stack on Linux/macOS.
+      if (!kIsWeb &&
+          (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
         try {
           await player.pause();
         } catch (_) {}
@@ -1006,7 +1017,14 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
       await player.seek(target);
       if (token != _seekToken) return;
       await Future<void>.delayed(
-        Duration(milliseconds: (!kIsWeb && Platform.isWindows) ? 120 : 0),
+        Duration(
+          milliseconds: (!kIsWeb &&
+                  (Platform.isWindows ||
+                      Platform.isLinux ||
+                      Platform.isMacOS))
+              ? 120
+              : 0,
+        ),
       );
       if (token != _seekToken) return;
       await player.play();
@@ -1084,6 +1102,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     _backFocus.dispose();
     _audioFocus.dispose();
     _subsFocus.dispose();
+    _volumeFocus.dispose();
+    _fullscreenFocus.dispose();
     _rewindFocus.dispose();
     _playFocus.dispose();
     _forwardFocus.dispose();
@@ -2952,6 +2972,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
                         PopupMenuItem(value: f, child: Text(f.quality ?? f.container ?? 'file')),
                     ],
                   ),
+                if (_useDesktopSafeSeekBar) ...[
+                  _volumeButton(),
+                  _fullscreenButton(),
+                ],
               ],
             ),
             ),
@@ -2961,6 +2985,59 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
             ),
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _volumeButton() {
+    final vol = _player?.state.volume ?? 100;
+    final muted = _muted || vol <= 0.5;
+    return TvFocus(
+      child: IconButton(
+        focusNode: _volumeFocus,
+        tooltip: muted ? 'Unmute' : 'Mute',
+        icon: Icon(
+          muted
+              ? Icons.volume_off_rounded
+              : vol < 40
+                  ? Icons.volume_down_rounded
+                  : Icons.volume_up_rounded,
+          color: Colors.white,
+        ),
+        onPressed: () async {
+          _bumpChrome();
+          final player = _player;
+          if (player == null) return;
+          if (muted) {
+            final restore = _volumeBeforeMute <= 0.5 ? 80.0 : _volumeBeforeMute;
+            await player.setVolume(restore);
+            if (mounted) setState(() => _muted = false);
+          } else {
+            _volumeBeforeMute = vol;
+            await player.setVolume(0);
+            if (mounted) setState(() => _muted = true);
+          }
+        },
+      ),
+    );
+  }
+
+  Widget _fullscreenButton() {
+    return TvFocus(
+      child: IconButton(
+        focusNode: _fullscreenFocus,
+        tooltip: _inFullscreen ? 'Exit fullscreen' : 'Fullscreen',
+        icon: Icon(
+          _inFullscreen ? Icons.fullscreen_exit_rounded : Icons.fullscreen_rounded,
+          color: Colors.white,
+        ),
+        onPressed: () async {
+          _bumpChrome();
+          final ctx = _videoKey.currentContext;
+          if (ctx == null) return;
+          await toggleFullscreen(ctx);
+          if (mounted) setState(() => _inFullscreen = isFullscreen(ctx));
+        },
       ),
     );
   }
@@ -3251,6 +3328,21 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
                   fit: StackFit.expand,
                   children: [
                     ..._skipAndPlayNextOverlays(),
+                    if (_useDesktopSafeSeekBar && _showChrome)
+                      Positioned(
+                        top: 12,
+                        right: 12,
+                        child: _chromeLayer(
+                          hiddenOffset: const Offset(0, -0.35),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              _volumeButton(),
+                              _fullscreenButton(),
+                            ],
+                          ),
+                        ),
+                      ),
                     if (_showSeekControls &&
                         _useDesktopSafeSeekBar &&
                         _showChrome)
@@ -3440,37 +3532,36 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
       );
     }
 
-    return SafeArea(
-      top: false,
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          skipButton(icon: Icons.replay_10, seconds: -10, focusNode: _rewindFocus),
-          const SizedBox(width: 18),
-          Material(
-            color: Colors.black.withValues(alpha: 0.62),
-            shape: const CircleBorder(),
-            child: InkWell(
-              focusNode: _playFocus,
-              customBorder: const CircleBorder(),
-              onTap: () {
-                _bumpChrome();
-                _playOrPause();
-              },
-              child: Padding(
-                padding: const EdgeInsets.all(10),
-                child: Icon(
-                  _playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
-                  color: Colors.white,
-                  size: 32,
-                ),
+    // No SafeArea here — desktop MediaQuery padding differs by OS and was
+    // stacking weird insets on Linux/macOS. Positioned chrome owns placement.
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        skipButton(icon: Icons.replay_10, seconds: -10, focusNode: _rewindFocus),
+        const SizedBox(width: 18),
+        Material(
+          color: Colors.black.withValues(alpha: 0.62),
+          shape: const CircleBorder(),
+          child: InkWell(
+            focusNode: _playFocus,
+            customBorder: const CircleBorder(),
+            onTap: () {
+              _bumpChrome();
+              _playOrPause();
+            },
+            child: Padding(
+              padding: const EdgeInsets.all(10),
+              child: Icon(
+                _playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
+                color: Colors.white,
+                size: 32,
               ),
             ),
           ),
-          const SizedBox(width: 18),
-          skipButton(icon: Icons.forward_10, seconds: 10, focusNode: _forwardFocus),
-        ],
-      ),
+        ),
+        const SizedBox(width: 18),
+        skipButton(icon: Icons.forward_10, seconds: 10, focusNode: _forwardFocus),
+      ],
     );
   }
 
@@ -3494,54 +3585,53 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     final maxMs = dur.inMilliseconds > 0 ? dur.inMilliseconds.toDouble() : 1.0;
     final value = pos.inMilliseconds.clamp(0, maxMs.toInt()).toDouble();
 
-    return SafeArea(
-      top: false,
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: Colors.black.withValues(alpha: 0.55),
-          borderRadius: BorderRadius.circular(10),
-        ),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(12, 6, 12, 2),
-          child: Row(
-            children: [
-              Text(
-                _fmtClock(pos),
-                style: const TextStyle(color: Colors.white70, fontSize: 12),
-              ),
-              Expanded(
-                child: SliderTheme(
-                  data: SliderTheme.of(context).copyWith(
-                    trackHeight: 3,
-                    thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
-                    overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
-                    activeTrackColor: AppTheme.seed,
-                    inactiveTrackColor: Colors.white24,
-                    thumbColor: Colors.white,
-                  ),
-                  child: Slider(
-                    value: value,
-                    max: maxMs,
-                    onChangeStart: (_) => _bumpChrome(),
-                    onChanged: _canSeek
-                        ? (v) {
-                            setState(() {
-                              _lastGoodPos = Duration(milliseconds: v.round());
-                            });
-                          }
-                        : null,
-                    onChangeEnd: _canSeek
-                        ? (v) => unawaited(_seekPlayback(Duration(milliseconds: v.round())))
-                        : null,
-                  ),
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.55),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 6, 12, 2),
+        child: Row(
+          children: [
+            Text(
+              _fmtClock(pos),
+              style: const TextStyle(color: Colors.white70, fontSize: 12),
+            ),
+            Expanded(
+              child: SliderTheme(
+                data: SliderTheme.of(context).copyWith(
+                  trackHeight: 3,
+                  thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
+                  overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
+                  activeTrackColor: AppTheme.seed,
+                  inactiveTrackColor: Colors.white24,
+                  thumbColor: Colors.white,
+                ),
+                child: Slider(
+                  value: value,
+                  max: maxMs,
+                  onChangeStart: (_) => _bumpChrome(),
+                  onChanged: _canSeek
+                      ? (v) {
+                          setState(() {
+                            _lastGoodPos = Duration(milliseconds: v.round());
+                          });
+                        }
+                      : null,
+                  onChangeEnd: _canSeek
+                      ? (v) => unawaited(
+                            _seekPlayback(Duration(milliseconds: v.round())),
+                          )
+                      : null,
                 ),
               ),
-              Text(
-                dur > Duration.zero ? _fmtClock(dur) : '--:--',
-                style: const TextStyle(color: Colors.white70, fontSize: 12),
-              ),
-            ],
-          ),
+            ),
+            Text(
+              dur > Duration.zero ? _fmtClock(dur) : '--:--',
+              style: const TextStyle(color: Colors.white70, fontSize: 12),
+            ),
+          ],
         ),
       ),
     );
@@ -3569,20 +3659,18 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         seekBarThumbSize: 12.8,
       ),
       child: MaterialDesktopVideoControlsTheme(
-        // Hide media_kit's drag-seek bar on desktop — it calls seek() on every
-        // pointer move and crashes Windows (hr-seek + d3d11va). We render our
-        // own onChangeEnd scrubber above the bottom bar instead.
-        // Desktop: our chrome owns seek/play — keep only volume + fullscreen
-        // in media_kit so Win/Linux/mac look the same and nothing stays stuck on.
+        // Desktop: our scaffold chrome owns seek/play/volume/fullscreen.
+        // An empty media_kit bar avoids the dual-chrome mess (56px bar +
+        // gradient + OS SafeArea padding) that made Linux/mac look broken
+        // while Windows happened to look fine.
         normal: MaterialDesktopVideoControlsThemeData(
           displaySeekBar: false,
+          toggleFullscreenOnDoublePress: !_useDesktopSafeSeekBar,
+          modifyVolumeOnScroll: true,
           controlsHoverDuration: const Duration(seconds: 3),
+          padding: EdgeInsets.zero,
           bottomButtonBar: _useDesktopSafeSeekBar
-              ? const [
-                  MaterialDesktopVolumeButton(),
-                  Spacer(),
-                  MaterialDesktopFullscreenButton(),
-                ]
+              ? const []
               : const [
                   MaterialDesktopSkipPreviousButton(),
                   MaterialDesktopPlayOrPauseButton(),
@@ -3595,13 +3683,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         ),
         fullscreen: MaterialDesktopVideoControlsThemeData(
           displaySeekBar: false,
+          toggleFullscreenOnDoublePress: !_useDesktopSafeSeekBar,
+          modifyVolumeOnScroll: true,
           controlsHoverDuration: const Duration(seconds: 3),
+          padding: EdgeInsets.zero,
           bottomButtonBar: _useDesktopSafeSeekBar
-              ? const [
-                  MaterialDesktopVolumeButton(),
-                  Spacer(),
-                  MaterialDesktopFullscreenButton(),
-                ]
+              ? const []
               : const [
                   MaterialDesktopSkipPreviousButton(),
                   MaterialDesktopPlayOrPauseButton(),

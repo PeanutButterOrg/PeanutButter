@@ -38,7 +38,10 @@ class LocalTorrentEngine {
       final tmp = await getTemporaryDirectory();
       _savePath = '${tmp.path}/peanutbutter-streams';
       await Directory(_savePath!).create(recursive: true);
+      // IPv4-only random port. Default "0.0.0.0:0,[::]:0" also binds Docker /
+      // veth interfaces on Linux and announces junk endpoints to the swarm.
       await LibtorrentFlutter.init(
+        listenInterface: '0.0.0.0:0',
         uploadLimit: 0,
         downloadLimit: 0,
         defaultSavePath: _savePath,
