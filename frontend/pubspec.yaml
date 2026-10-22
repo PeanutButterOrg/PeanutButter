@@ -16,7 +16,10 @@ dependencies:
   media_kit: ^1.1.11
   media_kit_video: ^1.2.5
   media_kit_libs_video: ^1.0.5
-  libtorrent_flutter: ^2.0.0
+  # Vendored: upstream's macOS/Linux prebuilts were ABI-broken and its GitHub
+  # release host is gone. Native lib is built in-repo (see plugin README).
+  libtorrent_flutter:
+    path: plugins/libtorrent_flutter
   webview_flutter: ^4.10.0
   linux_embedded_webview:
     path: plugins/linux_embedded_webview

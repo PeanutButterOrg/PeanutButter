@@ -99,6 +99,7 @@ jobs:
             libgtk-3-dev liblzma-dev libstdc++-12-dev \
             libmpv-dev mpv \
             libwebkit2gtk-4.1-dev \
+            libtorrent-rasterbar-dev libboost-dev libssl-dev \
             dpkg-dev rsync curl file \
             python3-pil zip
 
@@ -160,47 +161,26 @@ jobs:
       - run: flutter config --enable-windows-desktop
       - run: flutter pub get
 
-      # cmake -E tar cannot extract through Flutter's .plugin_symlinks junction.
-      # Pre-seed the DLL into the real pub-cache package so the plugin skips unzip.
-      - name: Preseed libtorrent_flutter Windows prebuilt
+      # Upstream's prebuilt DLL download is gone (404). Unless a DLL is
+      # committed under plugins/libtorrent_flutter/prebuilt/windows/x64/, the
+      # plugin builds from source against this static vcpkg libtorrent.
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/vcpkg-bincache
+          key: vcpkg-libtorrent-x64-windows-static-md-v1
+      - name: Install libtorrent (vcpkg, static)
         shell: pwsh
         run: |
-          $ver = "2.0.0"
-          $lock = Get-Content -Raw pubspec.lock
-          if ($lock -match '(?s)libtorrent_flutter:.*?version:\s*"([^"]+)"') {
-            $ver = $Matches[1]
-          }
-          $pkg = Join-Path $env:PUB_CACHE "hosted\pub.dev\libtorrent_flutter-$ver"
-          if (-not (Test-Path $pkg)) {
-            throw "libtorrent_flutter package not found at $pkg"
-          }
-          $dest = Join-Path $pkg "prebuilt\windows\x64"
-          $dll = Join-Path $dest "libtorrent_flutter.dll"
-          if (Test-Path $dll) {
-            Write-Host "Prebuilt already present: $dll"
+          if (Test-Path "plugins/libtorrent_flutter/prebuilt/windows/x64/libtorrent_flutter.dll") {
+            Write-Host "Using committed prebuilt DLL"
             exit 0
           }
-          New-Item -ItemType Directory -Force -Path $dest | Out-Null
-          $url = "https://github.com/ayman708-UX/libtorrent_flutter/releases/download/v$ver/windows-native-lib-x64.zip"
-          $zip = Join-Path $env:RUNNER_TEMP "libtorrent-windows-x64.zip"
-          Write-Host "Downloading $url"
-          Invoke-WebRequest -Uri $url -OutFile $zip
-          Expand-Archive -Path $zip -DestinationPath $dest -Force
-          if (-not (Test-Path $dll)) {
-            $found = Get-ChildItem -Path $dest -Recurse -Filter "libtorrent_flutter.dll" |
-              Select-Object -First 1
-            if ($null -eq $found) {
-              Get-ChildItem -Recurse $dest | Select-Object -ExpandProperty FullName
-              throw "Expected $dll after extract"
-            }
-            Get-ChildItem -Path $found.DirectoryName -File | ForEach-Object {
-              Copy-Item -Force $_.FullName (Join-Path $dest $_.Name)
-            }
-          }
-          if (-not (Test-Path $dll)) {
-            throw "Expected $dll after extract"
-          }
-          Write-Host "Seeded $dll"
+          $cache = Join-Path $env:RUNNER_TEMP "vcpkg-bincache"
+          New-Item -ItemType Directory -Force -Path $cache | Out-Null
+          $env:VCPKG_BINARY_SOURCES = "clear;files,$cache,readwrite"
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install libtorrent:x64-windows-static-md
+          if ($LASTEXITCODE -ne 0) { throw "vcpkg install libtorrent failed" }
+          "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - run: flutter build windows --release
 
@@ -304,6 +284,20 @@ jobs:
           cache: true
 
       - run: flutter config --enable-macos-desktop
+
+      # Universal libtorrent + OpenSSL are built from source (static) by the
+      # vendored plugin; cache the toolchain output across runs.
+      - name: Install native build deps
+        run: brew install cmake ninja boost
+      - uses: actions/cache@v4
+        with:
+          path: |
+            frontend/plugins/libtorrent_flutter/.native-build/macos/*/prefix
+            frontend/plugins/libtorrent_flutter/.native-build/macos/src
+          key: ltf-macos-${{ hashFiles('frontend/plugins/libtorrent_flutter/tool/build_macos_native.sh') }}
+      - name: Build libtorrent_flutter native (universal)
+        run: plugins/libtorrent_flutter/tool/build_macos_native.sh
+
       - run: flutter pub get
 
       - name: Build universal macOS release

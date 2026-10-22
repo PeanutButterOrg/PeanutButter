@@ -342,7 +342,7 @@ final homeFeedProvider = FutureProvider.family<HomeFeed, String>((ref, kind) asy
     continueWatching: row('continueWatching'),
   );
   if (!isAndroidTv) {
-    unawaited(ArtCache.prefetch(feed.trending.take(8)));
+    unawaited(ArtCache.prefetch(feed.trending.take(8), banner: true));
     unawaited(ArtCache.prefetch([...feed.popular.take(12), ...feed.recent.take(12), ...feed.continueWatching]));
   }
   return feed;
@@ -486,7 +486,14 @@ final genresProvider = FutureProvider<List<String>>((ref) async {
       .toList();
 });
 
-final detailProvider = FutureProvider.family<TitleItem?, String>((ref, id) async {
+/// Auto-disposed so every title opened in a session isn't held forever, but
+/// kept for a few minutes after its page closes so going back stays instant.
+final detailProvider = FutureProvider.autoDispose.family<TitleItem?, String>((ref, id) async {
+  final link = ref.keepAlive();
+  Timer? expiry;
+  ref.onCancel(() => expiry = Timer(const Duration(minutes: 3), link.close));
+  ref.onResume(() => expiry?.cancel());
+  ref.onDispose(() => expiry?.cancel());
   final client = ref.watch(graphQLClientProvider);
   final result = await client.query(
     QueryOptions(
@@ -501,7 +508,8 @@ final detailProvider = FutureProvider.family<TitleItem?, String>((ref, id) async
   final json = result.data?['title'] as Map<String, dynamic>?;
   if (json == null) return null;
   final item = TitleItem.fromJson(json);
-  if (!isAndroidTv) await ArtCache.prefetch([item]);
+  // Never block the page on art: CachedArt loads it progressively.
+  if (!isAndroidTv) unawaited(ArtCache.prefetch([item], banner: true));
   return item;
 });
 

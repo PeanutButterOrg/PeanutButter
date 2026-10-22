@@ -25,7 +25,12 @@ class PlayerCache {
     } catch (_) {}
 
     try {
-      await _wipeChildren(await getApplicationCacheDirectory());
+      // Keep artwork: this is the *stream* cache. Settings → Artwork cache
+      // clears posters explicitly via ArtCache.clear().
+      await _wipeChildren(
+        await getApplicationCacheDirectory(),
+        skipNames: const {'catalog_art', 'libCachedImageData'},
+      );
     } catch (_) {}
 
     try {
@@ -57,9 +62,8 @@ class PlayerCache {
   }) async {
     if (!await dir.exists()) return;
     await for (final entity in dir.list()) {
-      final name = entity.uri.pathSegments.isEmpty
-          ? ''
-          : entity.uri.pathSegments.last;
+      // Not uri.pathSegments: a directory URI ends in '/', so .last is ''.
+      final name = entity.path.split(Platform.pathSeparator).last;
       if (skipNames.contains(name)) continue;
       try {
         if (entity is File) {

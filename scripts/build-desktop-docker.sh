@@ -81,7 +81,6 @@ run_linux_docker() {
   docker run --rm \
     -e HOME=/tmp \
     -e PUB_CACHE=/cache/pub \
-    -e LIBTORRENT_FLUTTER_SKIP_DOWNLOAD=ON \
     -v "$ROOT:/work:rw" \
     -v "${PUB_VOL}:/cache/pub" \
     -w /work/frontend \
@@ -91,9 +90,6 @@ run_linux_docker() {
       flutter config --enable-linux-desktop >/dev/null
       mkdir -p build/native_assets/linux
       flutter pub get
-      # Stale GitHub prebuilt liblibtorrent_flutter.so serves 0-byte HTTP ranges.
-      find /cache/pub/hosted -path "*/libtorrent_flutter-*/prebuilt/linux/*/liblibtorrent_flutter.so" \
-        -exec mv {} {}.stale-prebuilt \; 2>/dev/null || true
       flutter build linux --release
       chmod +x /work/scripts/package-linux.sh
       mkdir -p dist/PeanutButter
@@ -103,13 +99,6 @@ run_linux_docker() {
       chmod +x /work/scripts/bundle-mpv-runtime.sh
       /work/scripts/bundle-mpv-runtime.sh dist/PeanutButter/lib
       /work/scripts/bundle-mpv-runtime.sh build/linux/x64/release/bundle/lib
-      # Source-built libtorrent_flutter links libtorrent-rasterbar — ship it.
-      for dest in dist/PeanutButter/lib build/linux/x64/release/bundle/lib; do
-        for so in /usr/lib/x86_64-linux-gnu/libtorrent-rasterbar.so.2.0*; do
-          [[ -e "$so" ]] || continue
-          cp -aL "$so" "$dest/"
-        done
-      done
       printf "%s\n" "#!/usr/bin/env bash" "cd \"\$(dirname \"\$0\")\"" \
         "export LD_LIBRARY_PATH=\"\$PWD/lib\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}\"" \
         "exec ./peanutbutter \"\$@\"" > dist/PeanutButter/run.sh

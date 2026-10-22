@@ -5,6 +5,10 @@ use axum::body::Body;
 use axum::extract::{Path, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
+use bytes::Bytes;
+use moka::future::Cache;
+use std::sync::OnceLock;
+use std::time::Duration;
 use tracing::warn;
 
 use crate::error::AppError;
@@ -45,7 +49,44 @@ fn safe_youtube_key(key: &str) -> Option<&str> {
     Some(trimmed)
 }
 
+/// (content-type, body) per upstream URL. TMDB/YouTube art never changes at a
+/// given URL; without this every client cache miss was an upstream round trip.
+type CachedArt = (String, Bytes);
+
+fn art_cache() -> &'static Cache<String, CachedArt> {
+    static CACHE: OnceLock<Cache<String, CachedArt>> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        Cache::builder()
+            // ~128 MB of images (≈2–3k posters at w500).
+            .weigher(|k: &String, v: &CachedArt| {
+                (k.len() + v.0.len() + v.1.len()).try_into().unwrap_or(u32::MAX)
+            })
+            .max_capacity(128 * 1024 * 1024)
+            .time_to_live(Duration::from_secs(7 * 24 * 3600))
+            .build()
+    })
+}
+
+fn art_response(content_type: &str, bytes: Bytes) -> Response {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_str(content_type).unwrap_or_else(|_| HeaderValue::from_static("image/jpeg")),
+    );
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=604800"),
+    );
+    let mut res = Response::new(Body::from(bytes));
+    *res.status_mut() = StatusCode::OK;
+    *res.headers_mut() = headers;
+    res
+}
+
 async fn proxy_bytes(state: &HttpState, upstream: &str) -> Result<Response, AppError> {
+    if let Some((content_type, bytes)) = art_cache().get(upstream).await {
+        return Ok(art_response(&content_type, bytes));
+    }
     let response = state
         .app
         .http
@@ -78,20 +119,10 @@ async fn proxy_bytes(state: &HttpState, upstream: &str) -> Result<Response, AppE
         AppError::Provider(format!("art body failed: {e}"))
     })?;
 
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_str(&content_type).unwrap_or_else(|_| HeaderValue::from_static("image/jpeg")),
-    );
-    headers.insert(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static("public, max-age=604800"),
-    );
-
-    let mut res = Response::new(Body::from(bytes));
-    *res.status_mut() = StatusCode::OK;
-    *res.headers_mut() = headers;
-    Ok(res)
+    art_cache()
+        .insert(upstream.to_string(), (content_type.clone(), bytes.clone()))
+        .await;
+    Ok(art_response(&content_type, bytes))
 }
 
 /// GET /art/tmdb/{size}/{*path} → https://image.tmdb.org/t/p/{size}/{path}

@@ -342,6 +342,9 @@ class _FeaturedBannerState extends State<FeaturedBanner> {
 
   void _advance() {
     if (_paused || _holdRotation || !mounted || widget.items.length < 2) return;
+    // Home is covered (detail / player on top): don't rotate or decode
+    // backdrops nobody can see.
+    if (!TickerMode.of(context)) return;
     if (isAndroidTv) {
       setState(() => _index = (_index + 1) % widget.items.length);
       return;

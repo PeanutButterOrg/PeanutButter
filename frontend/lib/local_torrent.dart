@@ -198,13 +198,13 @@ class LocalTorrentEngine {
         maxCacheBytes: 512 * 1024 * 1024,
       );
       _streamId = stream.id;
-      // Cap per-torrent peers (TorrServer uses ~25). 200 fans requests across
-      // slow peers and stalls the critical head pieces.
+      // Cap per-torrent peers. 200 fans requests across slow peers and stalls
+      // the head pieces; 25 left well-seeded swarms at ~1 MB/s.
       engine.setCacheSettings(
         stream.id,
         capacity: 512 * 1024 * 1024,
         readAheadPct: 95,
-        connectionsLimit: 25,
+        connectionsLimit: 50,
       );
       engine.preloadStream(stream.id, preloadBytes: 32 * 1024 * 1024);
       try {
@@ -384,7 +384,9 @@ class LocalTorrentEngine {
     // Let HTTP readers / libmpv drop the socket before we tear down the
     // torrent handle. Removing under an active reader aborts the process
     // ("terminate called without an active exception") on Linux/desktop.
-    await Future<void>.delayed(const Duration(milliseconds: 500));
+    if (sid != null || tid != null) {
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+    }
     if (tid != null) {
       try {
         if (deleteFiles) {
@@ -488,7 +490,7 @@ class LocalTorrentEngine {
         sid,
         capacity: 512 * 1024 * 1024,
         readAheadPct: 95,
-        connectionsLimit: 25,
+        connectionsLimit: 50,
       );
       final fileSize = stream?.fileSize ?? 0;
       final url = stream?.url ?? '';

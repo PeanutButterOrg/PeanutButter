@@ -223,6 +223,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   List<YoutubeQualityOption> _trailerQualities = const [];
   int? _trailerHeight;
   final GlobalKey _videoKey = GlobalKey();
+  static const _windowChannel = MethodChannel('peanutbutter/window');
   late final GraphQLClient _client;
 
   /// TheIntroDB skip segments (intro / recap / credits / preview).
@@ -288,6 +289,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     // Register hardware key handler AFTER everything is set up.
     HardwareKeyboard.instance.addHandler(_onHardwareKey);
+    if (!kIsWeb && Platform.isMacOS) {
+      _windowChannel.setMethodCallHandler(_onWindowCall);
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) => _bumpChrome());
   }
 
@@ -372,8 +376,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         _bufferStallTimer?.cancel();
       }
     });
+    // Fires several times a second. Only "any buffer yet" feeds the UI
+    // (_hasVideo); the seek bar listens to the player itself.
     _bufferSub = player.stream.buffer.listen((value) {
-      if (mounted) setState(() => _buffered = value);
+      final crossed = (value > Duration.zero) != (_buffered > Duration.zero);
+      _buffered = value;
+      if (crossed && mounted) setState(() {});
     });
     _tracksSub = player.stream.tracks.listen((tracks) {
       final audio = [
@@ -643,14 +651,24 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
       } catch (_) {}
     }
     if (!_inFullscreen || !mounted) return false;
+    // Clear first: the native exit below echoes back via _onWindowCall.
+    _inFullscreen = false;
     // Fullscreen uses a separate route + native window size — pop restores both.
     await Navigator.of(context, rootNavigator: true).maybePop();
     try {
       await defaultExitNativeFullscreen();
     } catch (_) {}
-    _inFullscreen = false;
     if (mounted) setState(() {});
     return true;
+  }
+
+  /// macOS: the window left fullscreen natively (green button, Esc, Mission
+  /// Control) — drop media_kit's fullscreen route so the player isn't stuck.
+  Future<dynamic> _onWindowCall(MethodCall call) async {
+    if (call.method != 'didExitFullScreen' || !_inFullscreen || !mounted) return;
+    _inFullscreen = false;
+    await Navigator.of(context, rootNavigator: true).maybePop();
+    if (mounted) setState(() {});
   }
 
   Future<void> _confirmLeavePlayer() async {
@@ -1133,6 +1151,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     _subsFocus.dispose();
     _volumeFocus.dispose();
     _fullscreenFocus.dispose();
+    if (!kIsWeb && Platform.isMacOS) _windowChannel.setMethodCallHandler(null);
     _rewindFocus.dispose();
     _playFocus.dispose();
     _forwardFocus.dispose();
@@ -2233,21 +2252,35 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     if (widget.localTorrent || (widget.sessionId?.startsWith('local-') ?? false)) {
       final local = LocalTorrentEngine.instance.currentStats();
       if (local == null || !mounted) return;
-      setState(() {
-        _streamInfo = StreamSession(
-          id: widget.sessionId ?? 'local',
-          title: widget.title,
-          progress: (local.bufferPct / 100).clamp(0, 1),
-          bufferProgress: (local.bufferPct / 100).clamp(0, 1),
-          downloadMbps: local.downloadMbps,
-          seeders: local.seeders,
-          peers: local.peers,
-          resumePosition: widget.startMs,
-          status: local.ready || local.torrentComplete ? 'ready' : 'buffering',
-          streamUrl: _url,
-          swarmActive: local.swarmActive,
-        );
-      });
+      final next = StreamSession(
+        id: widget.sessionId ?? 'local',
+        title: widget.title,
+        progress: (local.bufferPct / 100).clamp(0, 1),
+        bufferProgress: (local.bufferPct / 100).clamp(0, 1),
+        downloadMbps: local.downloadMbps,
+        seeders: local.seeders,
+        peers: local.peers,
+        resumePosition: widget.startMs,
+        status: local.ready || local.torrentComplete ? 'ready' : 'buffering',
+        streamUrl: _url,
+        swarmActive: local.swarmActive,
+      );
+      // Polled every second for the whole movie; only rebuild when the HUD /
+      // chip text would actually change.
+      final prev = _streamInfo;
+      final same = prev != null &&
+          prev.status == next.status &&
+          prev.peers == next.peers &&
+          prev.seeders == next.seeders &&
+          prev.swarmActive == next.swarmActive &&
+          prev.streamUrl == next.streamUrl &&
+          (prev.progress * 100).round() == (next.progress * 100).round() &&
+          (prev.downloadMbps * 10).round() == (next.downloadMbps * 10).round();
+      if (same) {
+        _streamInfo = next;
+      } else {
+        setState(() => _streamInfo = next);
+      }
       // Only open after a real head runway (same bar as LocalTorrentEngine).
       if (!_streamOpened &&
           _url.isNotEmpty &&
@@ -3111,10 +3144,17 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         ),
         onPressed: () async {
           _bumpChrome();
+          // In fullscreen this button lives in media_kit's fullscreen route;
+          // _videoKey's context is the windowed Video, where isFullscreen()
+          // is false, so toggleFullscreen(ctx) tried to enter again.
+          if (_inFullscreen) {
+            await _tryExitFullscreen();
+            return;
+          }
           final ctx = _videoKey.currentContext;
           if (ctx == null) return;
-          await toggleFullscreen(ctx);
-          if (mounted) setState(() => _inFullscreen = isFullscreen(ctx));
+          await enterFullscreen(ctx);
+          if (mounted) setState(() => _inFullscreen = true);
         },
       ),
     );
@@ -3650,7 +3690,18 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   }
 
   /// Scrubber that seeks only on release (safe for Windows libmpv).
+  /// Rebuilds itself from the position stream so playback ticks don't
+  /// rebuild the whole player screen.
   Widget _playbackSeekBar() {
+    final player = _player;
+    if (player == null) return _playbackSeekBarAt();
+    return StreamBuilder<Duration>(
+      stream: player.stream.position,
+      builder: (context, _) => _playbackSeekBarAt(),
+    );
+  }
+
+  Widget _playbackSeekBarAt() {
     Duration mediaKitPos() {
       if (_seeking) return _lastGoodPos;
       final p = _player?.state.position ?? Duration.zero;

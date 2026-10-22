@@ -3,6 +3,7 @@
 .env.*
 !.env.example
 *.pem
+!frontend/plugins/libtorrent_flutter/assets/cacert.pem
 *.keystore
 *.jks
 key.properties
@@ -96,3 +97,8 @@ Thumbs.db
 *.tmp
 *.temp
 .cache/
+
+# libtorrent_flutter native build output (tool/build_macos_native.sh)
+frontend/plugins/libtorrent_flutter/.native-build/
+frontend/plugins/libtorrent_flutter/macos/liblibtorrent_flutter.dylib
+frontend/plugins/libtorrent_flutter/macos/.liblibtorrent_flutter.stamp

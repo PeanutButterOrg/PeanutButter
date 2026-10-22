@@ -11,6 +11,7 @@ import '../graphql/client.dart';
 import '../models.dart';
 import '../providers/settings.dart';
 import '../tv.dart';
+import '../window_layout.dart';
 
 bool _looksLikeImage(List<int> bytes) {
   if (bytes.length < 12) return false;
@@ -129,10 +130,28 @@ class ArtCache {
     ),
   );
 
-  static Future<void> prefetch(Iterable<TitleItem> items, {int concurrency = 8}) async {
+  /// Warm the disk cache. Rails only show posters; pass [banner] for items
+  /// shown in a hero/backdrop so their wide art and logo are fetched too.
+  /// Already-cached files are skipped (downloadFile always hits the network).
+  static Future<void> prefetch(
+    Iterable<TitleItem> items, {
+    bool banner = false,
+    int concurrency = 6,
+  }) async {
     final urls = <String>{};
     for (final item in items) {
-      for (final url in [item.thumbUrl, item.backdropUrl, item.posterUrl, item.logoUrl]) {
+      final wanted = banner
+          ? [
+              bestBannerUrl(
+                backdropUrl: item.backdropUrl,
+                thumbUrl: item.thumbUrl,
+                posterUrl: item.posterUrl,
+              ),
+              item.logoUrl,
+              item.posterUrl,
+            ]
+          : [item.posterUrl];
+      for (final url in wanted) {
         if (url == null || url.isEmpty) continue;
         urls.add(url);
       }
@@ -144,6 +163,7 @@ class ArtCache {
       await Future.wait(
         chunk.map((url) async {
           try {
+            if (await posters.getFileFromCache(url) != null) return;
             await posters.downloadFile(url).timeout(const Duration(seconds: 12));
           } catch (_) {}
         }),

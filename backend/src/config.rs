@@ -314,8 +314,10 @@ pub fn tmdb_proxy_url(public_url: &str, size: &str, path: &Option<String>) -> Op
     Some(format!("{base}/art/tmdb/{size}/{trimmed}"))
 }
 
+/// Posters render at most ~420px wide (Retina rail cards / TV); w500 is about
+/// half the bytes of w780 with no visible loss.
 pub fn absolute_image_url(public_url: &str, path: &Option<String>) -> Option<String> {
-    tmdb_proxy_url(public_url, "w780", path)
+    tmdb_proxy_url(public_url, "w500", path)
 }
 
 pub fn still_url(public_url: &str, path: &Option<String>) -> Option<String> {

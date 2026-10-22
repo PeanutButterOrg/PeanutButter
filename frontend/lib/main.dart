@@ -29,7 +29,6 @@ import 'screens/search.dart';
 import 'screens/settings.dart';
 import 'screens/unreachable.dart';
 import 'theme.dart';
-import 'widgets/cached_art.dart';
 import 'player_cache.dart';
 import 'local_torrent.dart';
 
@@ -95,10 +94,10 @@ Future<void> main() async {
   // Downloaded stream pieces persist between launches. Only when Settings →
   // Clear cache on exit is on do we wipe here too (covers a crash / force-quit
   // that skipped the normal on-exit cleanup). Same key as SettingsNotifier.
+  // Runs in the background: deleting GBs of pieces used to delay the first
+  // frame, and every stream start already wipes its own save dir.
   if (prefs.getBool('clearCacheOnExit') ?? false) {
-    try {
-      await PlayerCache.clear(); // also purges torrent pieces
-    } catch (_) {}
+    unawaited(PlayerCache.clear().catchError((_) {}));
   }
   runApp(
     ProviderScope(
@@ -410,7 +409,6 @@ class _PeanutButterAppState extends ConsumerState<PeanutButterApp> with WidgetsB
       if (wipe) {
         await LocalTorrentEngine.instance.purgeDownloads();
         await PlayerCache.clear();
-        await ArtCache.clear();
       } else {
         await LocalTorrentEngine.instance.stop(deleteFiles: false);
       }
