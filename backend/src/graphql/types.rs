@@ -480,7 +480,10 @@ impl Title {
                    last_check, created_at
             FROM file_references
             WHERE title_id = $1
-            ORDER BY quality DESC NULLS LAST, created_at
+            ORDER BY CASE
+                WHEN quality ~* '(4k|uhd)' THEN 2160
+                ELSE NULLIF(substring(quality from '(\d{3,4})'), '')::int
+            END DESC NULLS LAST, created_at
             "#,
         )
         .bind(self.id)

@@ -35,6 +35,10 @@
 #include <libtorrent/add_torrent_params.hpp>
 #include <libtorrent/torrent_handle.hpp>
 #include <libtorrent/torrent_info.hpp>
+#include <libtorrent/version.hpp>
+#if LIBTORRENT_VERSION_NUM >= 20008
+#include <libtorrent/load_torrent.hpp>
+#endif
 #include <libtorrent/torrent_status.hpp>
 #include <libtorrent/alert_types.hpp>
 #include <libtorrent/magnet_uri.hpp>
@@ -95,6 +99,17 @@
 
 namespace lt  = libtorrent;
 namespace chr = std::chrono;
+
+// libtorrent 2.1 renamed torrent_info::files() to layout(); files() only
+// exists when it was built with deprecated functions (vcpkg's is not), and
+// 2.0 (Ubuntu's libtorrent-rasterbar) has no layout().
+static inline const lt::file_storage& ti_files(const lt::torrent_info& ti) {
+#if LIBTORRENT_VERSION_NUM >= 20100
+    return ti.layout();
+#else
+    return ti.files();
+#endif
+}
 
 // ── debug logging ───────────────────────────────────────────────────────────────
 static FILE* g_logfile = nullptr;
@@ -1157,7 +1172,7 @@ struct SessionWrapper {
                                 try {
                                     auto ti = mra->handle.torrent_file();
                                     if (ti) {
-                                        int nf = ti->files().num_files();
+                                        int nf = ti_files(*ti).num_files();
                                         std::vector<lt::download_priority_t> p(
                                             (size_t)nf, lt::dont_download);
                                         mra->handle.prioritize_files(p);
@@ -1688,7 +1703,7 @@ static void handle_connection(StreamEngine* s, socket_t cli, int reader_id) {
             // get filename — port of stream.go MIME detection
             std::string filename = "video.mp4";
             if (s->ti) {
-                try { filename = std::string(s->ti->files().file_name(lt::file_index_t{s->file_index})); }
+                try { filename = std::string(ti_files(*s->ti).file_name(lt::file_index_t{s->file_index})); }
                 catch (...) {}
             }
 
@@ -2248,10 +2263,18 @@ TORRENT_API lt_torrent_id lt_add_torrent_file(lt_session_t session,
     auto* sw = to_sw(session);
     try {
         lt::error_code ec;
+#if LIBTORRENT_VERSION_NUM >= 20008
+        // The torrent_info(path, ec) constructor is gone from 2.1 builds
+        // without deprecated functions. Throws on a bad file (caught below).
+        lt::add_torrent_params atp = lt::load_torrent_file(fp);
+#else
+        // load_torrent_file() only exists from 2.0.8 (Ubuntu 22.04 has 2.0.5).
         auto ti = std::make_shared<lt::torrent_info>(fp, ec);
         if (ec) { set_err(ec.message()); return -1; }
         lt::add_torrent_params atp;
-        atp.ti = ti; atp.save_path = path;
+        atp.ti = ti;
+#endif
+        atp.save_path = path;
         atp.flags &= ~lt::torrent_flags::paused;
         atp.flags &= ~lt::torrent_flags::auto_managed;
 
@@ -2379,7 +2402,7 @@ TORRENT_API int lt_get_files(lt_session_t session, lt_torrent_id id,
 #endif
             return 0;
         }
-        const lt::file_storage& fs = ti->files();
+        const lt::file_storage& fs = ti_files(*ti);
         int n = 0;
         for (int i = 0; i < fs.num_files() && n < max; ++i, ++n) {
             lt::file_index_t fi{i};
@@ -2419,7 +2442,7 @@ TORRENT_API void lt_set_file_priorities(lt_session_t session, lt_torrent_id id,
     try {
         auto ti = it->second.torrent_file();
         if (!ti) return;
-        int nf = ti->files().num_files();
+        int nf = ti_files(*ti).num_files();
         std::vector<lt::download_priority_t> p;
         p.reserve(nf);
         for (int i = 0; i < nf; ++i)
@@ -2450,7 +2473,7 @@ TORRENT_API lt_stream_id lt_start_stream(lt_session_t session,
 
     auto ti = handle.torrent_file();
     if (!ti) { set_err("no metadata yet"); return -1; }
-    const lt::file_storage& fs = ti->files();
+    const lt::file_storage& fs = ti_files(*ti);
 
     // auto-select largest streamable file
     if (file_index < 0) {
@@ -2686,7 +2709,7 @@ TORRENT_API void lt_stop_stream(lt_session_t session, lt_stream_id sid) {
         try {
             auto ti2 = stream->handle.torrent_file();
             if (ti2) {
-                int nf = ti2->files().num_files();
+                int nf = ti_files(*ti2).num_files();
                 std::vector<lt::download_priority_t> p((size_t)nf, lt::default_priority);
                 stream->handle.prioritize_files(p);
             }

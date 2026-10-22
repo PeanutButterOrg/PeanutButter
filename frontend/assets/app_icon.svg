@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+<!-- PeanutButter app icon (source of truth). Regenerate platform files with scripts/sync-app-icons.sh -->
+<rect width="1024" height="1024" fill="#0E0E12"/>
+<g transform="rotate(-28 512 515)">
+<path d="M512 150 C650 150 720 250 712 360 C706 440 660 470 662 520 C664 575 735 610 730 700 C724 820 630 880 512 880 C394 880 300 820 294 700 C289 610 360 575 362 520 C364 470 318 440 312 360 C304 250 374 150 512 150 Z" fill="#E2A456"/>
+<g fill="none" stroke="#C9853E" stroke-width="16" stroke-linecap="round">
+<path d="M420 230 L446 250"/><path d="M500 206 L530 214"/><path d="M590 232 L612 256"/><path d="M372 330 L382 362"/><path d="M640 330 L648 362"/>
+<path d="M352 690 L360 724"/><path d="M412 806 L442 822"/><path d="M500 842 L532 842"/><path d="M590 822 L620 806"/><path d="M664 724 L672 690"/>
+</g></g>
+<path d="M466 432 L466 608 L614 520 Z" fill="#FFFFFF" stroke="#FFFFFF" stroke-width="44" stroke-linejoin="round"/>
+</svg>

@@ -132,7 +132,11 @@ impl Loader<FileStatsKey> for TitleLoader {
                        COALESCE(MAX(available_peers) OVER (PARTITION BY title_id), 0)::int
                 FROM file_references
                 WHERE title_id = ANY($1)
-                ORDER BY title_id, quality DESC NULLS LAST
+                -- Numeric resolution: as text "720p" sorted above "1080p".
+                ORDER BY title_id, CASE
+                    WHEN quality ~* '(4k|uhd)' THEN 2160
+                    ELSE NULLIF(substring(quality from '(\d{3,4})'), '')::int
+                END DESC NULLS LAST
                 "#,
             )
             .bind(ids(keys, |k| k.0))
