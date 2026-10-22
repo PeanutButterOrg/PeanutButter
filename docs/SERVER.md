@@ -103,10 +103,18 @@ Data: `/DATA/AppData/peanutbutter/`
 
 ## 5. After install
 
-1. Open `http://YOUR_SERVER:3001/` and sign in (`ADMIN_PASSWORD` from compose, or generated password in API logs)
+1. Open `http://YOUR_SERVER:3001/` and sign in. With `ADMIN_PASSWORD` empty, the first boot generates a password and prints it in `docker compose … logs api`. Change it in the console's Settings tab.
 2. Configure Jackett in the console (optional)
-3. Create a pairing code; enter it in the TV / desktop / phone app under Settings
+3. Under Devices, add a device to get a 6-digit pairing code and type it into the TV / desktop / phone app **within 15 minutes**. The app trades it for its own long-lived key; the code is not a password. Use **New code** on a device to add another screen to the same profile, and **Remove** to sign all of that device's apps out.
 4. Point the app at `http://YOUR_SERVER:3001`
+
+### Security notes
+
+- Pairing codes, API keys and the console password are rate-limited per IP (10 wrong codes or passwords, or 30 bad keys, per 15 minutes).
+- Only the **Admin** device (the first one) can change catalog keys or the media folder from an app. Everything else is done in the console.
+- Browsers may only call the API from `PUBLIC_URL`'s origin. If you serve the web build elsewhere, add its origin to `CORS_ORIGINS` (comma-separated).
+- The API container runs as uid 10001. Your media folder must be readable by it (normal `755`/`644` permissions are fine), or set `PB_RUN_AS_ROOT=1`.
+- **Upgrading from 6-digit codes:** codes that existed before this update keep working for 30 days. Updated apps swap them for a key automatically on next launch; apps still on old codes after that must re-pair.
 
 Firewall: allow **3001/tcp** from your LAN.
 
@@ -117,7 +125,9 @@ Firewall: allow **3001/tcp** from your LAN.
 | Symptom | Check |
 | --- | --- |
 | Health fails | `docker compose … ps` / logs / firewall |
-| Unknown console password | `docker compose … logs api` |
+| Unknown console password | `docker compose … logs api`; to reset, set `ADMIN_PASSWORD` and `ADMIN_PASSWORD_RESET=1` for one restart |
+| "Too many attempts" | Wait 15 minutes (per-IP limit on codes / passwords) |
+| Pairing code rejected | Codes expire after 15 minutes: click **New code** in the console |
 | App unreachable | `PUBLIC_URL` must match app server address |
 | No posters | Set `TMDB_API_KEY` in compose |
 | No torrents | Jackett in console |

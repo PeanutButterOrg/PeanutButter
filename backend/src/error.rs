@@ -35,6 +35,9 @@ pub enum AppError {
     #[error("{0}")]
     BadRequest(String),
 
+    #[error("Too many attempts. Wait a few minutes and try again.")]
+    TooManyRequests(String),
+
     #[error("Something went wrong on the server. Try again.")]
     Internal(String),
 
@@ -65,6 +68,7 @@ impl AppError {
             AppError::NotFound(_) => StatusCode::NOT_FOUND,
             AppError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
             AppError::Forbidden(_) => StatusCode::FORBIDDEN,
+            AppError::TooManyRequests(_) => StatusCode::TOO_MANY_REQUESTS,
             AppError::BadRequest(_) | AppError::Config(_) | AppError::Message(_) => StatusCode::BAD_REQUEST,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         }

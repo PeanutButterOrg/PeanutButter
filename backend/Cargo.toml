@@ -7,7 +7,7 @@ license = "MIT"
 
 [dependencies]
 axum = { version = "0.8", features = ["macros"] }
-async-graphql = { version = "7", features = ["chrono", "uuid"] }
+async-graphql = { version = "7", features = ["chrono", "uuid", "dataloader"] }
 async-graphql-axum = "7"
 sqlx = { version = "0.8", default-features = false, features = [
     "runtime-tokio-rustls",
@@ -36,6 +36,7 @@ notify = "7"
 mime_guess = "2"
 regex = "1"
 sha2 = "0.10"
+argon2 = "0.5"
 hex = "0.4"
 tokio-util = { version = "0.7", features = ["io"] }
 futures = "0.3"
@@ -43,7 +44,7 @@ http-body-util = "0.1"
 bytes = "1"
 ipnet = "2"
 walkdir = "2"
-moka = { version = "0.12", features = ["future"] }
+moka = { version = "0.12", features = ["future", "sync"] }
 librqbit = { version = "8.1.1", default-features = false, features = ["default-tls"] }
 
 [dev-dependencies]

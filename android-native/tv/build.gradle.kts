@@ -13,6 +13,13 @@ val releaseKeystore = Properties().apply {
     val file = rootProject.file("keystore.properties")
     if (file.exists()) file.inputStream().use { load(it) }
 }
+if (releaseKeystore.isEmpty()) {
+    logger.warn(
+        "PeanutButter TV: release APK is signed with the DEBUG key " +
+            "(no android-native/keystore.properties). Anyone with that key can " +
+            "publish updates for this app id; see README \"Release signing\".",
+    )
+}
 
 // Opt-in R8 shrinking: ./gradlew :tv:assembleRelease -Ppb.minify=true
 // Off by default until a minified build has been smoke-tested on a TV.

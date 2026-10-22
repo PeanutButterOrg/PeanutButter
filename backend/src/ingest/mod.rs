@@ -242,6 +242,9 @@ async fn run_full_sync_inner(ctx: IngestContext) -> Result<()> {
 
     // Optional: upgrade any leftover YTS/TVMaze rows that only have IMDb ids.
     let _ = db::set_sync_progress(&ctx.pool, "TMDB · Link legacy", 90, 100).await;
+    if let Err(e) = tmdb::backfill_missing_imdb(&ctx).await {
+        warn!(error = %e, "IMDb id backfill failed (continuing)");
+    }
     if let Err(e) = tmdb::enrich_missing_from_imdb(&ctx).await {
         warn!(error = %e, "legacy IMDb enrich failed (continuing)");
         let _ = slog(
@@ -392,6 +395,9 @@ pub async fn refresh_stale(ctx: &IngestContext) -> Result<()> {
         info!("refreshing stale titles (updated_at older than 7 days)");
         if let Err(e) = tmdb::refresh_stale_titles(ctx).await {
             warn!(error = %e, "TMDB stale refresh failed");
+        }
+        if let Err(e) = tmdb::backfill_missing_imdb(ctx).await {
+            warn!(error = %e, "IMDb id backfill failed");
         }
     }
     Ok(())

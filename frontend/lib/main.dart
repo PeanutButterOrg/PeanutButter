@@ -29,6 +29,7 @@ import 'screens/search.dart';
 import 'screens/settings.dart';
 import 'screens/unreachable.dart';
 import 'theme.dart';
+import 'pairing_exchange.dart';
 import 'player_cache.dart';
 import 'local_torrent.dart';
 
@@ -322,7 +323,24 @@ class _PeanutButterAppState extends ConsumerState<PeanutButterApp> with WidgetsB
     // Paired: /health alone decides Home vs Unreachable (GraphQL warms after).
     if (await _ensureHealthy(notifier)) {
       await notifier.markConnected();
+      unawaited(_upgradeLegacyPairing(notifier));
       _warmServerInfo();
+    }
+  }
+
+  /// Devices paired before device keys existed stored the 6-digit code as
+  /// their token. Trade it for a key once; the server stops accepting bare
+  /// codes after a transition window. A rejected code is left to the normal
+  /// 401 handling (it would fail as a token too).
+  Future<void> _upgradeLegacyPairing(SettingsNotifier notifier) async {
+    final settings = ref.read(settingsProvider);
+    if (!isPairingCode(settings.apiToken) || settings.serverUrl.isEmpty) return;
+    try {
+      final result = await exchangePairingCode(settings.serverUrl, settings.apiToken)
+          .timeout(const Duration(seconds: 8));
+      if (result is PairingKey) await notifier.setApiToken(result.key);
+    } catch (e) {
+      debugPrint('pairing upgrade skipped: $e');
     }
   }
 

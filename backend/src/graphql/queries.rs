@@ -506,9 +506,10 @@ impl Query {
                 String::new()
             }
         };
+        // "v2|": results from before strict title/IMDb matching are not reused.
         let cache_key = crate::db::stream_search_cache_key(
             title_id,
-            &query,
+            &format!("v2|{query}"),
             kind.as_db(),
             season,
             episode,
@@ -549,30 +550,42 @@ impl Query {
 
         // Prefer catalog metadata over the client string so searches stay exact
         // (clean title + imdb + S/E), even if the app sends a messy query.
-        let mut search_title = query;
-        let mut imdb_id: Option<String> = None;
+        let mut target = crate::jackett::SearchTarget {
+            title: query.clone(),
+            year,
+            ..Default::default()
+        };
         if let Some(id) = title_id {
             if let Ok(Some(meta)) = crate::db::title_stream_meta(&state.pool, id).await {
                 // Catalog title is the canonical English/UI name torrents usually use.
                 if !meta.title.trim().is_empty() {
-                    search_title = meta.title;
+                    target.title = meta.title;
                 }
-                imdb_id = meta.imdb_id.filter(|s| !s.trim().is_empty());
+                target.year = meta.year.or(year);
+                target.imdb_id = meta.imdb_id.filter(|s| !s.trim().is_empty());
+                // Releases may use the original title (anime romaji, foreign films)
+                // or whatever the app sent.
+                for alt in [meta.original_title, Some(query.clone())].into_iter().flatten() {
+                    let alt = alt.trim().to_string();
+                    if !alt.is_empty()
+                        && !alt.eq_ignore_ascii_case(&target.title)
+                        && !target.alt_titles.iter().any(|a| a.eq_ignore_ascii_case(&alt))
+                    {
+                        target.alt_titles.push(alt);
+                    }
+                }
             }
         }
 
-        // Never bake year/language into the Jackett *query* (too few hits).
-        let _ = year;
+        // The year only filters results; it is never baked into the Jackett query.
         let found = client
             .search(
-                &search_title,
+                &target,
                 kind.as_db(),
                 season,
                 episode,
-                None,
                 &preferred_res,
                 &preferred,
-                imdb_id.as_deref(),
             )
             .await?;
         let found = if let (Some(s), Some(e)) = (season, episode) {

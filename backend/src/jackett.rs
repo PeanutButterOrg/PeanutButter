@@ -83,6 +83,9 @@ struct JackettHit {
     category: Vec<i32>,
     #[serde(default, rename = "CategoryDesc")]
     category_desc: Option<String>,
+    /// Found by an exact IMDb-id search — skips the title/year check.
+    #[serde(skip)]
+    id_matched: bool,
 }
 
 impl JackettClient {
@@ -150,31 +153,30 @@ impl JackettClient {
 
     pub async fn search(
         &self,
-        query: &str,
+        target: &SearchTarget,
         kind: &str,
         season: Option<i32>,
         episode: Option<i32>,
-        year: Option<i32>,
         preferred_resolution: &str,
         preferred_language: &str,
-        imdb_id: Option<&str>,
     ) -> Result<Vec<StreamSource>> {
-        let q = build_query(query, kind, season, episode, year, preferred_language);
+        let q = build_query(&target.title, kind, season, episode, None, preferred_language);
         if q.trim().is_empty() {
             return Ok(vec![]);
         }
+        let strict = |v: Vec<StreamSource>| -> Vec<StreamSource> {
+            v.into_iter().filter(|s| target.matches(&s.title, kind)).collect()
+        };
 
         // Fast path only: parallel Torznab against a small ranked indexer set.
         // Do NOT race `/all/results` at the same time — that hammered Jackett and
         // made every search wait on the slowest indexer (20–50s).
         let torznab = self
             .search_torznab_all(
-                &q,
+                target,
                 kind,
                 season,
                 episode,
-                year,
-                imdb_id,
                 preferred_resolution,
                 preferred_language,
             )
@@ -187,7 +189,7 @@ impl JackettClient {
 
         // Thin Torznab result → quick Query+Category pass (still early-exits).
         let plain = self
-            .search_indexers_individually(&q, preferred_resolution, preferred_language, kind)
+            .search_indexers_individually(&q, preferred_resolution, preferred_language, kind, Some(target))
             .await
             .unwrap_or_default();
         found = merge_ranked(
@@ -206,7 +208,7 @@ impl JackettClient {
         )
         .await
         {
-            Ok(Ok(v)) => Self::filter_episode(v, season, episode),
+            Ok(Ok(v)) => Self::filter_episode(strict(v), season, episode),
             _ => Vec::new(),
         };
         Ok(merge_ranked(found, all, preferred_resolution))
@@ -341,41 +343,44 @@ impl JackettClient {
     /// enough healthy releases. Falls back gracefully if an indexer doesn't support it.
     async fn search_torznab_all(
         &self,
-        query: &str,
+        target: &SearchTarget,
         kind: &str,
         season: Option<i32>,
         episode: Option<i32>,
-        year: Option<i32>,
-        imdb_id: Option<&str>,
         preferred_resolution: &str,
         preferred_language: &str,
     ) -> Result<Vec<StreamSource>> {
-        let ids = self.stream_indexer_ids(kind).await;
+        let caps = self.indexer_caps().await;
+        let mut ids = self.ranked_indexer_ids(kind, 10).await;
         if ids.is_empty() {
             return Ok(vec![]);
         }
+        // Movies: indexers that take an IMDb id give exact matches — ask them first.
+        if kind == "movie" && target.imdb().is_some() {
+            ids.sort_by_key(|id| !caps.get(id).is_some_and(|c| c.movie_imdb));
+        }
+        ids.truncate(7);
+        // Exact-match indexers still running: don't stop early on text hits
+        // while one of them may return the best (correct) releases.
+        let mut id_pending: HashSet<String> = if kind == "movie" && target.imdb().is_some() {
+            ids.iter()
+                .filter(|id| caps.get(*id).is_some_and(|c| c.movie_imdb))
+                .cloned()
+                .collect()
+        } else {
+            HashSet::new()
+        };
         let mut set = tokio::task::JoinSet::new();
         for id in &ids {
             let this = self.clone();
             let id = id.clone();
-            let query = query.to_string();
             let kind = kind.to_string();
-            let season = season;
-            let episode = episode;
-            let year = year;
-            let imdb = imdb_id.map(str::to_string);
+            let caps = caps.get(&id).cloned();
+            let target = target.clone();
             set.spawn(async move {
                 let result = tokio::time::timeout(
-                    Duration::from_secs(6),
-                    this.search_torznab_one(
-                        &id,
-                        &query,
-                        &kind,
-                        season,
-                        episode,
-                        year,
-                        imdb.as_deref(),
-                    ),
+                    Duration::from_secs(8),
+                    this.search_torznab_one(&id, caps.as_ref(), &target, &kind, season, episode),
                 )
                 .await;
                 (id, result)
@@ -384,11 +389,16 @@ impl JackettClient {
         let mut hits: Vec<JackettHit> = Vec::new();
         while let Some(joined) = set.join_next().await {
             let Ok((id, timed)) = joined else { continue };
+            id_pending.remove(&id);
             match timed {
-                Ok(Ok(batch)) => {
+                Ok(Ok(mut batch)) => {
+                    // Only releases of *this* title count toward stopping early.
+                    batch.retain(|h| h.id_matched || target.matches(&h.title, kind));
                     hits.extend(batch);
                     // Return as soon as we have a usable picker set.
-                    if healthy_hit_count(&hits) >= 2 || magnet_hit_count(&hits) >= 8 {
+                    if id_pending.is_empty()
+                        && (healthy_hit_count(&hits) >= 2 || magnet_hit_count(&hits) >= 8)
+                    {
                         set.abort_all();
                         break;
                     }
@@ -400,54 +410,6 @@ impl JackettClient {
             }
         }
         Ok(self.transform_results(hits, preferred_resolution, preferred_language, kind))
-    }
-
-    /// Single-indexer search with Jackett JSON API + Category[] filters.
-    async fn search_torznab_one(
-        &self,
-        id: &str,
-        query: &str,
-        kind: &str,
-        season: Option<i32>,
-        episode: Option<i32>,
-        year: Option<i32>,
-        imdb_id: Option<&str>,
-    ) -> std::result::Result<Vec<JackettHit>, String> {
-        let url = format!("{}/api/v2.0/indexers/{id}/results", self.base_url);
-
-        // Jackett JSON API: Category is int[] (repeat the key). Do NOT use Torznab
-        // `/results/torznab` here — that returns XML and ignores our JSON parser.
-        let mut params: Vec<(&str, String)> = vec![
-            ("apikey", self.api_key.clone()),
-            ("Query", query.to_string()),
-        ];
-        for cat in kind_category_ids(kind) {
-            params.push(("Category", cat.to_string()));
-        }
-
-        if kind == "movie" {
-            if let Some(imdb) = imdb_id.filter(|s| !s.is_empty()) {
-                let numeric = imdb.trim_start_matches("tt");
-                if !numeric.is_empty() {
-                    params.push(("ImdbId", numeric.to_string()));
-                }
-            }
-        }
-        let _ = year;
-
-        // Bake S/E into Query for the JSON API (no Torznab season/ep fields).
-        if let (Some(s), Some(e)) = (season, episode) {
-            if kind == "series" || kind == "anime" {
-                let tag = format!(" S{s:02}E{e:02}");
-                if let Some((_, q)) = params.iter_mut().find(|(k, _)| *k == "Query") {
-                    if !q.to_ascii_uppercase().contains(&format!("S{s:02}E{e:02}")) {
-                        q.push_str(&tag);
-                    }
-                }
-            }
-        }
-
-        self.fetch_indexer_results(&url, &params).await
     }
 
     async fn fetch_indexer_results(
@@ -578,9 +540,16 @@ impl JackettClient {
             .await
         {
             Ok(res) if res.status().is_success() => res,
-            _ => return Vec::new(),
+            // A Jackett admin password makes this JSON endpoint redirect to
+            // the login page even with the API key; the Torznab indexer list
+            // accepts the key. Without this every search fell through to the
+            // slow aggregate /all/results.
+            _ => return self.load_indexers_torznab().await,
         };
-        let rows: Vec<IndexerListItem> = res.json().await.unwrap_or_default();
+        let rows: Vec<IndexerListItem> = match res.json().await {
+            Ok(rows) => rows,
+            Err(_) => return self.load_indexers_torznab().await,
+        };
         let parsed: Vec<IndexerInfo> = rows
             .into_iter()
             .filter(|row| row.configured)
@@ -675,6 +644,7 @@ impl JackettClient {
         preferred_resolution: &str,
         preferred_language: &str,
         kind: &str,
+        target: Option<&SearchTarget>,
     ) -> Result<Vec<StreamSource>> {
         let ids = self.stream_indexer_ids(kind).await;
         if ids.is_empty() {
@@ -698,7 +668,10 @@ impl JackettClient {
         while let Some(joined) = set.join_next().await {
             let Ok((id, timed)) = joined else { continue };
             match timed {
-                Ok(Ok(batch)) => {
+                Ok(Ok(mut batch)) => {
+                    if let Some(t) = target {
+                        batch.retain(|h| t.matches(&h.title, kind));
+                    }
                     hits.extend(batch);
                     if healthy_hit_count(&hits) >= 2 || magnet_hit_count(&hits) >= 8 {
                         set.abort_all();
@@ -1928,5 +1901,685 @@ mod tests {
         assert!(!tv.contains("2022"));
         assert!(!tv.contains("Hindi"));
         assert_eq!(tv.matches("S03E07").count(), 1);
+    }
+}
+
+// ── Accurate matching: IMDb / season-episode Torznab search + strict titles ──
+
+/// What the user actually asked for. Built from catalog metadata so text
+/// results can be checked against the real title and year.
+#[derive(Clone, Debug, Default)]
+pub struct SearchTarget {
+    pub title: String,
+    /// Original / client-sent titles that releases may use instead.
+    pub alt_titles: Vec<String>,
+    pub year: Option<i32>,
+    /// `tt…` IMDb id (exact movie search on indexers that support `imdbid`).
+    pub imdb_id: Option<String>,
+}
+
+impl SearchTarget {
+    fn imdb(&self) -> Option<&str> {
+        self.imdb_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| s.starts_with("tt") && s.len() > 2)
+    }
+
+    /// Token lists a release name may start with, and whether that candidate
+    /// is only a shortened form (text before ':' / ' - ') which then needs an
+    /// exact year in the release to count.
+    fn candidates(&self) -> Vec<(Vec<String>, bool)> {
+        let mut out: Vec<(Vec<String>, bool)> = Vec::new();
+        let mut push = |tokens: Vec<String>, needs_year: bool| {
+            if !tokens.is_empty() && !out.iter().any(|(t, _)| *t == tokens) {
+                out.push((tokens, needs_year));
+            }
+        };
+        for name in std::iter::once(&self.title).chain(self.alt_titles.iter()) {
+            let full = title_tokens(name);
+            push(full.clone(), false);
+            if full.first().is_some_and(|t| t == "the") {
+                push(full[1..].to_vec(), false);
+            }
+            if let Some(short) = name.split([':', '–']).next().filter(|s| s.len() < name.len()) {
+                push(title_tokens(short), true);
+            }
+        }
+        out
+    }
+
+    /// Strict check for releases found by *text* search. Rejects other titles
+    /// that merely contain the words ("Kleo S02E03 The Bear", "Dune Part Two
+    /// 2024" when looking for Dune 2021).
+    pub fn matches(&self, release: &str, kind: &str) -> bool {
+        let rel = title_tokens(strip_release_prefix(release));
+        if rel.is_empty() {
+            return false;
+        }
+        let rel_variants: Vec<&[String]> = if rel[0] == "the" && rel.len() > 1 {
+            vec![&rel[..], &rel[1..]]
+        } else {
+            vec![&rel[..]]
+        };
+        for (cand, needs_year) in self.candidates() {
+            for r in &rel_variants {
+                if r.len() >= cand.len() && r[..cand.len()] == cand[..] {
+                    if self.rest_ok(&r[cand.len()..], kind, needs_year) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    fn year_ok(&self, found: i32, exact: bool) -> bool {
+        match self.year {
+            Some(want) if exact => found == want,
+            Some(want) => (found - want).abs() <= 1,
+            None => true,
+        }
+    }
+
+    fn rest_ok(&self, rest: &[String], kind: &str, needs_year: bool) -> bool {
+        if kind == "movie" {
+            // The release year, if present, sits before the quality tags.
+            for tok in rest {
+                if is_release_tag(tok) {
+                    break;
+                }
+                if let Some(y) = year_token(tok) {
+                    return self.year_ok(y, needs_year);
+                }
+            }
+            if needs_year {
+                return false;
+            }
+            // No year: only quality tags may follow ("Dune 1080p"), not more
+            // title words ("Dune Messiah", "Dune Part Two").
+            return rest.first().is_none_or(|t| is_release_tag(t));
+        }
+        // Series / anime: the show title must be followed by an episode or
+        // season marker (or a show year, then the marker).
+        let Some(first) = rest.first() else {
+            return false;
+        };
+        if let Some(y) = year_token(first) {
+            if !self.year_ok(y, needs_year) {
+                return false;
+            }
+            return rest.get(1).is_none_or(|t| is_episode_marker(t, kind) || is_release_tag(t));
+        }
+        if needs_year {
+            return false;
+        }
+        is_episode_marker(first, kind) || matches!(first.as_str(), "season" | "complete" | "series")
+    }
+}
+
+/// Lowercase alphanumeric tokens; `&` → "and", apostrophes dropped so
+/// "Marvel's" and "Marvels" match.
+fn title_tokens(raw: &str) -> Vec<String> {
+    let mut s = String::with_capacity(raw.len());
+    for c in raw.chars() {
+        match c {
+            '\'' | '’' | '`' => {}
+            '&' => s.push_str(" and "),
+            c if c.is_alphanumeric() => s.extend(c.to_lowercase()),
+            _ => s.push(' '),
+        }
+    }
+    s.split_whitespace().map(str::to_owned).collect()
+}
+
+/// Drop leading "[Group]" / "(tag)" blocks and "www.site.org - " prefixes.
+fn strip_release_prefix(raw: &str) -> &str {
+    let mut s = raw.trim();
+    loop {
+        let before = s;
+        for (open, close) in [('[', ']'), ('(', ')'), ('【', '】')] {
+            if s.starts_with(open) {
+                if let Some(end) = s.find(close) {
+                    s = s[end + close.len_utf8()..].trim_start();
+                }
+            }
+        }
+        let lower = s.to_ascii_lowercase();
+        if lower.starts_with("www.") {
+            if let Some(idx) = s.find(" - ") {
+                s = s[idx + 3..].trim_start();
+            }
+        }
+        s = s.trim_start_matches(['-', ' ', '.', '_']);
+        if s == before {
+            return s;
+        }
+    }
+}
+
+fn year_token(tok: &str) -> Option<i32> {
+    if tok.len() != 4 {
+        return None;
+    }
+    let y: i32 = tok.parse().ok()?;
+    (1900..=2099).contains(&y).then_some(y)
+}
+
+fn is_episode_marker(tok: &str, kind: &str) -> bool {
+    let b = tok.as_bytes();
+    // s02, s02e03, s2e3
+    if b.first() == Some(&b's') && b.len() > 1 {
+        let rest = &tok[1..];
+        let (s, e) = rest.split_once('e').unwrap_or((rest, ""));
+        let digits = |x: &str| !x.is_empty() && x.len() <= 3 && x.bytes().all(|c| c.is_ascii_digit());
+        return digits(s) && (e.is_empty() || digits(e));
+    }
+    // 2x03
+    if let Some((s, e)) = tok.split_once('x') {
+        return !s.is_empty() && !e.is_empty() && s.len() <= 2 && e.len() <= 3
+            && s.bytes().all(|c| c.is_ascii_digit()) && e.bytes().all(|c| c.is_ascii_digit());
+    }
+    // Anime absolute numbering: "Frieren - 05"
+    kind == "anime" && tok.len() <= 4 && tok.bytes().all(|c| c.is_ascii_digit())
+}
+
+fn is_release_tag(tok: &str) -> bool {
+    if tok.len() >= 4 && tok.ends_with('p') && tok[..tok.len() - 1].bytes().all(|c| c.is_ascii_digit()) {
+        return true; // 1080p, 2160p
+    }
+    matches!(
+        tok,
+        "4k" | "8k" | "uhd" | "hd" | "fhd" | "hdr" | "hdr10" | "dv" | "dovi" | "sdr" | "3d"
+            | "web" | "webrip" | "webdl" | "dl" | "bluray" | "blu" | "brrip" | "bdrip" | "bdremux"
+            | "remux" | "hdrip" | "dvdrip" | "dvd" | "hdtv" | "hdcam" | "x264" | "x265" | "h264"
+            | "h265" | "hevc" | "avc" | "av1" | "10bit" | "8bit" | "aac" | "ac3" | "dts" | "ddp"
+            | "dd" | "atmos" | "truehd" | "proper" | "repack" | "extended" | "unrated" | "imax"
+            | "remastered" | "multi" | "dual" | "dubbed" | "subbed" | "yts" | "yify" | "rarbg"
+            | "internal" | "limited" | "nf" | "amzn" | "dsnp" | "hulu" | "atvp" | "hmax"
+    )
+}
+
+// ── Torznab plumbing ──
+
+#[derive(Clone, Debug, Default)]
+struct IndexerCaps {
+    movie_search: bool,
+    movie_imdb: bool,
+    tv_search: bool,
+    tv_season_ep: bool,
+}
+
+type CapsMap = std::collections::HashMap<String, IndexerCaps>;
+
+/// Per-Jackett-URL capability map, refreshed every 6h. One `t=indexers`
+/// request covers every configured indexer.
+fn caps_cache() -> &'static Mutex<Option<(std::time::Instant, String, CapsMap)>> {
+    static CACHE: std::sync::OnceLock<Mutex<Option<(std::time::Instant, String, CapsMap)>>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(None))
+}
+
+fn torznab_regex(pattern: &'static str, slot: &'static std::sync::OnceLock<regex::Regex>) -> &'static regex::Regex {
+    slot.get_or_init(|| regex::Regex::new(pattern).expect("static regex"))
+}
+
+fn xml_unescape(raw: &str) -> String {
+    let s = raw.trim();
+    let s = s
+        .strip_prefix("<![CDATA[")
+        .and_then(|x| x.strip_suffix("]]>"))
+        .unwrap_or(s);
+    if !s.contains('&') {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(i) = rest.find('&') {
+        out.push_str(&rest[..i]);
+        let tail = &rest[i..];
+        let Some(end) = tail.find(';').filter(|e| *e <= 10) else {
+            out.push('&');
+            rest = &tail[1..];
+            continue;
+        };
+        let entity = &tail[1..end];
+        let decoded = match entity {
+            "amp" => Some('&'),
+            "lt" => Some('<'),
+            "gt" => Some('>'),
+            "quot" => Some('"'),
+            "apos" => Some('\''),
+            e if e.starts_with("#x") || e.starts_with("#X") => {
+                u32::from_str_radix(&e[2..], 16).ok().and_then(char::from_u32)
+            }
+            e if e.starts_with('#') => e[1..].parse::<u32>().ok().and_then(char::from_u32),
+            _ => None,
+        };
+        match decoded {
+            Some(c) => {
+                out.push(c);
+                rest = &tail[end + 1..];
+            }
+            None => {
+                out.push('&');
+                rest = &tail[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+fn parse_caps(xml: &str) -> CapsMap {
+    static INDEXER: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    static SEARCH: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let indexer = torznab_regex(r#"(?s)<indexer\s+id="([^"]+)".*?</indexer>"#, &INDEXER);
+    let search = torznab_regex(
+        r#"<(movie-search|tv-search)\s+available="(\w+)"\s+supportedParams="([^"]*)""#,
+        &SEARCH,
+    );
+    let mut map = CapsMap::new();
+    for m in indexer.captures_iter(xml) {
+        let mut caps = IndexerCaps::default();
+        for s in search.captures_iter(&m[0]) {
+            let on = &s[2] == "yes";
+            let params: Vec<&str> = s[3].split(',').map(str::trim).collect();
+            match &s[1] {
+                "movie-search" => {
+                    caps.movie_search = on;
+                    caps.movie_imdb = on && params.contains(&"imdbid");
+                }
+                _ => {
+                    caps.tv_search = on;
+                    caps.tv_season_ep = on && params.contains(&"season") && params.contains(&"ep");
+                }
+            }
+        }
+        map.insert(m[1].to_string(), caps);
+    }
+    map
+}
+
+fn parse_torznab_items(xml: &str, id_matched: bool) -> std::result::Result<Vec<JackettHit>, String> {
+    static ERROR: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    static ITEM: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    static ATTR: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    static CAT: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    static INDEXER: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let error = torznab_regex(r#"<error\s+code="(\d+)"\s+description="([^"]*)""#, &ERROR);
+    if let Some(e) = error.captures(xml) {
+        return Err(xml_unescape(&e[2]));
+    }
+    let item = torznab_regex(r"(?s)<item>(.*?)</item>", &ITEM);
+    let attr = torznab_regex(r#"<torznab:attr\s+name="([^"]+)"\s+value="([^"]*)""#, &ATTR);
+    let cat = torznab_regex(r"<category>(\d+)</category>", &CAT);
+    let jidx = torznab_regex(r#"<jackettindexer\s+id="([^"]*)">([^<]*)</jackettindexer>"#, &INDEXER);
+    let tag = |body: &str, name: &str| -> Option<String> {
+        let open = format!("<{name}>");
+        let close = format!("</{name}>");
+        let start = body.find(&open)? + open.len();
+        let end = body[start..].find(&close)? + start;
+        Some(xml_unescape(&body[start..end])).filter(|s| !s.is_empty())
+    };
+    let mut hits = Vec::new();
+    for m in item.captures_iter(xml) {
+        let body = &m[1];
+        let mut seeders = None;
+        let mut peers = None;
+        let mut magnet = None;
+        let mut infohash = None;
+        for a in attr.captures_iter(body) {
+            let v = xml_unescape(&a[2]);
+            match &a[1] {
+                "seeders" => seeders = v.parse().ok(),
+                "peers" => peers = v.parse().ok(),
+                "magneturl" if v.starts_with("magnet:") => magnet = Some(v),
+                "infohash" if !v.is_empty() => infohash = Some(v),
+                _ => {}
+            }
+        }
+        let title = tag(body, "title").unwrap_or_default();
+        if magnet.is_none() {
+            if let Some(h) = infohash {
+                magnet = Some(format!("magnet:?xt=urn:btih:{h}"));
+            }
+        }
+        let (indexer_id, indexer_name) = jidx
+            .captures(body)
+            .map(|c| (Some(c[1].to_string()), Some(xml_unescape(&c[2]))))
+            .unwrap_or((None, None));
+        hits.push(JackettHit {
+            title,
+            magnet_uri: magnet,
+            link: tag(body, "link"),
+            seeders,
+            peers,
+            size: tag(body, "size").and_then(|s| s.parse().ok()),
+            tracker: indexer_name.clone(),
+            tracker_id: indexer_id,
+            indexer: indexer_name,
+            guid: tag(body, "guid"),
+            category: cat.captures_iter(body).filter_map(|c| c[1].parse().ok()).collect(),
+            category_desc: None,
+            id_matched,
+        });
+    }
+    Ok(hits)
+}
+
+impl JackettClient {
+    async fn indexer_caps(&self) -> CapsMap {
+        {
+            let guard = caps_cache().lock().unwrap_or_else(|e| e.into_inner());
+            if let Some((at, base, map)) = guard.as_ref() {
+                if *base == self.base_url && at.elapsed() < Duration::from_secs(6 * 3600) {
+                    return map.clone();
+                }
+            }
+        }
+        let url = format!(
+            "{}/api/v2.0/indexers/all/results/torznab/api",
+            self.base_url
+        );
+        let fetched = tokio::time::timeout(
+            Duration::from_secs(8),
+            self.http
+                .get(&url)
+                .query(&[
+                    ("apikey", self.api_key.as_str()),
+                    ("t", "indexers"),
+                    ("configured", "true"),
+                ])
+                .send(),
+        )
+        .await;
+        let map = match fetched {
+            Ok(Ok(res)) if res.status().is_success() => {
+                parse_caps(&res.text().await.unwrap_or_default())
+            }
+            _ => CapsMap::new(),
+        };
+        if !map.is_empty() {
+            *caps_cache().lock().unwrap_or_else(|e| e.into_inner()) =
+                Some((std::time::Instant::now(), self.base_url.clone(), map.clone()));
+        }
+        map
+    }
+
+    async fn load_indexers_torznab(&self) -> Vec<IndexerInfo> {
+        static ROW: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+        let row = torznab_regex(
+            r#"(?s)<indexer\s+id="([^"]+)"[^>]*>\s*<title>([^<]*)</title>"#,
+            &ROW,
+        );
+        let url = format!("{}/api/v2.0/indexers/all/results/torznab/api", self.base_url);
+        let Ok(Ok(res)) = tokio::time::timeout(
+            Duration::from_secs(8),
+            self.http
+                .get(&url)
+                .query(&[
+                    ("apikey", self.api_key.as_str()),
+                    ("t", "indexers"),
+                    ("configured", "true"),
+                ])
+                .send(),
+        )
+        .await
+        else {
+            return Vec::new();
+        };
+        if !res.status().is_success() {
+            return Vec::new();
+        }
+        let xml = res.text().await.unwrap_or_default();
+        let parsed: Vec<IndexerInfo> = row
+            .captures_iter(&xml)
+            .filter(|c| &c[1] != "all")
+            .map(|c| IndexerInfo {
+                id: c[1].to_string(),
+                name: xml_unescape(&c[2]),
+                last_error: String::new(),
+            })
+            .collect();
+        if !parsed.is_empty() {
+            *self.indexer_cache.lock().unwrap_or_else(|e| e.into_inner()) = Some(parsed.clone());
+        }
+        parsed
+    }
+
+    async fn fetch_torznab(
+        &self,
+        id: &str,
+        params: &[(&str, String)],
+        id_matched: bool,
+    ) -> std::result::Result<Vec<JackettHit>, String> {
+        let url = format!("{}/api/v2.0/indexers/{id}/results/torznab/api", self.base_url);
+        let res = self
+            .http
+            .get(&url)
+            .query(&[("apikey", self.api_key.as_str())])
+            .query(params)
+            .send()
+            .await
+            .map_err(|e| self.redact_text(&e.to_string()))?;
+        let status = res.status();
+        let body = res.text().await.unwrap_or_default();
+        if status.as_u16() == 429 {
+            return Err("rate_limited".to_string());
+        }
+        if !status.is_success() {
+            return Err(self.redact_text(&body));
+        }
+        parse_torznab_items(&body, id_matched).map_err(|e| self.redact_text(&e))
+    }
+
+    /// One indexer: exact IMDb search when it supports it (movies), else a
+    /// Torznab text / season+episode search. Unknown caps → plain `t=search`.
+    async fn search_torznab_one(
+        &self,
+        id: &str,
+        caps: Option<&IndexerCaps>,
+        target: &SearchTarget,
+        kind: &str,
+        season: Option<i32>,
+        episode: Option<i32>,
+    ) -> std::result::Result<Vec<JackettHit>, String> {
+        let cats = kind_categories(kind).to_string();
+        let title = build_query(&target.title, kind, None, None, None, "");
+        if kind == "movie" {
+            if let (Some(imdb), Some(c)) = (target.imdb(), caps) {
+                if c.movie_imdb {
+                    let hits = self
+                        .fetch_torznab(
+                            id,
+                            &[("t", "movie".into()), ("imdbid", imdb.into()), ("cat", cats.clone())],
+                            true,
+                        )
+                        .await?;
+                    if !hits.is_empty() {
+                        return Ok(hits);
+                    }
+                }
+            }
+            let t = if caps.is_some_and(|c| c.movie_search) { "movie" } else { "search" };
+            return self
+                .fetch_torznab(id, &[("t", t.into()), ("q", title), ("cat", cats)], false)
+                .await;
+        }
+        match (season, episode) {
+            (Some(s), Some(e)) if caps.is_some_and(|c| c.tv_season_ep) => {
+                self.fetch_torznab(
+                    id,
+                    &[
+                        ("t", "tvsearch".into()),
+                        ("q", title),
+                        ("season", s.to_string()),
+                        ("ep", e.to_string()),
+                        ("cat", cats),
+                    ],
+                    false,
+                )
+                .await
+            }
+            (Some(s), Some(e)) => {
+                self.fetch_torznab(
+                    id,
+                    &[("t", "search".into()), ("q", format!("{title} S{s:02}E{e:02}")), ("cat", cats)],
+                    false,
+                )
+                .await
+            }
+            _ => {
+                let t = if caps.is_some_and(|c| c.tv_search) { "tvsearch" } else { "search" };
+                self.fetch_torznab(id, &[("t", t.into()), ("q", title), ("cat", cats)], false)
+                    .await
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod match_tests {
+    use super::*;
+
+    fn dune() -> SearchTarget {
+        SearchTarget {
+            title: "Dune".into(),
+            year: Some(2021),
+            imdb_id: Some("tt1160419".into()),
+            ..Default::default()
+        }
+    }
+
+    fn bear() -> SearchTarget {
+        SearchTarget {
+            title: "The Bear".into(),
+            year: Some(2022),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn movie_year_and_title() {
+        let t = dune();
+        assert!(t.matches("Dune Part One (2021) 1080p BRRip 5.1 x264 -YTS", "movie"));
+        assert!(t.matches("Dune.2021.2160p.AI Enhanced.WEBRip.60FPS.H265", "movie"));
+        assert!(t.matches("Dune 1080p WEB-DL", "movie"));
+        assert!(!t.matches("Dune Part Two (2024) 1080p BRRip 5.1 x264 -YT", "movie"));
+        assert!(!t.matches("Dune - Part Two 2024 1080p BluRay DoVi HDR10", "movie"));
+        assert!(!t.matches("Dune 1984 1080p BluRay", "movie"));
+        assert!(!t.matches("Dune Messiah 1080p", "movie"));
+        assert!(!t.matches("À l'école de l'universel Germaine Le Goff", "movie"));
+    }
+
+    #[test]
+    fn series_title_must_lead() {
+        let t = bear();
+        assert!(t.matches("The Bear S02E03 Sundae 2160p DSNP WEB-DL DDP5 1 H", "series"));
+        assert!(t.matches("The.Bear.S02E03.Sundae.1080p.DSNP.WEB-DL.DDP5.1.H", "series"));
+        assert!(t.matches("The Bear S02e01-10 [1080p Ita Eng Spa 5.1 HEVC10]", "series"));
+        assert!(t.matches("www.UIndex.org    -    The Bear S02E03 720p WEB h264-EDITH", "series"));
+        assert!(t.matches("The Bear 2022 S02E03 1080p", "series"));
+        assert!(!t.matches("Kleo S02E03 The Bear 1080p NF WEB-DL DD 5 1 Atmos", "series"));
+        assert!(!t.matches("Running Wild with Bear Grylls The Challenge S02E03", "series"));
+        assert!(!t.matches("The Yogi Bear Show S02E03 Gleesome Threesome 1080p", "series"));
+        assert!(!t.matches("The Island with Bear Grylls S02E03 The Mens Island", "series"));
+        assert!(!t.matches("Ronja the Robbers Daughter 2024 S02E03 Bear Cavern", "series"));
+        assert!(!t.matches("The Bear 1988 S02E03", "series"));
+    }
+
+    #[test]
+    fn subtitles_and_alt_titles() {
+        let t = SearchTarget {
+            title: "Mission: Impossible – Dead Reckoning Part One".into(),
+            year: Some(2023),
+            ..Default::default()
+        };
+        assert!(t.matches("Mission Impossible Dead Reckoning Part One 2023 1080p", "movie"));
+        assert!(t.matches("Mission.Impossible.2023.1080p.WEB", "movie"));
+        assert!(!t.matches("Mission Impossible 1996 1080p", "movie"));
+        let a = SearchTarget {
+            title: "Frieren: Beyond Journey's End".into(),
+            alt_titles: vec!["Sousou no Frieren".into()],
+            ..Default::default()
+        };
+        assert!(a.matches("[SubsPlease] Sousou no Frieren - 05 (1080p) [ABCD1234].mkv", "anime"));
+        assert!(!a.matches("[SubsPlease] Dandadan - 05 (1080p)", "anime"));
+    }
+
+    #[test]
+    fn parses_torznab_items_and_caps() {
+        let xml = r#"<rss><channel>
+          <item><title>Dune Part One 2021 720p BluRay &amp; x264</title>
+          <guid>https://x/1</guid><jackettindexer id="yts">YTS</jackettindexer>
+          <size>1717986918</size><link>http://j/dl/yts/?a=1&amp;b=2</link>
+          <category>2000</category><category>100467</category>
+          <torznab:attr name="seeders" value="55" /><torznab:attr name="peers" value="72" />
+          <torznab:attr name="infohash" value="C325154DAA922E60334A169DF70354ED07AA17E3" />
+          </item></channel></rss>"#;
+        let hits = parse_torznab_items(xml, true).unwrap();
+        assert_eq!(hits.len(), 1);
+        let h = &hits[0];
+        assert_eq!(h.title, "Dune Part One 2021 720p BluRay & x264");
+        assert_eq!(h.seeders, Some(55));
+        assert_eq!(h.size, Some(1717986918));
+        assert_eq!(h.category, vec![2000, 100467]);
+        assert_eq!(h.link.as_deref(), Some("http://j/dl/yts/?a=1&b=2"));
+        assert!(h.magnet_uri.as_deref().unwrap().contains("C325154DAA922E60334A169DF70354ED07AA17E3"));
+        assert!(h.id_matched);
+        assert_eq!(
+            parse_torznab_items(r#"<error code="100" description="Invalid API Key" />"#, false).unwrap_err(),
+            "Invalid API Key"
+        );
+
+        let caps = parse_caps(r#"<indexers>
+          <indexer id="yts" configured="true"><caps><searching>
+          <tv-search available="no" supportedParams="q" />
+          <movie-search available="yes" supportedParams="q,imdbid" /></searching></caps></indexer>
+          <indexer id="eztv" configured="true"><caps><searching>
+          <tv-search available="yes" supportedParams="q,season,ep" />
+          <movie-search available="no" supportedParams="q" /></searching></caps></indexer>
+          </indexers>"#);
+        assert!(caps["yts"].movie_imdb && !caps["yts"].tv_search);
+        assert!(caps["eztv"].tv_season_ep && !caps["eztv"].movie_search);
+    }
+}
+
+/// Live check against a real Jackett. Skipped unless run with
+/// `LIVE_JACKETT_URL=… LIVE_JACKETT_KEY=… cargo test -- --ignored live_jackett --nocapture`.
+#[cfg(test)]
+mod live_tests {
+    use super::*;
+
+    fn client() -> Option<JackettClient> {
+        let url = std::env::var("LIVE_JACKETT_URL").ok()?;
+        let key = std::env::var("LIVE_JACKETT_KEY").ok()?;
+        Some(JackettClient::new(reqwest::Client::new(), url, key))
+    }
+
+    async fn run(label: &str, target: SearchTarget, kind: &str, s: Option<i32>, e: Option<i32>) {
+        let Some(c) = client() else { return };
+        let started = std::time::Instant::now();
+        let found = c.search(&target, kind, s, e, "1080p", "").await.expect("search");
+        println!("\n== {label}: {} results in {:.1}s", found.len(), started.elapsed().as_secs_f32());
+        for src in found.iter().take(12) {
+            println!("  [{:>4}] {} — {}", src.seeders, src.title, src.indexer);
+        }
+        assert!(!found.is_empty(), "{label}: no results");
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn live_jackett() {
+        run("Dune (2021) by IMDb", SearchTarget {
+            title: "Dune".into(), year: Some(2021), imdb_id: Some("tt1160419".into()), ..Default::default()
+        }, "movie", None, None).await;
+        run("Dune (2021) no IMDb (text + strict)", SearchTarget {
+            title: "Dune".into(), year: Some(2021), ..Default::default()
+        }, "movie", None, None).await;
+        run("The Bear S02E03", SearchTarget {
+            title: "The Bear".into(), year: Some(2022), imdb_id: Some("tt14452776".into()), ..Default::default()
+        }, "series", Some(2), Some(3)).await;
     }
 }

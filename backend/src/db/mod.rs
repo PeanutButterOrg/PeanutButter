@@ -37,6 +37,7 @@ const EMBEDDED_MIGRATION_024: &str = include_str!("migrations/024_stream_search_
 const EMBEDDED_MIGRATION_025: &str = include_str!("migrations/025_stream_bookmark.sql");
 const EMBEDDED_MIGRATION_026: &str = include_str!("migrations/026_wyzie_subtitles.sql");
 const EMBEDDED_MIGRATION_027: &str = include_str!("migrations/027_stream_progress_per_device.sql");
+const EMBEDDED_MIGRATION_028: &str = include_str!("migrations/028_device_keys.sql");
 
 pub async fn connect(database_url: &str) -> Result<PgPool> {
     connect_with(database_url, 40, 4, Duration::from_secs(15)).await
@@ -109,6 +110,7 @@ pub async fn run_migrations(pool: &PgPool, extra_dir: Option<&Path>) -> Result<(
     apply_one(pool, "025_stream_bookmark", EMBEDDED_MIGRATION_025).await?;
     apply_one(pool, "026_wyzie_subtitles", EMBEDDED_MIGRATION_026).await?;
     apply_one(pool, "027_stream_progress_per_device", EMBEDDED_MIGRATION_027).await?;
+    apply_one(pool, "028_device_keys", EMBEDDED_MIGRATION_028).await?;
 
     if let Some(dir) = extra_dir {
         if dir.is_dir() {
@@ -152,6 +154,8 @@ pub async fn run_migrations(pool: &PgPool, extra_dir: Option<&Path>) -> Result<(
                     || version == "024_stream_search_cache"
                     || version == "025_stream_bookmark"
                     || version == "026_wyzie_subtitles"
+                    || version == "027_stream_progress_per_device"
+                    || version == "028_device_keys"
                 {
                     continue;
                 }
@@ -593,11 +597,19 @@ pub async fn ensure_app_token(pool: &PgPool, config: &crate::config::Config) -> 
     .await?;
 
     config.live.set_app_token(token.clone());
-    ensure_device_tokens(pool, &token).await?;
-    info!(
-        code = %crate::pin::format_code(&token),
-        "pairing: sign in at / to add TVs (6-digit codes); set ADMIN_PASSWORD to choose the console password"
-    );
+    let fixed_env_code = config
+        .api_key
+        .as_deref()
+        .is_some_and(|k| crate::pin::is_pairing_code(k));
+    if ensure_device_tokens(pool, &token, fixed_env_code).await? {
+        info!(
+            code = %crate::pin::format_code(&token),
+            minutes = PAIRING_CODE_TTL_MINUTES,
+            "pairing: enter this code in the app (valid briefly); sign in at / for more codes"
+        );
+    } else {
+        info!("pairing: sign in at / to create pairing codes for new devices");
+    }
     Ok(token)
 }
 
@@ -610,24 +622,39 @@ pub fn hash_admin_password(password: &str, salt: &str) -> String {
     hex::encode(hasher.finalize())
 }
 
+/// argon2id PHC string (`$argon2id$v=19$…`).
 pub fn new_admin_password_hash(password: &str) -> String {
-    let salt = hex::encode(Uuid::new_v4().as_bytes());
-    format!("{}${ }", salt, hash_admin_password(password, &salt))
+    use argon2::password_hash::{PasswordHasher, SaltString};
+    let salt = SaltString::encode_b64(Uuid::new_v4().as_bytes())
+        .expect("16-byte salt is always valid");
+    argon2::Argon2::default()
+        .hash_password(password.as_bytes(), &salt)
+        .expect("argon2 hashing with default params")
+        .to_string()
 }
 
-pub fn admin_password_matches(password: &str, stored: &str) -> bool {
+#[derive(Debug, Default)]
+pub struct PasswordCheck {
+    pub ok: bool,
+    /// Stored with the old fast `salt$sha256` scheme; rehash after login.
+    pub needs_rehash: bool,
+}
+
+pub fn admin_password_check(password: &str, stored: &str) -> PasswordCheck {
+    if stored.starts_with("$argon2") {
+        use argon2::password_hash::{PasswordHash, PasswordVerifier};
+        let ok = PasswordHash::new(stored).is_ok_and(|parsed| {
+            argon2::Argon2::default()
+                .verify_password(password.as_bytes(), &parsed)
+                .is_ok()
+        });
+        return PasswordCheck { ok, needs_rehash: false };
+    }
     let Some((salt, expected)) = stored.split_once('$') else {
-        return false;
+        return PasswordCheck::default();
     };
-    crate::auth::token_matches(&hash_admin_password(password, salt), expected)
-}
-
-pub fn admin_session_token(password_hash: &str) -> String {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(password_hash.as_bytes());
-    hasher.update(b"|pb-admin-session-v1");
-    hex::encode(hasher.finalize())
+    let ok = crate::auth::token_matches(&hash_admin_password(password, salt), expected);
+    PasswordCheck { ok, needs_rehash: ok }
 }
 
 fn random_admin_password() -> String {
@@ -648,7 +675,12 @@ pub async fn ensure_admin_password(pool: &PgPool) -> Result<()> {
     .await?
     .flatten();
 
-    if let Some(password) = env_pw {
+    // ADMIN_PASSWORD seeds the first password only, so a password changed in
+    // the console survives restarts. ADMIN_PASSWORD_RESET=1 forces it (use to
+    // recover a forgotten password, then remove it).
+    let force = std::env::var("ADMIN_PASSWORD_RESET")
+        .is_ok_and(|v| matches!(v.trim(), "1" | "true" | "yes"));
+    if let Some(password) = env_pw.filter(|_| stored.is_none() || force) {
         let hash = new_admin_password_hash(&password);
         sqlx::query(
             r#"
@@ -711,66 +743,201 @@ pub async fn set_admin_password(pool: &PgPool, password: &str) -> Result<()> {
     Ok(())
 }
 
+/// How long a freshly created 6-digit pairing code can be exchanged for a key.
+pub const PAIRING_CODE_TTL_MINUTES: i32 = 15;
+
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct DeviceTokenRow {
     pub id: Uuid,
     pub name: String,
     pub token: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
+    pub is_admin: bool,
+    pub code_expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub key_count: i64,
 }
 
-pub async fn ensure_device_tokens(pool: &PgPool, admin_token: &str) -> Result<()> {
+impl DeviceTokenRow {
+    pub fn code_live(&self) -> bool {
+        self.code_expires_at.is_some_and(|t| t > chrono::Utc::now())
+    }
+}
+
+/// A resolved device session (key or legacy code).
+#[derive(Debug, Clone)]
+pub struct DeviceSession {
+    pub id: Uuid,
+    pub name: String,
+    pub is_admin: bool,
+}
+
+pub fn hash_device_key(key: &str) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(key.trim().as_bytes()))
+}
+
+fn random_device_key() -> String {
+    // 32 bytes from the OS CSPRNG (uuid v4 uses getrandom).
+    let mut bytes = [0u8; 32];
+    bytes[..16].copy_from_slice(Uuid::new_v4().as_bytes());
+    bytes[16..].copy_from_slice(Uuid::new_v4().as_bytes());
+    format!("pbk_{}", hex::encode(bytes))
+}
+
+pub fn looks_like_device_key(value: &str) -> bool {
+    value.trim().starts_with("pbk_")
+}
+
+/// Trade a live pairing code for a new long-lived device key. Returns the
+/// plaintext key once; only its hash is stored.
+pub async fn exchange_pairing_code(
+    pool: &PgPool,
+    code: &str,
+) -> Result<Option<(DeviceSession, String)>> {
+    let code = crate::pin::normalize_code(code);
+    if !crate::pin::is_pairing_code(&code) {
+        return Ok(None);
+    }
+    let row: Option<(Uuid, String, bool)> = sqlx::query_as(
+        r#"
+        SELECT id, name, is_admin FROM device_tokens
+        WHERE token = $1 AND code_expires_at > now()
+        LIMIT 1
+        "#,
+    )
+    .bind(&code)
+    .fetch_optional(pool)
+    .await?;
+    let Some((id, name, is_admin)) = row else {
+        return Ok(None);
+    };
+    let key = random_device_key();
+    sqlx::query("INSERT INTO device_keys (device_id, key_hash) VALUES ($1, $2)")
+        .bind(id)
+        .bind(hash_device_key(&key))
+        .execute(pool)
+        .await?;
+    Ok(Some((DeviceSession { id, name, is_admin }, key)))
+}
+
+pub async fn find_device_by_key(pool: &PgPool, key: &str) -> Result<Option<DeviceSession>> {
+    let row: Option<(Uuid, String, bool)> = sqlx::query_as(
+        r#"
+        UPDATE device_keys k SET last_used_at = now()
+        FROM device_tokens d
+        WHERE k.key_hash = $1 AND d.id = k.device_id
+        RETURNING d.id, d.name, d.is_admin
+        "#,
+    )
+    .bind(hash_device_key(key))
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|(id, name, is_admin)| DeviceSession { id, name, is_admin }))
+}
+
+/// Pre-key apps sent the 6-digit code itself as their API token. Accepted
+/// only during the post-migration transition window.
+pub async fn find_device_by_legacy_code(
+    pool: &PgPool,
+    code: &str,
+) -> Result<Option<DeviceSession>> {
+    let code = crate::pin::normalize_code(code);
+    if !crate::pin::is_pairing_code(&code) {
+        return Ok(None);
+    }
+    let row: Option<(Uuid, String, bool)> = sqlx::query_as(
+        r#"
+        SELECT id, name, is_admin FROM device_tokens
+        WHERE token = $1 AND legacy_bearer_until > now()
+        LIMIT 1
+        "#,
+    )
+    .bind(code)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|(id, name, is_admin)| DeviceSession { id, name, is_admin }))
+}
+
+/// New 6-digit code for an existing device (adds another screen to the same
+/// profile). Ends that device's legacy bearer use.
+pub async fn regenerate_device_code(pool: &PgPool, id: Uuid) -> Result<Option<String>> {
+    let code = unique_pairing_code(pool).await?;
+    let updated = sqlx::query(
+        r#"
+        UPDATE device_tokens
+        SET token = $2,
+            code_expires_at = now() + make_interval(mins => $3),
+            legacy_bearer_until = NULL
+        WHERE id = $1
+        "#,
+    )
+    .bind(id)
+    .bind(&code)
+    .bind(PAIRING_CODE_TTL_MINUTES)
+    .execute(pool)
+    .await?;
+    Ok((updated.rows_affected() > 0).then_some(code))
+}
+
+pub async fn ensure_device_tokens(
+    pool: &PgPool,
+    admin_token: &str,
+    rearm_admin_code: bool,
+) -> Result<bool> {
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM device_tokens")
         .fetch_one(pool)
         .await?;
+    let mut armed = false;
     if count == 0 {
+        // Fresh install: the admin device's code is live for a short window.
         sqlx::query(
             r#"
-            INSERT INTO device_tokens (name, token)
-            VALUES ('Default', $1)
+            INSERT INTO device_tokens (name, token, is_admin, code_expires_at)
+            VALUES ('Default', $1, true, now() + make_interval(mins => $2))
             ON CONFLICT (token) DO NOTHING
             "#,
         )
         .bind(admin_token)
+        .bind(PAIRING_CODE_TTL_MINUTES)
         .execute(pool)
         .await?;
-    } else {
-        // Keep a Default row that mirrors the admin pairing code.
-        let exists: Option<Uuid> = sqlx::query_scalar(
-            "SELECT id FROM device_tokens WHERE token = $1 LIMIT 1",
+        armed = true;
+    } else if rearm_admin_code {
+        // Fixed API_KEY from the environment: re-open that code briefly on
+        // each boot instead of leaving a permanent 6-digit credential.
+        sqlx::query(
+            r#"
+            UPDATE device_tokens
+            SET token = $1, code_expires_at = now() + make_interval(mins => $2)
+            WHERE id = (
+                SELECT id FROM device_tokens
+                ORDER BY is_admin DESC, created_at ASC LIMIT 1
+            )
+              AND NOT EXISTS (
+                SELECT 1 FROM device_tokens WHERE token = $1 AND NOT is_admin
+              )
+            "#,
         )
         .bind(admin_token)
-        .fetch_optional(pool)
+        .bind(PAIRING_CODE_TTL_MINUTES)
+        .execute(pool)
         .await?;
-        if exists.is_none() {
-            sqlx::query(
-                r#"
-                UPDATE device_tokens
-                SET token = $1
-                WHERE name = 'Default'
-                  AND NOT EXISTS (SELECT 1 FROM device_tokens WHERE token = $1)
-                "#,
-            )
-            .bind(admin_token)
-            .execute(pool)
-            .await?;
-            sqlx::query(
-                r#"
-                INSERT INTO device_tokens (name, token)
-                VALUES ('Default', $1)
-                ON CONFLICT (token) DO NOTHING
-                "#,
-            )
-            .bind(admin_token)
-            .execute(pool)
-            .await?;
-        }
+        armed = true;
     }
+    // Exactly one device keeps the old app_token's admin role.
+    sqlx::query(
+        r#"
+        UPDATE device_tokens SET is_admin = true
+        WHERE id = (SELECT id FROM device_tokens ORDER BY created_at ASC LIMIT 1)
+          AND NOT EXISTS (SELECT 1 FROM device_tokens WHERE is_admin)
+        "#,
+    )
+    .execute(pool)
+    .await?;
 
     let default_id: Uuid = sqlx::query_scalar(
-        "SELECT id FROM device_tokens WHERE token = $1 OR name = 'Default' ORDER BY created_at ASC LIMIT 1",
+        "SELECT id FROM device_tokens ORDER BY is_admin DESC, created_at ASC LIMIT 1",
     )
-    .bind(admin_token)
     .fetch_one(pool)
     .await?;
 
@@ -804,16 +971,7 @@ pub async fn ensure_device_tokens(pool: &PgPool, admin_token: &str) -> Result<()
         .execute(pool)
         .await?;
     }
-    Ok(())
-}
-
-pub async fn default_device_token(pool: &PgPool) -> Result<(Uuid, String)> {
-    let row: (Uuid, String) = sqlx::query_as(
-        "SELECT id, name FROM device_tokens ORDER BY created_at ASC LIMIT 1",
-    )
-    .fetch_one(pool)
-    .await?;
-    Ok(row)
+    Ok(armed)
 }
 
 pub async fn unique_pairing_code(pool: &PgPool) -> Result<String> {
@@ -835,20 +993,14 @@ pub async fn unique_pairing_code(pool: &PgPool) -> Result<String> {
     Err(AppError::Internal("could not allocate a pairing code".into()))
 }
 
-pub async fn find_device_token(pool: &PgPool, token: &str) -> Result<Option<(Uuid, String)>> {
-    let code = crate::pin::normalize_code(token);
-    let row: Option<(Uuid, String)> = sqlx::query_as(
-        "SELECT id, name FROM device_tokens WHERE token = $1 LIMIT 1",
-    )
-    .bind(code)
-    .fetch_optional(pool)
-    .await?;
-    Ok(row)
-}
-
 pub async fn list_device_tokens(pool: &PgPool) -> Result<Vec<DeviceTokenRow>> {
     let rows = sqlx::query_as::<_, DeviceTokenRow>(
-        "SELECT id, name, token, created_at FROM device_tokens ORDER BY created_at ASC",
+        r#"
+        SELECT d.id, d.name, d.token, d.created_at, d.is_admin, d.code_expires_at,
+               (SELECT COUNT(*) FROM device_keys k WHERE k.device_id = d.id) AS key_count
+        FROM device_tokens d
+        ORDER BY d.created_at ASC
+        "#,
     )
     .fetch_all(pool)
     .await?;
@@ -859,13 +1011,14 @@ pub async fn create_device_token(pool: &PgPool, name: &str) -> Result<DeviceToke
     let token = unique_pairing_code(pool).await?;
     let row = sqlx::query_as::<_, DeviceTokenRow>(
         r#"
-        INSERT INTO device_tokens (name, token)
-        VALUES ($1, $2)
-        RETURNING id, name, token, created_at
+        INSERT INTO device_tokens (name, token, code_expires_at)
+        VALUES ($1, $2, now() + make_interval(mins => $3))
+        RETURNING id, name, token, created_at, is_admin, code_expires_at, 0::BIGINT AS key_count
         "#,
     )
     .bind(name)
     .bind(token)
+    .bind(PAIRING_CODE_TTL_MINUTES)
     .fetch_one(pool)
     .await?;
     Ok(row)

@@ -6,6 +6,7 @@ import 'package:graphql_flutter/graphql_flutter.dart';
 import '../friendly_error.dart';
 import '../graphql/client.dart';
 import '../graphql/queries.dart';
+import '../pairing_exchange.dart';
 import '../providers/catalog.dart';
 import '../providers/settings.dart';
 import '../services/discovery.dart';
@@ -176,8 +177,30 @@ class _PairingScreenState extends ConsumerState<PairingScreen> {
           'That pairing code was not accepted. Create a code in the server console and type it here.';
       final code = _token.text.trim();
       String? failure;
+      // The 6-digit code is single-purpose: trade it for this device's own
+      // key and store only the key. Older servers without /pair still take
+      // the code itself.
+      var token = code;
       try {
-        final probe = createGraphQLClient(resolved, apiToken: code);
+        final exchanged = await exchangePairingCode(resolved, code)
+            .timeout(const Duration(seconds: 20));
+        switch (exchanged) {
+          case PairingKey(:final key):
+            token = key;
+          case PairingRejected(:final message):
+            failure = message;
+          case PairingUnsupported():
+            break;
+        }
+      } catch (e) {
+        failure = friendlyRequestError(e);
+      }
+      if (failure != null) {
+        await notifier.clearPairingAttempt(failure);
+        return;
+      }
+      try {
+        final probe = createGraphQLClient(resolved, apiToken: token);
         final result = await probe
             .query(
               QueryOptions(
@@ -198,10 +221,11 @@ class _PairingScreenState extends ConsumerState<PairingScreen> {
         await notifier.clearPairingAttempt(failure);
         return;
       }
-      // Confirmed — only now persist the server and the code.
+      // Confirmed — only now persist the server and the key.
       await notifier.setServerUrl(resolved);
-      await notifier.setApiToken(code);
-      if (mounted) _token.text = ref.read(settingsProvider).apiToken;
+      await notifier.setApiToken(token);
+      // The stored token is now a private key — never echo it into the UI.
+      if (mounted) _token.clear();
       ref.invalidate(serverInfoProvider);
       await notifier.markConnected();
       ref.invalidate(homeFeedProvider('MOVIE'));

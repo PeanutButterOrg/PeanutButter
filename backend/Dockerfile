@@ -18,11 +18,14 @@ RUN touch src/main.rs && cargo build --release \
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates wget \
     && rm -rf /var/lib/apt/lists/* \
-    && mkdir -p /app /media /data/streams
+    && mkdir -p /app /media /data/streams \
+    && useradd --system --uid 10001 --user-group --home-dir /app --no-create-home pb \
+    && chown -R pb:pb /data
 
 WORKDIR /app
 COPY --from=builder /app/target/release/peanutbutter /usr/local/bin/peanutbutter
 COPY src/db/migrations /app/migrations
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
 ENV MIGRATIONS_DIR=/app/migrations \
     BIND_ADDR=0.0.0.0:8080 \
@@ -37,4 +40,7 @@ VOLUME ["/media", "/data/streams"]
 HEALTHCHECK --interval=10s --timeout=5s --start-period=20s --retries=12 \
     CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:8080/health || exit 1
 
+# Starts as root only to fix /data ownership on existing volumes, then runs
+# as uid 10001 (PB_RUN_AS_ROOT=1 opts out).
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["peanutbutter"]

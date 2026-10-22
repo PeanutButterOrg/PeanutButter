@@ -651,6 +651,72 @@ pub async fn enrich_missing_from_imdb(ctx: &IngestContext) -> Result<()> {
 }
 
 #[derive(Debug, Deserialize)]
+struct TmdbExternalIds {
+    #[serde(default)]
+    imdb_id: Option<String>,
+}
+
+/// Titles that have a TMDB id but no IMDb id: ask TMDB's `external_ids`
+/// again (it often gains the IMDb link after a title is first synced). The
+/// IMDb id drives exact Jackett movie searches.
+pub async fn backfill_missing_imdb(ctx: &IngestContext) -> Result<()> {
+    if ctx.config.tmdb_key().is_empty() {
+        return Ok(());
+    }
+    let rows: Vec<(Uuid, i32, String)> = sqlx::query_as(
+        r#"
+        SELECT id, tmdb_id, kind
+        FROM titles
+        WHERE tmdb_id IS NOT NULL
+          AND COALESCE(imdb_id, '') = ''
+          AND kind IN ('movie', 'series')
+        ORDER BY updated_at DESC NULLS LAST
+        LIMIT 500
+        "#,
+    )
+    .fetch_all(&ctx.pool)
+    .await?;
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let mut filled = 0u32;
+    for (id, tmdb_id, kind) in &rows {
+        let media = if kind == "series" { "tv" } else { "movie" };
+        let url = format!(
+            "{TMDB}/{media}/{tmdb_id}/external_ids?api_key={}",
+            ctx.config.tmdb_key()
+        );
+        let ids: TmdbExternalIds = match get_json(ctx, &url).await {
+            Ok(v) => v,
+            Err(e) => {
+                debug!(tmdb_id, error = %e, "TMDB external_ids failed");
+                continue;
+            }
+        };
+        let Some(imdb) = ids.imdb_id.map(|s| s.trim().to_string()).filter(|s| s.starts_with("tt")) else {
+            continue;
+        };
+        // imdb_id is unique: never steal it from another row.
+        let done = sqlx::query(
+            r#"
+            UPDATE titles SET imdb_id = $1, updated_at = now()
+            WHERE id = $2
+              AND NOT EXISTS (SELECT 1 FROM titles WHERE imdb_id = $1)
+            "#,
+        )
+        .bind(&imdb)
+        .bind(id)
+        .execute(&ctx.pool)
+        .await?;
+        if done.rows_affected() > 0 {
+            filled += 1;
+        }
+    }
+    info!(checked = rows.len(), filled, "IMDb id backfill from TMDB external_ids");
+    Ok(())
+}
+
+#[derive(Debug, Deserialize)]
 struct TmdbFindResponse {
     #[serde(default)]
     movie_results: Vec<TmdbFindHit>,

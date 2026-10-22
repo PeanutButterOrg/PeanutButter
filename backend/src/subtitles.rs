@@ -463,6 +463,30 @@ async fn download_os_file(http: &reqwest::Client, api_key: &str, file_id: i64) -
     download_srt(http, &link).await
 }
 
+fn wyzie_host(url: &reqwest::Url) -> bool {
+    matches!(
+        url.host_str().map(|h| h.to_ascii_lowercase()).as_deref(),
+        Some("sub.wyzie.io") | Some("cdn.wyzie.io") | Some("wyzie.io")
+    )
+}
+
+fn wyzie_client() -> &'static reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .redirect(reqwest::redirect::Policy::custom(|attempt| {
+                if attempt.previous().len() < 3 && wyzie_host(attempt.url()) {
+                    attempt.follow()
+                } else {
+                    attempt.stop()
+                }
+            }))
+            .build()
+            .expect("static reqwest client")
+    })
+}
+
 async fn download_srt(http: &reqwest::Client, url: &str) -> Result<String> {
     let resp = http.get(url).header("User-Agent", USER_AGENT).send().await?;
     if !resp.status().is_success() {
@@ -670,7 +694,7 @@ pub async fn search_wyzie_for_title(
 
 /// Download a previously listed Wyzie (or other) subtitle URL.
 pub async fn download_remote_subtitle(
-    http: &reqwest::Client,
+    _http: &reqwest::Client,
     download_url: &str,
     language: &str,
     label: &str,
@@ -682,19 +706,14 @@ pub async fn download_remote_subtitle(
         return Err(AppError::BadRequest("Invalid subtitle download URL.".into()));
     }
     // Only allow Wyzie CDN hosts for safety.
-    let host = reqwest::Url::parse(url)
-        .ok()
-        .and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase()));
-    let allowed = matches!(
-        host.as_deref(),
-        Some("sub.wyzie.io") | Some("cdn.wyzie.io") | Some("wyzie.io")
-    );
+    let allowed = reqwest::Url::parse(url).is_ok_and(|u| wyzie_host(&u));
     if !allowed {
         return Err(AppError::BadRequest(
             "Subtitle download host is not allowed.".into(),
         ));
     }
-    let content = download_srt(http, url).await?;
+    // The URL comes from the client: a redirect must not leave the allowlist.
+    let content = download_srt(wyzie_client(), url).await?;
     let fmt = if looks_like_vtt(&content) {
         "vtt".into()
     } else if format.trim().is_empty() {

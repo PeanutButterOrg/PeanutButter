@@ -49,32 +49,15 @@ query GetCatalog(
     hasNextPage
     page
     perPage
+    # Grid cards only (poster_card.dart). Detail pages fetch the rest by id;
+    # every extra field here was another per-title lookup on the server.
     items {
       id
       kind
       title
-      originalTitle
-      synopsis
       year
-      runtimeMinutes
       posterUrl
-      backdropUrl
-      logoUrl
-      thumbUrl
-      ratings {
-        tmdbVoteAverage
-        imdbRating
-        anilistScore
-        rtScore
-      }
-      genres
-      trailerYoutubeKey
-      availablePeers
       bestQuality
-      contentRating
-      videoCodec
-      audioCodec
-      container
       userState {
         watched
         positionMs

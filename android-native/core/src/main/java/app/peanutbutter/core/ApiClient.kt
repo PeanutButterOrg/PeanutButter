@@ -585,6 +585,57 @@ class ApiClient(
         }.getOrDefault(raw)
     }
 
+    /** Outcome of trading a 6-digit pairing code for this device's key. */
+    sealed class PairResult {
+        /** Long-lived device key — store it as the API token. */
+        data class Key(val key: String) : PairResult()
+        /** Wrong or expired code. */
+        data class Rejected(val message: String) : PairResult()
+        /** Older server without POST /pair: the code itself is the token. */
+        object Unsupported : PairResult()
+    }
+
+    /**
+     * POST {base}/pair `{"code": …}` → `{"key": "pbk_…"}`. Throws [ApiException]
+     * for network errors and rate limiting so callers never treat "couldn't
+     * ask" as "code rejected".
+     */
+    suspend fun exchangePairingCode(baseUrl: String, code: String): PairResult =
+        withContext(Dispatchers.IO) {
+            val base = baseUrl.trim().trimEnd('/').removeSuffix("/graphql")
+            require(base.isNotBlank()) { "Server URL is empty." }
+            val body = JsonObject().apply {
+                addProperty("code", code.filter { !it.isWhitespace() })
+            }.toString()
+            val req = Request.Builder()
+                .url("$base/pair")
+                .post(body.toRequestBody(jsonMedia))
+                .header("Accept", "application/json")
+                .build()
+            http.newCall(req).execute().use { res ->
+                val text = res.body?.string().orEmpty()
+                val json = runCatching { JsonParser.parseString(text).asJsonObject }.getOrNull()
+                when {
+                    res.code == 404 || res.code == 405 -> PairResult.Unsupported
+                    res.code == 429 -> throw ApiException(
+                        "Too many attempts. Wait a few minutes and try again.",
+                    )
+                    res.isSuccessful -> {
+                        val key = json?.get("key")?.takeIf { it.isJsonPrimitive }?.asString
+                        if (key.isNullOrBlank()) {
+                            throw ApiException("Unexpected response from the server.")
+                        }
+                        PairResult.Key(key)
+                    }
+                    res.code == 401 || res.code == 403 -> PairResult.Rejected(
+                        json?.get("error")?.takeIf { it.isJsonPrimitive }?.asString
+                            ?: "That pairing code is wrong or expired. Create a new one on the server.",
+                    )
+                    else -> throw ApiException("Server error ${res.code}")
+                }
+            }
+        }
+
     /**
      * Check a pairing code against [baseUrl] **without saving anything** and
      * without touching [AuthEvents]. Throws [UnauthorizedException] when the

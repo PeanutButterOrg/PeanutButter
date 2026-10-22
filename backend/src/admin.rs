@@ -108,18 +108,38 @@ pub async fn has_session(state: &HttpState, headers: &HeaderMap) -> bool {
     session_ok(state, headers).await
 }
 
-async fn session_ok(state: &HttpState, headers: &HeaderMap) -> bool {
-    let Some(cookie) = cookie_value(headers, "pb_sess") else {
-        return false;
-    };
-    let Ok(Some(hash)) = crate::db::admin_password_hash(&state.app.pool).await else {
-        return false;
-    };
-    crate::auth::token_matches(&cookie, &crate::db::admin_session_token(&hash))
+/// Signed-in console browsers. Random per-login tokens (not derived from the
+/// password hash) so logout and password changes actually revoke them. A
+/// server restart signs everyone out.
+fn console_sessions() -> &'static moka::sync::Cache<String, ()> {
+    static SESSIONS: std::sync::OnceLock<moka::sync::Cache<String, ()>> =
+        std::sync::OnceLock::new();
+    SESSIONS.get_or_init(|| {
+        moka::sync::Cache::builder()
+            .max_capacity(1_000)
+            .time_to_live(std::time::Duration::from_secs(SESSION_MAX_AGE_SECS))
+            .build()
+    })
+}
+
+const SESSION_MAX_AGE_SECS: u64 = 30 * 24 * 3600;
+
+fn new_console_session() -> String {
+    let token = format!(
+        "{}{}",
+        Uuid::new_v4().simple(),
+        Uuid::new_v4().simple()
+    );
+    console_sessions().insert(token.clone(), ());
+    token
+}
+
+async fn session_ok(_state: &HttpState, headers: &HeaderMap) -> bool {
+    cookie_value(headers, "pb_sess").is_some_and(|c| console_sessions().contains_key(&c))
 }
 
 fn session_cookie(token: &str) -> String {
-    format!("pb_sess={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000")
+    format!("pb_sess={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={SESSION_MAX_AGE_SECS}")
 }
 
 fn clear_session_cookie() -> String {
@@ -514,14 +534,14 @@ pub async fn sync_flush(
 }
 
 pub async fn action(
-    ConnectInfo(_addr): ConnectInfo<SocketAddr>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<HttpState>,
     headers: HeaderMap,
     Form(form): Form<AdminForm>,
 ) -> Result<Response, AppError> {
     match form.action.as_str() {
-        "login" => return login(&state, &form).await,
-        "logout" => return logout(&state).await,
+        "login" => return login(&state, &form, addr.ip()).await,
+        "logout" => return logout(&state, &headers).await,
         _ => {}
     }
 
@@ -553,17 +573,33 @@ pub async fn action(
             let row = crate::db::create_device_token(&state.app.pool, name).await?;
             highlight = Some(row.token.clone());
             notice = Some(format!(
-                "{} is ready. Type {} in the app under Settings.",
+                "{} is ready. Type {} in the app within {} minutes.",
                 row.name,
-                crate::pin::format_code(&row.token)
+                crate::pin::format_code(&row.token),
+                crate::db::PAIRING_CODE_TTL_MINUTES
             ));
         }
         "revoke" => {
             tab = Some("devices");
             if let Some(id) = form.id.as_deref().and_then(|s| Uuid::parse_str(s).ok()) {
                 crate::db::revoke_device_token(&state.app.pool, id).await?;
+                crate::auth::forget_sessions();
                 state.app.gql_cache.invalidate();
-                notice = Some("Device removed. That pairing code no longer works.".into());
+                notice = Some("Device removed. Its apps are signed out.".into());
+            }
+        }
+        "new_code" => {
+            tab = Some("devices");
+            if let Some(id) = form.id.as_deref().and_then(|s| Uuid::parse_str(s).ok()) {
+                if let Some(code) = crate::db::regenerate_device_code(&state.app.pool, id).await? {
+                    crate::auth::forget_sessions();
+                    highlight = Some(code.clone());
+                    notice = Some(format!(
+                        "Type {} in the app within {} minutes to add another screen to this device.",
+                        crate::pin::format_code(&code),
+                        crate::db::PAIRING_CODE_TTL_MINUTES
+                    ));
+                }
             }
         }
         "delete_title" => {
@@ -732,19 +768,16 @@ pub async fn action(
                 notice = Some("Choose a password of at least 8 characters.".into());
             } else {
                 crate::db::set_admin_password(&state.app.pool, next).await?;
-                let hash = crate::db::admin_password_hash(&state.app.pool)
-                    .await?
-                    .unwrap_or_default();
+                // Sign out every other browser; keep this one.
+                console_sessions().invalidate_all();
                 let mut response = redirect_console_tab(
-                    Some("Password updated. Stay signed in on this browser."),
+                    Some("Password updated. Other browsers were signed out."),
                     None,
                     Some("settings"),
                 );
                 response.headers_mut().append(
                     header::SET_COOKIE,
-                    session_cookie(&crate::db::admin_session_token(&hash))
-                        .parse()
-                        .unwrap(),
+                    session_cookie(&new_console_session()).parse().unwrap(),
                 );
                 return Ok(response);
             }
@@ -774,13 +807,36 @@ pub async fn action(
     Ok(redirect_console_tab(notice.as_deref(), highlight.as_deref(), tab))
 }
 
-async fn login(state: &HttpState, form: &AdminForm) -> Result<Response, AppError> {
+async fn login(
+    state: &HttpState,
+    form: &AdminForm,
+    ip: std::net::IpAddr,
+) -> Result<Response, AppError> {
+    use crate::ratelimit::{self, Bucket};
+    if ratelimit::is_blocked(Bucket::Credential, ip) {
+        let html = render(
+            state,
+            false,
+            Some("Too many attempts. Wait a few minutes and try again."),
+            None,
+            "streaming",
+            &TabQuery::default(),
+        )
+        .await?;
+        return Ok((StatusCode::TOO_MANY_REQUESTS, Html(html)).into_response());
+    }
     let password = form.password.as_deref().unwrap_or("").trim();
     let stored = crate::db::admin_password_hash(&state.app.pool).await?;
-    let ok = stored
+    let check = stored
         .as_deref()
-        .is_some_and(|hash| crate::db::admin_password_matches(password, hash));
-    if !ok {
+        .map(|hash| crate::db::admin_password_check(password, hash))
+        .unwrap_or_default();
+    if check.ok && check.needs_rehash {
+        // Upgrade the old fast SHA-256 hash to argon2 on first good login.
+        crate::db::set_admin_password(&state.app.pool, password).await?;
+    }
+    if !check.ok {
+        ratelimit::record_failure(Bucket::Credential, ip);
         let html = render(
             state,
             false,
@@ -792,7 +848,7 @@ async fn login(state: &HttpState, form: &AdminForm) -> Result<Response, AppError
         .await?;
         return Ok((StatusCode::UNAUTHORIZED, Html(html)).into_response());
     }
-    let token = crate::db::admin_session_token(stored.as_deref().unwrap());
+    let token = new_console_session();
     let mut response = redirect_console(Some("Signed in."), None);
     response
         .headers_mut()
@@ -800,7 +856,10 @@ async fn login(state: &HttpState, form: &AdminForm) -> Result<Response, AppError
     Ok(response)
 }
 
-async fn logout(_state: &HttpState) -> Result<Response, AppError> {
+async fn logout(_state: &HttpState, headers: &HeaderMap) -> Result<Response, AppError> {
+    if let Some(c) = cookie_value(headers, "pb_sess") {
+        console_sessions().invalidate(&c);
+    }
     let mut response = redirect_console(Some("Signed out."), None);
     response
         .headers_mut()
@@ -958,16 +1017,39 @@ async fn dashboard(
 
     let mut cards = String::new();
     for t in &tokens {
-        let pin = crate::pin::format_code(&t.token);
         let created = t.created_at.format("%Y-%m-%d").to_string();
         let hot = highlight.is_some_and(|h| crate::pin::codes_equal(h, &t.token));
+        // Only show a code while it can still be used.
+        let pin = if t.code_live() {
+            let until = t
+                .code_expires_at
+                .map(|e| e.format("%H:%M UTC").to_string())
+                .unwrap_or_default();
+            format!(
+                r#"<div class="pin">{}</div><p class="muted">Code valid until {until}</p>"#,
+                html_escape(&crate::pin::format_code(&t.token))
+            )
+        } else {
+            r#"<p class="muted">No active pairing code</p>"#.to_string()
+        };
+        let screens = match t.key_count {
+            0 => "Not paired yet".to_string(),
+            1 => "1 app paired".to_string(),
+            n => format!("{n} apps paired"),
+        };
+        let admin = if t.is_admin { r#" <span class="pill ok">Admin</span>"# } else { "" };
         cards.push_str(&format!(
             r#"<article class="card{hot}">
               <div>
-                <h3>{}</h3>
-                <p class="muted">Added {created}</p>
+                <h3>{}{admin}</h3>
+                <p class="muted">Added {created} · {screens}</p>
               </div>
-              <div class="pin">{}</div>
+              <div>{pin}</div>
+              <form method="post" action="/">
+                <input type="hidden" name="action" value="new_code" />
+                <input type="hidden" name="id" value="{}" />
+                <button type="submit" class="ghost">New code</button>
+              </form>
               <form method="post" action="/" onsubmit="return confirm('Remove this device?');">
                 <input type="hidden" name="action" value="revoke" />
                 <input type="hidden" name="id" value="{}" />
@@ -975,7 +1057,7 @@ async fn dashboard(
               </form>
             </article>"#,
             html_escape(&t.name),
-            html_escape(&pin),
+            t.id,
             t.id,
             hot = if hot { " hot" } else { "" },
             created = created,

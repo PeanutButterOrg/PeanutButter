@@ -14,7 +14,8 @@ services:
       timeout: 5s
       retries: 12
     ports:
-      - "5433:5432"
+      # Localhost only: never expose the database to the LAN.
+      - "127.0.0.1:5433:5432"
 
   meilisearch:
     image: getmeili/meilisearch:v1.11
@@ -30,7 +31,7 @@ services:
       timeout: 5s
       retries: 12
     ports:
-      - "7700:7700"
+      - "127.0.0.1:7700:7700"
 
   api:
     image: peanutbutter-api:${PEANUTBUTTER_TAG:-0.2.0}
@@ -48,6 +49,8 @@ services:
       MEILI_URL: http://meilisearch:7700
       BIND_ADDR: 0.0.0.0:8080
       MEDIA_PATH: /media
+      # The web build on :3000 calls the API from the browser.
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
     volumes:
       - ${MEDIA_PATH:-./media}:/media
     depends_on:

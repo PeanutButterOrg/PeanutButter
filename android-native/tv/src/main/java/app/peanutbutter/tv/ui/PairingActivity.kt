@@ -9,7 +9,9 @@ import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.fragment.app.FragmentActivity
+import app.peanutbutter.core.ApiClient
 import app.peanutbutter.core.Discovery
+import app.peanutbutter.core.UnauthorizedException
 import app.peanutbutter.tv.R
 import app.peanutbutter.tv.asTv
 import kotlinx.coroutines.CoroutineScope
@@ -87,12 +89,20 @@ class PairingActivity : FragmentActivity() {
                     base = resolved
                     // Confirm the code with the server BEFORE saving anything —
                     // a wrong or unchecked code must never be stored.
-                    withContext(Dispatchers.IO) {
+                    // Trade the 6-digit code for this TV's own key and store
+                    // only the key. Older servers without /pair take the code.
+                    val token = withContext(Dispatchers.IO) {
                         check(Discovery.isPeanutButter(base)) { "Server not reachable at $base" }
-                        app.api.verifyPairing(base, code)
+                        val key = when (val r = app.api.exchangePairingCode(base, code)) {
+                            is ApiClient.PairResult.Key -> r.key
+                            is ApiClient.PairResult.Rejected -> throw UnauthorizedException(r.message)
+                            ApiClient.PairResult.Unsupported -> code
+                        }
+                        app.api.verifyPairing(base, key)
+                        key
                     }
                     app.session.serverUrl = base
-                    app.session.apiToken = code
+                    app.session.apiToken = token
                     startActivity(Intent(this@PairingActivity, MainActivity::class.java))
                     finish()
                 } catch (e: Exception) {

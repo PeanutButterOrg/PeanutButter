@@ -21,6 +21,7 @@ import app.peanutbutter.tv.ui.PairingActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.launch
 import java.util.concurrent.Executors
 
 class TvApp : Application() {
@@ -64,9 +65,30 @@ class TvApp : Application() {
             AppLog.e("Crash", "uncaught in ${t.name}", e)
             prev?.uncaughtException(t, e)
         }
+        upgradeLegacyPairing()
         AppExitCleanup.install(this, shouldWipe = { session.clearCacheOnExit }) { deleteFiles ->
             activeStreamSession = null
             runCatching { TorrentClient.stop(this, deleteFiles = deleteFiles) }
+        }
+    }
+
+    /**
+     * TVs paired before device keys existed stored the 6-digit code as their
+     * token. Trade it for a key once; the server stops accepting bare codes
+     * after a transition window. A rejected code is left to the normal 401
+     * handling (it would fail as a token too).
+     */
+    private fun upgradeLegacyPairing() {
+        val token = session.apiToken
+        val base = session.serverUrl
+        if (base.isBlank() || !token.matches(Regex("^\\d{6}$"))) return
+        backgroundWrites.launch {
+            runCatching {
+                val r = api.exchangePairingCode(base, token)
+                if (r is ApiClient.PairResult.Key && session.apiToken == token) {
+                    session.apiToken = r.key
+                }
+            }.onFailure { AppLog.i("TvApp", "pairing upgrade skipped: ${it.message}") }
         }
     }
 

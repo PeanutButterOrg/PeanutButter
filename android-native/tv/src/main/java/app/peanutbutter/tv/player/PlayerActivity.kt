@@ -1434,7 +1434,9 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         }
         if (complete && length > 0L) pos = maxOf(pos, length)
         if (!complete && pos < 2_000L) return
-        if (!force && !complete && lastSavedPosMs >= 0L && kotlin.math.abs(pos - lastSavedPosMs) < 5_000L) return
+        // Every save is two mutations (progress + stream bookmark); 15s keeps
+        // resume accurate without a server write every few seconds.
+        if (!force && !complete && lastSavedPosMs >= 0L && kotlin.math.abs(pos - lastSavedPosMs) < 15_000L) return
         val dur = length.takeIf { it > 0L }
         lastSavedPosMs = pos
         if (complete) markedComplete = true

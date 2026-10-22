@@ -14,6 +14,7 @@ pub struct Mutation;
 impl Mutation {
     /// Start a background metadata sync from OMDb, TVMaze, AniList, and optional TMDB.
     async fn trigger_sync(&self, ctx: &Context<'_>) -> async_graphql::Result<MutationResult> {
+        ctx.data::<crate::auth::AuthSession>()?.require_admin()?;
         let state = ctx.data::<AppState>()?;
         if state.syncing.load(std::sync::atomic::Ordering::Relaxed) {
             return Ok(MutationResult {
@@ -34,6 +35,7 @@ impl Mutation {
         ctx: &Context<'_>,
         input: TitleInput,
     ) -> async_graphql::Result<Title> {
+        ctx.data::<crate::auth::AuthSession>()?.require_admin()?;
         let state = ctx.data::<AppState>()?;
         let title = input.title.clone().unwrap_or_else(|| "Untitled".into());
         let kind = input.kind.unwrap_or(crate::graphql::types::TitleKind::Movie);
@@ -66,6 +68,7 @@ impl Mutation {
         id: Uuid,
         input: TitleInput,
     ) -> async_graphql::Result<Title> {
+        ctx.data::<crate::auth::AuthSession>()?.require_admin()?;
         let state = ctx.data::<AppState>()?;
         sqlx::query(
             r#"
@@ -102,6 +105,7 @@ impl Mutation {
 
     /// Pull fresh metadata, episodes, and drop cached stream listings for one title.
     async fn refresh_title(&self, ctx: &Context<'_>, id: Uuid) -> async_graphql::Result<Title> {
+        ctx.data::<crate::auth::AuthSession>()?.require_admin()?;
         let state = ctx.data::<AppState>()?;
         let ingest = IngestContext::from(state);
         crate::ingest::refresh_title(&ingest, id).await?;
@@ -111,6 +115,7 @@ impl Mutation {
     }
 
     async fn delete_title(&self, ctx: &Context<'_>, id: Uuid) -> async_graphql::Result<MutationResult> {
+        ctx.data::<crate::auth::AuthSession>()?.require_admin()?;
         let state = ctx.data::<AppState>()?;
         let result = sqlx::query("DELETE FROM titles WHERE id = $1")
             .bind(id)
@@ -133,6 +138,17 @@ impl Mutation {
         ctx: &Context<'_>,
         input: SettingsInput,
     ) -> async_graphql::Result<MutationResult> {
+        let auth = ctx.data::<crate::auth::AuthSession>()?;
+        // Any device may pick languages and subtitle providers (entered from
+        // the player); catalog keys and the media folder are admin-only.
+        let set = |v: &Option<String>| v.as_deref().is_some_and(|s| !s.trim().is_empty());
+        if set(&input.tmdb_api_key)
+            || set(&input.omdb_api_key)
+            || set(&input.anilist_client_id)
+            || set(&input.media_path)
+        {
+            auth.require_admin()?;
+        }
         let state = ctx.data::<AppState>()?;
         let langs = input.preferred_languages.as_ref().map(|codes| {
             crate::config::normalize_language_list(&codes.join(","))
@@ -470,6 +486,7 @@ impl Mutation {
     }
 
     async fn test_jackett(&self, ctx: &Context<'_>) -> async_graphql::Result<MutationResult> {
+        ctx.data::<crate::auth::AuthSession>()?.require_admin()?;
         let state = ctx.data::<AppState>()?;
         let client = crate::jackett::JackettClient::from_live(&state.http, &state.config.live)?;
         match client.test_connection().await {

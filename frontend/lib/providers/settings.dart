@@ -1,8 +1,11 @@
 import 'dart:async';
+import 'dart:io' show File, Platform, Process;
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:graphql_flutter/graphql_flutter.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../graphql/client.dart';
@@ -168,6 +171,21 @@ class SettingsNotifier extends StateNotifier<SettingsState> {
     if (next == state.apiToken) return;
     await _prefs.setString(_kToken, next);
     state = state.copyWith(apiToken: next);
+    unawaited(_restrictPrefsFile());
+  }
+
+  /// Linux stores prefs (including the device key) as a JSON file that the
+  /// default umask leaves readable by other local users. macOS / Windows
+  /// keep it in per-user, already-private locations.
+  static Future<void> _restrictPrefsFile() async {
+    if (kIsWeb || !Platform.isLinux) return;
+    try {
+      final dir = await getApplicationSupportDirectory();
+      final file = File('${dir.path}/shared_preferences.json');
+      if (await file.exists()) {
+        await Process.run('chmod', ['600', file.path]);
+      }
+    } catch (_) {}
   }
 
   Future<void> forgetPairing({String? message}) async {

@@ -7,38 +7,29 @@ use crate::db::models::{
     EpisodeRow, FileReferenceRow, RatingRow, SeasonRow, TitlePersonRow, TitleRow, TrailerRow,
     UserProgressRow,
 };
-use crate::db::{self};
 use crate::error::AppError;
 use crate::AppState;
 
-struct PrimaryFile {
-    quality: Option<String>,
-    codec: Option<String>,
-    audio_codec: Option<String>,
-    container: Option<String>,
+type Loader = async_graphql::dataloader::DataLoader<super::loaders::TitleLoader>;
+
+fn loader<'a>(ctx: &'a Context<'_>) -> async_graphql::Result<&'a Loader> {
+    ctx.data::<Loader>()
 }
 
-async fn primary_file(ctx: &Context<'_>, title_id: Uuid) -> async_graphql::Result<Option<PrimaryFile>> {
-    let state = ctx.data::<AppState>()?;
-    let row: Option<(Option<String>, Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
-        r#"
-        SELECT quality, codec, audio_codec, container
-        FROM file_references
-        WHERE title_id = $1
-        ORDER BY quality DESC NULLS LAST
-        LIMIT 1
-        "#,
-    )
-    .bind(title_id)
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(AppError::Database)?;
-    Ok(row.map(|(quality, codec, audio_codec, container)| PrimaryFile {
-        quality,
-        codec,
-        audio_codec,
-        container,
-    }))
+/// Loader errors carry raw SQL text; never send that to clients.
+fn load_err(e: super::loaders::LoadError) -> AppError {
+    tracing::error!(error = %e, "batched title lookup failed");
+    AppError::Internal("title lookup".into())
+}
+
+async fn file_stats(
+    ctx: &Context<'_>,
+    title_id: Uuid,
+) -> async_graphql::Result<Option<super::loaders::FileStats>> {
+    Ok(loader(ctx)?
+        .load_one(super::loaders::FileStatsKey(title_id))
+        .await
+        .map_err(load_err)?)
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq, Debug)]
@@ -445,25 +436,19 @@ impl Title {
 #[ComplexObject]
 impl Title {
     async fn ratings(&self, ctx: &Context<'_>) -> async_graphql::Result<Option<Ratings>> {
-        let state = ctx.data::<AppState>()?;
-        let row: Option<RatingRow> = sqlx::query_as(
-            r#"
-            SELECT id, title_id, tmdb_vote_average, tmdb_vote_count, imdb_rating, imdb_votes,
-                   anilist_score, anilist_popularity, rt_score, updated_at
-            FROM ratings
-            WHERE title_id = $1
-            "#,
-        )
-        .bind(self.id)
-        .fetch_optional(&state.pool)
-        .await
-        .map_err(AppError::Database)?;
+        let row = loader(ctx)?
+            .load_one(super::loaders::RatingsKey(self.id))
+            .await
+            .map_err(load_err)?;
         Ok(row.map(Ratings::from))
     }
 
     async fn genres(&self, ctx: &Context<'_>) -> async_graphql::Result<Vec<String>> {
-        let state = ctx.data::<AppState>()?;
-        Ok(db::genre_names_for_title(&state.pool, self.id).await?)
+        Ok(loader(ctx)?
+            .load_one(super::loaders::GenresKey(self.id))
+            .await
+            .map_err(load_err)?
+            .unwrap_or_default())
     }
 
     async fn trailers(&self, ctx: &Context<'_>) -> async_graphql::Result<Vec<Trailer>> {
@@ -565,50 +550,30 @@ impl Title {
     }
 
     async fn trailer_youtube_key(&self, ctx: &Context<'_>) -> async_graphql::Result<Option<String>> {
-        let state = ctx.data::<AppState>()?;
-        let row: Option<(String,)> = sqlx::query_as(
-            r#"
-            SELECT youtube_key FROM trailers
-            WHERE title_id = $1
-              AND COALESCE(size, 720) >= 720
-              AND name NOT ILIKE '%mobile%'
-            ORDER BY size DESC NULLS LAST, created_at
-            LIMIT 1
-            "#,
-        )
-        .bind(self.id)
-        .fetch_optional(&state.pool)
-        .await
-        .map_err(AppError::Database)?;
-        Ok(row.map(|r| r.0))
+        Ok(loader(ctx)?
+            .load_one(super::loaders::TrailerKey(self.id))
+            .await
+            .map_err(load_err)?)
     }
 
     async fn available_peers(&self, ctx: &Context<'_>) -> async_graphql::Result<i32> {
-        let state = ctx.data::<AppState>()?;
-        let (peers,): (i32,) = sqlx::query_as(
-            "SELECT COALESCE(MAX(available_peers), 0)::int FROM file_references WHERE title_id = $1",
-        )
-        .bind(self.id)
-        .fetch_one(&state.pool)
-        .await
-        .map_err(AppError::Database)?;
-        Ok(peers)
+        Ok(file_stats(ctx, self.id).await?.map_or(0, |f| f.peers))
     }
 
     async fn best_quality(&self, ctx: &Context<'_>) -> async_graphql::Result<Option<String>> {
-        Ok(primary_file(ctx, self.id).await?.and_then(|row| row.quality))
+        Ok(file_stats(ctx, self.id).await?.and_then(|f| f.quality))
     }
 
     async fn video_codec(&self, ctx: &Context<'_>) -> async_graphql::Result<Option<String>> {
-        Ok(primary_file(ctx, self.id).await?.and_then(|row| row.codec))
+        Ok(file_stats(ctx, self.id).await?.and_then(|f| f.codec))
     }
 
     async fn audio_codec(&self, ctx: &Context<'_>) -> async_graphql::Result<Option<String>> {
-        Ok(primary_file(ctx, self.id).await?.and_then(|row| row.audio_codec))
+        Ok(file_stats(ctx, self.id).await?.and_then(|f| f.audio_codec))
     }
 
     async fn container(&self, ctx: &Context<'_>) -> async_graphql::Result<Option<String>> {
-        Ok(primary_file(ctx, self.id).await?.and_then(|row| row.container))
+        Ok(file_stats(ctx, self.id).await?.and_then(|f| f.container))
     }
 
     async fn people(&self, ctx: &Context<'_>) -> async_graphql::Result<Vec<Person>> {
@@ -634,18 +599,10 @@ impl Title {
     async fn user_state(&self, ctx: &Context<'_>) -> async_graphql::Result<Option<UserState>> {
         let state = ctx.data::<AppState>()?;
         let auth = ctx.data::<crate::auth::AuthSession>()?;
-        let row: Option<UserProgressRow> = sqlx::query_as(
-            r#"
-            SELECT title_id, episode_id, file_id, position_ms, duration_ms, watched, favorite, updated_at
-            FROM user_progress
-            WHERE token_id = $1 AND title_id = $2
-            "#,
-        )
-        .bind(auth.token_id)
-        .bind(self.id)
-        .fetch_optional(&state.pool)
-        .await
-        .map_err(AppError::Database)?;
+        let row = loader(ctx)?
+            .load_one(super::loaders::ProgressKey(auth.token_id, self.id))
+            .await
+            .map_err(load_err)?;
         let Some(row) = row else {
             return Ok(None);
         };

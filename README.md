@@ -106,8 +106,10 @@ More detail: [frontend/README.md](frontend/README.md) · [backend/README.md](bac
 | `MEDIA_PATH` | Your media folder (mounted into the API) |
 | `STREAM_PATH` | Writable torrent cache (Docker default `/data/streams`) |
 | `PUBLIC_URL` | Base URL clients use for playback links |
-| `API_KEY` | Optional fixed 6-digit pairing code |
-| `ADMIN_PASSWORD` | Web console password |
+| `API_KEY` | Optional fixed 6-digit pairing code for the admin device (re-opened for 15 minutes on each boot) |
+| `ADMIN_PASSWORD` | Initial web console password (empty = generated and logged; `ADMIN_PASSWORD_RESET=1` forces it) |
+| `CORS_ORIGINS` | Extra browser origins allowed to call the API (comma-separated, `*` for any) |
+| `PB_RUN_AS_ROOT` | `1` keeps the API container running as root (default: uid 10001) |
 | `BIND_ADDR` | Listen address (`0.0.0.0:3001` on host; Compose maps `3001→8080`) |
 | `JACKETT_URL` / `JACKETT_API_KEY` | Optional; prefer console after sign-in |
 | `RUST_LOG` | Tracing filter |

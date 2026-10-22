@@ -1,3 +1,4 @@
+pub mod loaders;
 pub mod mutations;
 pub mod queries;
 pub mod schema;

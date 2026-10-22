@@ -11,6 +11,7 @@ mod introdb;
 mod jackett;
 mod media;
 mod pin;
+mod ratelimit;
 mod search;
 mod stream;
 mod subtitles;
@@ -23,18 +24,18 @@ use std::time::Duration;
 use async_graphql::http::GraphiQLSource;
 use async_graphql_axum::GraphQLRequest;
 use axum::extract::State;
-use axum::http::{HeaderMap, Method};
+use axum::http::{HeaderValue, Method};
 use axum::middleware;
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
 use serde::Serialize;
 use tokio::net::TcpListener;
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 use tracing::{info, warn};
 
-use crate::cache::GqlCache;
+use crate::cache::{GqlCache, RequestKind};
 use crate::config::Config;
 use crate::error::Result;
 use crate::graphql::{build_schema, AppSchema};
@@ -105,6 +106,7 @@ async fn main() -> Result<()> {
     let http = reqwest::Client::builder()
         .user_agent(format!("PeanutButter/{}", config.version))
         .timeout(Duration::from_secs(30))
+        .redirect(reqwest::redirect::Policy::limited(3))
         .build()?;
 
     let app_state = AppState {
@@ -186,13 +188,11 @@ async fn main() -> Result<()> {
         }
     });
 
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods([Method::GET, Method::POST, Method::OPTIONS, Method::HEAD])
-        .allow_headers(Any);
+    let cors = cors_layer(&config.public_url);
 
     let router = Router::new()
         .route("/health", get(health))
+        .route("/pair", axum::routing::post(auth::pair))
         .route("/", get(crate::admin::page).post(crate::admin::action))
         .route("/tokens", get(crate::admin::page).post(crate::admin::action))
         .route("/sync/status", get(crate::admin::sync_status))
@@ -207,24 +207,56 @@ async fn main() -> Result<()> {
         .with_state(http_state.clone())
         .layer(middleware::from_fn_with_state(http_state, auth::gate))
         .layer(cors)
-        .layer(TraceLayer::new_for_http());
+        // Log method + path only: media URLs can carry ?key= for external players.
+        .layer(TraceLayer::new_for_http().make_span_with(|req: &axum::http::Request<_>| {
+            tracing::info_span!("request", method = %req.method(), path = %req.uri().path())
+        }));
 
     let addr: SocketAddr = config
         .bind_addr
         .parse()
         .map_err(|e| error::AppError::Config(format!("invalid BIND_ADDR: {e}")))?;
     let listener = TcpListener::bind(addr).await?;
-    info!(
-        addr = %addr,
-        pairing = %crate::pin::format_code(&config.app_token()),
-        "listening"
-    );
+    info!(addr = %addr, "listening");
     axum::serve(
         listener,
         router.into_make_service_with_connect_info::<SocketAddr>(),
     )
     .await?;
     Ok(())
+}
+
+/// Browsers may only call the API from the server's own origin, plus any
+/// listed in CORS_ORIGINS (comma-separated; "*" allows every origin). Native
+/// apps send no Origin header and are unaffected.
+fn cors_layer(public_url: &str) -> CorsLayer {
+    let base = CorsLayer::new()
+        .allow_methods([Method::GET, Method::POST, Method::OPTIONS, Method::HEAD])
+        .allow_headers([
+            axum::http::header::CONTENT_TYPE,
+            axum::http::header::AUTHORIZATION,
+            axum::http::HeaderName::from_static("x-api-key"),
+        ]);
+    let extra = std::env::var("CORS_ORIGINS").unwrap_or_default();
+    if extra.split(',').any(|o| o.trim() == "*") {
+        return base.allow_origin(Any).allow_headers(Any);
+    }
+    let origins: Vec<HeaderValue> = std::iter::once(public_url)
+        .chain(extra.split(','))
+        .filter_map(origin_of)
+        .filter_map(|o| HeaderValue::from_str(&o).ok())
+        .collect();
+    base.allow_origin(AllowOrigin::list(origins))
+}
+
+/// "http://10.0.0.5:3001/x" → "http://10.0.0.5:3001".
+fn origin_of(url: &str) -> Option<String> {
+    let url = reqwest::Url::parse(url.trim()).ok()?;
+    let host = url.host_str()?;
+    Some(match url.port() {
+        Some(p) => format!("{}://{host}:{p}", url.scheme()),
+        None => format!("{}://{host}", url.scheme()),
+    })
 }
 
 async fn graphiql() -> impl IntoResponse {
@@ -238,34 +270,26 @@ async fn graphiql() -> impl IntoResponse {
 
 async fn graphql_handler(
     State(state): State<HttpState>,
-    headers: HeaderMap,
+    Extension(session): Extension<auth::AuthSession>,
     req: GraphQLRequest,
 ) -> Response {
     let mut request = req.into_inner();
-    let Ok(session) = auth::resolve_session(&state, &headers).await else {
-        return crate::error::AppError::Unauthorized("invalid API token".into()).into_response();
-    };
-    request = request.data(session.clone());
+    request = request
+        .data(session.clone())
+        .data(crate::graphql::loaders::new_loader(state.app.pool.clone()));
     let token_scope = session.token_id.to_string();
-    let is_mutation = request
-        .query
-        .trim_start()
-        .to_ascii_lowercase()
-        .starts_with("mutation");
-    let cache_key = format!("{}:{}:{:?}", token_scope, request.query, request.variables);
+    let kind = crate::cache::classify(&request.query);
+    let cache_key = GqlCache::key(&token_scope, &request.query, &request.variables);
     let skip_cache = {
         let q = request.query.to_ascii_lowercase();
         q.contains("streamingsearch")
             || q.contains("streamstatus")
-            || q.contains("startstream")
-            || q.contains("stopstream")
-            || q.contains("streamresume")
             || q.contains("testjackett")
             || q.contains("jackettcatalog")
             || q.contains("serverinfo")
-            || q.contains("homefeed")
     };
-    if !is_mutation && !skip_cache {
+    let cacheable = kind == RequestKind::Query && !skip_cache;
+    if cacheable {
         if let Some(cached) = state.app.gql_cache.get(&cache_key).await {
             return Json(cached).into_response();
         }
@@ -276,10 +300,13 @@ async fn graphql_handler(
             "errors": [{ "message": "failed to serialize GraphQL response" }]
         })
     });
-    if is_mutation {
-        state.app.gql_cache.invalidate();
-    } else if !skip_cache {
-        state.app.gql_cache.insert(cache_key, json.clone()).await;
+    match kind {
+        RequestKind::GlobalMutation => state.app.gql_cache.invalidate(),
+        RequestKind::PersonalMutation => state.app.gql_cache.invalidate_scope(&token_scope),
+        RequestKind::Query if cacheable && response.errors.is_empty() => {
+            state.app.gql_cache.insert(cache_key, json.clone()).await;
+        }
+        RequestKind::Query => {}
     }
     Json(json).into_response()
 }
@@ -291,12 +318,27 @@ struct HealthBody {
     meilisearch: bool,
 }
 
+/// LAN discovery probes /health on every candidate host, and apps poll it;
+/// reuse a result for a few seconds instead of hitting Postgres + Meili each time.
 async fn health(State(state): State<HttpState>) -> impl IntoResponse {
-    let postgres = sqlx::query("SELECT 1")
-        .execute(&state.app.pool)
-        .await
-        .is_ok();
-    let meilisearch = state.app.search.health().await;
+    static LAST: std::sync::Mutex<Option<(std::time::Instant, bool, bool)>> =
+        std::sync::Mutex::new(None);
+    let cached = LAST
+        .lock()
+        .ok()
+        .and_then(|g| *g)
+        .filter(|(at, _, _)| at.elapsed() < Duration::from_secs(3));
+    let (postgres, meilisearch) = match cached {
+        Some((_, pg, ms)) => (pg, ms),
+        None => {
+            let pg = sqlx::query("SELECT 1").execute(&state.app.pool).await.is_ok();
+            let ms = state.app.search.health().await;
+            if let Ok(mut g) = LAST.lock() {
+                *g = Some((std::time::Instant::now(), pg, ms));
+            }
+            (pg, ms)
+        }
+    };
     let ok = postgres && meilisearch;
     let body = HealthBody {
         status: if ok { "ok" } else { "degraded" },

@@ -53,11 +53,38 @@ class YoutubeTrailerViewState extends State<YoutubeTrailerView> {
       _controller = WebViewController()
         ..setJavaScriptMode(JavaScriptMode.unrestricted)
         ..setBackgroundColor(const Color(0xFF000000))
+        // JS is required by the YouTube player; keep the view on YouTube so
+        // a click inside the embed can't load an arbitrary site in-app.
+        ..setNavigationDelegate(
+          NavigationDelegate(
+            onNavigationRequest: (request) => _youtubeOnly(request.url)
+                ? NavigationDecision.navigate
+                : NavigationDecision.prevent,
+          ),
+        )
         ..loadHtmlString(
           youtubeEmbedHtml(widget.videoId, muted: widget.muted),
           baseUrl: 'https://www.youtube.com/',
         );
     }
+  }
+
+  static bool _youtubeOnly(String url) {
+    final uri = Uri.tryParse(url);
+    if (uri == null) return false;
+    if (uri.scheme == 'about' || uri.scheme == 'data') return true;
+    if (uri.scheme != 'https') return false;
+    final host = uri.host.toLowerCase();
+    const allowed = [
+      'youtube.com',
+      'youtube-nocookie.com',
+      'youtu.be',
+      'ytimg.com',
+      'googlevideo.com',
+      'google.com',
+      'gstatic.com',
+    ];
+    return allowed.any((d) => host == d || host.endsWith('.$d'));
   }
 
   Future<void> setMuted(bool muted) async {
