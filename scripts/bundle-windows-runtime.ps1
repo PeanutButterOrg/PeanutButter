@@ -61,7 +61,7 @@ foreach ($root in $roots) {
 if ($null -ne $dumpbin) {
   $imports = & $dumpbin.FullName /DEPENDENTS (Join-Path $ReleaseDir "libtorrent_flutter.dll") |
     ForEach-Object { $_.Trim() } |
-    Where-Object { $_ -match '\.dll$' }
+    Where-Object { $_ -match '^[\w.-]+\.dll$' }  # bare names only, not the "Dump of file C:\...dll" header
   $systemDll = '^(?i)(kernel32|user32|advapi32|ws2_32|iphlpapi|crypt32|bcrypt|mswsock|dbghelp|ole32|shell32|secur32|ntdll|rpcrt4|shlwapi|version|userenv|api-ms-win-.*|ucrtbase|vcruntime140(_1)?|msvcp140(_\w+)?)\.dll$'
   $unshipped = @($imports | Where-Object {
     ($_ -notmatch $systemDll) -and -not (Test-Path (Join-Path $ReleaseDir $_))
