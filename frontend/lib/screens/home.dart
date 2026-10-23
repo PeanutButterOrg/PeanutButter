@@ -278,6 +278,7 @@ class _HomeBodyState extends ConsumerState<_HomeBody> {
 
 void _openCatalog(BuildContext context, {String? kind, required String sort}) {
   final container = ProviderScope.containerOf(context);
+  container.read(catalogProvider.notifier).clearForNewView();
   if (kind != null) {
     container.read(selectedKindProvider.notifier).state = kind;
   }

@@ -12,7 +12,7 @@
     <color name="pb_white54">#8AFFFFFF</color>
     <color name="pb_rt">#FFFA320A</color>
     <color name="pb_completed">#FF7CFFB2</color>
-    <color name="pb_favorite">#FFFF6B6F</color>
+    <color name="pb_state_liked">#EBFFFFFF</color>
     <color name="pb_hairline">#22FFFFFF</color>
     <color name="pb_error">#FFFF6B6B</color>
 </resources>

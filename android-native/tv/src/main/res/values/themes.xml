@@ -32,8 +32,9 @@
         <item name="focusOutEnd">true</item>
         <item name="android:paddingStart">@dimen/shelf_inset</item>
         <item name="android:paddingEnd">@dimen/shelf_inset</item>
-        <item name="android:paddingTop">6dp</item>
-        <item name="android:paddingBottom">6dp</item>
+        <!-- Room for a focused card (1.08×, ~10dp past each edge) so it isn't cut. -->
+        <item name="android:paddingTop">14dp</item>
+        <item name="android:paddingBottom">14dp</item>
         <item name="android:horizontalSpacing">0dp</item>
         <item name="android:clipChildren">false</item>
         <item name="android:clipToPadding">false</item>

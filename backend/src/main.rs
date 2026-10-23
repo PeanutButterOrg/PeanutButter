@@ -16,6 +16,7 @@ mod search;
 mod stream;
 mod subtitles;
 mod providers;
+mod server_update;
 mod updates;
 
 use std::net::SocketAddr;
@@ -101,6 +102,10 @@ async fn main() -> Result<()> {
     if let Err(e) = providers::load(&pool).await {
         tracing::warn!(error = %e, "could not load fallback torrent sources");
     }
+    if let Err(e) = server_update::load(&pool).await {
+        tracing::warn!(error = %e, "could not load the server auto-update setting");
+    }
+    server_update::ensure_token();
     db::ensure_app_token(&pool, &config).await?;
     db::ensure_admin_password(&pool).await?;
     info!("admin console at / — password required");
@@ -225,6 +230,7 @@ async fn main() -> Result<()> {
         .map_err(|e| error::AppError::Config(format!("invalid BIND_ADDR: {e}")))?;
     // Mirror signed app releases from GitHub for LAN updates.
     updates::spawn_background();
+    server_update::spawn_auto(app_state.http.clone(), app_state.streams.clone());
     let listener = TcpListener::bind(addr).await?;
     info!(addr = %addr, "listening");
     axum::serve(
@@ -323,6 +329,8 @@ async fn graphql_handler(
 #[derive(Serialize)]
 struct HealthBody {
     status: &'static str,
+    /// Running server version; the console watches it change after an update.
+    version: &'static str,
     postgres: bool,
     meilisearch: bool,
 }
@@ -351,6 +359,7 @@ async fn health(State(state): State<HttpState>) -> impl IntoResponse {
     let ok = postgres && meilisearch;
     let body = HealthBody {
         status: if ok { "ok" } else { "degraded" },
+        version: crate::config::build_version(),
         postgres,
         meilisearch,
     };

@@ -39,6 +39,8 @@ const EMBEDDED_MIGRATION_026: &str = include_str!("migrations/026_wyzie_subtitle
 const EMBEDDED_MIGRATION_027: &str = include_str!("migrations/027_stream_progress_per_device.sql");
 const EMBEDDED_MIGRATION_028: &str = include_str!("migrations/028_device_keys.sql");
 const EMBEDDED_MIGRATION_029: &str = include_str!("migrations/029_stream_providers.sql");
+const EMBEDDED_MIGRATION_030: &str = include_str!("migrations/030_server_auto_update.sql");
+const EMBEDDED_MIGRATION_031: &str = include_str!("migrations/031_console_sessions.sql");
 
 pub async fn connect(database_url: &str) -> Result<PgPool> {
     connect_with(database_url, 40, 4, Duration::from_secs(15)).await
@@ -113,6 +115,8 @@ pub async fn run_migrations(pool: &PgPool, extra_dir: Option<&Path>) -> Result<(
     apply_one(pool, "027_stream_progress_per_device", EMBEDDED_MIGRATION_027).await?;
     apply_one(pool, "028_device_keys", EMBEDDED_MIGRATION_028).await?;
     apply_one(pool, "029_stream_providers", EMBEDDED_MIGRATION_029).await?;
+    apply_one(pool, "030_server_auto_update", EMBEDDED_MIGRATION_030).await?;
+    apply_one(pool, "031_console_sessions", EMBEDDED_MIGRATION_031).await?;
 
     if let Some(dir) = extra_dir {
         if dir.is_dir() {
@@ -159,6 +163,8 @@ pub async fn run_migrations(pool: &PgPool, extra_dir: Option<&Path>) -> Result<(
                     || version == "027_stream_progress_per_device"
                     || version == "028_device_keys"
                     || version == "029_stream_providers"
+                    || version == "030_server_auto_update"
+                    || version == "031_console_sessions"
                 {
                     continue;
                 }
@@ -697,6 +703,10 @@ pub async fn ensure_admin_password(pool: &PgPool) -> Result<()> {
         .bind(&hash)
         .execute(pool)
         .await?;
+        if force {
+            // Console sessions outlive restarts; a forced reset signs everyone out.
+            sqlx::query("DELETE FROM console_sessions").execute(pool).await?;
+        }
         info!("admin UI password loaded from ADMIN_PASSWORD");
         return Ok(());
     }

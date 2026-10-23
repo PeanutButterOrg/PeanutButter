@@ -91,8 +91,8 @@
     <string name="loading_sources">Looking up sources…</string>
     <string name="disconnect">Disconnect</string>
     <string name="server_info_line">v%1$s · %2$d titles</string>
-    <string name="jackett_ok">Jackett connected</string>
-    <string name="jackett_missing">Jackett not configured</string>
+    <string name="jackett_ok">Torrent sources ready (Jackett or Stremio add-ons)</string>
+    <string name="jackett_missing">No torrent source. Add Jackett or a Stremio add-on in the server console.</string>
     <string name="sort">Sort</string>
     <string name="sort_year">Year</string>
     <string name="sort_rating">Rating</string>

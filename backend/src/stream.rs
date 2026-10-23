@@ -119,6 +119,11 @@ fn torrent_listen_range() -> std::ops::Range<u16> {
 }
 
 impl StreamService {
+    /// Server-side streams currently open (auto-update waits for none).
+    pub async fn active_sessions(&self) -> usize {
+        self.inner.sessions.read().await.len()
+    }
+
     pub fn new(media_path: PathBuf, public_url: String) -> Self {
         Self {
             inner: Arc::new(StreamInner {

@@ -15,6 +15,9 @@ import app.peanutbutter.tv.R
  * and a row of cards fills the width without running past it.
  */
 object GridMetrics {
+    /** Space above/below a poster grid: a focused card grows ~4% past each edge. */
+    const val PAD_V_DP = 16
+
     var columns: Int = 7
         private set
     var cardWidthPx: Int = 0
@@ -94,7 +97,7 @@ fun VerticalGridView.pinPosterGrid() {
     overScrollMode = View.OVER_SCROLL_NEVER
     val density = resources.displayMetrics.density
     val padH = resources.getDimensionPixelSize(R.dimen.shelf_inset)
-    val padV = (8 * density).toInt()
+    val padV = (GridMetrics.PAD_V_DP * density).toInt()
     val gap = (8 * density).toInt()
     setPadding(padH, padV, padH, padV)
     setHorizontalSpacing(0)

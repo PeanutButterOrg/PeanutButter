@@ -159,6 +159,8 @@ jobs:
           file: ./backend/Dockerfile
           push: false
           load: true
+          build-args: |
+            PB_VERSION=${{ needs.version.outputs.version }}
           tags: |
             peanutbutter-api:${{ needs.version.outputs.version }}
             peanutbutter-api:0.2.0

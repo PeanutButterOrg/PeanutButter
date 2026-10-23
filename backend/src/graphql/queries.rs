@@ -570,7 +570,7 @@ impl Query {
         let fallback_on = crate::providers::active();
         if !state.config.live.jackett_enabled() && !fallback_on {
             return Err(AppError::BadRequest(
-                "Jackett streaming is turned off. Enable it in Settings.".into(),
+                "No torrent source on the server. Set up Jackett or add a Stremio add-on in the console's Streaming tab.".into(),
             )
             .into());
         }
@@ -719,8 +719,8 @@ impl Query {
 
         let found = retain_tryable_sources(found);
 
-        // Nothing reliable from Jackett: ask the fallback add-ons (by IMDb id)
-        // and merge their torrents into the same ranked list.
+        // No Jackett, or nothing reliable from it: ask the Stremio add-ons (by
+        // IMDb id) and merge their torrents into the same ranked list.
         let found = match target.imdb_id.as_deref() {
             Some(imdb) if crate::providers::needs_fallback(&found) => {
                 let extra = crate::providers::search(
@@ -776,7 +776,7 @@ impl Query {
         let state = ctx.data::<AppState>()?;
         if !state.config.live.jackett_enabled() && !crate::providers::active() {
             return Err(crate::error::AppError::BadRequest(
-                "Jackett streaming is turned off. Enable it in Settings.".into(),
+                "No torrent source on the server. Set up Jackett or add a Stremio add-on in the console's Streaming tab.".into(),
             )
             .into());
         }
@@ -799,7 +799,7 @@ impl Query {
         let state = ctx.data::<AppState>()?;
         if !state.config.live.jackett_enabled() && !crate::providers::active() {
             return Err(crate::error::AppError::BadRequest(
-                "Jackett streaming is turned off. Enable it in Settings.".into(),
+                "No torrent source on the server. Set up Jackett or add a Stremio add-on in the console's Streaming tab.".into(),
             )
             .into());
         }

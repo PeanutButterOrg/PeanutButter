@@ -17,7 +17,7 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:background="@drawable/poster_card_bg"
-        android:foreground="@drawable/poster_focus_ring">
+>
 
         <ImageView
             android:id="@+id/poster"
@@ -25,6 +25,11 @@
             android:layout_height="match_parent"
             android:contentDescription="@null"
             android:scaleType="centerCrop" />
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@drawable/poster_scrim" />
 
         <LinearLayout
             android:id="@+id/score_chip"
@@ -67,35 +72,40 @@
                 android:textStyle="bold" />
         </LinearLayout>
 
-        <!-- Liked / watched markers, same corner as the desktop apps. -->
+        <!-- Liked / watched: one chip styled like the score chip (same glass,
+             radius, height), matching the desktop apps. -->
         <LinearLayout
+            android:id="@+id/state_chip"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_gravity="top|end"
             android:layout_margin="6dp"
-            android:orientation="horizontal">
+            android:background="@drawable/badge_score"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="5dp"
+            android:paddingTop="3dp"
+            android:paddingEnd="5dp"
+            android:paddingBottom="3dp"
+            android:visibility="gone">
 
             <ImageView
                 android:id="@+id/favorite_badge"
-                android:layout_width="22dp"
-                android:layout_height="22dp"
-                android:background="@drawable/badge_watched"
+                android:layout_width="13dp"
+                android:layout_height="13dp"
                 android:contentDescription="@string/liked"
-                android:padding="3dp"
                 android:src="@drawable/ic_favorite"
-                android:tint="@color/pb_favorite"
+                android:tint="@color/pb_state_liked"
                 android:visibility="gone" />
 
             <ImageView
                 android:id="@+id/watched_badge"
-                android:layout_width="22dp"
-                android:layout_height="22dp"
-                android:layout_marginStart="4dp"
-                android:background="@drawable/badge_watched"
+                android:layout_width="13dp"
+                android:layout_height="13dp"
+                android:layout_marginStart="3dp"
                 android:contentDescription="@string/watched"
-                android:padding="2dp"
                 android:src="@drawable/ic_check"
-                android:tint="@color/pb_completed"
+                android:tint="@color/pb_accent"
                 android:visibility="gone" />
         </LinearLayout>
 
@@ -131,23 +141,25 @@
                 android:textColor="@color/pb_white54"
                 android:textSize="10sp" />
         </LinearLayout>
+        <!-- Resume bar: inset inside the poster (and its focus ring) so the
+             whole card, bar included, scales and stays within the rounded edge. -->
+        <FrameLayout
+            android:id="@+id/progress"
+            android:layout_width="match_parent"
+            android:layout_height="4dp"
+            android:layout_gravity="bottom"
+            android:layout_marginStart="8dp"
+            android:layout_marginEnd="8dp"
+            android:layout_marginBottom="6dp"
+            android:background="@drawable/progress_track_round"
+            android:visibility="gone">
+
+            <View
+                android:id="@+id/progress_fill"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:background="@drawable/progress_fill_round" />
+        </FrameLayout>
     </FrameLayout>
 
-    <!-- Outside clipped poster_frame so rounded clipToOutline does not eat the bar. -->
-    <FrameLayout
-        android:id="@+id/progress"
-        android:layout_width="match_parent"
-        android:layout_height="6dp"
-        android:layout_gravity="bottom"
-        android:layout_marginBottom="4dp"
-        android:background="#99FFFFFF"
-        android:elevation="8dp"
-        android:visibility="gone">
-
-        <View
-            android:id="@+id/progress_fill"
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:background="@color/pb_seed" />
-    </FrameLayout>
 </FrameLayout>

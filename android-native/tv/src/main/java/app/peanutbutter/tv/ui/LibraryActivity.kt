@@ -77,7 +77,7 @@ class LibraryFragment : VerticalGridSupportFragment() {
         val dm = resources.displayMetrics
         val density = dm.density
         val padH = resources.getDimensionPixelSize(R.dimen.shelf_inset)
-        val padV = (8 * density).toInt()
+        val padV = (GridMetrics.PAD_V_DP * density).toInt()
         val gap = (8 * density).toInt()
         val chrome = (52 * density).toInt()
         applyFit(
@@ -149,7 +149,7 @@ class LibraryFragment : VerticalGridSupportFragment() {
         }
         val density = resources.displayMetrics.density
         val padH = resources.getDimensionPixelSize(R.dimen.shelf_inset)
-        val padV = (8 * density).toInt()
+        val padV = (GridMetrics.PAD_V_DP * density).toInt()
         val gap = (8 * density).toInt()
         val fit = GridMetrics.fit(view.width, view.height, padH, padV, gap)
         if (fit.columns != columns || fit.width != cardWidth || fit.height != cardHeight) {

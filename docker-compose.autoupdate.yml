@@ -1,14 +1,16 @@
-# Opt-in server self-update. Layer it on top of the normal stack:
+# Server self-update from the console. Layer it on top of the normal stack:
 #
 #   docker compose -f docker-compose.server.yml -f docker-compose.autoupdate.yml pull api
 #   docker compose -f docker-compose.server.yml -f docker-compose.autoupdate.yml up -d
 #
-# (no --build: the api now comes from GHCR). Watchtower then checks every
-# 6 hours and restarts *only* the api on a new release; Postgres and
-# Meilisearch are never touched. Migrations run on api start-up.
+# (no --build: the api now comes from GHCR, built by CI for every vX.Y.Z tag).
+# The console's Settings tab then shows new versions with an "Update to …"
+# button and an "Update automatically" switch. On update the server backs up
+# Postgres (newest five kept in the backups volume) and asks Watchtower to
+# pull the new image and restart *only* the api. Postgres and Meilisearch are
+# never touched; migrations run on api start-up.
 #
 #   PB_CHANNEL=stable  newest vX.Y.Z release (default)
-#   PB_CHANNEL=latest  every push to main (testing only)
 #   PB_CHANNEL=0.3     stay on 0.3.x
 #
 # See docs/SERVER.md "Automatic server updates".
@@ -19,10 +21,21 @@ services:
     pull_policy: always
     labels:
       com.centurylinklabs.watchtower.enable: "true"
+    environment:
+      PB_WATCHTOWER_URL: http://watchtower:8080
+      PB_CONTROL_DIR: /data/control
+      PB_BACKUP_DIR: /data/backups
+    volumes:
+      # Token shared with Watchtower (created by the api on first start).
+      - control_data:/data/control
+      - backups_data:/data/backups
 
   watchtower:
     image: containrrr/watchtower:1.7.1
     restart: always
+    depends_on:
+      api:
+        condition: service_healthy
     logging:
       driver: json-file
       options:
@@ -31,11 +44,20 @@ services:
     environment:
       WATCHTOWER_LABEL_ENABLE: "true"
       WATCHTOWER_CLEANUP: "true"
-      WATCHTOWER_POLL_INTERVAL: ${WATCHTOWER_POLL_INTERVAL:-21600}
       WATCHTOWER_INCLUDE_RESTARTING: "true"
-      # Docker 29+ rejects Watchtower's old default API version; set 1.44 there.
-      DOCKER_API_VERSION: ${WATCHTOWER_DOCKER_API_VERSION:-}
+      # Update only when the console asks (Update now / Auto-update).
+      WATCHTOWER_HTTP_API_UPDATE: "true"
+      WATCHTOWER_HTTP_API_PERIODIC_POLLS: "false"
+      WATCHTOWER_HTTP_API_TOKEN: /secrets/watchtower-token
+      # Watchtower 1.7.1 defaults to Docker API 1.25, which Docker 25+ refuses.
+      # 1.44 = Docker 25 or newer; set WATCHTOWER_DOCKER_API_VERSION for older.
+      DOCKER_API_VERSION: ${WATCHTOWER_DOCKER_API_VERSION:-1.44}
       TZ: ${TZ:-UTC}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - control_data:/secrets:ro
     mem_limit: 128m
+
+volumes:
+  control_data:
+  backups_data:

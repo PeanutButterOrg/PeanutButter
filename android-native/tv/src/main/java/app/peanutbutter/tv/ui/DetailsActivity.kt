@@ -479,12 +479,14 @@ class DetailsActivity : FragmentActivity() {
         val next = !t.watched
         item = t.copy(watched = next, positionMs = if (next) 0 else t.positionMs)
         updateWatchedFav(item!!)
+        UserStateEdits.setWatched(t.id, next)
         lifecycleScope.launch {
             try {
                 application.asTv().api.setWatched(t.id, next)
             } catch (e: Exception) {
                 item = t
                 updateWatchedFav(t)
+                UserStateEdits.setWatched(t.id, t.watched)
                 Toast.makeText(this@DetailsActivity, e.message, Toast.LENGTH_SHORT).show()
             }
         }
@@ -495,12 +497,14 @@ class DetailsActivity : FragmentActivity() {
         val next = !t.favorite
         item = t.copy(favorite = next)
         updateWatchedFav(item!!)
+        UserStateEdits.setFavorite(t.id, next)
         lifecycleScope.launch {
             try {
                 application.asTv().api.setFavorite(t.id, next)
             } catch (e: Exception) {
                 item = t
                 updateWatchedFav(t)
+                UserStateEdits.setFavorite(t.id, t.favorite)
                 Toast.makeText(this@DetailsActivity, e.message, Toast.LENGTH_SHORT).show()
             }
         }

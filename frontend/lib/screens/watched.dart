@@ -8,10 +8,10 @@ import '../providers/catalog.dart';
 import '../theme.dart';
 import '../tv.dart';
 import '../widgets/empty_state.dart';
+import '../widgets/hero_banner.dart';
 import '../widgets/local_overlay.dart';
 import '../widgets/poster_card.dart';
 import '../widgets/tv_chrome.dart';
-import 'home.dart' show FeaturedBanner;
 
 /// Completed / watched titles — moved out of Continue watching when finished.
 class WatchedScreen extends ConsumerWidget {
@@ -97,24 +97,17 @@ class WatchedScreen extends ConsumerWidget {
                 showSettings: false,
               );
             }
-            final bannerItems = <TitleItem>[
-              ...data.movies,
-              ...data.series,
-              ...data.anime,
-            ];
             return ClippedOverlay(
               child: ListView(
                 cacheExtent: isAndroidTv ? 280 : 800,
                 addAutomaticKeepAlives: false,
                 physics: const ClampingScrollPhysics(),
+                // The header overlays the list; start the rows just below it.
                 padding: EdgeInsets.only(
+                  top: HeroBannerFrame.headerGap(context) + 8,
                   bottom: isAndroidTv ? tvCenterBottomPad(context) : 48,
                 ),
                 children: [
-                  FeaturedBanner(
-                    key: const ValueKey('watched-banner'),
-                    items: bannerItems,
-                  ),
                   _WatchedRow(title: 'Movies', items: data.movies),
                   _WatchedRow(title: 'Series', items: data.series),
                   _WatchedRow(title: 'Anime', items: data.anime),

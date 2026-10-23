@@ -252,7 +252,7 @@ impl Config {
             api_key,
             sync_cron_popular: env_or("SYNC_CRON_POPULAR", "0 0 */6 * * *"),
             sync_cron_stale: env_or("SYNC_CRON_STALE", "0 30 3 * * *"),
-            version: env!("CARGO_PKG_VERSION"),
+            version: build_version(),
         })
     }
 
@@ -394,5 +394,13 @@ pub fn tmdb_ui_locale(codes: &[String]) -> String {
         Some("th") => "th-TH".into(),
         Some("id") => "id-ID".into(),
         Some(code) => code.to_string(),
+    }
+}
+
+/// Release version baked in by CI (`PB_VERSION` build arg), else Cargo.toml's.
+pub fn build_version() -> &'static str {
+    match option_env!("PB_SERVER_VERSION") {
+        Some(v) if !v.trim().is_empty() => v,
+        _ => env!("CARGO_PKG_VERSION"),
     }
 }

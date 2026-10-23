@@ -214,6 +214,14 @@ class LibraryNotifier extends StateNotifier<CatalogState> {
   /// so a slow page for the previous filter can't overwrite the new results.
   int _generation = 0;
 
+  /// Drop the current list before a different "See all" opens, so the
+  /// screen shows its loader instead of the previous rail's cards.
+  void clearForNewView() {
+    _filterDebounce?.cancel();
+    _generation++;
+    state = const CatalogState(loading: true);
+  }
+
   Future<void> refresh() async {
     final generation = ++_generation;
     state = state.copyWith(loading: true, clearError: true);

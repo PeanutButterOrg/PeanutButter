@@ -8,10 +8,10 @@ import '../providers/catalog.dart';
 import '../theme.dart';
 import '../tv.dart';
 import '../widgets/empty_state.dart';
+import '../widgets/hero_banner.dart';
 import '../widgets/local_overlay.dart';
 import '../widgets/poster_card.dart';
 import '../widgets/tv_chrome.dart';
-import 'home.dart' show FeaturedBanner;
 
 /// Favourites home — same poster-rail feel as Home, organised by kind
 /// (Movies / Series / Anime) instead of Popular / Last added.
@@ -98,24 +98,17 @@ class FavouritesScreen extends ConsumerWidget {
                 showSettings: false,
               );
             }
-            final bannerItems = <TitleItem>[
-              ...data.movies,
-              ...data.series,
-              ...data.anime,
-            ];
             return ClippedOverlay(
               child: ListView(
                 cacheExtent: isAndroidTv ? 280 : 800,
                 addAutomaticKeepAlives: false,
                 physics: const ClampingScrollPhysics(),
+                // The header overlays the list; start the rows just below it.
                 padding: EdgeInsets.only(
+                  top: HeroBannerFrame.headerGap(context) + 8,
                   bottom: isAndroidTv ? tvCenterBottomPad(context) : 48,
                 ),
                 children: [
-                  FeaturedBanner(
-                    key: const ValueKey('favourites-banner'),
-                    items: bannerItems,
-                  ),
                   _FavRow(title: 'Movies', items: data.movies),
                   _FavRow(title: 'Series', items: data.series),
                   _FavRow(title: 'Anime', items: data.anime),

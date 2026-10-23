@@ -2387,12 +2387,14 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   }
 
   /// Compact seed/speed chip while streaming mid-play — never alongside the HUD.
+  /// Download stats chip: only with the player controls, or while playback
+  /// is really stalled on data. Seeking or pausing alone doesn't show it.
   bool get _showStreamChip =>
       widget.isStream &&
       _streamError == null &&
       !_showStreamHud &&
       (_hasVideo || _streamOpened) &&
-      (_buffering || _seeking || _seekSettling || !_playing);
+      (_buffering || _showChrome);
 
   /// Movie / series name + episode line shown while paused.
   String get _pauseTitleMain {
@@ -3039,12 +3041,20 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
           // Windowed: align with the seeding chip on the scaffold. Fullscreen
           // copies live inside media_kit controls (native fullscreen route).
           if (!_inFullscreen) ..._skipAndPlayNextOverlays(),
-          // Stats chip while buffering — sit above the seekbar, never over it.
-          if (_showStreamChip)
+          // Stats chip — sits above the seekbar, never over it. Fades in and
+          // out with the controls (or a real buffering stall).
+          if (widget.isStream)
             Positioned(
               right: _actionChipInset,
               bottom: _streamStatsChipBottom,
-              child: _streamStatsChip(),
+              child: IgnorePointer(
+                child: AnimatedOpacity(
+                  opacity: _showStreamChip ? 1 : 0,
+                  duration: _chromeAnim,
+                  curve: Curves.easeOutCubic,
+                  child: _streamStatsChip(),
+                ),
+              ),
             ),
           Positioned(
             top: 12,
@@ -3419,7 +3429,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   }
 
   double get _skipPlayNextBottom {
-    final seedVisible = _showStreamChip && !_showStreamHud && widget.isStream;
+    final seedVisible =
+        _showStreamChip && !_showStreamHud && widget.isStream;
     final base = seedVisible ? _streamStatsChipBottom : _actionChipBottom;
     return seedVisible ? base + _actionChipStackLift : base;
   }

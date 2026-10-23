@@ -134,19 +134,28 @@ Apps ask the server after launch and then every 12 hours. They install only buil
 
 Environment: `UPDATES_ENABLED=0` turns updates off, `UPDATES_REPO` sets the source repository (default `PeanutButterOrg/PeanutButter`), and `UPDATES_INCLUDE_PRERELEASE=1` also offers `-rc` tags.
 
-### Automatic server updates (optional)
+### Server updates from the console
+
+Every `vX.Y.Z` tag makes CI publish the server image as `ghcr.io/peanutbutterorg/peanutbutter-api:stable`. The console is served by the server, so it updates together with it. Switch to the CI image once, in the folder with your compose file:
 
 ```bash
 docker compose -f docker-compose.server.yml -f docker-compose.autoupdate.yml pull api
 docker compose -f docker-compose.server.yml -f docker-compose.autoupdate.yml up -d
 ```
 
-This runs the API from `ghcr.io/peanutbutterorg/peanutbutter-api:stable` and adds Watchtower, which restarts only the `api` container when a new release image appears. Postgres and Meilisearch are never updated automatically. Don't pass `--build` with this file.
+From then on, **Settings → Server** in the console shows the running version and any newer release:
 
-- The GHCR package must be public, or the host must run `docker login ghcr.io` with a token that has `read:packages`. In the private case, add `- /root/.docker/config.json:/config.json:ro` to the `watchtower` volumes.
-- On Docker 29 or newer, set `WATCHTOWER_DOCKER_API_VERSION=1.44`.
-- Watchtower doesn't take a database backup first. Keep your usual `pg_dump` schedule.
-- To go back to local builds, run the plain `docker compose -f docker-compose.server.yml up -d --build`.
+- **Update to vX.Y.Z** backs up Postgres, then asks Watchtower to pull the new image and restart the `api` container only. The page reloads itself when the new version is up, and you stay signed in.
+- **Update automatically** does the same by itself after a release appears, once no stream is running through the server.
+
+Details:
+
+- Before each update the database is dumped to the `backups_data` volume (`pre-update-<version>-<time>.sql.gz`; the newest five are kept).
+- Watchtower never polls on its own; it only acts when the console asks. Postgres and Meilisearch are never updated automatically.
+- The token the server and Watchtower share is created on first start in the `control_data` volume. There's nothing to configure.
+- Watchtower needs Docker 25 or newer by default. On older Docker, set `WATCHTOWER_DOCKER_API_VERSION` (for example `1.43`).
+- The GHCR package must be public, or the host must run `docker login ghcr.io` with a token that has `read:packages`, plus `- /root/.docker/config.json:/config.json:ro` in the `watchtower` volumes.
+- Don't pass `--build` with this file. To go back to local builds, run `docker compose -f docker-compose.server.yml up -d --build`.
 
 ---
 
@@ -168,7 +177,7 @@ This runs the API from `ghcr.io/peanutbutterorg/peanutbutter-api:stable` and add
 
 | File | Role |
 | --- | --- |
-| `docker-compose.autoupdate.yml` | Opt-in GHCR image + Watchtower for server self-updates |
+| `docker-compose.autoupdate.yml` | CI image + Watchtower, for server updates from the console |
 | `scripts/run-server.sh` | Build image + start stack |
 | `docker-compose.server.yml` | Homelab (baked config, auto-restart) |
 | `docker-compose.casaos.yml` | CasaOS (baked config) |

@@ -155,15 +155,10 @@ class _PosterCardState extends ConsumerState<PosterCard> {
                   const Spacer(),
                   if (item.bestQuality != null && item.bestQuality!.isNotEmpty)
                     _badge(item.bestQuality!, Colors.black87),
-                  if (item.userState?.favorite == true) ...[
+                  if (item.userState?.favorite == true ||
+                      item.userState?.watched == true) ...[
                     const SizedBox(width: 4),
-                    _stateIcon(Icons.favorite_rounded, 'Liked',
-                        const Color(0xFFE5484D), compact: compact),
-                  ],
-                  if (item.userState?.watched == true) ...[
-                    const SizedBox(width: 4),
-                    _stateIcon(Icons.check_rounded, 'Watched',
-                        const Color(0xFF30A46C), compact: compact),
+                    _stateChip(item.userState!, compact: compact),
                   ],
                 ],
               ),
@@ -215,20 +210,34 @@ class _PosterCardState extends ConsumerState<PosterCard> {
     return (state.positionMs / duration).clamp(0.0, 1.0);
   }
 
-  /// Liked / watched marker on the poster corner (same on every platform).
-  Widget _stateIcon(IconData icon, String label, Color color, {required bool compact}) {
-    final size = compact ? 18.0 : 22.0;
+  /// Liked / watched in one chip styled like the rating chip (same dark
+  /// glass, radius and height), so it sits quietly on any poster art.
+  Widget _stateChip(UserState state, {required bool compact}) {
+    final accent = Theme.of(context).colorScheme.primary;
+    final size = compact ? 12.0 : 14.0;
+    final icons = <Widget>[
+      if (state.favorite)
+        Icon(Icons.favorite_rounded, size: size, color: Colors.white.withValues(alpha: 0.92)),
+      if (state.watched)
+        Icon(Icons.check_circle_rounded, size: size, color: accent),
+    ];
     return Semantics(
-      label: label,
+      label: [if (state.favorite) 'Liked', if (state.watched) 'Watched'].join(', '),
       child: Container(
-        width: size,
-        height: size,
+        padding: EdgeInsets.symmetric(horizontal: compact ? 5 : 6, vertical: compact ? 3 : 4),
         decoration: BoxDecoration(
-          color: color,
-          shape: BoxShape.circle,
-          boxShadow: const [BoxShadow(color: Color(0x66000000), blurRadius: 4)],
+          color: Colors.black.withValues(alpha: 0.72),
+          borderRadius: BorderRadius.circular(compact ? 6 : 8),
         ),
-        child: Icon(icon, size: size * 0.66, color: Colors.white),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (var k = 0; k < icons.length; k++) ...[
+              if (k > 0) SizedBox(width: compact ? 3 : 4),
+              icons[k],
+            ],
+          ],
+        ),
       ),
     );
   }

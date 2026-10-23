@@ -77,6 +77,8 @@ pub struct UpdateStatus {
     pub last_check: Option<String>,
     pub last_error: Option<String>,
     pub busy: bool,
+    /// Newest release on GitHub (also offered as the server image), e.g. "v0.3.1".
+    pub latest_tag: Option<String>,
 }
 
 struct Service {
@@ -284,6 +286,8 @@ impl Service {
         }
         let _run = self.run.lock().await;
         let release = self.latest_release().await?;
+        let tag = release.tag_name.clone();
+        self.set_status(|s| s.latest_tag = Some(tag));
         let asset_url = |name: &str| {
             release
                 .assets

@@ -29,8 +29,9 @@ pub struct AdminForm {
     pub wyzie_api_key: Option<String>,
     /// Fallback torrent sources (Stremio add-ons).
     pub provider_url: Option<String>,
-    pub fallback_enabled: Option<String>,
     pub fallback_min_seeders: Option<String>,
+    /// Console "Update automatically" switch for the server itself.
+    pub server_auto: Option<String>,
     /// Language checkboxes use unique names (`lang_en`, `lang_hi`, …) so
     /// `serde_urlencoded` does not reject repeated `preferred_languages` keys.
     #[serde(flatten, default)]
@@ -113,33 +114,69 @@ pub async fn has_session(state: &HttpState, headers: &HeaderMap) -> bool {
 }
 
 /// Signed-in console browsers. Random per-login tokens (not derived from the
-/// password hash) so logout and password changes actually revoke them. A
-/// server restart signs everyone out.
+/// password hash) so logout and password changes actually revoke them. Kept
+/// in Postgres (hashed) so restarts and self-updates don't sign anyone out;
+/// the in-memory cache only saves a query per request.
 fn console_sessions() -> &'static moka::sync::Cache<String, ()> {
     static SESSIONS: std::sync::OnceLock<moka::sync::Cache<String, ()>> =
         std::sync::OnceLock::new();
     SESSIONS.get_or_init(|| {
         moka::sync::Cache::builder()
             .max_capacity(1_000)
-            .time_to_live(std::time::Duration::from_secs(SESSION_MAX_AGE_SECS))
+            .time_to_live(std::time::Duration::from_secs(10 * 60))
             .build()
     })
 }
 
 const SESSION_MAX_AGE_SECS: u64 = 30 * 24 * 3600;
 
-fn new_console_session() -> String {
+fn session_hash(token: &str) -> String {
+    use sha2::Digest;
+    hex::encode(sha2::Sha256::digest(token.as_bytes()))
+}
+
+async fn new_console_session(state: &HttpState) -> Result<String, AppError> {
     let token = format!(
         "{}{}",
         Uuid::new_v4().simple(),
         Uuid::new_v4().simple()
     );
+    sqlx::query(
+        "INSERT INTO console_sessions (token_hash, expires_at) VALUES ($1, NOW() + make_interval(secs => $2))",
+    )
+    .bind(session_hash(&token))
+    .bind(SESSION_MAX_AGE_SECS as f64)
+    .execute(&state.app.pool)
+    .await?;
     console_sessions().insert(token.clone(), ());
-    token
+    Ok(token)
 }
 
-async fn session_ok(_state: &HttpState, headers: &HeaderMap) -> bool {
-    cookie_value(headers, "pb_sess").is_some_and(|c| console_sessions().contains_key(&c))
+async fn session_ok(state: &HttpState, headers: &HeaderMap) -> bool {
+    let Some(c) = cookie_value(headers, "pb_sess") else {
+        return false;
+    };
+    if console_sessions().contains_key(&c) {
+        return true;
+    }
+    let found: Option<(i32,)> = sqlx::query_as(
+        "SELECT 1 FROM console_sessions WHERE token_hash = $1 AND expires_at > NOW()",
+    )
+    .bind(session_hash(&c))
+    .fetch_optional(&state.app.pool)
+    .await
+    .unwrap_or(None);
+    if found.is_some() {
+        console_sessions().insert(c, ());
+    }
+    found.is_some()
+}
+
+/// Sign every browser out (password change); expired rows are dropped too.
+async fn revoke_all_sessions(state: &HttpState) -> Result<(), AppError> {
+    sqlx::query("DELETE FROM console_sessions").execute(&state.app.pool).await?;
+    console_sessions().invalidate_all();
+    Ok(())
 }
 
 fn session_cookie(token: &str) -> String {
@@ -767,18 +804,16 @@ pub async fn action(
         }
         "save_fallback" => {
             tab = Some("streaming");
-            let enabled = form.fallback_enabled.as_deref() == Some("on");
             let min = form
                 .fallback_min_seeders
                 .as_deref()
                 .and_then(|v| v.trim().parse::<i32>().ok())
                 .unwrap_or(5);
-            crate::providers::set_options(&state.app.pool, enabled, min).await?;
-            notice = Some(if enabled {
-                format!("Fallback sources are on. They're used when Jackett has no torrent with {} or more seeders.", min.clamp(1, 500))
-            } else {
-                "Fallback sources are off. Only Jackett is searched.".into()
-            });
+            crate::providers::set_min_seeders(&state.app.pool, min).await?;
+            notice = Some(format!(
+                "Saved. With Jackett on, add-ons are asked when it has no torrent with {} or more seeders.",
+                min.clamp(1, 500)
+            ));
         }
         "add_provider" => {
             tab = Some("streaming");
@@ -787,7 +822,7 @@ pub async fn action(
                 "Paste the add-on's manifest URL first.".into()
             } else {
                 match crate::providers::add(&state.app.pool, &state.app.http, url).await {
-                    Ok(name) => format!("Installed {name}. Turn on fallback sources below if it isn't already."),
+                    Ok(name) => format!("Installed {name}. Apps can now find torrents through it."),
                     Err(e) => e.to_string(),
                 }
             });
@@ -807,6 +842,23 @@ pub async fn action(
             crate::providers::remove(&state.app.pool, id).await?;
             notice = Some("Source removed.".into());
         }
+        "server_update_now" => {
+            tab = Some("settings");
+            notice = Some(match crate::server_update::update_now(&state.app.http).await {
+                Ok(msg) => msg,
+                Err(e) => e.to_string(),
+            });
+        }
+        "save_server_auto" => {
+            tab = Some("settings");
+            let on = form.server_auto.as_deref() == Some("on");
+            crate::server_update::set_auto(&state.app.pool, on).await?;
+            notice = Some(if on {
+                "Automatic server updates are on. New releases are installed when nothing is streaming from the server; the database is backed up first.".into()
+            } else {
+                "Automatic server updates are off. Use Update now when you want a new version.".into()
+            });
+        }
         "check_updates" => {
             tab = Some("settings");
             notice = Some(crate::updates::check_now().await);
@@ -819,7 +871,7 @@ pub async fn action(
             } else {
                 crate::db::set_admin_password(&state.app.pool, next).await?;
                 // Sign out every other browser; keep this one.
-                console_sessions().invalidate_all();
+                revoke_all_sessions(&state).await?;
                 let mut response = redirect_console_tab(
                     Some("Password updated. Other browsers were signed out."),
                     None,
@@ -827,7 +879,7 @@ pub async fn action(
                 );
                 response.headers_mut().append(
                     header::SET_COOKIE,
-                    session_cookie(&new_console_session()).parse().unwrap(),
+                    session_cookie(&new_console_session(&state).await?).parse().unwrap(),
                 );
                 return Ok(response);
             }
@@ -898,7 +950,7 @@ async fn login(
         .await?;
         return Ok((StatusCode::UNAUTHORIZED, Html(html)).into_response());
     }
-    let token = new_console_session();
+    let token = new_console_session(state).await?;
     let mut response = redirect_console(Some("Signed in."), None);
     response
         .headers_mut()
@@ -906,8 +958,12 @@ async fn login(
     Ok(response)
 }
 
-async fn logout(_state: &HttpState, headers: &HeaderMap) -> Result<Response, AppError> {
+async fn logout(state: &HttpState, headers: &HeaderMap) -> Result<Response, AppError> {
     if let Some(c) = cookie_value(headers, "pb_sess") {
+        sqlx::query("DELETE FROM console_sessions WHERE token_hash = $1 OR expires_at < NOW()")
+            .bind(session_hash(&c))
+            .execute(&state.app.pool)
+            .await?;
         console_sessions().invalidate(&c);
     }
     let mut response = redirect_console(Some("Signed out."), None);
@@ -1019,6 +1075,7 @@ async fn render(
             r#"
             {notice_html}
             <section class="panel login">
+              <span class="logo" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M8 5.5v13l10-6.5z"/></svg></span>
               <p class="brand">PeanutButter</p>
               <h1>Server console</h1>
               <p class="lead">Sign in to manage Jackett and pairing codes. Apps on TVs and desktops use a 6-digit code, not this password.</p>
@@ -1057,12 +1114,15 @@ async fn dashboard(
     let jackett_ok = live.jackett_configured();
     let jackett_url = live.jackett_url().unwrap_or_default();
     let resolution = live.streaming_resolution();
-    let status = if jackett_ok {
-        "<span class=\"pill ok\">Ready</span>"
-    } else if jackett_on {
-        "<span class=\"pill warn\">Needs key</span>"
-    } else {
-        "<span class=\"pill\">Off</span>"
+    // Torrents need Jackett or at least one Stremio add-on; either is enough.
+    let jackett_ready = jackett_on && jackett_ok;
+    let addons_ready = crate::providers::active();
+    let status = match (jackett_ready, addons_ready) {
+        (true, true) => "<span class=\"pill ok\">Ready: Jackett + add-ons</span>",
+        (true, false) => "<span class=\"pill ok\">Ready: Jackett</span>",
+        (false, true) => "<span class=\"pill ok\">Ready: add-ons</span>",
+        (false, false) if jackett_on => "<span class=\"pill warn\">Jackett needs a key</span>",
+        (false, false) => "<span class=\"pill warn\">No torrent source</span>",
     };
 
     let mut cards = String::new();
@@ -1235,28 +1295,18 @@ async fn dashboard(
             String::new()
         } else {
             format!(
-                r#"<form method="post" action="/" class="inline">
+                r#"<form method="post" action="/" class="quick-add">
             <input type="hidden" name="action" value="add_provider" />
             <input type="hidden" name="provider_url" value="{url}" />
             <button type="submit">Add Torrentio</button>
+            <span class="muted">One click, no setup. The most common add-on.</span>
           </form>"#,
                 url = crate::providers::TORRENTIO_URL,
             )
         };
         format!(
-            r#"<h2 style="margin-top:1.6rem">Fallback sources</h2>
-          <p class="lead">When Jackett finds no reliable torrent for a title, the server asks these Stremio add-ons for the same title (by IMDb id) and adds their best torrents to the list. Playback still runs through this server; nothing is installed on devices.</p>
-          <form method="post" action="/" class="grid-form">
-            <input type="hidden" name="action" value="save_fallback" />
-            <label class="check">
-              <input type="checkbox" name="fallback_enabled" value="on" {checked} />
-              Use fallback sources when Jackett has nothing reliable
-            </label>
-            <label>Reliable means at least this many seeders
-              <input name="fallback_min_seeders" type="number" min="1" max="500" value="{min}" />
-            </label>
-            <div class="actions"><button type="submit">Save fallback</button></div>
-          </form>
+            r#"<h2 style="margin-top:1.6rem">Stremio add-ons</h2>
+          <p class="lead">Enabled add-ons are asked for each title by its IMDb id. Without Jackett they are the torrent source; with Jackett they fill in when it finds nothing reliable. Playback still runs through this server; nothing is installed on devices.</p>
           {table}
           {torrentio_btn}
           <form method="post" action="/" class="inline" autocomplete="off">
@@ -1266,9 +1316,101 @@ async fn dashboard(
             </label>
             <button type="submit" class="ghost">Install add-on</button>
           </form>
-          <p class="muted">Any Stremio add-on that returns torrents for IMDb ids works (Torrentio, or one you host). Configured Torrentio links (e.g. from its configure page, with chosen providers) can be pasted here too.</p>"#,
-            checked = if p.enabled { "checked" } else { "" },
+          <p class="muted">Any Stremio add-on that returns torrents for IMDb ids works (Torrentio, or one you host). Configured Torrentio links (e.g. from its configure page, with chosen providers) can be pasted here too.</p>
+          <form method="post" action="/" class="threshold">
+            <input type="hidden" name="action" value="save_fallback" />
+            <span>With Jackett on, ask add-ons when its best torrent has fewer than</span>
+            <input name="fallback_min_seeders" type="number" min="1" max="500" value="{min}" aria-label="Seeders" />
+            <span>seeders</span>
+            <button type="submit" class="ghost small">Save</button>
+          </form>"#,
             min = p.min_seeders,
+        )
+    };
+    let server_html = {
+        let su = crate::server_update::status().await;
+        let latest_line = match (&su.latest, su.update_available) {
+            (Some(l), true) => format!(r#"<strong>{}</strong> is available."#, html_escape(l)),
+            (Some(_), false) => "This is the latest release.".to_string(),
+            (None, _) => "No release information yet; it's checked every few hours (or use Check now below).".to_string(),
+        };
+        let message = su
+            .message
+            .as_deref()
+            .map(|m| format!(r#"<p class="muted">{}</p>"#, html_escape(m)))
+            .unwrap_or_default();
+        let backup = su
+            .last_backup
+            .as_deref()
+            .map(|b| format!(r#"<p class="muted">Last backup: <code>{}</code> (kept in the backups volume, newest five).</p>"#, html_escape(b)))
+            .unwrap_or_default();
+        let controls = if su.managed {
+            let update_btn = if su.busy {
+                r#"<button type="button" disabled>Updating…</button>"#.to_string()
+            } else if su.update_available {
+                format!(
+                    r#"<form method="post" action="/" class="quick-add" onsubmit="return confirm('Update the server to {v}?
+
+The database is backed up first. Apps reconnect on their own after about a minute.');">
+              <input type="hidden" name="action" value="server_update_now" />
+              <button type="submit">Update to {v}</button>
+              <span class="muted">Backs up the database, then restarts with the new version.</span>
+            </form>"#,
+                    v = html_escape(su.latest.as_deref().unwrap_or("")),
+                )
+            } else {
+                String::new()
+            };
+            format!(
+                r#"{update_btn}
+          <form method="post" action="/" class="grid-form">
+            <input type="hidden" name="action" value="save_server_auto" />
+            <label class="check{on_class}">
+              <input type="checkbox" name="server_auto" value="on" {checked} onchange="this.form.submit()" />
+              Update automatically when a new release is out
+            </label>
+            <noscript><div class="actions"><button type="submit" class="ghost small">Save</button></div></noscript>
+          </form>"#,
+                on_class = if su.auto { " on" } else { "" },
+                checked = if su.auto { "checked" } else { "" },
+            )
+        } else {
+            r#"<p class="muted">One-click updates need this server to run the CI-built image with Watchtower. On the server, in the folder with your compose file, run once:</p>
+          <pre class="sync-log">docker compose -f docker-compose.server.yml -f docker-compose.autoupdate.yml pull api
+docker compose -f docker-compose.server.yml -f docker-compose.autoupdate.yml up -d</pre>
+          <p class="muted">Your data and settings stay. After that, updates happen from here.</p>"#.to_string()
+        };
+        let watcher = if su.busy {
+            format!(
+                r#"<script>
+          (function () {{
+            var from = {from};
+            var seenDown = false;
+            setInterval(function () {{
+              fetch('/health', {{ cache: 'no-store' }}).then(function (r) {{ return r.json(); }}).then(function (h) {{
+                if (seenDown || h.version !== from) location.reload();
+              }}).catch(function () {{ seenDown = true; }});
+            }}, 4000);
+          }})();
+          </script>"#,
+                from = serde_json::to_string(&su.running).unwrap_or_else(|_| "\"\"".into()),
+            )
+        } else {
+            String::new()
+        };
+        format!(
+            r#"<div class="row-head"><h2>Server</h2>{pill}</div>
+          <p class="lead">Running <strong>{running}</strong>. {latest_line} The console updates together with the server.</p>
+          {message}
+          {controls}
+          {backup}
+          {watcher}"#,
+            pill = if su.update_available {
+                r#"<span class="pill warn">Update available</span>"#
+            } else {
+                r#"<span class="pill ok">Up to date</span>"#
+            },
+            running = html_escape(&su.running),
         )
     };
     let updates_html = {
@@ -1295,7 +1437,7 @@ async fn dashboard(
             format!("{offered}{checked}")
         };
         format!(
-            r#"<h2>App updates</h2>
+            r#"<h2 style="margin-top:1.6rem">App updates</h2>
           <p class="lead">Signed releases from <code>{repo}</code> are mirrored here every few hours; apps on this network update from this server. {state}</p>
           {error}
           <form method="post" action="/" class="grid-form">
@@ -1430,14 +1572,17 @@ async fn dashboard(
 
     Ok(format!(
         r#"
-        {notice_html}
         <header class="top">
-          <div>
-            <p class="brand">PeanutButter</p>
-            <h1>Server console</h1>
+          <div class="brand-row">
+            <span class="logo" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M8 5.5v13l10-6.5z"/></svg></span>
+            <div>
+              <p class="brand">PeanutButter</p>
+              <h1>Server console</h1>
+            </div>
           </div>
-          <form method="post" action="/"><input type="hidden" name="action" value="logout" /><button class="ghost" type="submit">Sign out</button></form>
+          <form method="post" action="/"><input type="hidden" name="action" value="logout" /><button class="ghost small" type="submit">Sign out</button></form>
         </header>
+        {notice_html}
 
         <div class="sync-strip" id="sync-strip" hidden>
           <div class="sync-strip-meta">
@@ -1449,20 +1594,22 @@ async fn dashboard(
           <a class="tab" href="/?tab=sync">Open Sync</a>
         </div>
 
-        <nav class="tabs">
-          <a class="{tab_streaming}" href="/?tab=streaming">Streaming</a>
-          <a class="{tab_devices}" href="/?tab=devices">Devices</a>
-          <a class="{tab_catalog}" href="/?tab=catalog">Catalog</a>
-          <a class="{tab_sync}" href="/?tab=sync">Sync</a>
-          <a class="{tab_settings}" href="/?tab=settings">Settings</a>
+        <div class="layout">
+        <nav class="tabs" aria-label="Sections">
+          <a class="{tab_streaming}" href="/?tab=streaming"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M10 8.5v7l6-3.5z"/></svg><span>Streaming</span></a>
+          <a class="{tab_devices}" href="/?tab=devices"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8M12 17v4"/></svg><span>Devices</span></a>
+          <a class="{tab_catalog}" href="/?tab=catalog"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="9" rx="1.5"/><rect x="3" y="15" width="7" height="6" rx="1.5"/><rect x="14" y="15" width="7" height="6" rx="1.5"/></svg><span>Catalog</span></a>
+          <a class="{tab_sync}" href="/?tab=sync"><svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14.3-4.9L4 8M4 4v4h4M4 13a8 8 0 0 0 14.3 4.9L20 16M20 20v-4h-4"/></svg><span>Sync</span></a>
+          <a class="{tab_settings}" href="/?tab=settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg><span>Settings</span></a>
         </nav>
+        <div class="content">
 
         <section class="panel{panel_streaming}" id="panel-streaming">
           <div class="row-head">
             <h2>Streaming</h2>
             {status}
           </div>
-          <p class="lead">Jackett lives on this server. Every paired device uses the same indexers — nothing to configure on the TV.</p>
+          <p class="lead">Torrents come from <strong>Jackett</strong>, from <strong>Stremio add-ons</strong> (below), or both. Either one is enough. Every paired device uses the same sources, so there's nothing to configure on the TV.</p>
           <form method="post" action="/" class="grid-form">
             <label class="check">
               <input type="checkbox" name="jackett_enabled" value="on" {checked} />
@@ -1562,6 +1709,7 @@ async fn dashboard(
         </section>
 
         <section class="panel{panel_settings}" id="panel-settings">
+          {server_html}
           {updates_html}
           <h2>Metadata keys</h2>
           <p class="lead"><strong>TMDB is required</strong> for catalog sync, cast/crew, trailers, posters, and search. Get a free key at themoviedb.org. OMDb is optional for IMDb / Rotten Tomatoes scores.</p>
@@ -1606,6 +1754,8 @@ async fn dashboard(
             <button class="ghost danger" type="submit">Clear catalog</button>
           </form>
         </section>
+        </div>
+        </div>
 
         <script>
         (function () {{
@@ -1751,6 +1901,7 @@ async fn dashboard(
         panel_sync = panel_sync,
         panel_settings = panel_settings,
         updates_html = updates_html,
+        server_html = server_html,
         fallback_html = fallback_html,
         status = status,
         checked = if jackett_on { "checked" } else { "" },
@@ -1800,9 +1951,9 @@ fn shell(title: &str, body: &str, authed: bool, wide: bool) -> String {
     let width = if !authed {
         "440px"
     } else if wide {
-        "1100px"
+        "1280px"
     } else {
-        "980px"
+        "1160px"
     };
     format!(
         r#"<!doctype html>
@@ -1813,161 +1964,242 @@ fn shell(title: &str, body: &str, authed: bool, wide: bool) -> String {
 <title>PeanutButter · {title}</title>
 <style>
   :root {{
+    /* Same palette as the apps: canvas, panel, blue accent. */
     --bg: #0e0e12;
     --card: #121218;
-    --line: #ffffff18;
+    --card-2: #16161e;
+    --field: #0b0b10;
+    --line: #ffffff14;
+    --line-strong: #ffffff24;
     --ink: #f4f6fb;
     --muted: #9aa3b5;
     --accent: #5b9fff;
+    --accent-ink: #081018;
+    --accent-soft: #5b9fff1f;
     --ok: #7dd3a0;
     --warn: #e8c07a;
     --danger: #ff8a80;
+    --radius: 14px;
+    --shadow: 0 1px 0 #ffffff08 inset, 0 12px 32px -18px #000000cc;
   }}
   * {{ box-sizing: border-box; }}
   html, body {{ margin: 0; min-height: 100%; }}
   body {{
-    font: 15px/1.5 "Nunito Sans", "Segoe UI", sans-serif;
+    font: 15px/1.55 "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
     background:
-      radial-gradient(1100px 520px at 8% -8%, #5b9fff22, transparent 55%),
-      radial-gradient(800px 420px at 108% 0%, #3d6fb822, transparent 50%),
+      radial-gradient(1000px 480px at 0% -10%, #5b9fff1a, transparent 60%),
+      radial-gradient(700px 380px at 100% 0%, #3d6fb814, transparent 55%),
       var(--bg);
     color: var(--ink);
   }}
-  main {{ max-width: {width}; margin: 0 auto; padding: 2.4rem 1.25rem 4rem; }}
-  .brand {{ margin: 0; font: 700 0.78rem/1 "Fraunces", Georgia, serif; letter-spacing: 0.16em; text-transform: uppercase; color: var(--accent); }}
-  h1 {{ font: 600 2rem/1.15 "Fraunces", Georgia, serif; margin: 0.2rem 0 0; }}
-  h2 {{ font: 600 1.15rem/1.2 "Fraunces", Georgia, serif; margin: 0; }}
-  h3 {{ margin: 0; font-size: 1rem; }}
+  a {{ color: var(--accent); }}
+  main {{ max-width: {width}; margin: 0 auto; padding: 1.4rem 1.25rem 4rem; }}
+  h1 {{ font-weight: 700; font-size: 1.35rem; line-height: 1.2; letter-spacing: -0.01em; margin: 0; }}
+  h2 {{ font-weight: 650; font-size: 1.08rem; line-height: 1.3; letter-spacing: -0.005em; margin: 0; }}
+  h3 {{ margin: 0; font-size: 0.95rem; font-weight: 650; }}
+  .brand {{ margin: 0; font-size: 0.7rem; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: var(--accent); }}
   .lead, .muted {{ color: var(--muted); }}
-  .lead {{ margin: 0.45rem 0 1.1rem; max-width: 40rem; }}
-  .top {{ display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; margin-bottom: 1rem; }}
-  .tabs {{
-    display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0 0 1.1rem;
+  .muted {{ font-size: 0.86rem; }}
+  .lead {{ margin: 0.35rem 0 1.1rem; max-width: 44rem; font-size: 0.93rem; }}
+  code {{ font: 0.85em ui-monospace, SFMono-Regular, Menlo, monospace; background: #ffffff0d; padding: 0.1rem 0.35rem; border-radius: 6px; }}
+
+  /* Top bar */
+  .top {{
+    position: sticky; top: 0; z-index: 5;
+    display: flex; justify-content: space-between; align-items: center; gap: 1rem;
+    margin: -1.4rem -1.25rem 1.2rem; padding: 0.9rem 1.25rem;
+    background: color-mix(in srgb, var(--bg) 82%, transparent);
+    backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+    border-bottom: 1px solid var(--line);
   }}
-  .tab {{
-    display: inline-block; padding: 0.55rem 0.9rem; border-radius: 999px;
-    border: 1px solid var(--line); color: var(--muted); text-decoration: none; font-weight: 700; font-size: 0.85rem;
+  .brand-row {{ display: flex; align-items: center; gap: 0.75rem; }}
+  .logo {{
+    display: inline-grid; place-items: center; width: 38px; height: 38px; border-radius: 11px;
+    background: linear-gradient(135deg, var(--accent), #3d6fb8);
+    box-shadow: 0 8px 20px -10px var(--accent);
   }}
-  .tab.on {{ color: #081018; background: var(--accent); border-color: transparent; }}
+  .logo svg {{ width: 18px; height: 18px; fill: var(--accent-ink); }}
+
+  /* Sidebar + content */
+  .layout {{ display: grid; grid-template-columns: 210px minmax(0, 1fr); gap: 1.4rem; align-items: start; }}
+  .tabs {{ position: sticky; top: 84px; display: grid; gap: 0.2rem; }}
+  .tabs .tab {{
+    display: flex; align-items: center; gap: 0.65rem;
+    padding: 0.62rem 0.8rem; border-radius: 10px;
+    color: var(--muted); text-decoration: none; font-weight: 600; font-size: 0.92rem;
+    border: 1px solid transparent; transition: background 0.15s, color 0.15s;
+  }}
+  .tabs .tab svg {{ width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }}
+  .tabs .tab:hover {{ background: #ffffff0a; color: var(--ink); }}
+  .tabs .tab.on {{ background: var(--accent-soft); color: var(--ink); border-color: #5b9fff33; }}
+  .tabs .tab.on svg {{ color: var(--accent); }}
+  .content {{ min-width: 0; }}
+  /* Stand-alone link buttons (pager, "Open Sync"). */
+  a.tab {{
+    display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.45rem 0.8rem; border-radius: 10px;
+    border: 1px solid var(--line-strong); color: var(--ink); text-decoration: none; font-weight: 600; font-size: 0.85rem;
+  }}
+  a.tab:hover {{ background: #ffffff0a; }}
   .hidden {{ display: none !important; }}
+
+  /* Panels */
+  .panel {{
+    background: linear-gradient(180deg, var(--card-2), var(--card));
+    border: 1px solid var(--line); border-radius: 18px;
+    padding: 1.4rem 1.5rem 1.5rem; margin-bottom: 1.1rem; box-shadow: var(--shadow);
+  }}
+  .panel h2:not(:first-child) {{ margin-top: 1.9rem !important; padding-top: 1.5rem; border-top: 1px solid var(--line); }}
+  .panel.login {{ margin-top: 14vh; padding: 2rem; }}
+  .panel.login .logo {{ margin-bottom: 1rem; }}
+  .panel.login h1 {{ font-size: 1.6rem; margin-top: 0.2rem; }}
+  .row-head {{ display: flex; align-items: center; justify-content: space-between; gap: 0.7rem; flex-wrap: wrap; }}
+  .banner {{
+    display: flex; gap: 0.6rem; align-items: flex-start;
+    background: var(--accent-soft); border: 1px solid #5b9fff3a; color: var(--ink);
+    padding: 0.8rem 1rem; border-radius: 12px; margin: 0 0 1rem; font-size: 0.92rem;
+  }}
+  .banner::before {{ content: ""; flex: none; width: 8px; height: 8px; margin-top: 0.45rem; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 4px #5b9fff26; }}
+
+  /* Status pills */
+  .pill {{
+    display: inline-flex; align-items: center; gap: 0.4rem;
+    font-size: 0.72rem; font-weight: 650; letter-spacing: 0.03em; text-transform: uppercase;
+    border: 1px solid var(--line-strong); border-radius: 999px; padding: 0.22rem 0.6rem; color: var(--muted);
+    background: #ffffff06;
+  }}
+  .pill::before {{ content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: 0.85; }}
+  .pill.ok {{ color: var(--ok); border-color: #7dd3a03d; background: #7dd3a00f; }}
+  .pill.warn {{ color: var(--warn); border-color: #e8c07a3d; background: #e8c07a0f; }}
+
+  /* Forms */
+  form.stack, form.grid-form, form.inline {{ display: grid; gap: 0.9rem; }}
+  form.grid-form {{ margin-top: 0.4rem; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); align-items: end; }}
+  form.grid-form > label.check, form.grid-form > fieldset, form.grid-form > .actions, form.grid-form > p {{ grid-column: 1 / -1; }}
+  form.inline {{ grid-template-columns: 1fr auto; align-items: end; margin-top: 0.9rem; }}
+  form.quick-add {{ display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem 0.9rem; margin-top: 1rem; }}
+  form.threshold {{
+    display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.6rem; margin-top: 1.1rem;
+    padding: 0.75rem 0.9rem; border: 1px solid var(--line); border-radius: 12px; background: #ffffff04;
+    color: var(--muted); font-size: 0.88rem;
+  }}
+  form.threshold input {{ width: 84px; height: 36px; text-align: center; }}
+  form.threshold button {{ margin-left: auto; }}
+  form.inline-tight {{ display: flex; gap: 0.4rem; justify-content: flex-end; flex-wrap: nowrap; margin: 0; }}
+  form.inline-tight button {{ height: 34px; padding: 0 0.8rem; font-size: 0.82rem; }}
+  label {{ display: flex; flex-direction: column; gap: 0.4rem; font-size: 0.8rem; font-weight: 600; color: var(--muted); }}
+  input, select {{
+    width: 100%; height: 44px; padding: 0 0.9rem; border: 1px solid var(--line-strong);
+    border-radius: 11px; background: var(--field); color: var(--ink); font: inherit; font-size: 0.93rem;
+    transition: border-color 0.15s, box-shadow 0.15s;
+  }}
+  input::placeholder {{ color: #6b7385; }}
+  input:hover, select:hover {{ border-color: #ffffff38; }}
+  input:focus, select:focus {{ outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px #5b9fff33; }}
+  /* Checkboxes as switches */
+  label.check {{
+    flex-direction: row; align-items: center; gap: 0.7rem; color: var(--ink); font-size: 0.93rem; font-weight: 600;
+    padding: 0.7rem 0.85rem; border: 1px solid var(--line); border-radius: 12px; background: #ffffff05; cursor: pointer;
+  }}
+  label.check input[type="checkbox"] {{
+    appearance: none; -webkit-appearance: none; flex: none; width: 38px; height: 22px; padding: 0; margin: 0;
+    border-radius: 999px; background: #ffffff1f; border: 0; position: relative; cursor: pointer; transition: background 0.15s;
+  }}
+  label.check input[type="checkbox"]::after {{
+    content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%;
+    background: #fff; transition: transform 0.15s;
+  }}
+  label.check input[type="checkbox"]:checked {{ background: var(--accent); }}
+  label.check input[type="checkbox"]:checked::after {{ transform: translateX(16px); }}
+  label.check.on {{ border-color: #5b9fff40; background: var(--accent-soft); }}
+  input[type="checkbox"] {{ width: auto; height: auto; accent-color: var(--accent); }}
+  fieldset.langs {{ border: 1px solid var(--line); border-radius: 14px; padding: 0.9rem 1rem 1rem; margin: 0; background: #ffffff04; }}
+  fieldset.langs legend {{ padding: 0 0.4rem; color: var(--ink); font-size: 0.85rem; font-weight: 650; }}
+  .lang-grid {{ display: grid; gap: 0.45rem; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); margin-top: 0.6rem; }}
+  .lang-grid label.check {{ padding: 0.5rem 0.65rem; font-size: 0.86rem; }}
+  .langs-active {{ margin: 0.4rem 0 0; padding: 0.5rem 0.7rem; border-radius: 10px; background: var(--field); border: 1px solid var(--line); color: var(--ink); font-size: 0.88rem; }}
+
+  /* Buttons */
+  button {{
+    height: 44px; padding: 0 1.1rem; border: 1px solid transparent; border-radius: 11px;
+    background: var(--accent); color: var(--accent-ink); font: inherit; font-weight: 700; font-size: 0.9rem;
+    cursor: pointer; transition: filter 0.15s, background 0.15s, transform 0.05s; white-space: nowrap;
+  }}
+  button:hover {{ filter: brightness(1.08); }}
+  button:active {{ transform: translateY(1px); }}
+  button:focus-visible, a:focus-visible {{ outline: none; box-shadow: 0 0 0 3px #5b9fff55; }}
+  button:disabled {{ opacity: 0.5; cursor: not-allowed; filter: none; }}
+  button.ghost {{ background: #ffffff08; color: var(--ink); border-color: var(--line-strong); }}
+  button.ghost:hover {{ background: #ffffff12; filter: none; }}
+  button.small {{ height: 36px; padding: 0 0.85rem; font-size: 0.85rem; }}
+  button.danger, button.ghost.danger {{ background: #ff8a800d; color: var(--danger); border-color: #ff8a8040; }}
+  button.ghost.danger:hover {{ background: #ff8a801a; }}
+  .actions {{ display: flex; flex-wrap: wrap; gap: 0.55rem; }}
+
+  /* Devices */
+  .grid {{ display: grid; gap: 0.9rem; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); margin-top: 1.1rem; }}
+  .card {{
+    display: grid; gap: 0.7rem; padding: 1.05rem 1.1rem; border-radius: var(--radius);
+    border: 1px solid var(--line); background: var(--field); transition: border-color 0.15s;
+  }}
+  .card:hover {{ border-color: var(--line-strong); }}
+  .card.hot {{ border-color: var(--accent); box-shadow: 0 0 0 3px #5b9fff22; }}
+  .pin {{ font: 700 1.85rem/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.18em; color: var(--ink); }}
+
+  /* Sync */
   .sync-strip {{
-    display: grid; gap: 0.55rem; margin: 0 0 1rem; padding: 0.8rem 1rem;
-    background: #e8c07a14; border: 1px solid #e8c07a44; border-radius: 14px;
+    display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem 1rem; margin: 0 0 1.1rem; padding: 0.75rem 1rem;
+    background: #e8c07a0f; border: 1px solid #e8c07a3a; border-radius: 14px;
   }}
   .sync-strip[hidden] {{ display: none !important; }}
   .sync-strip-meta {{ display: flex; flex-wrap: wrap; align-items: center; gap: 0.55rem; }}
-  .sync-strip .strip-bar {{ height: 8px; }}
-  .sync-meter {{ margin: 0.4rem 0 1rem; }}
-  .sync-bar {{
-    height: 12px; border-radius: 999px; background: #ffffff12; overflow: hidden; border: 1px solid var(--line);
-  }}
-  .sync-bar > span {{
-    display: block; height: 100%; width: 0; background: linear-gradient(90deg, #3d6fb8, var(--accent));
-    transition: width 0.35s ease;
-  }}
+  .sync-strip .strip-bar {{ flex: 1 1 200px; height: 6px; }}
+  .sync-meter {{ margin: 0.5rem 0 1.1rem; }}
+  .sync-bar {{ height: 10px; border-radius: 999px; background: #ffffff10; overflow: hidden; }}
+  .sync-bar > span {{ display: block; height: 100%; width: 0; border-radius: 999px; background: linear-gradient(90deg, #3d6fb8, var(--accent)); transition: width 0.35s ease; }}
   .sync-meta {{ display: flex; justify-content: space-between; gap: 1rem; margin-top: 0.55rem; color: var(--muted); }}
   .sync-meta strong {{ color: var(--ink); font-size: 1.15rem; }}
-  .sync-stats {{
-    display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 0.75rem;
-    margin-top: 0.4rem;
-  }}
-  .sync-stats > div {{
-    background: #0e0e12; border: 1px solid var(--line); border-radius: 12px; padding: 0.7rem 0.8rem;
-    display: grid; gap: 0.2rem;
-  }}
-  .sync-stats strong {{ font-size: 1.05rem; }}
+  .sync-stats {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 0.7rem; margin-top: 0.5rem; }}
+  .sync-stats > div {{ background: var(--field); border: 1px solid var(--line); border-radius: 12px; padding: 0.75rem 0.85rem; display: grid; gap: 0.15rem; }}
+  .sync-stats strong {{ font-size: 1.1rem; }}
   .sync-log {{
-    margin: 0; max-height: 280px; overflow: auto; padding: 0.85rem 1rem;
+    margin: 0; max-height: 300px; overflow: auto; padding: 0.9rem 1rem;
     background: #08080c; border: 1px solid var(--line); border-radius: 12px;
-    color: #c8d0dc; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color: #c8d0dc; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     white-space: pre-wrap; word-break: break-word;
   }}
-  .panel {{
-    background: var(--card); border: 1px solid var(--line); border-radius: 18px;
-    padding: 1.25rem 1.3rem 1.35rem; margin-bottom: 1.1rem;
-  }}
-  .panel.login {{ margin-top: 12vh; }}
-  .row-head {{ display: flex; align-items: center; gap: 0.7rem; }}
-  .banner {{
-    background: #5b9fff18; border: 1px solid #5b9fff33; color: var(--ink);
-    padding: 0.75rem 1rem; border-radius: 12px; margin: 0 0 1rem;
-  }}
-  .pill {{ font-size: 0.72rem; letter-spacing: 0.04em; text-transform: uppercase; border: 1px solid var(--line); border-radius: 999px; padding: 0.2rem 0.55rem; color: var(--muted); }}
-  .pill.ok {{ color: var(--ok); border-color: #7dd3a044; }}
-  .pill.warn {{ color: var(--warn); border-color: #e8c07a44; }}
-  form.stack, form.grid-form, form.inline {{ display: grid; gap: 0.85rem; }}
-  form.inline {{ grid-template-columns: 1fr auto; align-items: end; }}
-  form.inline-tight {{ display: flex; gap: 0.4rem; justify-content: flex-end; flex-wrap: wrap; }}
-  td.row-actions {{ text-align: right; white-space: nowrap; }}
-  form.grid-form {{ margin-top: 0.4rem; }}
-  label {{ display: flex; flex-direction: column; gap: 0.35rem; font-size: 0.8rem; color: var(--muted); }}
-  label.check {{ flex-direction: row; align-items: center; gap: 0.55rem; color: var(--ink); font-size: 0.95rem; }}
-  label.check.on {{
-    background: color-mix(in srgb, var(--accent) 16%, transparent);
-    border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line));
-    border-radius: 10px; padding: 0.35rem 0.55rem;
-  }}
-  fieldset.langs {{
-    border: 1px solid var(--line); border-radius: 12px; padding: 0.85rem 1rem 1rem; margin: 0;
-  }}
-  fieldset.langs legend {{ padding: 0 0.35rem; color: var(--ink); font-size: 0.85rem; }}
-  .lang-grid {{
-    display: grid; gap: 0.45rem 0.75rem;
-    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-    margin-top: 0.55rem;
-  }}
-  .langs-active {{
-    margin: 0.35rem 0 0; padding: 0.45rem 0.65rem; border-radius: 10px;
-    background: #14141a; border: 1px solid var(--line); color: var(--ink); font-size: 0.9rem;
-  }}
-  input, select {{
-    width: 100%; padding: 0.78rem 0.9rem; border: 1px solid var(--line);
-    border-radius: 12px; background: #0e0e12; color: var(--ink); font: inherit;
-  }}
-  input[type="checkbox"] {{ width: auto; }}
-  input:focus, select:focus {{ outline: 2px solid var(--accent); border-color: transparent; }}
-  button {{
-    padding: 0.78rem 1.05rem; border: 0; border-radius: 12px; background: var(--accent);
-    color: #081018; font-weight: 700; cursor: pointer;
-  }}
-  button:disabled {{ opacity: 0.55; cursor: not-allowed; }}
-  button.ghost {{ background: transparent; color: var(--ink); border: 1px solid var(--line); }}
-  button.ghost.danger {{ color: var(--danger); border-color: #ff8a8033; }}
-  button.danger {{ color: var(--danger); border-color: #ff8a8033; }}
-  .actions {{ display: flex; flex-wrap: wrap; gap: 0.55rem; }}
-  .grid {{ display: grid; gap: 0.9rem; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); margin-top: 1rem; }}
-  .card {{ display: grid; gap: 0.7rem; padding: 1rem 1.05rem; border-radius: 14px; border: 1px solid var(--line); background: #0e0e12; }}
-  .card.hot {{ border-color: var(--accent); }}
-  .pin {{ font: 700 1.7rem/1 "Fraunces", Georgia, serif; letter-spacing: 0.16em; }}
+
+  /* Tables */
   form.catalog-filter {{ margin-top: 0.2rem; grid-template-columns: 1.4fr 0.7fr auto; }}
-  .catalog-bulk-bar {{
-    display: flex; align-items: center; justify-content: space-between;
-    gap: 0.75rem; margin: 0.85rem 0 0.35rem; flex-wrap: wrap;
-  }}
-  table.catalog {{
-    width: 100%; border-collapse: collapse; margin-top: 0.5rem;
-    font-size: 0.92rem;
-  }}
-  table.catalog th, table.catalog td {{
-    text-align: left; padding: 0.65rem 0.55rem; border-bottom: 1px solid var(--line);
-    vertical-align: middle;
-  }}
-  table.catalog th {{ color: var(--muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; }}
-  table.catalog .actions-cell {{ width: 1%; white-space: nowrap; }}
+  .catalog-bulk-bar {{ display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; margin: 0.9rem 0 0.4rem; flex-wrap: wrap; }}
+  table.catalog {{ width: 100%; border-collapse: separate; border-spacing: 0; margin-top: 0.7rem; font-size: 0.9rem; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }}
+  table.catalog th, table.catalog td {{ text-align: left; padding: 0.7rem 0.8rem; border-bottom: 1px solid var(--line); vertical-align: middle; }}
+  table.catalog tr:last-child td {{ border-bottom: 0; }}
+  table.catalog th {{ background: #ffffff05; color: var(--muted); font-size: 0.72rem; font-weight: 650; text-transform: uppercase; letter-spacing: 0.05em; }}
+  table.catalog tbody tr {{ transition: background 0.12s; }}
+  table.catalog tbody tr:hover {{ background: #ffffff06; }}
+  table.catalog .actions-cell, td.row-actions {{ width: 1%; white-space: nowrap; text-align: right; }}
   table.catalog .actions-cell form {{ margin: 0; }}
-  table.catalog .check-cell {{ width: 2.1rem; text-align: center; }}
-  table.catalog .check-cell input {{ width: 1rem; height: 1rem; accent-color: var(--accent); }}
-  .catalog-pager {{
-    display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center;
-    gap: 0.75rem; margin-top: 1rem;
+  table.catalog .check-cell {{ width: 2.4rem; text-align: center; }}
+  table.catalog .check-cell input {{ width: 1rem; height: 1rem; }}
+  table.catalog button {{ height: 34px; padding: 0 0.75rem; font-size: 0.82rem; }}
+  .catalog-pager {{ display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 0.75rem; margin-top: 1rem; }}
+
+  @media (max-width: 860px) {{
+    .layout {{ grid-template-columns: 1fr; gap: 0.9rem; }}
+    .tabs {{ position: static; display: flex; overflow-x: auto; gap: 0.35rem; padding-bottom: 0.2rem; scrollbar-width: none; }}
+    .tabs .tab {{ flex: none; padding: 0.5rem 0.8rem; border: 1px solid var(--line); border-radius: 999px; }}
   }}
   @media (max-width: 640px) {{
-    form.inline {{ grid-template-columns: 1fr; }}
-    form.catalog-filter {{ grid-template-columns: 1fr; }}
+    main {{ padding-inline: 1rem; }}
+    .top {{ margin-inline: -1rem; padding-inline: 1rem; }}
+    .panel {{ padding: 1.1rem; border-radius: 16px; }}
+    form.inline, form.catalog-filter {{ grid-template-columns: 1fr; }}
+    table.catalog {{ display: block; overflow-x: auto; }}
   }}
 </style>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Nunito+Sans:wght@400;700&display=swap" />
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;650;700&display=swap" />
 </head>
 <body>
 <main>

@@ -1,10 +1,10 @@
-//! Fallback torrent sources: Stremio stream add-ons (Torrentio and anything
-//! that speaks the same API), installed from the console by manifest URL.
+//! Stremio stream add-ons (Torrentio and anything that speaks the same API),
+//! installed from the console by manifest URL.
 //!
-//! Jackett stays the primary source. When it finds nothing reliable (no
-//! source with at least `min_seeders`), `streaming_search` asks every enabled
-//! add-on for the same title by IMDb id and merges the results into the same
-//! ranked list. Add-ons only return magnets (info hash + trackers); playback
+//! Torrents come from Jackett, from add-ons, or both — any one is enough.
+//! Without Jackett the enabled add-ons are the source. With Jackett they are
+//! asked only when it finds nothing reliable (no source with at least
+//! `min_seeders`), and their torrents are merged into the same ranked list. Add-ons only return magnets (info hash + trackers); playback
 //! still goes through this server's torrent engine, nothing runs on devices.
 //!
 //! Stremio add-on protocol: GET {base}/manifest.json describes the add-on,
@@ -37,7 +37,8 @@ pub struct Addon {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProviderSettings {
-    /// Master switch for the fallback.
+    /// Unused since add-ons became a source of their own (kept so settings
+    /// saved by older builds still parse).
     #[serde(default)]
     pub enabled: bool,
     /// Jackett results with fewer seeders than this don't count as reliable.
@@ -74,10 +75,9 @@ pub fn snapshot() -> ProviderSettings {
     store().read().expect("providers lock").clone()
 }
 
-/// Fallback is on and at least one add-on is enabled.
+/// At least one add-on is installed and enabled.
 pub fn active() -> bool {
-    let s = store().read().expect("providers lock");
-    s.enabled && s.addons.iter().any(|a| a.enabled)
+    store().read().expect("providers lock").addons.iter().any(|a| a.enabled)
 }
 
 /// Load saved settings at start-up (missing / unreadable = defaults).
@@ -111,9 +111,8 @@ async fn save(pool: &PgPool, next: ProviderSettings) -> Result<()> {
     Ok(())
 }
 
-pub async fn set_options(pool: &PgPool, enabled: bool, min_seeders: i32) -> Result<()> {
+pub async fn set_min_seeders(pool: &PgPool, min_seeders: i32) -> Result<()> {
     let mut next = snapshot();
-    next.enabled = enabled;
     next.min_seeders = min_seeders.clamp(1, 500);
     save(pool, next).await
 }
@@ -225,10 +224,11 @@ pub async fn add(pool: &PgPool, http: &reqwest::Client, raw_url: &str) -> Result
     Ok(name)
 }
 
-/// True when no Jackett result is reliable enough and the fallback can run.
+/// True when add-ons should be asked: none of `found` (Jackett's results,
+/// empty without Jackett) is reliable enough.
 pub fn needs_fallback(found: &[StreamSource]) -> bool {
     let s = snapshot();
-    if !s.enabled || !s.addons.iter().any(|a| a.enabled) {
+    if !s.addons.iter().any(|a| a.enabled) {
         return false;
     }
     !found
@@ -464,7 +464,7 @@ mod tests {
     #[ignore]
     async fn live_torrentio() {
         *store().write().unwrap() = ProviderSettings {
-            enabled: true,
+            enabled: false,
             min_seeders: 5,
             addons: vec![Addon {
                 id: "t".into(),
