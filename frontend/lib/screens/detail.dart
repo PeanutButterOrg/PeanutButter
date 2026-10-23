@@ -117,7 +117,15 @@ class _DetailBodyState extends ConsumerState<_DetailBody> {
               variables: {'titleId': current.id, 'watched': next},
             ),
           );
-      invalidatePlaybackProgress(ref, titleId: current.id);
+      invalidatePlaybackProgress(
+        ref,
+        titleId: current.id,
+        patch: (s) => s.copyWith(
+          watched: next,
+          positionMs: next ? 0 : s.positionMs,
+          progressPercent: next ? 0 : s.progressPercent,
+        ),
+      );
     } catch (_) {
       if (mounted) setState(() => _optimistic = prev);
     }
@@ -140,7 +148,11 @@ class _DetailBodyState extends ConsumerState<_DetailBody> {
             ),
           );
       ref.invalidate(favoritesFeedProvider);
-      invalidatePlaybackProgress(ref, titleId: current.id);
+      invalidatePlaybackProgress(
+        ref,
+        titleId: current.id,
+        patch: (s) => s.copyWith(favorite: next),
+      );
     } catch (_) {
       if (mounted) setState(() => _optimistic = prev);
     }

@@ -65,6 +65,7 @@ class PosterCardPresenter(
         val progress = root.findViewById<ViewGroup>(R.id.progress)
         val progressFill = root.findViewById<View>(R.id.progress_fill)
         val watchedBadge = root.findViewById<ImageView>(R.id.watched_badge)
+        val favoriteBadge = root.findViewById<ImageView>(R.id.favorite_badge)
 
         titleView.text = title.displayTitle
         // Flutter: year only under title (no rating / genres / runtime)
@@ -89,6 +90,7 @@ class PosterCardPresenter(
         }
 
         watchedBadge.isVisible = title.watched
+        favoriteBadge.isVisible = title.favorite
 
         val p = title.watchProgress
         // Continue-watching / resume items often sit at ~1% — still show a clear bar.

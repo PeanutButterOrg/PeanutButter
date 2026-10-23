@@ -454,8 +454,9 @@ impl Query {
             tmdb_configured: !state.config.tmdb_key().is_empty(),
             omdb_configured: !state.config.omdb_key().is_empty(),
             anilist_configured: true,
-            jackett_enabled: state.config.live.jackett_enabled(),
-            jackett_configured: state.config.live.jackett_configured(),
+            // Apps only know "can stream"; fallback add-ons count too.
+            jackett_enabled: state.config.live.jackett_enabled() || crate::providers::active(),
+            jackett_configured: state.config.live.jackett_configured() || crate::providers::active(),
             jackett_url: state.config.live.jackett_url(),
             streaming_resolution: state.config.live.streaming_resolution(),
             preferred_languages: state.config.live.preferred_language_codes(),
@@ -566,13 +567,16 @@ impl Query {
         live: Option<bool>,
     ) -> async_graphql::Result<Vec<StreamSource>> {
         let state = ctx.data::<AppState>()?;
-        if !state.config.live.jackett_enabled() {
+        let fallback_on = crate::providers::active();
+        if !state.config.live.jackett_enabled() && !fallback_on {
             return Err(AppError::BadRequest(
                 "Jackett streaming is turned off. Enable it in Settings.".into(),
             )
             .into());
         }
-        if !state.config.live.jackett_configured() {
+        let jackett_on =
+            state.config.live.jackett_enabled() && state.config.live.jackett_configured();
+        if !jackett_on && !fallback_on {
             return Ok(vec![]);
         }
 
@@ -593,7 +597,9 @@ impl Query {
         // "v2|": results from before strict title/IMDb matching are not reused.
         let cache_key = crate::db::stream_search_cache_key(
             title_id,
-            &format!("v2|{query}"),
+            // Separate entries while fallback sources are on, so lists cached
+            // without them (often the weak ones) aren't served instead.
+            &format!("{}|{query}", if fallback_on { "v3p" } else { "v2" }),
             kind.as_db(),
             season,
             episode,
@@ -630,7 +636,6 @@ impl Query {
             }
         }
 
-        let client = crate::jackett::JackettClient::from_live(&state.http, &state.config.live)?;
 
         // Prefer catalog metadata over the client string so searches stay exact
         // (clean title + imdb + S/E), even if the app sends a messy query.
@@ -662,16 +667,27 @@ impl Query {
         }
 
         // The year only filters results; it is never baked into the Jackett query.
-        let found = client
-            .search(
-                &target,
-                kind.as_db(),
-                season,
-                episode,
-                &preferred_res,
-                &preferred,
-            )
-            .await?;
+        let found = if jackett_on {
+            let searched = match crate::jackett::JackettClient::from_live(&state.http, &state.config.live) {
+                Ok(client) => {
+                    client
+                        .search(&target, kind.as_db(), season, episode, &preferred_res, &preferred)
+                        .await
+                }
+                Err(e) => Err(e),
+            };
+            match searched {
+                Ok(found) => found,
+                // Jackett down: the fallback sources can still answer.
+                Err(e) if fallback_on => {
+                    tracing::warn!(error = %e, "Jackett search failed — using fallback sources");
+                    Vec::new()
+                }
+                Err(e) => return Err(e.into()),
+            }
+        } else {
+            Vec::new()
+        };
         let found = if let (Some(s), Some(e)) = (season, episode) {
             found
                 .into_iter()
@@ -702,6 +718,29 @@ impl Query {
         };
 
         let found = retain_tryable_sources(found);
+
+        // Nothing reliable from Jackett: ask the fallback add-ons (by IMDb id)
+        // and merge their torrents into the same ranked list.
+        let found = match target.imdb_id.as_deref() {
+            Some(imdb) if crate::providers::needs_fallback(&found) => {
+                let extra = crate::providers::search(
+                    &state.http,
+                    imdb,
+                    kind.as_db(),
+                    season,
+                    episode,
+                    &preferred,
+                )
+                .await;
+                if extra.is_empty() {
+                    found
+                } else {
+                    tracing::info!(count = extra.len(), "fallback sources added torrents");
+                    retain_tryable_sources(crate::providers::merge(found, extra, &preferred_res))
+                }
+            }
+            _ => found,
+        };
 
         if found.is_empty() {
             // Live Jackett flaked — last resort: filtered expired cache.
@@ -735,7 +774,7 @@ impl Query {
         magnet: String,
     ) -> async_graphql::Result<TorrentProbe> {
         let state = ctx.data::<AppState>()?;
-        if !state.config.live.jackett_enabled() {
+        if !state.config.live.jackett_enabled() && !crate::providers::active() {
             return Err(crate::error::AppError::BadRequest(
                 "Jackett streaming is turned off. Enable it in Settings.".into(),
             )
@@ -758,7 +797,7 @@ impl Query {
         episode: Option<i32>,
     ) -> async_graphql::Result<Vec<TorrentFile>> {
         let state = ctx.data::<AppState>()?;
-        if !state.config.live.jackett_enabled() {
+        if !state.config.live.jackett_enabled() && !crate::providers::active() {
             return Err(crate::error::AppError::BadRequest(
                 "Jackett streaming is turned off. Enable it in Settings.".into(),
             )

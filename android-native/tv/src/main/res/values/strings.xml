@@ -36,6 +36,7 @@
     <string name="no_sources">No healthy sources found</string>
     <string name="favourites">Favourites</string>
     <string name="watched">Watched</string>
+    <string name="liked">Liked</string>
     <string name="starting_stream">Starting stream…</string>
     <string name="stream_start_failed">Couldn\'t start this stream. Try another source.</string>
     <string name="finding_peers">Finding peers…</string>

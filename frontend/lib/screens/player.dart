@@ -222,7 +222,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   DateTime _lastStreamRetarget = DateTime.fromMillisecondsSinceEpoch(0);
   List<YoutubeQualityOption> _trailerQualities = const [];
   int? _trailerHeight;
-  final GlobalKey _videoKey = GlobalKey();
+  /// media_kit's top-level enterFullscreen(ctx) needs a context *below* the
+  /// Video's own VideoStateInheritedWidget; the Video's element context is
+  /// above it, so those calls threw (swallowed) and the button did nothing.
+  /// VideoState's own methods use the right inner context.
+  final GlobalKey<VideoState> _videoKey = GlobalKey<VideoState>();
   static const _windowChannel = MethodChannel('peanutbutter/window');
   late final GraphQLClient _client;
 
@@ -640,12 +644,14 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   }
 
   Future<bool> _tryExitFullscreen() async {
-    final videoCtx = _videoKey.currentContext;
-    if (videoCtx != null && videoCtx.mounted) {
+    final video = _videoKey.currentState;
+    if (video != null && video.mounted) {
       try {
-        if (isFullscreen(videoCtx)) {
-          await exitFullscreen(videoCtx);
+        if (video.isFullscreen()) {
+          // Clear first: the native exit echoes back via _onWindowCall.
           _inFullscreen = false;
+          await video.exitFullscreen();
+          if (mounted) setState(() {});
           return true;
         }
       } catch (_) {}
@@ -3163,9 +3169,14 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
             await _tryExitFullscreen();
             return;
           }
-          final ctx = _videoKey.currentContext;
-          if (ctx == null) return;
-          await enterFullscreen(ctx);
+          final video = _videoKey.currentState;
+          if (video == null || !video.mounted) return;
+          try {
+            await video.enterFullscreen();
+          } catch (e) {
+            debugPrint('PeanutButter enterFullscreen failed: $e');
+            return;
+          }
           if (mounted) setState(() => _inFullscreen = true);
         },
       ),

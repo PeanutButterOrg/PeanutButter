@@ -111,6 +111,23 @@ class CatalogNotifier extends StateNotifier<CatalogState> {
     await _load(page: state.page + 1, replace: false, generation: _generation);
   }
 
+  /// Update one loaded card (liked / watched badges) without reloading the
+  /// grid, which would lose the scroll position and the pages already fetched.
+  void patchUserState(String titleId, UserState Function(UserState) update) {
+    var changed = false;
+    final items = [
+      for (final item in state.items)
+        if (item.id == titleId)
+          () {
+            changed = true;
+            return item.copyWith(userState: update(item.userState ?? const UserState()));
+          }()
+        else
+          item,
+    ];
+    if (changed) state = state.copyWith(items: items);
+  }
+
   Future<void> _prefetchPages({required int throughPage, required int generation}) async {
     while (mounted &&
         generation == _generation &&
@@ -290,13 +307,25 @@ final catalogProvider = StateNotifierProvider<LibraryNotifier, CatalogState>((re
   return notifier;
 });
 
-void invalidatePlaybackProgress(WidgetRef ref, {String? titleId}) {
+void invalidatePlaybackProgress(
+  WidgetRef ref, {
+  String? titleId,
+  UserState Function(UserState)? patch,
+}) {
   ref.invalidate(homeFeedProvider('MOVIE'));
   ref.invalidate(homeFeedProvider('SERIES'));
   ref.invalidate(homeFeedProvider('ANIME'));
   ref.invalidate(catalogProvider);
   if (titleId != null && titleId.isNotEmpty) {
     ref.invalidate(detailProvider(titleId));
+    if (patch != null) {
+      for (final kind in const ['MOVIE', 'SERIES', 'ANIME']) {
+        // Only grids that are alive; reading would create (and fetch) one.
+        if (ref.exists(browseProvider(kind))) {
+          ref.read(browseProvider(kind).notifier).patchUserState(titleId, patch);
+        }
+      }
+    }
   }
 }
 

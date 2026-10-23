@@ -67,18 +67,37 @@
                 android:textStyle="bold" />
         </LinearLayout>
 
-        <ImageView
-            android:id="@+id/watched_badge"
-            android:layout_width="22dp"
-            android:layout_height="22dp"
+        <!-- Liked / watched markers, same corner as the desktop apps. -->
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
             android:layout_gravity="top|end"
             android:layout_margin="6dp"
-            android:background="@drawable/badge_watched"
-            android:contentDescription="@string/watched"
-            android:padding="2dp"
-            android:src="@drawable/ic_check"
-            android:tint="@color/pb_completed"
-            android:visibility="gone" />
+            android:orientation="horizontal">
+
+            <ImageView
+                android:id="@+id/favorite_badge"
+                android:layout_width="22dp"
+                android:layout_height="22dp"
+                android:background="@drawable/badge_watched"
+                android:contentDescription="@string/liked"
+                android:padding="3dp"
+                android:src="@drawable/ic_favorite"
+                android:tint="@color/pb_favorite"
+                android:visibility="gone" />
+
+            <ImageView
+                android:id="@+id/watched_badge"
+                android:layout_width="22dp"
+                android:layout_height="22dp"
+                android:layout_marginStart="4dp"
+                android:background="@drawable/badge_watched"
+                android:contentDescription="@string/watched"
+                android:padding="2dp"
+                android:src="@drawable/ic_check"
+                android:tint="@color/pb_completed"
+                android:visibility="gone" />
+        </LinearLayout>
 
         <LinearLayout
             android:layout_width="match_parent"

@@ -59,6 +59,7 @@ query GetCatalog(
       posterUrl
       bestQuality
       userState {
+        favorite
         watched
         positionMs
         durationMs
@@ -192,6 +193,13 @@ query SearchTitles($query: String!, $kind: TitleKind, $page: Int, $perPage: Int)
       videoCodec
       audioCodec
       container
+      userState {
+        favorite
+        watched
+        positionMs
+        durationMs
+        progressPercent
+      }
     }
   }
 }
@@ -268,6 +276,7 @@ fragment HomeTitle on Title {
   audioCodec
   container
   userState {
+    favorite
     watched
     positionMs
     durationMs

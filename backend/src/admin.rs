@@ -27,6 +27,10 @@ pub struct AdminForm {
     pub omdb_api_key: Option<String>,
     pub opensubtitles_api_key: Option<String>,
     pub wyzie_api_key: Option<String>,
+    /// Fallback torrent sources (Stremio add-ons).
+    pub provider_url: Option<String>,
+    pub fallback_enabled: Option<String>,
+    pub fallback_min_seeders: Option<String>,
     /// Language checkboxes use unique names (`lang_en`, `lang_hi`, …) so
     /// `serde_urlencoded` does not reject repeated `preferred_languages` keys.
     #[serde(flatten, default)]
@@ -761,6 +765,48 @@ pub async fn action(
                 );
             }
         }
+        "save_fallback" => {
+            tab = Some("streaming");
+            let enabled = form.fallback_enabled.as_deref() == Some("on");
+            let min = form
+                .fallback_min_seeders
+                .as_deref()
+                .and_then(|v| v.trim().parse::<i32>().ok())
+                .unwrap_or(5);
+            crate::providers::set_options(&state.app.pool, enabled, min).await?;
+            notice = Some(if enabled {
+                format!("Fallback sources are on. They're used when Jackett has no torrent with {} or more seeders.", min.clamp(1, 500))
+            } else {
+                "Fallback sources are off. Only Jackett is searched.".into()
+            });
+        }
+        "add_provider" => {
+            tab = Some("streaming");
+            let url = form.provider_url.as_deref().unwrap_or("").trim();
+            notice = Some(if url.is_empty() {
+                "Paste the add-on's manifest URL first.".into()
+            } else {
+                match crate::providers::add(&state.app.pool, &state.app.http, url).await {
+                    Ok(name) => format!("Installed {name}. Turn on fallback sources below if it isn't already."),
+                    Err(e) => e.to_string(),
+                }
+            });
+        }
+        "toggle_provider" => {
+            tab = Some("streaming");
+            let id = form.id.as_deref().unwrap_or("");
+            notice = Some(match crate::providers::toggle(&state.app.pool, id).await {
+                Ok(true) => "Source enabled.".into(),
+                Ok(false) => "Source disabled.".into(),
+                Err(e) => e.to_string(),
+            });
+        }
+        "remove_provider" => {
+            tab = Some("streaming");
+            let id = form.id.as_deref().unwrap_or("");
+            crate::providers::remove(&state.app.pool, id).await?;
+            notice = Some("Source removed.".into());
+        }
         "check_updates" => {
             tab = Some("settings");
             notice = Some(crate::updates::check_now().await);
@@ -1151,6 +1197,80 @@ async fn dashboard(
     let panel_catalog = if tab == "catalog" { "" } else { " hidden" };
     let panel_sync = if sync_on { "" } else { " hidden" };
     let panel_settings = if tab == "settings" { "" } else { " hidden" };
+    let fallback_html = {
+        let p = crate::providers::snapshot();
+        let installed_torrentio = p
+            .addons
+            .iter()
+            .any(|a| a.url.starts_with(crate::providers::TORRENTIO_URL));
+        let mut rows = String::new();
+        for a in &p.addons {
+            rows.push_str(&format!(
+                r#"<tr>
+                  <td><strong>{name}</strong><div class="muted">{url}</div></td>
+                  <td><span class="pill{pill}">{state}</span></td>
+                  <td class="row-actions">
+                    <form method="post" action="/" class="inline-tight">
+                      <input type="hidden" name="id" value="{id}" />
+                      <button type="submit" class="ghost" name="action" value="toggle_provider">{toggle}</button>
+                      <button type="submit" class="ghost danger" name="action" value="remove_provider" onclick="return confirm('Remove {name_js}?');">Remove</button>
+                    </form>
+                  </td>
+                </tr>"#,
+                name = html_escape(&a.name),
+                name_js = html_escape(&a.name).replace('\'', ""),
+                url = html_escape(&a.url),
+                id = html_escape(&a.id),
+                pill = if a.enabled { " ok" } else { "" },
+                state = if a.enabled { "On" } else { "Off" },
+                toggle = if a.enabled { "Disable" } else { "Enable" },
+            ));
+        }
+        let table = if rows.is_empty() {
+            r#"<p class="muted">No sources installed yet.</p>"#.to_string()
+        } else {
+            format!(r#"<table class="catalog"><thead><tr><th>Source</th><th>Status</th><th></th></tr></thead><tbody>{rows}</tbody></table>"#)
+        };
+        let torrentio_btn = if installed_torrentio {
+            String::new()
+        } else {
+            format!(
+                r#"<form method="post" action="/" class="inline">
+            <input type="hidden" name="action" value="add_provider" />
+            <input type="hidden" name="provider_url" value="{url}" />
+            <button type="submit">Add Torrentio</button>
+          </form>"#,
+                url = crate::providers::TORRENTIO_URL,
+            )
+        };
+        format!(
+            r#"<h2 style="margin-top:1.6rem">Fallback sources</h2>
+          <p class="lead">When Jackett finds no reliable torrent for a title, the server asks these Stremio add-ons for the same title (by IMDb id) and adds their best torrents to the list. Playback still runs through this server; nothing is installed on devices.</p>
+          <form method="post" action="/" class="grid-form">
+            <input type="hidden" name="action" value="save_fallback" />
+            <label class="check">
+              <input type="checkbox" name="fallback_enabled" value="on" {checked} />
+              Use fallback sources when Jackett has nothing reliable
+            </label>
+            <label>Reliable means at least this many seeders
+              <input name="fallback_min_seeders" type="number" min="1" max="500" value="{min}" />
+            </label>
+            <div class="actions"><button type="submit">Save fallback</button></div>
+          </form>
+          {table}
+          {torrentio_btn}
+          <form method="post" action="/" class="inline" autocomplete="off">
+            <input type="hidden" name="action" value="add_provider" />
+            <label>Add-on manifest URL
+              <input name="provider_url" type="url" placeholder="https://…/manifest.json" required />
+            </label>
+            <button type="submit" class="ghost">Install add-on</button>
+          </form>
+          <p class="muted">Any Stremio add-on that returns torrents for IMDb ids works (Torrentio, or one you host). Configured Torrentio links (e.g. from its configure page, with chosen providers) can be pasted here too.</p>"#,
+            checked = if p.enabled { "checked" } else { "" },
+            min = p.min_seeders,
+        )
+    };
     let updates_html = {
         let u = crate::updates::status().await;
         let offered = match (&u.current_version, u.current_build) {
@@ -1368,6 +1488,7 @@ async fn dashboard(
               <button type="submit" class="ghost" name="action" value="test_jackett">Test connection</button>
             </div>
           </form>
+          {fallback_html}
         </section>
 
         <section class="panel{panel_devices}" id="panel-devices">
@@ -1630,6 +1751,7 @@ async fn dashboard(
         panel_sync = panel_sync,
         panel_settings = panel_settings,
         updates_html = updates_html,
+        fallback_html = fallback_html,
         status = status,
         checked = if jackett_on { "checked" } else { "" },
         catalog_q = html_escape(catalog_q),
@@ -1775,6 +1897,8 @@ fn shell(title: &str, body: &str, authed: bool, wide: bool) -> String {
   .pill.warn {{ color: var(--warn); border-color: #e8c07a44; }}
   form.stack, form.grid-form, form.inline {{ display: grid; gap: 0.85rem; }}
   form.inline {{ grid-template-columns: 1fr auto; align-items: end; }}
+  form.inline-tight {{ display: flex; gap: 0.4rem; justify-content: flex-end; flex-wrap: wrap; }}
+  td.row-actions {{ text-align: right; white-space: nowrap; }}
   form.grid-form {{ margin-top: 0.4rem; }}
   label {{ display: flex; flex-direction: column; gap: 0.35rem; font-size: 0.8rem; color: var(--muted); }}
   label.check {{ flex-direction: row; align-items: center; gap: 0.55rem; color: var(--ink); font-size: 0.95rem; }}

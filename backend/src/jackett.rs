@@ -1667,6 +1667,89 @@ fn resolution_rank(title: &str, preferred: &str) -> i32 {
     0
 }
 
+/// A torrent found outside Jackett (fallback add-ons such as Torrentio),
+/// put through the same CAM / sample / junk / size / language rules as a
+/// Jackett hit so the picker can't tell the difference.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn external_source(
+    title: &str,
+    info_hash: &str,
+    trackers: &[String],
+    seeders: Option<i32>,
+    bytes: u64,
+    source_label: &str,
+    kind: &str,
+    preferred_language: &str,
+) -> Option<StreamSource> {
+    let hash = info_hash.trim().to_ascii_lowercase();
+    let hash_ok = (hash.len() == 40 && hash.bytes().all(|b| b.is_ascii_hexdigit()))
+        || (hash.len() == 32 && hash.bytes().all(|b| b.is_ascii_alphanumeric()));
+    let title = title.trim();
+    if !hash_ok || title.is_empty() {
+        return None;
+    }
+    if looks_like_sample(title)
+        || looks_like_cam(&padded(title))
+        || looks_like_sign_language(title)
+        || looks_like_junk_release(title, kind)
+    {
+        return None;
+    }
+    if bytes > 0 && !size_plausible(bytes, kind, title) {
+        return None;
+    }
+    let langs = language_codes(title);
+    let language = stored_language(&langs, kind);
+    let preferred = preferred_language.trim().to_ascii_lowercase();
+    if !preferred.is_empty() && preferred != "all" {
+        let found: Vec<&str> = language
+            .split([',', '/', '|', '+'])
+            .map(str::trim)
+            .filter(|part| !part.is_empty() && *part != "unknown")
+            .collect();
+        if !language_matches(&found, &preferred, kind) {
+            return None;
+        }
+    }
+    let mut magnet = format!("magnet:?xt=urn:btih:{hash}&dn={}", percent_encode(title));
+    for tr in trackers.iter().take(12) {
+        magnet.push_str("&tr=");
+        magnet.push_str(&percent_encode(tr));
+    }
+    let seeders_unknown = seeders.is_none();
+    let seeders = seeders.unwrap_or(0).max(0);
+    let rank_seeders = if seeders_unknown { 1 } else { seeders };
+    Some(StreamSource {
+        id: hash,
+        title: title.to_string(),
+        magnet,
+        seeders: rank_seeders,
+        peers: 0,
+        rating: calculate_rating(rank_seeders),
+        health: if seeders_unknown {
+            "unknown".into()
+        } else {
+            health_for(seeders).into()
+        },
+        size: if bytes > 0 { format_size(bytes) } else { "?".into() },
+        tracker: source_label.to_string(),
+        indexer: source_label.to_string(),
+        language,
+    })
+}
+
+fn percent_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
 fn format_size(bytes: u64) -> String {
     const KB: f64 = 1024.0;
     const MB: f64 = KB * 1024.0;

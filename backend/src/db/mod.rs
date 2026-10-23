@@ -38,6 +38,7 @@ const EMBEDDED_MIGRATION_025: &str = include_str!("migrations/025_stream_bookmar
 const EMBEDDED_MIGRATION_026: &str = include_str!("migrations/026_wyzie_subtitles.sql");
 const EMBEDDED_MIGRATION_027: &str = include_str!("migrations/027_stream_progress_per_device.sql");
 const EMBEDDED_MIGRATION_028: &str = include_str!("migrations/028_device_keys.sql");
+const EMBEDDED_MIGRATION_029: &str = include_str!("migrations/029_stream_providers.sql");
 
 pub async fn connect(database_url: &str) -> Result<PgPool> {
     connect_with(database_url, 40, 4, Duration::from_secs(15)).await
@@ -111,6 +112,7 @@ pub async fn run_migrations(pool: &PgPool, extra_dir: Option<&Path>) -> Result<(
     apply_one(pool, "026_wyzie_subtitles", EMBEDDED_MIGRATION_026).await?;
     apply_one(pool, "027_stream_progress_per_device", EMBEDDED_MIGRATION_027).await?;
     apply_one(pool, "028_device_keys", EMBEDDED_MIGRATION_028).await?;
+    apply_one(pool, "029_stream_providers", EMBEDDED_MIGRATION_029).await?;
 
     if let Some(dir) = extra_dir {
         if dir.is_dir() {
@@ -156,6 +158,7 @@ pub async fn run_migrations(pool: &PgPool, extra_dir: Option<&Path>) -> Result<(
                     || version == "026_wyzie_subtitles"
                     || version == "027_stream_progress_per_device"
                     || version == "028_device_keys"
+                    || version == "029_stream_providers"
                 {
                     continue;
                 }

@@ -155,6 +155,16 @@ class _PosterCardState extends ConsumerState<PosterCard> {
                   const Spacer(),
                   if (item.bestQuality != null && item.bestQuality!.isNotEmpty)
                     _badge(item.bestQuality!, Colors.black87),
+                  if (item.userState?.favorite == true) ...[
+                    const SizedBox(width: 4),
+                    _stateIcon(Icons.favorite_rounded, 'Liked',
+                        const Color(0xFFE5484D), compact: compact),
+                  ],
+                  if (item.userState?.watched == true) ...[
+                    const SizedBox(width: 4),
+                    _stateIcon(Icons.check_rounded, 'Watched',
+                        const Color(0xFF30A46C), compact: compact),
+                  ],
                 ],
               ),
               const Spacer(),
@@ -203,6 +213,24 @@ class _PosterCardState extends ConsumerState<PosterCard> {
     final duration = state.durationMs ?? 0;
     if (duration <= 0) return 0.08;
     return (state.positionMs / duration).clamp(0.0, 1.0);
+  }
+
+  /// Liked / watched marker on the poster corner (same on every platform).
+  Widget _stateIcon(IconData icon, String label, Color color, {required bool compact}) {
+    final size = compact ? 18.0 : 22.0;
+    return Semantics(
+      label: label,
+      child: Container(
+        width: size,
+        height: size,
+        decoration: BoxDecoration(
+          color: color,
+          shape: BoxShape.circle,
+          boxShadow: const [BoxShadow(color: Color(0x66000000), blurRadius: 4)],
+        ),
+        child: Icon(icon, size: size * 0.66, color: Colors.white),
+      ),
+    );
   }
 
   Widget _badge(String text, Color color) {

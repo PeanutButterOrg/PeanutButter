@@ -916,6 +916,11 @@ struct StreamEngine {
     std::atomic<int64_t> preload_size{0};
     std::atomic<int64_t> preloaded_bytes{0};
     std::atomic<bool>    preloading{false};
+    // True from the moment a preload is started until its thread body returns.
+    // `preloading` alone can't guard preload_thread: it is cleared from outside
+    // (seek/stop) while the thread is still running, and at the end of the body
+    // while the std::thread is still joinable.
+    std::atomic<bool>    preload_running{false};
     std::thread          preload_thread;
 
     // speed tracking — port of torrent.go progressEvent
@@ -2968,14 +2973,28 @@ TORRENT_API int lt_preload_stream(lt_session_t session, lt_stream_id sid,
         if (it == sw->streams.end()) return 0;
     
         auto* s = it->second.get();
-        if (s->preloading.load() || !s->active.load()) return 0;
-    
+        if (!s->active.load()) return 0;
+        // One preload at a time; also stops two quick calls both starting one.
+        bool idle = false;
+        if (!s->preload_running.compare_exchange_strong(idle, true)) return 0;
+
         // default preload 16MB — port of preload.go startend
         if (preload_bytes <= 0) preload_bytes = 16 * 1024 * 1024;
-    
-        s->preload_thread = std::thread([s, preload_bytes]() {
-            preload_stream(s, preload_bytes);
-        });
+
+        // Assigning over a joinable std::thread calls std::terminate (this was
+        // the macOS crash on pause: keepDownloading -> second preload). The
+        // previous thread has finished here (preload_running was false), so
+        // this join returns at once.
+        if (s->preload_thread.joinable()) s->preload_thread.join();
+        try {
+            s->preload_thread = std::thread([s, preload_bytes]() {
+                try { preload_stream(s, preload_bytes); } catch (...) {}
+                s->preload_running.store(false);
+            });
+        } catch (...) {
+            s->preload_running.store(false);
+            throw;
+        }
         return 1;
     } catch (const std::exception& e) {
         set_err(e.what());

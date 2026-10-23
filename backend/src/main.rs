@@ -15,6 +15,7 @@ mod ratelimit;
 mod search;
 mod stream;
 mod subtitles;
+mod providers;
 mod updates;
 
 use std::net::SocketAddr;
@@ -97,6 +98,9 @@ async fn main() -> Result<()> {
         .map(std::path::PathBuf::from);
     db::run_migrations(&pool, migrations_dir.as_deref()).await?;
     db::overlay_saved_settings(&pool, &config).await?;
+    if let Err(e) = providers::load(&pool).await {
+        tracing::warn!(error = %e, "could not load fallback torrent sources");
+    }
     db::ensure_app_token(&pool, &config).await?;
     db::ensure_admin_password(&pool).await?;
     info!("admin console at / — password required");
