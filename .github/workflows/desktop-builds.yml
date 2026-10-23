@@ -48,8 +48,12 @@ on:
     paths:
       - "frontend/**"
       - "packaging/**"
+      # Every script a job below runs, or a fix to one never triggers a build.
       - "scripts/package-linux.sh"
       - "scripts/build-desktop-docker.sh"
+      - "scripts/bundle-mpv-runtime.sh"
+      - "scripts/bundle-windows-runtime.ps1"
+      - "scripts/release_manifest.py"
       - "android-native/**"
       - ".github/workflows/desktop-builds.yml"
 
