@@ -25,6 +25,25 @@ class MainFlutterWindow: NSWindow {
     windowChannel = FlutterMethodChannel(
       name: "peanutbutter/window",
       binaryMessenger: flutterViewController.engine.binaryMessenger)
+    // media_kit finds the window via registrar.view?.window, which can be nil
+    // here — then its native fullscreen silently does nothing. Toggle this
+    // window directly instead.
+    windowChannel?.setMethodCallHandler { [weak self] call, result in
+      guard let self = self else { return result(nil) }
+      let isFull = self.styleMask.contains(.fullScreen)
+      switch call.method {
+      case "enterFullScreen":
+        if !isFull { self.toggleFullScreen(nil) }
+        result(nil)
+      case "exitFullScreen":
+        if isFull { self.toggleFullScreen(nil) }
+        result(nil)
+      case "isFullScreen":
+        result(isFull)
+      default:
+        result(FlutterMethodNotImplemented)
+      }
+    }
 
     super.awakeFromNib()
 

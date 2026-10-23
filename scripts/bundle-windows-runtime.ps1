@@ -37,10 +37,6 @@ $required = @(
   "libEGL.dll",
   "libGLESv2.dll",
   "libtorrent_flutter.dll",
-  "libssl-3-x64.dll",
-  "libcrypto-3-x64.dll",
-  "torrent-rasterbar.dll",
-  "iconv-2.dll",
   "vcruntime140.dll",
   "vcruntime140_1.dll",
   "msvcp140.dll"
@@ -50,5 +46,31 @@ if ($missing.Count -gt 0) {
   Write-Host "Files in ${ReleaseDir}:"
   Get-ChildItem $ReleaseDir | Select-Object -ExpandProperty Name
   throw "Windows build is missing libraries required to launch: $($missing -join ', ')"
+}
+
+# libtorrent_flutter.dll is built against a static vcpkg libtorrent + OpenSSL
+# (no torrent-rasterbar / libssl DLLs). Check its real imports so a change
+# in how it links can't ship a build that fails to start.
+$dumpbin = $null
+foreach ($root in $roots) {
+  $dumpbin = Get-ChildItem -Path $root -Recurse -Filter "dumpbin.exe" -ErrorAction SilentlyContinue |
+    Where-Object { $_.FullName -match '\\Hostx64\\x64\\dumpbin\.exe$' } |
+    Select-Object -First 1
+  if ($null -ne $dumpbin) { break }
+}
+if ($null -ne $dumpbin) {
+  $imports = & $dumpbin.FullName /DEPENDENTS (Join-Path $ReleaseDir "libtorrent_flutter.dll") |
+    ForEach-Object { $_.Trim() } |
+    Where-Object { $_ -match '\.dll$' }
+  $systemDll = '^(?i)(kernel32|user32|advapi32|ws2_32|iphlpapi|crypt32|bcrypt|mswsock|dbghelp|ole32|shell32|secur32|ntdll|rpcrt4|shlwapi|version|userenv|api-ms-win-.*|ucrtbase|vcruntime140(_1)?|msvcp140(_\w+)?)\.dll$'
+  $unshipped = @($imports | Where-Object {
+    ($_ -notmatch $systemDll) -and -not (Test-Path (Join-Path $ReleaseDir $_))
+  })
+  Write-Host "libtorrent_flutter.dll imports: $($imports -join ', ')"
+  if ($unshipped.Count -gt 0) {
+    throw "libtorrent_flutter.dll needs DLLs that are not bundled: $($unshipped -join ', ')"
+  }
+} else {
+  Write-Warning "dumpbin.exe not found; skipped the libtorrent_flutter.dll import check."
 }
 Write-Host "Windows runtime libraries are present."

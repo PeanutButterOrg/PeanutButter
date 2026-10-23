@@ -43,7 +43,57 @@ impl Query {
         // sync owns the ingest pool — serve whatever is already in Postgres.
         let mut remote_has_more = false;
         let syncing = state.syncing.load(std::sync::atomic::Ordering::Relaxed);
+        let personal = matches!(
+            sort,
+            SortField::ContinueWatching | SortField::Favorites | SortField::Watched
+        );
+        // Filters (genre / years / rating): pull matching titles from TMDB
+        // Discover as the user scrolls, instead of unfiltered shelf pages that
+        // the filters would then mostly hide.
+        let discover = crate::ingest::tmdb::DiscoverFilter {
+            genre: filter.genre.clone(),
+            year_min: filter.year_min,
+            year_max: filter.year_max,
+            rating_min: filter.rating_min,
+        };
+        let discover_active = discover.is_active() && !personal;
+        if discover_active {
+            let kind = filter.kind.map(|k| match k {
+                TitleKind::Movie => "movie",
+                TitleKind::Series => "series",
+                TitleKind::Anime => "anime",
+            });
+            let ingest = crate::ingest::IngestContext::from(state);
+            remote_has_more = match tokio::time::timeout(
+                std::time::Duration::from_secs(6),
+                crate::ingest::tmdb::ensure_discover_pages_for_catalog(
+                    &ingest, kind, &discover, page, per_page,
+                ),
+            )
+            .await
+            {
+                Ok(Ok(more)) => more,
+                Ok(Err(e)) => {
+                    tracing::warn!(error = %e, page, "TMDB discover for filters failed");
+                    false
+                }
+                // Still fetching: the next scroll picks up what landed.
+                Err(_) => true,
+            };
+            if !syncing {
+                let ingest_bg = crate::ingest::IngestContext::from(state);
+                let discover_bg = discover.clone();
+                let next = page + 1;
+                tokio::spawn(async move {
+                    let _ = crate::ingest::tmdb::ensure_discover_pages_for_catalog(
+                        &ingest_bg, kind, &discover_bg, next, per_page,
+                    )
+                    .await;
+                });
+            }
+        }
         if let Some(shelf) = match sort {
+            _ if discover_active => None,
             SortField::Trending => Some("trending"),
             SortField::Popularity => Some("popular"),
             SortField::DateAdded => Some("fresh"),
@@ -232,6 +282,40 @@ impl Query {
         }
 
         let kind_db = kind.map(|k| k.as_db().to_string());
+
+        // "tt0111161", an IMDb / TMDB link or "tmdb:278": exact lookup (saved
+        // to the catalog if new) instead of a name search.
+        if let Some(title_ref) = crate::ingest::tmdb::parse_title_ref(q) {
+            let ingest = crate::ingest::IngestContext::from(state);
+            let ids = if page == 1 {
+                crate::ingest::tmdb::ingest_by_ref(&ingest, &title_ref, kind_db.as_deref())
+                    .await
+                    .unwrap_or_else(|e| {
+                        tracing::warn!(error = %e, "id search failed");
+                        Vec::new()
+                    })
+            } else {
+                Vec::new()
+            };
+            let rows: Vec<TitleRow> = sqlx::query_as(&format!(
+                "SELECT {TITLE_COLUMNS} FROM titles t WHERE t.id = ANY($1)"
+            ))
+            .bind(&ids)
+            .fetch_all(&state.pool)
+            .await?;
+            let public_url = state.config.public_url.clone();
+            let items: Vec<Title> = rows
+                .into_iter()
+                .map(|r| Title::from_row(r, &public_url))
+                .collect();
+            return Ok(SearchResult {
+                total_count: items.len() as i64,
+                items,
+                has_next_page: false,
+                page: page as i32,
+            });
+        }
+
         // Ask Meili for a few extras so release-date filtering can still fill a page.
         let fetch_n = per_page.saturating_mul(2).max(per_page);
         let results = state

@@ -656,10 +656,22 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     // Fullscreen uses a separate route + native window size — pop restores both.
     await Navigator.of(context, rootNavigator: true).maybePop();
     try {
-      await defaultExitNativeFullscreen();
+      await _setNativeFullscreen(false);
     } catch (_) {}
     if (mounted) setState(() {});
     return true;
+  }
+
+  /// macOS toggles the window over our own channel: media_kit's lookup
+  /// (registrar.view?.window) can come back nil and then silently does nothing.
+  Future<void> _setNativeFullscreen(bool on) async {
+    if (!kIsWeb && Platform.isMacOS) {
+      try {
+        await _windowChannel.invokeMethod(on ? 'enterFullScreen' : 'exitFullScreen');
+        return;
+      } catch (_) {}
+    }
+    on ? await defaultEnterNativeFullscreen() : await defaultExitNativeFullscreen();
   }
 
   /// macOS: the window left fullscreen natively (green button, Esc, Mission
@@ -3834,11 +3846,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
           wakelock: true,
           onEnterFullscreen: () async {
             if (mounted) setState(() => _inFullscreen = true);
-            await defaultEnterNativeFullscreen();
+            await _setNativeFullscreen(true);
           },
           onExitFullscreen: () async {
             if (mounted) setState(() => _inFullscreen = false);
-            await defaultExitNativeFullscreen();
+            await _setNativeFullscreen(false);
           },
         ),
       ),

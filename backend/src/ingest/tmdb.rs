@@ -485,7 +485,7 @@ pub async fn search_and_ingest(
         .map(|(tmdb_id, media)| {
             let ctx = ctx.clone();
             async move {
-                match fetch_details(&ctx, tmdb_id, &media).await {
+                match fetch_details_explicit(&ctx, tmdb_id, &media).await {
                     Ok(uuid) => Some(uuid),
                     Err(e) => {
                         warn!(tmdb_id, media = %media, error = %e, "TMDB search ingest failed");
@@ -714,6 +714,125 @@ pub async fn backfill_missing_imdb(ctx: &IngestContext) -> Result<()> {
     }
     info!(checked = rows.len(), filled, "IMDb id backfill from TMDB external_ids");
     Ok(())
+}
+
+/// A title the user identified directly instead of by name.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TitleRef {
+    Imdb(String),
+    /// `media`: Some("movie" | "series") when the link / prefix says which.
+    Tmdb { id: i32, media: Option<&'static str> },
+}
+
+/// Recognise `tt0111161`, IMDb / TMDB links and `tmdb:278` / `tmdb tv 1396`.
+/// Bare numbers are not ids — "1917" and "2012" are film titles.
+pub fn parse_title_ref(query: &str) -> Option<TitleRef> {
+    let q = query.trim().to_ascii_lowercase();
+    static IMDB: OnceLock<regex::Regex> = OnceLock::new();
+    static TMDB_URL: OnceLock<regex::Regex> = OnceLock::new();
+    static TMDB_PREFIX: OnceLock<regex::Regex> = OnceLock::new();
+    let imdb = IMDB.get_or_init(|| {
+        regex::Regex::new(r"^(?:https?://)?(?:www\.|m\.)?(?:imdb\.com/title/)?(tt\d{5,10})\b").unwrap()
+    });
+    let tmdb_url = TMDB_URL.get_or_init(|| {
+        regex::Regex::new(r"themoviedb\.org/(movie|tv)/(\d+)").unwrap()
+    });
+    let tmdb_prefix = TMDB_PREFIX.get_or_init(|| {
+        regex::Regex::new(r"^tmdb\s*[:#/\- ]?\s*(?:(movie|tv|series)\s*[:/\- ]?\s*)?(\d{1,9})$").unwrap()
+    });
+    let media = |m: Option<regex::Match>| match m.map(|m| m.as_str()) {
+        Some("movie") => Some("movie"),
+        Some("tv") | Some("series") => Some("series"),
+        _ => None,
+    };
+    if let Some(c) = imdb.captures(&q) {
+        return Some(TitleRef::Imdb(c[1].to_string()));
+    }
+    if let Some(c) = tmdb_url.captures(&q) {
+        return Some(TitleRef::Tmdb { id: c[2].parse().ok()?, media: media(c.get(1)) });
+    }
+    if let Some(c) = tmdb_prefix.captures(&q) {
+        return Some(TitleRef::Tmdb { id: c[2].parse().ok()?, media: media(c.get(1)) });
+    }
+    None
+}
+
+/// Resolve an id search: reuse catalog rows, otherwise fetch from TMDB and
+/// save (explicit — ignores the language lock). `kind` narrows movie/series.
+pub async fn ingest_by_ref(
+    ctx: &IngestContext,
+    r: &TitleRef,
+    kind: Option<&str>,
+) -> Result<Vec<Uuid>> {
+    let want = |media: &str| match kind {
+        Some("movie") => media == "movie",
+        Some("series") | Some("anime") => media == "series",
+        _ => true,
+    };
+    let mut out = Vec::new();
+    match r {
+        TitleRef::Imdb(imdb) => {
+            let existing: Vec<(Uuid, String)> =
+                sqlx::query_as("SELECT id, kind FROM titles WHERE imdb_id = $1")
+                    .bind(imdb)
+                    .fetch_all(&ctx.pool)
+                    .await?;
+            for (id, k) in existing {
+                if want(if k == "movie" { "movie" } else { "series" }) {
+                    out.push(id);
+                }
+            }
+            if !out.is_empty() || ctx.config.tmdb_key().is_empty() {
+                return Ok(out);
+            }
+            let url = format!(
+                "{TMDB}/find/{imdb}?api_key={}&external_source=imdb_id&language={}",
+                ctx.config.tmdb_key(),
+                tmdb_locale(ctx)
+            );
+            let found: TmdbFindResponse = get_json(ctx, &url).await?;
+            let hits = found
+                .movie_results
+                .iter()
+                .map(|h| (h.id, "movie"))
+                .chain(found.tv_results.iter().map(|h| (h.id, "series")));
+            for (tmdb_id, media) in hits {
+                if want(media) {
+                    match fetch_details_explicit(ctx, tmdb_id, media).await {
+                        Ok(id) => out.push(id),
+                        Err(e) => warn!(%imdb, tmdb_id, error = %e, "IMDb id search ingest failed"),
+                    }
+                }
+            }
+        }
+        TitleRef::Tmdb { id, media } => {
+            let medias: Vec<&str> = match media {
+                Some(m) => vec![*m],
+                None => vec!["movie", "series"],
+            };
+            for m in medias.into_iter().filter(|m| want(m)) {
+                let kinds: &[&str] = if m == "movie" { &["movie"] } else { &["series", "anime"] };
+                let existing: Option<(Uuid,)> = sqlx::query_as(
+                    "SELECT id FROM titles WHERE tmdb_id = $1 AND kind = ANY($2) LIMIT 1",
+                )
+                .bind(id)
+                .bind(kinds)
+                .fetch_optional(&ctx.pool)
+                .await?;
+                if let Some((uuid,)) = existing {
+                    out.push(uuid);
+                } else if !ctx.config.tmdb_key().is_empty() {
+                    match fetch_details_explicit(ctx, *id, m).await {
+                        Ok(uuid) => out.push(uuid),
+                        // A bare tmdb:N is tried as both; one usually 404s.
+                        Err(e) => debug!(tmdb_id = id, media = m, error = %e, "TMDB id search miss"),
+                    }
+                }
+            }
+        }
+    }
+    out.dedup();
+    Ok(out)
 }
 
 #[derive(Debug, Deserialize)]
@@ -971,6 +1090,19 @@ pub async fn fetch_tv(ctx: &IngestContext) -> Result<()> {
     Ok(())
 }
 
+/// Like [fetch_details] for a title the user searched for (ignores the
+/// preferred-language lock; adult / unreleased / blocked genres still apply).
+pub async fn fetch_details_explicit(ctx: &IngestContext, tmdb_id: i32, kind: &str) -> Result<Uuid> {
+    let id = if kind == "series" {
+        let details = fetch_details_tv(ctx, tmdb_id).await?;
+        upsert_tv_opts(ctx, details, false).await?
+    } else {
+        let details = fetch_details_movie(ctx, tmdb_id).await?;
+        upsert_movie_opts(ctx, details, false).await?
+    };
+    id.ok_or_else(|| AppError::Message("title is adult, unreleased or a blocked genre".into()))
+}
+
 pub async fn fetch_details(ctx: &IngestContext, tmdb_id: i32, kind: &str) -> Result<Uuid> {
     let id = if kind == "series" {
         let details = fetch_details_tv(ctx, tmdb_id).await?;
@@ -1165,6 +1297,200 @@ pub async fn shelf_has_more_for_catalog(
     kind: Option<&str>,
 ) -> Result<bool> {
     shelf_has_more_remote(ctx, shelf, kind).await
+}
+
+/// Catalog filters that can be translated to TMDB Discover parameters.
+#[derive(Debug, Clone, Default)]
+pub struct DiscoverFilter {
+    pub genre: Option<String>,
+    pub year_min: Option<i32>,
+    pub year_max: Option<i32>,
+    pub rating_min: Option<f64>,
+}
+
+impl DiscoverFilter {
+    pub fn is_active(&self) -> bool {
+        self.genre
+            .as_deref()
+            .is_some_and(|g| !g.trim().is_empty() && !g.eq_ignore_ascii_case("all"))
+            || self.year_min.is_some()
+            || self.year_max.is_some()
+            || self.rating_min.is_some_and(|r| r > 0.0)
+    }
+
+    /// `/discover/{media}?…`, or None when the genre doesn't exist on TMDB
+    /// (nothing there could match, so don't fetch).
+    fn path(&self, media: &str, genre_id: Option<Option<i32>>) -> Option<String> {
+        let mut path = format!("/discover/{media}?sort_by=popularity.desc&include_adult=false");
+        match genre_id {
+            Some(Some(id)) => path.push_str(&format!("&with_genres={id}")),
+            Some(None) => return None,
+            None => {}
+        }
+        let (gte, lte) = if media == "tv" {
+            ("first_air_date.gte", "first_air_date.lte")
+        } else {
+            ("primary_release_date.gte", "primary_release_date.lte")
+        };
+        if let Some(y) = self.year_min {
+            path.push_str(&format!("&{gte}={y}-01-01"));
+        }
+        if let Some(y) = self.year_max {
+            path.push_str(&format!("&{lte}={y}-12-31"));
+        }
+        if let Some(r) = self.rating_min.filter(|r| *r > 0.0) {
+            // A floor on votes keeps 2-vote 10/10 obscurities out.
+            path.push_str(&format!("&vote_average.gte={r:.1}&vote_count.gte=100"));
+        }
+        Some(path)
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct TmdbGenreList {
+    #[serde(default)]
+    genres: Vec<TmdbGenreEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TmdbGenreEntry {
+    id: i32,
+    name: String,
+}
+
+/// TMDB genre id for a catalog genre name (catalog genres come from TMDB in
+/// the same locale). Lists are cached per media + locale.
+async fn tmdb_genre_id(ctx: &IngestContext, media: &str, name: &str) -> Result<Option<i32>> {
+    static CACHE: OnceLock<std::sync::Mutex<std::collections::HashMap<String, Vec<(i32, String)>>>> =
+        OnceLock::new();
+    let cache = CACHE.get_or_init(Default::default);
+    let locale = tmdb_locale(ctx);
+    let key = format!("{media}|{locale}");
+    let cached = cache.lock().unwrap_or_else(|e| e.into_inner()).get(&key).cloned();
+    let list = match cached {
+        Some(list) => list,
+        None => {
+            let url = format!(
+                "{TMDB}/genre/{media}/list?api_key={}&language={locale}",
+                ctx.config.tmdb_key()
+            );
+            let fetched: TmdbGenreList = get_json(ctx, &url).await?;
+            let list: Vec<(i32, String)> = fetched.genres.into_iter().map(|g| (g.id, g.name)).collect();
+            cache.lock().unwrap_or_else(|e| e.into_inner()).insert(key, list.clone());
+            list
+        }
+    };
+    let want = name.trim().to_lowercase();
+    Ok(list
+        .into_iter()
+        .find(|(_, n)| {
+            let n = n.to_lowercase();
+            n == want
+                // TMDB TV uses combined names ("Action & Adventure", "Sci-Fi & Fantasy").
+                || n.split(" & ").any(|part| part == want)
+                || (want == "science fiction" && n.contains("sci-fi"))
+        })
+        .map(|(id, _)| id))
+}
+
+/// (pages fetched, total pages) per Discover query, so scrolling continues
+/// where it left off. In memory: losing it on restart only refetches pages.
+fn discover_progress() -> &'static moka::sync::Cache<String, (i32, i32)> {
+    static CACHE: OnceLock<moka::sync::Cache<String, (i32, i32)>> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        moka::sync::Cache::builder()
+            .max_capacity(2_000)
+            .time_to_live(Duration::from_secs(6 * 3600))
+            .build()
+    })
+}
+
+/// Filtered catalog scrolling: fetch TMDB Discover pages matching the
+/// filters until `catalog_page` can be filled, saving every title to the
+/// catalog. Returns whether TMDB has more pages for these filters.
+pub async fn ensure_discover_pages_for_catalog(
+    ctx: &IngestContext,
+    kind: Option<&str>,
+    filter: &DiscoverFilter,
+    catalog_page: i32,
+    per_page: i32,
+) -> Result<bool> {
+    if ctx.config.tmdb_key().is_empty() || !filter.is_active() {
+        return Ok(false);
+    }
+    if ctx.syncing.load(std::sync::atomic::Ordering::Relaxed) {
+        return Ok(true);
+    }
+    let needed = {
+        let items = (catalog_page.max(1) as i64) * (per_page.max(1) as i64);
+        let pages = ((items + TMDB_LIST_PAGE_SIZE as i64 - 1) / TMDB_LIST_PAGE_SIZE as i64) as i32;
+        // Filters discard some results (language lock, blocked genres): one page of slack.
+        (pages + 1).clamp(1, TMDB_LIST_MAX_PAGES)
+    };
+    let medias: Vec<&str> = match kind {
+        Some("movie") => vec!["movie"],
+        Some("series") | Some("anime") => vec!["tv"],
+        _ => vec!["movie", "tv"],
+    };
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    let _guard = LOCK.get_or_init(|| Mutex::new(())).lock().await;
+
+    let mut has_more = false;
+    for media in medias {
+        let genre_id = match filter.genre.as_deref().filter(|g| {
+            !g.trim().is_empty() && !g.eq_ignore_ascii_case("all")
+        }) {
+            Some(g) => Some(tmdb_genre_id(ctx, media, g).await?),
+            None => None,
+        };
+        let Some(path) = filter.path(media, genre_id) else {
+            continue;
+        };
+        let key = format!("{path}|{}|{}", tmdb_locale(ctx), original_language_query(ctx));
+        let (mut done, mut total) = discover_progress()
+            .get(&key)
+            .unwrap_or((0, TMDB_LIST_MAX_PAGES));
+        while done < needed && done < total {
+            let page = done + 1;
+            info!(media, page, path = %path, "fetching TMDB discover page for filtered catalog");
+            let (ids, total_pages) = fetch_list_page_ids(ctx, &path, true, page).await?;
+            total = total_pages.min(TMDB_LIST_MAX_PAGES);
+            done = page;
+            discover_progress().insert(key.clone(), (done, total));
+            if ids.is_empty() {
+                break;
+            }
+            let kinds: &[&str] = if media == "tv" { &["series", "anime"] } else { &["movie"] };
+            let known: Vec<(i32,)> = sqlx::query_as(
+                "SELECT tmdb_id FROM titles WHERE tmdb_id = ANY($1) AND kind = ANY($2)",
+            )
+            .bind(&ids)
+            .bind(kinds)
+            .fetch_all(&ctx.pool)
+            .await?;
+            let known: std::collections::HashSet<i32> = known.into_iter().map(|(id,)| id).collect();
+            let upsert_kind = if media == "tv" { "series" } else { "movie" };
+            stream::iter(ids.into_iter().filter(|id| !known.contains(id)))
+                .map(|id| {
+                    let ctx = ctx.clone();
+                    async move {
+                        match fetch_details(&ctx, id, upsert_kind).await {
+                            Ok(title_id) => {
+                                if let Err(e) = reindex(&ctx, title_id).await {
+                                    debug!(tmdb_id = id, error = %e, "meili reindex skipped");
+                                }
+                            }
+                            Err(e) => debug!(tmdb_id = id, error = %e, "discover ingest skipped"),
+                        }
+                    }
+                })
+                .buffer_unordered(TMDB_CONCURRENCY.min(6))
+                .collect::<Vec<_>>()
+                .await;
+        }
+        has_more |= done < total;
+    }
+    Ok(has_more)
 }
 
 pub async fn ensure_shelf_pages_for_catalog(
@@ -1373,6 +1699,16 @@ async fn fetch_details_tv(ctx: &IngestContext, id: i32) -> Result<TvDetails> {
 }
 
 async fn upsert_movie(ctx: &IngestContext, details: MovieDetails) -> Result<Option<Uuid>> {
+    upsert_movie_opts(ctx, details, true).await
+}
+
+/// `respect_language = false` for titles the user asked for by name or id:
+/// the preferred-language lock shapes browsing, it must not hide a search hit.
+async fn upsert_movie_opts(
+    ctx: &IngestContext,
+    details: MovieDetails,
+    respect_language: bool,
+) -> Result<Option<Uuid>> {
     if details.adult == Some(true) {
         debug!(tmdb_id = details.id, "skipping adult movie");
         return Ok(None);
@@ -1395,7 +1731,7 @@ async fn upsert_movie(ctx: &IngestContext, details: MovieDetails) -> Result<Opti
         debug!(tmdb_id = details.id, "skipping movie with blocked genre");
         return Ok(None);
     }
-    if !accepts_original_language(ctx, details.original_language.as_deref()) {
+    if respect_language && !accepts_original_language(ctx, details.original_language.as_deref()) {
         debug!(
             tmdb_id = details.id,
             lang = ?details.original_language,
@@ -1448,6 +1784,14 @@ async fn upsert_movie(ctx: &IngestContext, details: MovieDetails) -> Result<Opti
 }
 
 async fn upsert_tv(ctx: &IngestContext, details: TvDetails) -> Result<Option<Uuid>> {
+    upsert_tv_opts(ctx, details, true).await
+}
+
+async fn upsert_tv_opts(
+    ctx: &IngestContext,
+    details: TvDetails,
+    respect_language: bool,
+) -> Result<Option<Uuid>> {
     if details.adult == Some(true) {
         debug!(tmdb_id = details.id, "skipping adult series");
         return Ok(None);
@@ -1470,7 +1814,7 @@ async fn upsert_tv(ctx: &IngestContext, details: TvDetails) -> Result<Option<Uui
         debug!(tmdb_id = details.id, "skipping series with blocked genre");
         return Ok(None);
     }
-    if !accepts_original_language(ctx, details.original_language.as_deref()) {
+    if respect_language && !accepts_original_language(ctx, details.original_language.as_deref()) {
         debug!(
             tmdb_id = details.id,
             lang = ?details.original_language,
@@ -2311,4 +2655,66 @@ async fn get_json<T: serde::de::DeserializeOwned>(ctx: &IngestContext, url: &str
         )));
     }
     Ok(resp.json().await?)
+}
+
+#[cfg(test)]
+mod title_ref_tests {
+    use super::*;
+
+    #[test]
+    fn parses_ids_and_links() {
+        assert_eq!(parse_title_ref("tt0111161"), Some(TitleRef::Imdb("tt0111161".into())));
+        assert_eq!(parse_title_ref(" TT1160419 "), Some(TitleRef::Imdb("tt1160419".into())));
+        assert_eq!(
+            parse_title_ref("https://www.imdb.com/title/tt0903747/?ref_=nv"),
+            Some(TitleRef::Imdb("tt0903747".into()))
+        );
+        assert_eq!(
+            parse_title_ref("https://www.themoviedb.org/tv/1396-breaking-bad"),
+            Some(TitleRef::Tmdb { id: 1396, media: Some("series") })
+        );
+        assert_eq!(
+            parse_title_ref("https://www.themoviedb.org/movie/438631-dune"),
+            Some(TitleRef::Tmdb { id: 438631, media: Some("movie") })
+        );
+        assert_eq!(parse_title_ref("tmdb:278"), Some(TitleRef::Tmdb { id: 278, media: None }));
+        assert_eq!(parse_title_ref("tmdb tv 1396"), Some(TitleRef::Tmdb { id: 1396, media: Some("series") }));
+        assert_eq!(parse_title_ref("TMDB movie:550"), Some(TitleRef::Tmdb { id: 550, media: Some("movie") }));
+    }
+
+    #[test]
+    fn titles_are_not_ids() {
+        assert_eq!(parse_title_ref("1917"), None);
+        assert_eq!(parse_title_ref("2012"), None);
+        assert_eq!(parse_title_ref("the matrix"), None);
+        assert_eq!(parse_title_ref("tt"), None);
+        assert_eq!(parse_title_ref("Tron: Legacy"), None);
+    }
+}
+
+#[cfg(test)]
+mod discover_tests {
+    use super::*;
+
+    #[test]
+    fn builds_discover_paths() {
+        let f = DiscoverFilter {
+            genre: Some("Horror".into()),
+            year_min: Some(1980),
+            year_max: Some(1989),
+            rating_min: Some(7.0),
+        };
+        assert!(f.is_active());
+        assert_eq!(
+            f.path("movie", Some(Some(27))).unwrap(),
+            "/discover/movie?sort_by=popularity.desc&include_adult=false&with_genres=27\
+&primary_release_date.gte=1980-01-01&primary_release_date.lte=1989-12-31\
+&vote_average.gte=7.0&vote_count.gte=100"
+        );
+        assert!(f.path("tv", Some(None)).is_none());
+        let tv = DiscoverFilter { year_min: Some(2010), ..Default::default() }.path("tv", None).unwrap();
+        assert!(tv.contains("first_air_date.gte=2010-01-01"));
+        assert!(!DiscoverFilter { genre: Some("All".into()), ..Default::default() }.is_active());
+        assert!(!DiscoverFilter::default().is_active());
+    }
 }
