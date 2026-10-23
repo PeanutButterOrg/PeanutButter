@@ -15,6 +15,8 @@
 #endif
 
 [Setup]
+; In-app updates run this installer while PeanutButter is open.
+CloseApplications=force
 AppId={{A7C2E9F1-4B6D-4E8A-9C1F-2D3E4F5A6B7C}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
@@ -46,3 +48,5 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
+; Silent in-app update (/VERYSILENT): start the new version again.
+Filename: "{app}\{#MyAppExeName}"; Flags: nowait skipifnotsilent

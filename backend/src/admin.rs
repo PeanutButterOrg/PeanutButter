@@ -761,6 +761,10 @@ pub async fn action(
                 );
             }
         }
+        "check_updates" => {
+            tab = Some("settings");
+            notice = Some(crate::updates::check_now().await);
+        }
         "set_password" => {
             tab = Some("settings");
             let next = form.new_password.as_deref().unwrap_or("").trim();
@@ -1147,6 +1151,40 @@ async fn dashboard(
     let panel_catalog = if tab == "catalog" { "" } else { " hidden" };
     let panel_sync = if sync_on { "" } else { " hidden" };
     let panel_settings = if tab == "settings" { "" } else { " hidden" };
+    let updates_html = {
+        let u = crate::updates::status().await;
+        let offered = match (&u.current_version, u.current_build) {
+            (Some(v), Some(b)) => format!("Offering <strong>{}</strong> (build {b}) to apps.", html_escape(v)),
+            _ => "No release downloaded yet.".to_string(),
+        };
+        let checked = u
+            .last_check
+            .as_deref()
+            .map(|t| format!(" Last checked {}.", html_escape(t)))
+            .unwrap_or_default();
+        let error = u
+            .last_error
+            .as_deref()
+            .map(|e| format!(r#"<p class="muted">Last problem: {}</p>"#, html_escape(e)))
+            .unwrap_or_default();
+        let state = if !u.enabled {
+            "Disabled (UPDATES_ENABLED=false).".to_string()
+        } else if u.busy {
+            "Downloading a new release…".to_string()
+        } else {
+            format!("{offered}{checked}")
+        };
+        format!(
+            r#"<h2>App updates</h2>
+          <p class="lead">Signed releases from <code>{repo}</code> are mirrored here every few hours; apps on this network update from this server. {state}</p>
+          {error}
+          <form method="post" action="/" class="grid-form">
+            <input type="hidden" name="action" value="check_updates" />
+            <div class="actions"><button type="submit">Check now</button></div>
+          </form>"#,
+            repo = html_escape(&u.repo),
+        )
+    };
 
     let catalog_q = query.q.trim();
     let catalog_kind = query.kind.trim().to_ascii_uppercase();
@@ -1403,6 +1441,7 @@ async fn dashboard(
         </section>
 
         <section class="panel{panel_settings}" id="panel-settings">
+          {updates_html}
           <h2>Metadata keys</h2>
           <p class="lead"><strong>TMDB is required</strong> for catalog sync, cast/crew, trailers, posters, and search. Get a free key at themoviedb.org. OMDb is optional for IMDb / Rotten Tomatoes scores.</p>
           <form method="post" action="/" class="grid-form">
@@ -1590,6 +1629,7 @@ async fn dashboard(
         panel_catalog = panel_catalog,
         panel_sync = panel_sync,
         panel_settings = panel_settings,
+        updates_html = updates_html,
         status = status,
         checked = if jackett_on { "checked" } else { "" },
         catalog_q = html_escape(catalog_q),

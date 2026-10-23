@@ -152,4 +152,16 @@
     <string name="results_count">%1$d results</string>
     <string name="rewind">Rewind 10 seconds</string>
     <string name="forward">Forward 10 seconds</string>
+    <string name="update_title">PeanutButter %1$s is available</string>
+    <string name="update_message">Download and install the update (%1$d MB)? Android will ask you to confirm.</string>
+    <string name="update_downloading">Downloading… %1$d%%</string>
+    <string name="update_installing">Opening the installer…</string>
+    <string name="update_install">Install</string>
+    <string name="update_retry">Retry</string>
+    <string name="update_later">Later</string>
+    <string name="update_cancel">Cancel</string>
+    <string name="update_none">PeanutButter is up to date.</string>
+    <string name="update_check">Check for updates (version %1$s)</string>
+    <string name="update_install_failed">Update failed: %1$s</string>
+    <string name="update_signature_conflict">This update is signed with the new release key. Uninstall PeanutButter once, then install the new APK manually. Later updates will install normally.</string>
 </resources>

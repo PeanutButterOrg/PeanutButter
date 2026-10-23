@@ -16,6 +16,7 @@ import app.peanutbutter.core.SessionStore
 import app.peanutbutter.core.StreamQuality
 import app.peanutbutter.tv.R
 import app.peanutbutter.tv.asTv
+import app.peanutbutter.tv.update.checkForTvUpdate
 import kotlinx.coroutines.launch
 
 /** Flutter Settings: quality, languages, server/Jackett, disconnect. */
@@ -35,6 +36,12 @@ class SettingsActivity : FragmentActivity() {
         bindClearCache(app.session.clearCacheOnExit)
         findViewById<TextView>(R.id.opensub_save).setOnClickListener { saveOpenSubtitles() }
         findViewById<EditText>(R.id.opensub_key).closeKeyboardOnIme()
+
+        findViewById<TextView>(R.id.check_updates).apply {
+            val version = packageManager.getPackageInfo(packageName, 0).versionName.orEmpty()
+            text = getString(R.string.update_check, version)
+            setOnClickListener { checkForTvUpdate(this@SettingsActivity, manual = true) }
+        }
 
         findViewById<TextView>(R.id.disconnect).setOnClickListener {
             app.session.clear()

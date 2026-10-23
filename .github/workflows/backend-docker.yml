@@ -6,6 +6,7 @@
 # GHCR:
 #   ghcr.io/<owner>/peanutbutter-api:latest (main)
 #   ghcr.io/<owner>/peanutbutter-api:<semver> (tags v*)
+#   ghcr.io/<owner>/peanutbutter-api:stable   (tags vX.Y.Z without a -suffix)
 #
 # Local: cd backend && cargo build --release
 #        docker build -t peanutbutter-api:0.2.0 ./backend
@@ -146,6 +147,8 @@ jobs:
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
+            # Newest non-prerelease tag: what docker-compose.autoupdate.yml follows.
+            type=raw,value=stable,enable=${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-') }}
             type=sha,prefix=sha-,format=short
             type=raw,value=${{ needs.version.outputs.version }}
 

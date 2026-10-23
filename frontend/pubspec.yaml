@@ -24,6 +24,10 @@ dependencies:
   linux_embedded_webview:
     path: plugins/linux_embedded_webview
   path_provider: ^2.1.4
+  # Self-update: version, Ed25519 signature + SHA-256 checks.
+  package_info_plus: ^9.0.1
+  cryptography: ^2.7.0
+  crypto: ^3.0.7
   shared_preferences: ^2.3.2
   dio: ^5.7.0
   flutter_dotenv: ^5.2.1

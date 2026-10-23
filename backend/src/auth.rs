@@ -124,7 +124,9 @@ pub async fn resolve_token(state: &HttpState, provided: &str) -> Result<AuthSess
 
 fn is_media_get(method: &Method, path: &str) -> bool {
     (method == Method::GET || method == Method::HEAD)
-        && (path.starts_with("/stream/") || path.starts_with("/files/"))
+        && (path.starts_with("/stream/")
+            || path.starts_with("/files/")
+            || path.starts_with("/updates/files/"))
 }
 
 pub async fn gate(

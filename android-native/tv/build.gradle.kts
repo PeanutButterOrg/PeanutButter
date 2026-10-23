@@ -33,8 +33,10 @@ android {
         applicationId = "app.peanutbutter.tv"
         minSdk = 24
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0.0"
+        // CI: -Ppb.versionCode=<run number> -Ppb.versionName=<tag version>.
+        // Android only installs an update with a higher versionCode.
+        versionCode = (project.findProperty("pb.versionCode") as String?)?.toIntOrNull() ?: 1
+        versionName = (project.findProperty("pb.versionName") as String?) ?: "0.2.0"
     }
 
     compileOptions {
@@ -102,4 +104,7 @@ dependencies {
     implementation("androidx.media3:media3-ui:1.8.0")
     // Prebuilt FFmpeg decoders used by Jellyfin's Android TV player.
     implementation("org.jellyfin.media3:media3-ffmpeg-decoder:1.8.0+1")
+    // Ed25519 verification of signed update manifests (no platform API before 33).
+    implementation("org.bouncycastle:bcprov-jdk18on:1.80")
+    testImplementation("junit:junit:4.13.2")
 }

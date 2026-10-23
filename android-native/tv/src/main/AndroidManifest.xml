@@ -7,6 +7,8 @@
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Self-update: hands verified APKs from the server to PackageInstaller. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <uses-feature android:name="android.software.leanback" android:required="true" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
@@ -82,6 +84,14 @@
             android:configChanges="keyboard|keyboardHidden|navigation"
             android:exported="false"
             android:screenOrientation="landscape" />
+
+        <receiver
+            android:name=".update.UpdateInstallReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="app.peanutbutter.tv.UPDATE_INSTALL_STATUS" />
+            </intent-filter>
+        </receiver>
 
         <!-- Isolate libtorrent native crashes from the UI process -->
         <service

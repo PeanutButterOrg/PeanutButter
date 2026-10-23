@@ -18,6 +18,7 @@ import androidx.lifecycle.lifecycleScope
 import app.peanutbutter.core.HomeFeed
 import app.peanutbutter.tv.R
 import app.peanutbutter.tv.asTv
+import app.peanutbutter.tv.update.checkForTvUpdate
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
@@ -53,6 +54,8 @@ class MainActivity : FragmentActivity() {
         // Overlay must sit above the raised header so kind switches never flash shelves.
         findViewById<View>(R.id.loading_overlay).elevation = 32f
         loadHome(showOverlay = true, jumpToHero = true)
+        // Once per launch, after the home feed has had a head start.
+        window.decorView.postDelayed({ if (!isFinishing) checkForTvUpdate(this) }, 8_000)
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() = onHomeBack()
         })

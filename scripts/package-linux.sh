@@ -10,7 +10,8 @@ DIST="${FRONT}/dist"
 APP_NAME="PeanutButter"
 BIN_NAME="peanutbutter"
 APP_ID="app.peanutbutter.peanutbutter"
-VERSION="$(
+# CI passes PB_VERSION (from the release tag); local builds read pubspec.yaml.
+VERSION="${PB_VERSION:-$(
   python3 - <<PY
 import re
 from pathlib import Path
@@ -18,7 +19,7 @@ text = Path(r"$FRONT/pubspec.yaml").read_text()
 m = re.search(r"^version:\s*([0-9]+\.[0-9]+\.[0-9]+)", text, re.M)
 print(m.group(1) if m else "0.2.0")
 PY
-)"
+)}"
 ICON_SRC="$FRONT/linux/data/icon.png"
 
 if [[ ! -x "$BUNDLE/$BIN_NAME" ]]; then

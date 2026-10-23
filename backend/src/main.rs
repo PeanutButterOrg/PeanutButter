@@ -15,6 +15,7 @@ mod ratelimit;
 mod search;
 mod stream;
 mod subtitles;
+mod updates;
 
 use std::net::SocketAddr;
 use std::sync::atomic::AtomicBool;
@@ -204,6 +205,8 @@ async fn main() -> Result<()> {
         .route("/stream/{id}", get(stream::serve_stream).head(stream::serve_stream))
         .route("/art/tmdb/{size}/{*path}", get(media::proxy_tmdb).head(media::proxy_tmdb))
         .route("/art/youtube/{key}", get(media::proxy_youtube).head(media::proxy_youtube))
+        .route("/updates/latest", get(updates::latest))
+        .route("/updates/files/{tag}/{name}", get(updates::file).head(updates::file))
         .with_state(http_state.clone())
         .layer(middleware::from_fn_with_state(http_state, auth::gate))
         .layer(cors)
@@ -216,6 +219,8 @@ async fn main() -> Result<()> {
         .bind_addr
         .parse()
         .map_err(|e| error::AppError::Config(format!("invalid BIND_ADDR: {e}")))?;
+    // Mirror signed app releases from GitHub for LAN updates.
+    updates::spawn_background();
     let listener = TcpListener::bind(addr).await?;
     info!(addr = %addr, "listening");
     axum::serve(

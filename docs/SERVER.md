@@ -118,6 +118,36 @@ Data: `/DATA/AppData/peanutbutter/`
 
 Firewall: allow **3001/tcp** from your LAN.
 
+### App updates (desktop + TV)
+
+Every `vX.Y.Z` tag makes CI publish a GitHub release with the installers, plus a `manifest.json` that has been Ed25519-signed with the `UPDATE_SIGNING_KEY` secret. The server checks that release every 6 hours (`UPDATE_CHECK_HOURS`). It verifies the signature and each file's SHA-256, then keeps a copy in the `updates_data` volume, so devices download over your LAN, not from GitHub. Use **Settings → App updates → Check now** in the console to check right away.
+
+Apps ask the server after launch and then every 12 hours. They install only builds whose manifest carries a valid signature from the key built into the app:
+
+| Platform | Install |
+| --- | --- |
+| Windows | Silent installer, then the app restarts |
+| Linux AppImage | Replaces the AppImage in place, then restarts |
+| Linux .deb | `pkexec apt-get install` (asks for your password) |
+| macOS | Unpacks to `~/Downloads/PeanutButter <version>`; drag it into Applications |
+| Android TV | Android's own "Update?" screen (allow "Install unknown apps" once); Settings → Check for updates |
+
+Environment: `UPDATES_ENABLED=0` turns updates off, `UPDATES_REPO` sets the source repository (default `PeanutButterOrg/PeanutButter`), and `UPDATES_INCLUDE_PRERELEASE=1` also offers `-rc` tags.
+
+### Automatic server updates (optional)
+
+```bash
+docker compose -f docker-compose.server.yml -f docker-compose.autoupdate.yml pull api
+docker compose -f docker-compose.server.yml -f docker-compose.autoupdate.yml up -d
+```
+
+This runs the API from `ghcr.io/peanutbutterorg/peanutbutter-api:stable` and adds Watchtower, which restarts only the `api` container when a new release image appears. Postgres and Meilisearch are never updated automatically. Don't pass `--build` with this file.
+
+- The GHCR package must be public, or the host must run `docker login ghcr.io` with a token that has `read:packages`. In the private case, add `- /root/.docker/config.json:/config.json:ro` to the `watchtower` volumes.
+- On Docker 29 or newer, set `WATCHTOWER_DOCKER_API_VERSION=1.44`.
+- Watchtower doesn't take a database backup first. Keep your usual `pg_dump` schedule.
+- To go back to local builds, run the plain `docker compose -f docker-compose.server.yml up -d --build`.
+
 ---
 
 ## 6. Troubleshooting
@@ -138,6 +168,7 @@ Firewall: allow **3001/tcp** from your LAN.
 
 | File | Role |
 | --- | --- |
+| `docker-compose.autoupdate.yml` | Opt-in GHCR image + Watchtower for server self-updates |
 | `scripts/run-server.sh` | Build image + start stack |
 | `docker-compose.server.yml` | Homelab (baked config, auto-restart) |
 | `docker-compose.casaos.yml` | CasaOS (baked config) |

@@ -2776,6 +2776,7 @@ dependencies = [
  "notify",
  "regex",
  "reqwest",
+ "ring",
  "serde",
  "serde_json",
  "sha2",

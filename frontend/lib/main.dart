@@ -32,6 +32,8 @@ import 'theme.dart';
 import 'pairing_exchange.dart';
 import 'player_cache.dart';
 import 'local_torrent.dart';
+import 'app_updater.dart';
+import 'widgets/update_prompt.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -116,6 +118,9 @@ class _RouterRefresh extends ChangeNotifier {
   void bump() => notifyListeners();
 }
 
+/// Lets app-wide dialogs (update prompt) open over whatever route is showing.
+final rootNavigatorKey = GlobalKey<NavigatorState>();
+
 GoRouter _buildRouter(SettingsState Function() readSettings) {
   Page<void> pageFor(GoRouterState state, Widget child) {
     if (DeviceProfile.current.prefersDpad) {
@@ -125,6 +130,7 @@ GoRouter _buildRouter(SettingsState Function() readSettings) {
   }
 
   return GoRouter(
+    navigatorKey: rootNavigatorKey,
     initialLocation: '/boot',
     refreshListenable: _routerRefresh,
     redirect: (context, state) {
@@ -267,6 +273,48 @@ class _PeanutButterAppState extends ConsumerState<PeanutButterApp> with WidgetsB
       unawaited(_bootstrapSession());
     });
     _sessionWatch = Timer.periodic(const Duration(seconds: 12), (_) => _checkSession());
+    // Desktop self-update: shortly after launch, then twice a day.
+    _updateTimer = Timer(const Duration(seconds: 30), _checkForAppUpdate);
+  }
+
+  Timer? _updateTimer;
+  /// Build the user said "Later" to — don't ask again this session.
+  int? _deferredUpdateBuild;
+  bool _updatePromptOpen = false;
+
+  Future<void> _checkForAppUpdate() async {
+    _updateTimer?.cancel();
+    _updateTimer = Timer(const Duration(hours: 12), _checkForAppUpdate);
+    if (!mounted || _updatePromptOpen || !DeviceProfile.current.isDesktop) return;
+    final settings = ref.read(settingsProvider);
+    if (!settings.connected || settings.serverUrl.isEmpty) return;
+    if (playbackSessionActive) {
+      // Never interrupt a movie; look again a bit later.
+      _updateTimer?.cancel();
+      _updateTimer = Timer(const Duration(minutes: 10), _checkForAppUpdate);
+      return;
+    }
+    try {
+      final update = await checkForAppUpdate(
+        serverBase: settings.serverUrl,
+        token: settings.apiToken,
+      );
+      final ctx = rootNavigatorKey.currentContext;
+      if (update == null || update.build == _deferredUpdateBuild || ctx == null || !ctx.mounted) {
+        return;
+      }
+      _updatePromptOpen = true;
+      await showDialog<void>(
+        context: ctx,
+        barrierDismissible: false,
+        builder: (_) => UpdatePrompt(update: update),
+      );
+      _deferredUpdateBuild = update.build;
+    } catch (e) {
+      debugPrint('update check failed: $e');
+    } finally {
+      _updatePromptOpen = false;
+    }
   }
 
   Future<void> _bootstrapSession() async {
@@ -415,6 +463,7 @@ class _PeanutButterAppState extends ConsumerState<PeanutButterApp> with WidgetsB
   @override
   void dispose() {
     _sessionWatch?.cancel();
+    _updateTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     _router.dispose();
     super.dispose();

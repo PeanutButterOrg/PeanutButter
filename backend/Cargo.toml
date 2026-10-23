@@ -45,6 +45,8 @@ bytes = "1"
 ipnet = "2"
 walkdir = "2"
 moka = { version = "0.12", features = ["future", "sync"] }
+# Ed25519 checks for signed app updates (already in the tree via rustls).
+ring = "0.17"
 librqbit = { version = "8.1.1", default-features = false, features = ["default-tls"] }
 
 [dev-dependencies]

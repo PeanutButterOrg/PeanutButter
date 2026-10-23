@@ -99,6 +99,8 @@ services:
     volumes:
       - ./media:/media:ro
       - stream_data:/data/streams
+      # Mirrored, signed app releases offered to devices on this network.
+      - updates_data:/data/updates
     depends_on:
       postgres:
         condition: service_healthy
@@ -118,3 +120,4 @@ volumes:
   postgres_data:
   meili_data:
   stream_data:
+  updates_data:

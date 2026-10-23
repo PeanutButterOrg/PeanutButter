@@ -86,6 +86,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # One version for every platform: the vX.Y.Z tag (else pubspec.yaml),
+      # and a build number that only ever grows (Android needs that).
+      - name: Resolve version
+        shell: bash
+        working-directory: .
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" =~ ^v([0-9]+\.[0-9]+\.[0-9]+) ]]; then
+            ver="${BASH_REMATCH[1]}"
+          else
+            ver="$(sed -n 's/^version:[[:space:]]*\([0-9]*\.[0-9]*\.[0-9]*\).*/\1/p' frontend/pubspec.yaml | head -1)"
+          fi
+          ver="${ver:-0.2.0}"
+          build=$((GITHUB_RUN_NUMBER + 100))
+          echo "PB_VERSION=$ver" >> "$GITHUB_ENV"
+          echo "PB_BUILD=$build" >> "$GITHUB_ENV"
+          echo "Version $ver build $build"
+
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
@@ -107,7 +124,7 @@ jobs:
         run: flutter config --enable-linux-desktop
 
       - run: flutter pub get
-      - run: flutter build linux --release
+      - run: flutter build linux --release --build-name="$PB_VERSION" --build-number="$PB_BUILD"
 
       - name: Package portable / deb / AppImage
         working-directory: .
@@ -153,6 +170,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # One version for every platform: the vX.Y.Z tag (else pubspec.yaml),
+      # and a build number that only ever grows (Android needs that).
+      - name: Resolve version
+        shell: bash
+        working-directory: .
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" =~ ^v([0-9]+\.[0-9]+\.[0-9]+) ]]; then
+            ver="${BASH_REMATCH[1]}"
+          else
+            ver="$(sed -n 's/^version:[[:space:]]*\([0-9]*\.[0-9]*\.[0-9]*\).*/\1/p' frontend/pubspec.yaml | head -1)"
+          fi
+          ver="${ver:-0.2.0}"
+          build=$((GITHUB_RUN_NUMBER + 100))
+          echo "PB_VERSION=$ver" >> "$GITHUB_ENV"
+          echo "PB_BUILD=$build" >> "$GITHUB_ENV"
+          echo "Version $ver build $build"
+
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
@@ -182,7 +216,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "vcpkg install libtorrent failed" }
           "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-      - run: flutter build windows --release
+      - run: flutter build windows --release --build-name=$env:PB_VERSION --build-number=$env:PB_BUILD
 
       - name: Resolve release dir
         id: winout
@@ -231,7 +265,7 @@ jobs:
         shell: pwsh
         working-directory: .
         run: |
-          $ver = (Select-String -Path frontend\pubspec.yaml -Pattern '^version:\s*([0-9]+\.[0-9]+\.[0-9]+)').Matches.Groups[1].Value
+          $ver = $env:PB_VERSION
           if (-not $ver) { $ver = "0.2.0" }
           New-Item -ItemType Directory -Force -Path frontend\dist | Out-Null
           $src = (Resolve-Path "frontend\${{ steps.winout.outputs.dir }}").Path
@@ -278,6 +312,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # One version for every platform: the vX.Y.Z tag (else pubspec.yaml),
+      # and a build number that only ever grows (Android needs that).
+      - name: Resolve version
+        shell: bash
+        working-directory: .
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" =~ ^v([0-9]+\.[0-9]+\.[0-9]+) ]]; then
+            ver="${BASH_REMATCH[1]}"
+          else
+            ver="$(sed -n 's/^version:[[:space:]]*\([0-9]*\.[0-9]*\.[0-9]*\).*/\1/p' frontend/pubspec.yaml | head -1)"
+          fi
+          ver="${ver:-0.2.0}"
+          build=$((GITHUB_RUN_NUMBER + 100))
+          echo "PB_VERSION=$ver" >> "$GITHUB_ENV"
+          echo "PB_BUILD=$build" >> "$GITHUB_ENV"
+          echo "Version $ver build $build"
+
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
@@ -303,7 +354,7 @@ jobs:
       - name: Build universal macOS release
         run: |
           # Release.xcconfig: ARCHS=arm64 x86_64, ONLY_ACTIVE_ARCH=NO
-          flutter build macos --release
+          flutter build macos --release --build-name="$PB_VERSION" --build-number="$PB_BUILD"
           APP="build/macos/Build/Products/Release/peanutbutter.app"
           if [ ! -d "$APP" ]; then
             APP=$(find build/macos/Build/Products/Release -maxdepth 1 -name '*.app' | head -1)
@@ -362,6 +413,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # One version for every platform: the vX.Y.Z tag (else pubspec.yaml),
+      # and a build number that only ever grows (Android needs that).
+      - name: Resolve version
+        shell: bash
+        working-directory: .
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" =~ ^v([0-9]+\.[0-9]+\.[0-9]+) ]]; then
+            ver="${BASH_REMATCH[1]}"
+          else
+            ver="$(sed -n 's/^version:[[:space:]]*\([0-9]*\.[0-9]*\.[0-9]*\).*/\1/p' frontend/pubspec.yaml | head -1)"
+          fi
+          ver="${ver:-0.2.0}"
+          build=$((GITHUB_RUN_NUMBER + 100))
+          echo "PB_VERSION=$ver" >> "$GITHUB_ENV"
+          echo "PB_BUILD=$build" >> "$GITHUB_ENV"
+          echo "Version $ver build $build"
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -378,11 +446,33 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
+      # A fixed release key: Android only installs updates signed with the
+      # same key, and a CI runner's debug key changes every run.
+      - name: Configure release signing
+        working-directory: android-native
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -z "$KS_B64" ]; then
+            if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+              echo "::error::ANDROID_KEYSTORE_BASE64 is not set; a release APK must not be debug-signed"
+              exit 1
+            fi
+            echo "::warning::No release key secrets; this APK is debug-signed and cannot update installed TVs"
+            exit 0
+          fi
+          printf '%s' "$KS_B64" | base64 -d > release.jks
+          printf 'storeFile=release.jks\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
+            "$KS_PASS" "$KEY_ALIAS" "$KEY_PASS" > keystore.properties
+
       - name: Build TV release APK
         working-directory: android-native
         run: |
           chmod +x ./gradlew
-          ./gradlew :tv:assembleRelease --stacktrace
+          ./gradlew :tv:assembleRelease --stacktrace -Ppb.versionName="$PB_VERSION" -Ppb.versionCode="$PB_BUILD"
           out=tv/build/outputs/apk/release
           cp -f "$out/tv-universal-release.apk" "$GITHUB_WORKSPACE/PeanutButter-android-tv.apk"
           cp -f "$out/tv-arm64-v8a-release.apk" "$GITHUB_WORKSPACE/PeanutButter-android-tv-arm64-v8a.apk"
@@ -394,3 +484,61 @@ jobs:
           name: PeanutButter-android-tv
           path: PeanutButter-android-tv*.apk
           if-no-files-found: error
+
+  # On vX.Y.Z tags: publish every installer plus a signed manifest as a
+  # GitHub Release. Servers mirror it and offer it to apps as an update.
+  release:
+    name: Publish release
+    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+    needs: [linux, windows, macos, android-tv]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: PeanutButter-*
+
+      - name: Collect installers
+        run: |
+          mkdir -p release
+          cp artifacts/PeanutButter-windows-setup/PeanutButter-windows-x64-setup.exe release/
+          cp artifacts/PeanutButter-macos-universal/PeanutButter-macos-universal.zip release/
+          cp artifacts/PeanutButter-linux-appimage/PeanutButter-linux-x86_64.AppImage release/
+          cp artifacts/PeanutButter-linux-deb/PeanutButter-linux-amd64.deb release/
+          cp artifacts/PeanutButter-android-tv/PeanutButter-android-tv*.apk release/
+          ls -lh release
+
+      - name: Write and sign manifest
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          if [ -z "$UPDATE_SIGNING_KEY" ]; then
+            echo "::error::UPDATE_SIGNING_KEY secret is not set"
+            exit 1
+          fi
+          python3 scripts/release_manifest.py release "$GITHUB_REF_NAME" "$((GITHUB_RUN_NUMBER + 100))" > release/manifest.json
+          umask 077
+          printf '%s\n' "$UPDATE_SIGNING_KEY" > "$RUNNER_TEMP/update-key.pem"
+          openssl pkeyutl -sign -rawin -inkey "$RUNNER_TEMP/update-key.pem" \
+            -in release/manifest.json -out "$RUNNER_TEMP/manifest.sig"
+          rm -f "$RUNNER_TEMP/update-key.pem"
+          # Apps only trust packaging/update-signing-public.pem: prove the pair matches.
+          openssl pkeyutl -verify -pubin -inkey packaging/update-signing-public.pem -rawin \
+            -in release/manifest.json -sigfile "$RUNNER_TEMP/manifest.sig"
+          base64 -w0 "$RUNNER_TEMP/manifest.sig" > release/manifest.json.sig
+          cat release/manifest.json
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pre=""
+          [[ "$GITHUB_REF_NAME" == *-* ]] && pre="--prerelease"
+          gh release create "$GITHUB_REF_NAME" release/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "PeanutButter ${GITHUB_REF_NAME#v}" \
+            --generate-notes $pre

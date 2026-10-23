@@ -1,0 +1,41 @@
+# Opt-in server self-update. Layer it on top of the normal stack:
+#
+#   docker compose -f docker-compose.server.yml -f docker-compose.autoupdate.yml pull api
+#   docker compose -f docker-compose.server.yml -f docker-compose.autoupdate.yml up -d
+#
+# (no --build: the api now comes from GHCR). Watchtower then checks every
+# 6 hours and restarts *only* the api on a new release; Postgres and
+# Meilisearch are never touched. Migrations run on api start-up.
+#
+#   PB_CHANNEL=stable  newest vX.Y.Z release (default)
+#   PB_CHANNEL=latest  every push to main (testing only)
+#   PB_CHANNEL=0.3     stay on 0.3.x
+#
+# See docs/SERVER.md "Automatic server updates".
+
+services:
+  api:
+    image: ghcr.io/peanutbutterorg/peanutbutter-api:${PB_CHANNEL:-stable}
+    pull_policy: always
+    labels:
+      com.centurylinklabs.watchtower.enable: "true"
+
+  watchtower:
+    image: containrrr/watchtower:1.7.1
+    restart: always
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    environment:
+      WATCHTOWER_LABEL_ENABLE: "true"
+      WATCHTOWER_CLEANUP: "true"
+      WATCHTOWER_POLL_INTERVAL: ${WATCHTOWER_POLL_INTERVAL:-21600}
+      WATCHTOWER_INCLUDE_RESTARTING: "true"
+      # Docker 29+ rejects Watchtower's old default API version; set 1.44 there.
+      DOCKER_API_VERSION: ${WATCHTOWER_DOCKER_API_VERSION:-}
+      TZ: ${TZ:-UTC}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    mem_limit: 128m

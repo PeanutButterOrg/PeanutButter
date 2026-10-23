@@ -3,6 +3,8 @@
 .env.*
 !.env.example
 *.pem
+# Public half of the update signing key (CI + tests verify against it).
+!packaging/update-signing-public.pem
 !frontend/plugins/libtorrent_flutter/assets/cacert.pem
 *.keystore
 *.jks
