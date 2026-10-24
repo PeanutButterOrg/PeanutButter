@@ -67,18 +67,35 @@ private fun showUpdateDialog(activity: FragmentActivity, update: AppUpdate) {
         later.setText(R.string.update_cancel)
         later.requestFocus()
         job = activity.lifecycleScope.launch {
+            // Progress is posted from the download thread; once it's done, late
+            // posts must not overwrite later messages (the dialog used to sit at
+            // "Downloading… 75%" behind Android's installer).
+            var downloading = true
+            var lastPct = -1
             try {
                 val apk = AppUpdater.download(activity, session, update) { p ->
+                    val pct = (p * 100).toInt().coerceIn(0, 100)
+                    if (pct == lastPct) return@download
+                    lastPct = pct
                     activity.runOnUiThread {
-                        message.text = activity.getString(R.string.update_downloading, (p * 100).toInt())
+                        if (downloading && dialog.isShowing) {
+                            message.text = activity.getString(R.string.update_downloading, pct)
+                        }
                     }
                 }
+                downloading = false
                 message.setText(R.string.update_installing)
-                AppUpdater.install(activity, apk)
+                // Android's own confirm screen takes over from here.
                 dialog.dismiss()
+                AppUpdater.install(activity, apk)
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
+                downloading = false
+                if (!dialog.isShowing) {
+                    toast(activity, e.message ?: e.toString())
+                    return@launch
+                }
                 message.text = e.message ?: e.toString()
                 install.setText(R.string.update_retry)
                 install.isVisible = true

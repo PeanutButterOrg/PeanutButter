@@ -11,6 +11,7 @@ import org.libtorrent4j.AnnounceEntry
 import org.libtorrent4j.Priority
 import org.libtorrent4j.SessionManager
 import org.libtorrent4j.SettingsPack
+import org.libtorrent4j.swig.settings_pack
 import org.libtorrent4j.TorrentHandle
 import org.libtorrent4j.TorrentInfo
 import org.libtorrent4j.alerts.AddTorrentAlert
@@ -111,6 +112,7 @@ object LocalTorrentEngine {
             pack.uploadRateLimit(0)
             pack.listenInterfaces("0.0.0.0:0")
             pack.maxPeerlistSize(4_000)
+            applyStreamingTuning(pack)
             sm.start()
             sm.applySettings(pack)
             sm.maxConnections(200)
@@ -825,6 +827,55 @@ object LocalTorrentEngine {
         }
         return videos.maxByOrNull { fs.fileSize(it) }
     }
+    /**
+     * Same peer and piece tuning as the desktop engine (torrent_bridge.cpp).
+     * On libtorrent's defaults the TV announced to one tracker, opened 30
+     * connections a second with 15 s timeouts, fetched each piece from a
+     * single peer and dropped seeds after every streaming window — so it
+     * found peers late and started playback much slower than desktop.
+     */
+    private fun applyStreamingTuning(pack: SettingsPack) {
+        val i = { k: settings_pack.int_types, v: Int -> pack.setInteger(k.swigValue(), v) }
+        val b = { k: settings_pack.bool_types, v: Boolean -> pack.setBoolean(k.swigValue(), v) }
+        runCatching {
+            // Find and connect to peers fast.
+            b(settings_pack.bool_types.announce_to_all_trackers, true)
+            b(settings_pack.bool_types.announce_to_all_tiers, true)
+            i(settings_pack.int_types.connection_speed, 200)
+            i(settings_pack.int_types.torrent_connect_boost, 200)
+            b(settings_pack.bool_types.smooth_connects, false)
+            i(settings_pack.int_types.min_reconnect_time, 5)
+            i(settings_pack.int_types.max_failcount, 3)
+            i(settings_pack.int_types.peer_connect_timeout, 5)
+            i(settings_pack.int_types.handshake_timeout, 5)
+            i(settings_pack.int_types.dht_announce_interval, 60)
+            b(settings_pack.bool_types.enable_upnp, true)
+            b(settings_pack.bool_types.enable_natpmp, true)
+            // Streams only want a sliding window, so libtorrent keeps thinking
+            // the torrent is finished; keep the seeds connected.
+            b(settings_pack.bool_types.close_redundant_connections, false)
+            b(settings_pack.bool_types.allow_multiple_connections_per_ip, true)
+            // Pieces near the playhead come from many peers at once.
+            i(settings_pack.int_types.whole_pieces_threshold, 0)
+            i(settings_pack.int_types.piece_timeout, 5)
+            i(settings_pack.int_types.request_timeout, 5)
+            i(settings_pack.int_types.request_queue_time, 1)
+            i(settings_pack.int_types.max_out_request_queue, 500)
+            b(settings_pack.bool_types.strict_end_game_mode, false)
+            b(settings_pack.bool_types.prioritize_partial_pieces, true)
+            b(settings_pack.bool_types.piece_extent_affinity, true)
+            i(settings_pack.int_types.initial_picker_threshold, 0)
+            i(settings_pack.int_types.predictive_piece_announce, 500)
+            // Reciprocate so peers unchoke us sooner.
+            i(settings_pack.int_types.unchoke_slots_limit, -1)
+            // Encrypted handshake first (gets past ISP throttling), plaintext allowed.
+            i(settings_pack.int_types.in_enc_policy, settings_pack.enc_policy.pe_enabled.swigValue())
+            i(settings_pack.int_types.out_enc_policy, settings_pack.enc_policy.pe_enabled.swigValue())
+            i(settings_pack.int_types.allowed_enc_level, settings_pack.enc_level.pe_both.swigValue())
+            // TVs have little RAM: a modest write queue instead of desktop's 64 MB.
+            i(settings_pack.int_types.max_queued_disk_bytes, 16 * 1024 * 1024)
+        }.onFailure { Log.w(TAG, "streaming tuning not applied", it) }
+    }
 }
 
 data class LocalStreamHandle(
@@ -845,4 +896,5 @@ data class LocalStreamStats(
     companion object {
         fun empty() = LocalStreamStats(0.0, 0.0, 0, 0, false)
     }
+
 }

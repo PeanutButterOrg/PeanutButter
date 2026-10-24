@@ -200,12 +200,7 @@ class DetailsActivity : FragmentActivity() {
         if (t.people.isNotEmpty()) {
             castHeading.isVisible = true
             castList.isVisible = true
-            castList.clipChildren = false
-            castList.clipToPadding = false
-            (castList.parent as? ViewGroup)?.let {
-                it.clipChildren = false
-                it.clipToPadding = false
-            }
+            castList.unclipAncestors()
             castList.isHorizontalScrollBarEnabled = false
             castList.overScrollMode = View.OVER_SCROLL_NEVER
             castList.descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
@@ -223,6 +218,7 @@ class DetailsActivity : FragmentActivity() {
             trailerWrap.isVisible = true
             trailerCard.clipToOutline = true
             trailerCard.stateListAnimator = null
+            (trailerCard.parent as? View)?.unclipAncestors()
             trailerCard.setOnFocusChangeListener { v, hasFocus ->
                 PosterCardPresenter.applyFocusScaleElevate(v as ViewGroup, hasFocus)
             }
@@ -309,6 +305,7 @@ class DetailsActivity : FragmentActivity() {
             ?: cards.zip(episodes).firstOrNull { !it.second.watched }?.first
             ?: cards.firstOrNull()
         val scroller = CenterFocusScroll(this).apply { addView(row) }
+        scroller.post { scroller.unclipAncestors() }
         cards.forEach { card ->
             card.setOnFocusChangeListener { v, hasFocus ->
                 if (hasFocus) scroller.centerChild(v, smooth = true)
