@@ -146,6 +146,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   String? _activeSubId;
   bool _subsLoading = false;
   List<AudioTrack> _audioTracks = const [];
+  /// Subtitle tracks inside the video file (MKV etc.), shown in the CC menu.
+  List<SubtitleTrack> _embeddedSubs = const [];
   String? _activeAudioId;
   StreamSubscription<Duration>? _posSub;
   StreamSubscription<bool>? _completedSub;
@@ -164,6 +166,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   Duration _lastSeekTarget = Duration.zero;
   DateTime? _seekIgnoreUntil;
   DateTime? _lastFalseEofAt;
+  /// Snap-back-to-start recovery (see _recoverFromJumpToStart).
+  DateTime? _lastSnapBackAt;
+  int _snapBackTries = 0;
   int _falseEofCount = 0;
   _NextEpisodeTarget? _nextEpisode;
   bool _playNextVisible = false;
@@ -392,10 +397,15 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         for (final t in tracks.audio)
           if (t.id != 'auto' && t.id != 'no') t,
       ];
+      final embedded = [
+        for (final t in tracks.subtitle)
+          if (t.id != 'auto' && t.id != 'no') t,
+      ];
       if (!mounted) return;
       setState(() {
         _audioTracks = audio;
         _activeAudioId ??= player.state.track.audio.id;
+        _embeddedSubs = embedded;
       });
       unawaited(_applyPreferredAudioLanguage(audio));
     });
@@ -852,6 +862,41 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         } catch (_) {}
       }());
     });
+  }
+
+  /// A progressive torrent stream can lose its place and snap back to t≈0:
+  /// a seek before the file's index (MKV cues sit at the end) has
+  /// downloaded, or a read that hits the download edge. That showed up as
+  /// "Skip Intro starts from the beginning" and "the movie restarts after a
+  /// while". Unless the user asked for the start, seek back to where playback
+  /// should be (retrying while the pieces arrive) and don't let ~0 become the
+  /// new "good" position. Returns true when the tick was handled here.
+  bool _recoverFromJumpToStart(Duration position) {
+    if (!widget.isStream || _closing || _playerReleased) return false;
+    final intended = _seeking ? _lastSeekTarget : _lastGoodPos;
+    final snapped = position.inMilliseconds < 3000 &&
+        intended.inMilliseconds > 15000;
+    if (!snapped) {
+      if (position.inMilliseconds > 15000) _snapBackTries = 0;
+      return false;
+    }
+    final now = DateTime.now();
+    if (_lastSnapBackAt != null &&
+        now.difference(_lastSnapBackAt!) < const Duration(milliseconds: 1500)) {
+      return true; // a recovery seek is already on its way
+    }
+    if (_snapBackTries >= 6) return false; // give up rather than loop forever
+    _snapBackTries++;
+    _lastSnapBackAt = now;
+    _seekIgnoreUntil = now.add(const Duration(milliseconds: 2500));
+    unawaited(_retargetStreamBuffer(intended));
+    unawaited(() async {
+      try {
+        await _player?.seek(intended);
+        await _player?.play();
+      } catch (_) {}
+    }());
+    return true;
   }
 
   /// False EOF on progressive torrents used to call bare [play], which restarts
@@ -1337,6 +1382,19 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   void _onPosition(Duration position) {
     final prev = _lastTrackedPos;
     _lastTrackedPos = position;
+    // _buffering is also set by hand (start, seeks, reopen) and only the
+    // player's buffering:false clears it, which never comes if the player
+    // didn't stall. Time moving forward means it isn't buffering; otherwise
+    // the stats chip / spinner stayed up for the whole movie.
+    if (_buffering &&
+        !_seeking &&
+        prev != null &&
+        position > prev &&
+        position - prev < const Duration(seconds: 2) &&
+        mounted) {
+      setState(() => _buffering = false);
+    }
+    if (_recoverFromJumpToStart(position)) return;
     final ignoring = _seekIgnoreUntil != null &&
         DateTime.now().isBefore(_seekIgnoreUntil!);
 
@@ -1537,27 +1595,37 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     return route?.isCurrent ?? true;
   }
 
+  /// Chrome may show / hide: the player is on top, or in media_kit's
+  /// fullscreen route (which is "on top" of the player route). Without the
+  /// fullscreen case the controls never hid there and mouse moves were lost.
+  bool get _chromeRouteActive => _playerRouteIsCurrent || _inFullscreen;
+
+  void _setChromeVisible(bool visible) {
+    if (_chromeVisible == visible || !mounted) return;
+    setState(() => _chromeVisible = visible);
+    // The fullscreen route only rebuilds on _overlayEpoch.
+    _notifyOverlays();
+  }
+
   /// Reveal seek / audio / subtitle chrome; restart the auto-hide timer.
   void _bumpChrome() {
-    if (!_playerRouteIsCurrent) return;
+    if (!_chromeRouteActive) return;
     _chromeHideTimer?.cancel();
-    if (!_chromeVisible) {
-      if (mounted) setState(() => _chromeVisible = true);
-    }
+    _setChromeVisible(true);
     _armChromeHideTimer();
   }
 
   void _armChromeHideTimer() {
     _chromeHideTimer?.cancel();
     _chromeHideTimer = Timer(const Duration(seconds: _chromeHideSecs), () {
-      if (!mounted || !_playerRouteIsCurrent) return;
+      if (!mounted || !_chromeRouteActive) return;
       // Keep chrome while a control is focused — reschedule silently (no setState).
       if (_chromeControlFocused) {
         _armChromeHideTimer();
         return;
       }
-      setState(() => _chromeVisible = false);
-      if (!_rootFocus.hasFocus) _rootFocus.requestFocus();
+      _setChromeVisible(false);
+      if (!_inFullscreen && !_rootFocus.hasFocus) _rootFocus.requestFocus();
     });
   }
 
@@ -2737,6 +2805,17 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     }
   }
 
+  String _embeddedSubLabel(SubtitleTrack t) {
+    final lang = (t.language ?? '').trim();
+    final title = (t.title ?? '').trim();
+    final name = lang.isEmpty ? '' : languageDisplayName(lang);
+    final parts = [
+      if (name.isNotEmpty) name,
+      if (title.isNotEmpty && title.toLowerCase() != name.toLowerCase()) title,
+    ];
+    return '${parts.isEmpty ? 'Track ${t.id}' : parts.join(' · ')} (in video)';
+  }
+
   Future<void> _applySubtitle(_SubtitleOption sub) async {
     await _player?.setSubtitleTrack(
       SubtitleTrack.data(sub.content, title: sub.label, language: sub.language),
@@ -3309,6 +3388,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
           checked: _activeSubId == null,
           child: const Text('Off'),
         ),
+        for (final track in _embeddedSubs)
+          CheckedPopupMenuItem(
+            value: 'emb:${track.id}',
+            checked: _activeSubId == 'emb:${track.id}',
+            child: Text(_embeddedSubLabel(track)),
+          ),
         for (final sub in _subs)
           CheckedPopupMenuItem(
             value: sub.id,
@@ -3382,6 +3467,17 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
       }
       if (value == 'off') {
         await _disableSubtitles();
+        return;
+      }
+      if (value.startsWith('emb:')) {
+        final id = value.substring('emb:'.length);
+        for (final track in _embeddedSubs) {
+          if (track.id == id) {
+            await _player?.setSubtitleTrack(track);
+            if (mounted) setState(() => _activeSubId = value);
+            break;
+          }
+        }
         return;
       }
       if (value.startsWith('wyzie_hit:')) {
@@ -3473,14 +3569,19 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         // ValueListenableBuilder keeps countdown / skip / scrubber state fresh.
         if (fullscreen)
           Positioned.fill(
-            child: ValueListenableBuilder<int>(
+            // Mouse moves in fullscreen bring the controls back (the player
+            // route's own MouseRegion is under this route).
+            child: MouseRegion(
+              opaque: false,
+              onHover: (_) => _bumpChrome(),
+              child: ValueListenableBuilder<int>(
               valueListenable: _overlayEpoch,
               builder: (context, _, __) {
                 return Stack(
                   fit: StackFit.expand,
                   children: [
                     ..._skipAndPlayNextOverlays(),
-                    if (_useDesktopSafeSeekBar && _showChrome)
+                    if (_useDesktopSafeSeekBar)
                       Positioned(
                         top: 12,
                         right: 12,
@@ -3495,9 +3596,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
                           ),
                         ),
                       ),
-                    if (_showSeekControls &&
-                        _useDesktopSafeSeekBar &&
-                        _showChrome)
+                    // Always built; _chromeLayer fades them in and out.
+                    if (_showSeekControls && _useDesktopSafeSeekBar)
                       Positioned(
                         left: 24,
                         right: 24,
@@ -3517,6 +3617,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
                   ],
                 );
               },
+            ),
             ),
           ),
       ],

@@ -17,6 +17,7 @@ mod stream;
 mod subtitles;
 mod providers;
 mod server_update;
+mod torrent_links;
 mod trackers;
 mod updates;
 

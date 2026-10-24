@@ -49,4 +49,5 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
 ; Silent in-app update (/VERYSILENT): start the new version again.
-Filename: "{app}\{#MyAppExeName}"; Flags: nowait skipifnotsilent
+; runasoriginaluser: the installer runs elevated; the app must not.
+Filename: "{app}\{#MyAppExeName}"; Flags: nowait skipifnotsilent runasoriginaluser

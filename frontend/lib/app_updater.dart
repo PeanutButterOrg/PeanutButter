@@ -157,12 +157,26 @@ Future<File> downloadAppUpdate(
 Future<void> installAppUpdate(AppUpdate u, File file) async {
   switch (u.platform) {
     case 'windows':
-      // Silent Inno Setup run; the installer relaunches PeanutButter.
-      await Process.start(
-        file.path,
-        ['/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CLOSEAPPLICATIONS'],
-        mode: ProcessStartMode.detached,
-      );
+      // The installer writes to Program Files, so it needs administrator
+      // rights. Process.start can't elevate (it failed with "requires
+      // elevation"); Start-Process -Verb RunAs shows the normal Windows
+      // prompt. It returns once the installer has started, or fails if the
+      // user says No, in which case the app stays open.
+      final path = file.path.replaceAll("'", "''");
+      final started = await Process.run('powershell', [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        "Start-Process -FilePath '$path' "
+            "-ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/CLOSEAPPLICATIONS' "
+            '-Verb RunAs',
+      ]);
+      if (started.exitCode != 0) {
+        throw const UpdateException(
+          'Windows needs your permission to install the update. Choose Yes when asked.',
+        );
+      }
+      // The silent installer closes this app and starts the new version.
       exit(0);
     case 'linux-appimage':
       final target = Platform.environment['APPIMAGE']!;

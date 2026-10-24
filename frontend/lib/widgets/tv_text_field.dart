@@ -260,18 +260,29 @@ class TvTextFieldState extends State<TvTextField> {
   @override
   Widget build(BuildContext context) {
     if (!_androidTv) {
-      return TextField(
-        controller: widget.controller,
-        focusNode: _input,
-        autofocus: widget.autofocus,
-        obscureText: widget.obscureText,
-        keyboardType: widget.keyboardType,
-        textInputAction: widget.textInputAction,
-        maxLines: widget.maxLines,
-        onChanged: widget.onChanged,
-        onSubmitted: widget.onSubmitted,
-        scrollPadding: const EdgeInsets.fromLTRB(24, 80, 24, 220),
-        decoration: widget.decoration,
+      // The app maps Enter / Space to ActivateIntent (remote "OK"). A text
+      // field doesn't claim those keys, so they bubbled up and any ancestor
+      // with an activate action swallowed them: Enter never submitted the
+      // search and Space could go missing. Keep them in the text field.
+      return Shortcuts(
+        shortcuts: const {
+          SingleActivator(LogicalKeyboardKey.enter): DoNothingAndStopPropagationTextIntent(),
+          SingleActivator(LogicalKeyboardKey.numpadEnter): DoNothingAndStopPropagationTextIntent(),
+          SingleActivator(LogicalKeyboardKey.space): DoNothingAndStopPropagationTextIntent(),
+        },
+        child: TextField(
+          controller: widget.controller,
+          focusNode: _input,
+          autofocus: widget.autofocus,
+          obscureText: widget.obscureText,
+          keyboardType: widget.keyboardType,
+          textInputAction: widget.textInputAction,
+          maxLines: widget.maxLines,
+          onChanged: widget.onChanged,
+          onSubmitted: widget.onSubmitted,
+          scrollPadding: const EdgeInsets.fromLTRB(24, 80, 24, 220),
+          decoration: widget.decoration,
+        ),
       );
     }
 

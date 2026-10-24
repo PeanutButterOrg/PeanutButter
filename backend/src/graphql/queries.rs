@@ -600,7 +600,8 @@ impl Query {
             title_id,
             // Separate entries while fallback sources are on, so lists cached
             // without them (often the weak ones) aren't served instead.
-            &format!("{}|{query}", if fallback_on { "v3p" } else { "v2" }),
+            // v4: magnets only (links resolved server-side); older rows may hold links.
+            &format!("{}|{query}", if fallback_on { "v4p" } else { "v4" }),
             kind.as_db(),
             season,
             episode,
@@ -689,7 +690,7 @@ impl Query {
         } else {
             Vec::new()
         };
-        let found = if let (Some(s), Some(e)) = (season, episode) {
+        let found: Vec<StreamSource> = if let (Some(s), Some(e)) = (season, episode) {
             found
                 .into_iter()
                 .filter(|src| crate::jackett::torrent_usable_for_episode(&src.title, s, e))
@@ -697,6 +698,9 @@ impl Query {
         } else {
             found
         };
+        // Indexers without magnets give Jackett .torrent links, which the
+        // apps can't open (and which carry the Jackett API key): convert.
+        let found = crate::torrent_links::resolve_all(found).await;
         // Jackett Seeders are often 0/missing on public trackers — lightly sample
         // DHT/tracker peers only when ranking looks weak (don't block the picker).
         let known_good = found.iter().filter(|s| s.seeders >= 2).count();
