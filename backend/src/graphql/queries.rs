@@ -671,11 +671,19 @@ impl Query {
         // The year only filters results; it is never baked into the Jackett query.
         let found = if jackett_on {
             let searched = match crate::jackett::JackettClient::from_live(&state.http, &state.config.live) {
-                Ok(client) => {
-                    client
-                        .search(&target, kind.as_db(), season, episode, &preferred_res, &preferred)
-                        .await
-                }
+                // Jackett gets its whole minute before any add-on is asked; the
+                // add-ons below only run after this returns or times out.
+                Ok(client) => match tokio::time::timeout(
+                    crate::jackett::STREAM_SEARCH_BUDGET,
+                    client.search(&target, kind.as_db(), season, episode, &preferred_res, &preferred),
+                )
+                .await
+                {
+                    Ok(r) => r,
+                    Err(_) => Err(AppError::BadRequest(
+                        "Jackett took over a minute to answer.".into(),
+                    )),
+                },
                 Err(e) => Err(e),
             };
             match searched {
