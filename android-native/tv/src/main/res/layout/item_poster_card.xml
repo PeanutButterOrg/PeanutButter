@@ -12,6 +12,15 @@
     android:paddingEnd="16dp"
     android:paddingBottom="4dp">
 
+    <!-- Everything that grows on focus. Leanback animates the root view's own
+         scale (back to 1.0 with zoom "none"), so ours lives on this child. -->
+    <FrameLayout
+        android:id="@+id/card_body"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:clipChildren="false"
+        android:clipToPadding="false">
+
     <FrameLayout
         android:id="@+id/poster_frame"
         android:layout_width="match_parent"
@@ -162,4 +171,5 @@
         </FrameLayout>
     </FrameLayout>
 
+    </FrameLayout>
 </FrameLayout>

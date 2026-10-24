@@ -34,21 +34,18 @@ import java.util.concurrent.atomic.AtomicReference
  */
 object LocalTorrentEngine {
     private const val TAG = "LocalTorrent"
+    /** Fallback when the server hasn't sent its live list (serverInfo.streamTrackers). */
     private val publicTrackers = listOf(
         "udp://tracker.opentrackr.org:1337/announce",
+        "udp://open.demonii.com:1337/announce",
         "udp://open.stealth.si:80/announce",
-        "udp://tracker.openbittorrent.com:6969/announce",
-        "udp://explodie.org:6969/announce",
         "udp://tracker.torrent.eu.org:451/announce",
         "udp://exodus.desync.com:6969/announce",
-        "udp://open.demonii.com:1337/announce",
-        "udp://tracker.moeking.me:6969/announce",
-        "udp://tracker.tiny-vps.com:6969/announce",
+        "udp://explodie.org:6969/announce",
+        "udp://tracker.theoks.net:6969/announce",
         "udp://tracker.dler.org:6969/announce",
-        "udp://tracker1.bt.moack.co.kr:80/announce",
         "udp://bt1.archive.org:6969/announce",
         "udp://bt2.archive.org:6969/announce",
-        "http://tracker.openbittorrent.com:80/announce",
         "http://tracker.opentrackr.org:1337/announce",
     )
 
@@ -99,6 +96,12 @@ object LocalTorrentEngine {
             // DHT/LSD run in the isolated :torrent process — UI survives a native crash.
             // Keeping them off made swarms tiny and downloads crawl.
             pack.setEnableDht(true)
+            // Several routers so a cold DHT (every app start) bootstraps fast;
+            // libtorrent's default is a single node.
+            pack.setDhtBootstrapNodes(
+                "dht.libtorrent.org:25401,router.bittorrent.com:6881," +
+                    "router.utorrent.com:6881,dht.transmissionbt.com:6881",
+            )
             pack.setEnableLsd(true)
             pack.connectionsLimit(200)
             pack.activeDownloads(8)
@@ -765,7 +768,8 @@ object LocalTorrentEngine {
     }
 
     private fun injectTrackers(handle: TorrentHandle) {
-        val list = (extraTrackers + publicTrackers).distinct().take(12)
+        // Server's live list first: it is refreshed every 12h, the fallback isn't.
+        val list = (extraTrackers + publicTrackers).distinct().take(20)
         for (tr in list) {
             runCatching { handle.addTracker(AnnounceEntry(tr)) }
         }

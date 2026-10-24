@@ -460,7 +460,8 @@ impl Query {
             jackett_url: state.config.live.jackett_url(),
             streaming_resolution: state.config.live.streaming_resolution(),
             preferred_languages: state.config.live.preferred_language_codes(),
-            stream_trackers: Vec::new(),
+            // Live public trackers so apps find peers without waiting on DHT.
+            stream_trackers: crate::trackers::current(),
             jackett_catalog: jackett_catalog_status(state).await?,
             opensubtitles_enabled: state.config.live.opensubtitles_enabled(),
             opensubtitles_configured: state.config.live.opensubtitles_configured(),

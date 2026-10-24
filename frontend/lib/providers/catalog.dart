@@ -100,6 +100,14 @@ class CatalogNotifier extends StateNotifier<CatalogState> {
     await _prefetchPages(throughPage: 3, generation: generation);
   }
 
+  /// A new sort/filter: drop the old cards at once so the grid shows its
+  /// loader (and any error) instead of looking like nothing happened.
+  void restartForFilter() {
+    _generation++;
+    state = const CatalogState(loading: true);
+    scheduleRefresh();
+  }
+
   void scheduleRefresh() {
     _filterDebounce?.cancel();
     _filterDebounce = Timer(const Duration(milliseconds: 280), refresh);
@@ -197,7 +205,7 @@ final browseProvider = StateNotifierProvider.family<CatalogNotifier, CatalogStat
   ref.watch(graphQLClientProvider);
   final notifier = CatalogNotifier(ref, kind);
   ref.listen<CatalogFilter>(browseFilterProvider(kind), (_, __) {
-    notifier.scheduleRefresh();
+    notifier.restartForFilter();
   });
   return notifier;
 });
@@ -228,6 +236,14 @@ class LibraryNotifier extends StateNotifier<CatalogState> {
     await _load(page: 1, replace: true, generation: generation);
     // Sort / open should land with a deep wall (at least 3 pages) before scroll.
     await _prefetchPages(throughPage: 3, generation: generation);
+  }
+
+  /// A new sort/filter: drop the old cards at once so the grid shows its
+  /// loader (and any error) instead of looking like nothing happened.
+  void restartForFilter() {
+    _generation++;
+    state = const CatalogState(loading: true);
+    scheduleRefresh();
   }
 
   void scheduleRefresh() {
@@ -310,7 +326,7 @@ final catalogProvider = StateNotifierProvider<LibraryNotifier, CatalogState>((re
   ref.watch(graphQLClientProvider);
   final notifier = LibraryNotifier(ref);
   ref.listen<CatalogFilter>(catalogFilterProvider, (_, __) {
-    notifier.scheduleRefresh();
+    notifier.restartForFilter();
   });
   return notifier;
 });
@@ -618,6 +634,8 @@ class SearchNotifier extends StateNotifier<SearchState> {
       );
       return;
     }
+    // Old results go at once and the loader shows while the user pauses.
+    state = state.copyWith(loading: true, results: const [], clearError: true);
     _debounce = Timer(const Duration(milliseconds: 320), () {
       _run(trimmed, page: 1, replace: true, generation: generation);
     });
@@ -669,7 +687,14 @@ class SearchNotifier extends StateNotifier<SearchState> {
     int? generation,
   }) async {
     final gen = generation ?? ++_generation;
-    state = state.copyWith(loading: replace, loadingMore: !replace, error: null, clearError: true);
+    state = state.copyWith(
+      loading: replace,
+      loadingMore: !replace,
+      // A new search (or kind / filter change) never shows the previous hits.
+      results: replace ? const [] : null,
+      error: null,
+      clearError: true,
+    );
     final client = _ref.read(graphQLClientProvider);
     try {
       final result = await client.query(

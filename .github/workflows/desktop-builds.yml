@@ -82,7 +82,7 @@ jobs:
 
   linux:
     name: Linux (deb + AppImage + portable)
-    timeout-minutes: 45
+    timeout-minutes: 75
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.linux }}
     runs-on: ubuntu-latest
     defaults:
@@ -113,17 +113,27 @@ jobs:
           channel: stable
           cache: true
 
-      # Non-interactive, no recommends, no man-db rebuild: a stuck debconf
-      # prompt or trigger used to hang this step for 30+ minutes.
+      # The Azure apt mirror is often slow (a cold install took 15–70 min), so
+      # downloaded .debs are cached; restore/save are split so the cache is
+      # kept even when a later step fails.
+      - name: Restore apt package cache
+        id: apt-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/apt-cache
+          key: apt-noble-linux-deps-v1
+
       - name: Install Linux build deps
-        timeout-minutes: 15
+        timeout-minutes: 45
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
           echo 'set man-db/auto-update false' | sudo debconf-communicate >/dev/null 2>&1 || true
           sudo rm -f /var/lib/man-db/auto-update
-          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update -y
-          sudo -E apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 \
+          mkdir -p ~/apt-cache/partial
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update -y
+          sudo -E apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 \
+            -o Dir::Cache::Archives="$HOME/apt-cache" \
             -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
             install -y --no-install-recommends \
             clang cmake ninja-build pkg-config \
@@ -133,6 +143,17 @@ jobs:
             libtorrent-rasterbar-dev libboost-dev libssl-dev \
             dpkg-dev rsync curl file \
             python3-pil zip
+
+      - name: Prepare apt cache for upload
+        if: steps.apt-cache.outputs.cache-hit != 'true'
+        run: sudo chown -R "$USER" ~/apt-cache && rm -rf ~/apt-cache/partial ~/apt-cache/lock
+
+      - name: Upload apt package cache
+        if: steps.apt-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/apt-cache
+          key: apt-noble-linux-deps-v1
 
       - name: Enable Linux desktop
         run: flutter config --enable-linux-desktop

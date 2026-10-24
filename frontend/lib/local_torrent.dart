@@ -25,8 +25,26 @@ class LocalTorrentEngine {
       (Platform.isAndroid || Platform.isLinux || Platform.isWindows || Platform.isMacOS);
   bool get isActive => _torrentId != null;
 
-  /// Stub for newer settings/serverInfo callers; 9d785cb used TrackerManager only.
-  void configureTrackers(List<String> trackers) {}
+  /// Live tracker list from the server (serverInfo.streamTrackers).
+  List<String> _serverTrackers = const [];
+
+  /// Remember the server's tracker list; added first to every magnet so
+  /// trackerless magnets (most add-on results) find peers without waiting
+  /// on a cold DHT.
+  void configureTrackers(List<String> trackers) {
+    final clean = trackers.map((t) => t.trim()).where((t) => t.isNotEmpty).toList();
+    if (clean.isNotEmpty) _serverTrackers = clean;
+  }
+
+  String _withServerTrackers(String magnet) {
+    var uri = magnet.trim();
+    if (!uri.toLowerCase().startsWith('magnet:')) return uri;
+    for (final tr in _serverTrackers) {
+      final enc = Uri.encodeComponent(tr);
+      if (!uri.contains(enc) && !uri.contains(tr)) uri = '$uri&tr=$enc';
+    }
+    return uri;
+  }
 
   Future<void> prepareTrackers(List<String> serverTrackers) async {
     configureTrackers(serverTrackers);
@@ -126,7 +144,8 @@ class LocalTorrentEngine {
     await _clearSaveDir();
 
     final engine = LibtorrentFlutter.instance;
-    final magnetUri = TrackerManager.injectTrackers(_withPublicTrackers(magnet));
+    final magnetUri =
+        TrackerManager.injectTrackers(_withPublicTrackers(_withServerTrackers(magnet)));
     // streamOnly=false: streamOnly=true zeroes every file priority after
     // metadata, libtorrent marks the torrent "finished", and the session
     // sticks paused (~0 KB/s). Pause ourselves right after metadata instead,

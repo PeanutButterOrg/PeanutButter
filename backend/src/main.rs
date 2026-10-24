@@ -17,6 +17,7 @@ mod stream;
 mod subtitles;
 mod providers;
 mod server_update;
+mod trackers;
 mod updates;
 
 use std::net::SocketAddr;
@@ -231,6 +232,7 @@ async fn main() -> Result<()> {
     // Mirror signed app releases from GitHub for LAN updates.
     updates::spawn_background();
     server_update::spawn_auto(app_state.http.clone(), app_state.streams.clone());
+    trackers::spawn_refresh(app_state.http.clone());
     let listener = TcpListener::bind(addr).await?;
     info!(addr = %addr, "listening");
     axum::serve(

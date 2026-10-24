@@ -50,10 +50,13 @@ class PosterCardPresenter(
         }
         // Don't reset scale while focused — rebind during scroll would flash zoom-out
         if (!root.hasFocus()) {
-            root.animate().cancel()
-            root.scaleX = 1f
-            root.scaleY = 1f
+            root.findViewById<View>(R.id.card_body)?.let { body ->
+                body.animate().cancel()
+                body.scaleX = 1f
+                body.scaleY = 1f
+            }
             root.translationZ = 0f
+            root.findViewById<View>(R.id.poster_frame)?.elevation = 0f
         }
 
         val poster = root.findViewById<ImageView>(R.id.poster)
@@ -174,20 +177,21 @@ class PosterCardPresenter(
          * padding is the gap to the next card, so it is left out of the pivot.
          */
         fun applyCardFocus(card: View, hasFocus: Boolean) {
-            card.pivotX = (card.paddingStart + card.width - card.paddingEnd) / 2f
-            card.pivotY = (card.paddingTop + card.height - card.paddingBottom) / 2f
+            // Scale card_body, not the root: Leanback's focus highlight owns the
+            // root's scale and animates it back to 1.0 (zoom-in → zoom-out glitch).
+            val body = card.findViewById<View>(R.id.card_body) ?: return
             card.translationZ = if (hasFocus) FOCUS_ELEVATION else 0f
             // Lift (shadow) instead of an outline: no stroke on focused cards.
             card.findViewById<View>(R.id.poster_frame)?.elevation =
                 if (hasFocus) FOCUS_ELEVATION else 0f
-            card.animate().cancel()
+            body.animate().cancel()
             val target = if (hasFocus) FOCUS_SCALE else 1f
-            if (kotlin.math.abs(card.scaleX - target) < 0.01f) {
-                card.scaleX = target
-                card.scaleY = target
+            if (kotlin.math.abs(body.scaleX - target) < 0.01f) {
+                body.scaleX = target
+                body.scaleY = target
                 return
             }
-            card.animate().scaleX(target).scaleY(target).setDuration(140).start()
+            body.animate().scaleX(target).scaleY(target).setDuration(140).start()
         }
 
         /** Room a focused card needs past its own edge, for padding around grids. */
