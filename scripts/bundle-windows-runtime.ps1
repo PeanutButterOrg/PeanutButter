@@ -16,19 +16,40 @@ $roots = @(
   "${env:ProgramFiles(x86)}\Microsoft Visual Studio"
 ) | Where-Object { $_ -and (Test-Path $_) }
 
+# Bundle the NEWEST x64 CRT, matching the compiler. Visual Studio keeps old
+# redist folders too (e.g. 14.29 / VC142) and the first one found used to win.
+# Code built with VS 2022 17.10+ initialises std::mutex differently and an
+# older msvcp140.dll (< 14.40) crashes with 0xc0000005 on the first lock:
+# that was the Windows crash when a stream started.
 $crt = $null
-foreach ($root in $roots) {
-  $crt = Get-ChildItem -Path $root -Recurse -Filter "vcruntime140.dll" -ErrorAction SilentlyContinue |
-    Where-Object { $_.FullName -match '\\x64\\Microsoft\.VC\d+\.CRT\\vcruntime140\.dll$' } |
+$candidates = foreach ($root in $roots) {
+  Get-ChildItem -Path $root -Recurse -Filter "msvcp140.dll" -ErrorAction SilentlyContinue |
+    Where-Object {
+      $_.FullName -match '\\x64\\Microsoft\.VC\d+\.CRT\\msvcp140\.dll$' -and
+      $_.FullName -notmatch '\\onecore\\' -and
+      $_.FullName -notmatch 'debug_nonredist'
+    }
+}
+if ($candidates) {
+  $crt = $candidates |
+    Sort-Object { [version]$_.VersionInfo.FileVersionRaw } -Descending |
     Select-Object -First 1
-  if ($null -ne $crt) { break }
 }
 
 if ($null -ne $crt) {
   Copy-Item -Force (Join-Path $crt.DirectoryName "*.dll") $ReleaseDir
-  Write-Host "Bundled VC++ CRT from $($crt.DirectoryName)"
+  Write-Host "Bundled VC++ CRT $($crt.VersionInfo.FileVersionRaw) from $($crt.DirectoryName)"
 } else {
   Write-Warning "Visual C++ CRT folder was not found. The installer will fail on PCs that do not already have the VC++ 2015-2022 x64 redistributable."
+}
+
+$bundled = Join-Path $ReleaseDir "msvcp140.dll"
+if (Test-Path $bundled) {
+  $v = [version](Get-Item $bundled).VersionInfo.FileVersionRaw
+  if ($v -lt [version]"14.40.0.0") {
+    throw "Bundled msvcp140.dll is $v; builds from current Visual Studio need 14.40 or newer (older ones crash in std::mutex)."
+  }
+  Write-Host "msvcp140.dll version check passed ($v)"
 }
 
 $required = @(
