@@ -8,6 +8,10 @@ import com.google.gson.JsonParser
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.async
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -293,6 +297,10 @@ class ApiClient(
         episode: Int? = null,
     ): List<StreamSource> {
         val langs = session.preferredLanguages.toList().ifEmpty { listOf(null) }
+        // live=false is not "cache only": on a cache miss the server already
+        // runs the full Jackett search. Repeating it live whenever that came
+        // back empty doubled the wait for nothing. Only go live when the
+        // cached list is all dead (0 seeders), like the desktop picker.
         val cached = searchLanguages(
             langs = langs,
             query = query,
@@ -302,7 +310,8 @@ class ApiClient(
             episode = episode,
             live = false,
         )
-        if (cached.isNotEmpty()) return cached
+        val looksDead = cached.isNotEmpty() && cached.all { it.seeders <= 0 }
+        if (!looksDead) return cached
         return searchLanguages(
             langs = langs,
             query = query,
@@ -335,23 +344,38 @@ class ApiClient(
         val seen = linkedSetOf<String>()
         val out = ArrayList<StreamSource>()
         var lastError: Exception? = null
-        for (lang in ordered) {
-            val batch = try {
-                streamingSearch(
-                    query = query,
-                    kind = kind,
-                    titleId = titleId,
-                    season = season,
-                    episode = episode,
-                    language = lang,
-                    live = live,
-                )
-            } catch (e: UnauthorizedException) {
-                throw e
-            } catch (e: Exception) {
-                // One language bucket failing (no Hindi hits, etc.) must not
-                // abort English / other languages for the same title.
-                lastError = e
+        // All languages at once (each is a full server search that can take
+        // up to a minute); one after another, two languages took ~2 minutes.
+        val batches = coroutineScope {
+            ordered.map { lang ->
+                async {
+                    try {
+                        Result.success(
+                            streamingSearch(
+                                query = query,
+                                kind = kind,
+                                titleId = titleId,
+                                season = season,
+                                episode = episode,
+                                language = lang,
+                                live = live,
+                            ),
+                        )
+                    } catch (e: UnauthorizedException) {
+                        throw e
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        Result.failure(e)
+                    }
+                }
+            }.awaitAll()
+        }
+        for (result in batches) {
+            // One language bucket failing (no Hindi hits, etc.) must not
+            // abort English / other languages for the same title.
+            val batch = result.getOrElse {
+                lastError = it as? Exception
                 emptyList()
             }
             for (src in batch) {
