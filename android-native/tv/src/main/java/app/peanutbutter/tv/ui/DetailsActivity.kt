@@ -39,12 +39,15 @@ import kotlinx.coroutines.launch
 class DetailsActivity : FragmentActivity() {
     private var item: TitleItem? = null
     private var searching = false
+    private var searchJob: kotlinx.coroutines.Job? = null
     private var playSeason: Int? = null
     private var playEpisode: Int? = null
     private var playEpisodeId: String? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Start the torrent engine while the user reads the page, not after Play.
+        app.peanutbutter.core.TorrentClient.prewarm(this)
         setContentView(R.layout.activity_details)
         val id = intent.getStringExtra(EXTRA_ID).orEmpty()
         setBusy(true)
@@ -72,7 +75,17 @@ class DetailsActivity : FragmentActivity() {
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        if (findViewById<View>(R.id.busy_block).isVisible) return true
+        if (findViewById<View>(R.id.busy_block).isVisible) {
+            // Source searches can take a minute: Back cancels instead of being swallowed.
+            if (event.keyCode == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_UP) {
+                searchJob?.cancel()
+                searchJob = null
+                searching = false
+                setBusy(false)
+                findViewById<View>(R.id.btn_play)?.requestFocus()
+            }
+            return true
+        }
         return super.dispatchKeyEvent(event)
     }
 
@@ -545,7 +558,7 @@ class DetailsActivity : FragmentActivity() {
             (playEpisodeId == null || playEpisodeId == t.episodeId)
         Log.i(TAG, "openSources query=$query season=$season episode=$episode kind=${t.kind} resume=$wantResume")
 
-        lifecycleScope.launch {
+        searchJob = lifecycleScope.launch {
             try {
                 val api = application.asTv().api
                 if (wantResume) {
@@ -619,6 +632,8 @@ class DetailsActivity : FragmentActivity() {
                         }
                     }
                 }
+            } catch (t: kotlinx.coroutines.CancellationException) {
+                throw t
             } catch (t: Throwable) {
                 Log.e(TAG, "openSources failed", t)
                 Toast.makeText(

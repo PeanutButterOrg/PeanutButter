@@ -13,6 +13,7 @@ import java.net.ServerSocket
 import java.net.Socket
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.min
 
 /**
@@ -24,8 +25,20 @@ class StreamHttpServer(
     private val fileIndex: Int,
     private val file: File,
     private val fileSize: Long,
+    /** Called when the player's read position enters a new piece (drives read-ahead). */
+    private val onReadPiece: (Int) -> Unit = {},
 ) {
     private val running = AtomicBoolean(false)
+    /**
+     * The player has one live connection at a time; a seek opens a new one.
+     * Older requests stop waiting as soon as a newer one arrives, so they
+     * don't keep pulling pieces at the old position.
+     */
+    private val generation = AtomicLong(0)
+    @Volatile private var geometry: Geometry? = null
+    @Volatile private var lastReadPiece = -1
+
+    private class Geometry(val pieceLength: Long, val fileOffset: Long, val lastPiece: Int)
     private var serverSocket: ServerSocket? = null
     private val pool = Executors.newCachedThreadPool()
 
@@ -74,8 +87,9 @@ class StreamHttpServer(
                 output.flush()
                 return
             }
+            val gen = generation.incrementAndGet()
             writeHeaders(output, start, end, length, headOnly = false)
-            streamRange(output, start, end)
+            streamRange(output, start, end, gen)
             output.flush()
         } catch (t: Throwable) {
             Log.w(TAG, "client error: ${t.message}")
@@ -84,18 +98,20 @@ class StreamHttpServer(
         }
     }
 
-    private fun streamRange(output: OutputStream, start: Long, end: Long) {
+    private fun streamRange(output: OutputStream, start: Long, end: Long, gen: Long) {
         var pos = start
-        val buf = ByteArray(64 * 1024)
+        val buf = ByteArray(256 * 1024)
         RandomAccessFile(file, "r").use { raf ->
             while (pos <= end && running.get()) {
+                if (gen != generation.get()) throw IOException("superseded by a newer request")
                 // Throws if the bytes never arrive — closing the connection lets the
                 // player retry instead of decoding the zeros of a sparse file.
-                if (!waitForBytes(pos, min(pos + buf.size - 1, end))) {
+                val chunkEnd = min(pos + buf.size - 1, end)
+                if (!waitForBytes(pos, chunkEnd, gen)) {
                     throw IOException("pieces for bytes $pos.. not available yet")
                 }
                 raf.seek(pos)
-                val want = min(buf.size.toLong(), end - pos + 1).toInt()
+                val want = (chunkEnd - pos + 1).toInt()
                 val got = raf.read(buf, 0, want)
                 if (got <= 0) {
                     // File still growing — brief wait then retry.
@@ -108,45 +124,59 @@ class StreamHttpServer(
         }
     }
 
+    private fun geometry(): Geometry? {
+        geometry?.let { return it }
+        val handle = handleProvider()?.takeIf { it.isValid } ?: return null
+        // torrentFile() copies the whole torrent info over JNI: read it once,
+        // not on every chunk (that was a steady GC load during playback).
+        val info = runCatching { handle.torrentFile() }.getOrNull() ?: return null
+        val pieceLength = info.pieceLength().toLong().coerceAtLeast(1)
+        val offset = info.files().fileOffset(fileIndex)
+        val g = Geometry(pieceLength, offset, ((offset + fileSize - 1) / pieceLength).toInt())
+        geometry = g
+        return g
+    }
+
     /** @return true when every piece covering [start]..[end] is on disk. */
-    private fun waitForBytes(start: Long, end: Long): Boolean {
-        val handle = handleProvider()?.takeIf { it.isValid } ?: return false
-        val info = runCatching { handle.torrentFile() }.getOrNull() ?: return false
-        val pieceLength = info.pieceLength().coerceAtLeast(1)
-        val fs = info.files()
-        val fileOffset = fs.fileOffset(fileIndex)
-        val first = ((fileOffset + start) / pieceLength).toInt()
-        val last = ((fileOffset + end) / pieceLength).toInt()
-        val deadline = System.currentTimeMillis() + 120_000L
+    private fun waitForBytes(start: Long, end: Long, gen: Long): Boolean {
+        val g = geometry() ?: return false
+        val first = ((g.fileOffset + start) / g.pieceLength).toInt()
+        val last = ((g.fileOffset + end) / g.pieceLength).toInt().coerceAtMost(g.lastPiece)
+        if (first != lastReadPiece) {
+            lastReadPiece = first
+            runCatching { onReadPiece(first) }
+        }
+        val waitStart = System.currentTimeMillis()
+        val deadline = waitStart + 120_000L
+        var nextUrge = 0L
         while (System.currentTimeMillis() < deadline && running.get()) {
-            val live = handleProvider()?.takeIf { it.isValid } ?: break
+            if (gen != generation.get()) return false
+            val live = handleProvider()?.takeIf { it.isValid } ?: return false
             var missing = false
+            val now = System.currentTimeMillis()
+            val urge = now >= nextUrge
             for (p in first..last) {
                 // Default false — sparse/preallocated files look "present" on disk
                 // even when the piece hasn't arrived; never treat a failed probe as had.
-                val have = runCatching { live.havePiece(p) }.getOrDefault(false)
-                if (!have) {
-                    missing = true
+                if (runCatching { live.havePiece(p) }.getOrDefault(false)) continue
+                missing = true
+                // The player is blocked on this piece: make it the most urgent.
+                // Re-assert every 2 s, not every poll (each priority change
+                // re-sorts libtorrent's piece picker).
+                if (urge) {
                     runCatching {
-                        live.setPieceDeadline(p, 10)
+                        live.setPieceDeadline(p, 0)
                         live.piecePriority(p, org.libtorrent4j.Priority.TOP_PRIORITY)
                     }
                 }
             }
-            // Always warm a few pieces ahead of this read so the next Exo chunk is ready.
-            val warmTo = (last + 8).coerceAtMost(
-                ((fileOffset + fileSize - 1) / pieceLength).toInt(),
-            )
-            for (p in (last + 1)..warmTo) {
-                runCatching {
-                    if (!live.havePiece(p)) {
-                        live.setPieceDeadline(p, 40 + (p - last) * 12)
-                        live.piecePriority(p, org.libtorrent4j.Priority.TOP_PRIORITY)
-                    }
-                }
+            if (!missing) {
+                val waited = now - waitStart
+                if (waited >= 1_000L) AppLog.i(TAG, "player waited ${waited}ms for piece $first")
+                return true
             }
-            if (!missing) return true
-            // Short sleep — Exo is blocked on this read; wake ASAP when pieces land.
+            if (urge) nextUrge = now + 2_000L
+            // Short sleep — the player is blocked on this read; wake ASAP when pieces land.
             Thread.sleep(40)
         }
         return false
@@ -228,17 +258,16 @@ class StreamHttpServer(
 
     private fun parseRange(header: String?, size: Long): Pair<Long, Long> {
         if (size <= 0) return 0L to 0L
-        val defaultChunk = (2L * 1024 * 1024).coerceAtMost(size) - 1
-        if (header.isNullOrBlank() || !header.startsWith("bytes=")) {
-            // No Range → only the first chunk (never the whole file).
-            return 0L to defaultChunk.coerceAtLeast(0L)
-        }
+        // No Range (the player's first request at byte 0) → the whole file,
+        // streamed as pieces arrive. Answering with only 2 MB looked like a
+        // 2 MB file to the player.
+        val whole = 0L to (size - 1)
+        if (header.isNullOrBlank() || !header.startsWith("bytes=")) return whole
         val spec = header.removePrefix("bytes=").substringBefore(',').trim()
         val dash = spec.indexOf('-')
-        if (dash < 0) return 0L to defaultChunk.coerceAtLeast(0L)
+        if (dash < 0) return whole
         val startStr = spec.substring(0, dash)
         val endStr = spec.substring(dash + 1)
-        val openEndedCap = 8L * 1024 * 1024
         return try {
             when {
                 startStr.isEmpty() && endStr.isNotEmpty() -> {
@@ -247,9 +276,11 @@ class StreamHttpServer(
                     start to (size - 1)
                 }
                 startStr.isNotEmpty() && endStr.isEmpty() -> {
-                    val start = startStr.toLong().coerceIn(0, size - 1)
-                    val end = min(start + openEndedCap - 1, size - 1)
-                    start to end
+                    // Serve to the end of the file. Capping this at 8 MB made
+                    // the player read a "short" file: it hit a false end of
+                    // stream every 8 MB (the "Reconnecting…" stops) and closed
+                    // the movie after a few of them.
+                    startStr.toLong().coerceIn(0, size - 1) to (size - 1)
                 }
                 else -> {
                     val start = startStr.toLong().coerceIn(0, size - 1)
@@ -258,7 +289,7 @@ class StreamHttpServer(
                 }
             }
         } catch (_: Exception) {
-            0L to defaultChunk.coerceAtLeast(0L)
+            whole
         }
     }
 

@@ -157,6 +157,29 @@ object TorrentClient {
         }
     }
 
+    private val warmConn = AtomicReference<ServiceConnection?>(null)
+
+    /**
+     * Boot the `:torrent` process early (on the details screen) and keep it
+     * running, so Play doesn't spend ~6 s starting a process and libtorrent,
+     * and the DHT is already warm when the magnet is added.
+     */
+    fun prewarm(context: Context) {
+        if (warmConn.get() != null) return
+        val app = context.applicationContext
+        val conn = object : ServiceConnection {
+            override fun onServiceConnected(name: ComponentName?, service: IBinder?) = Unit
+            override fun onServiceDisconnected(name: ComponentName?) {
+                warmConn.set(null)
+            }
+        }
+        if (!warmConn.compareAndSet(null, conn)) return
+        val ok = runCatching {
+            app.bindService(Intent(app, TorrentService::class.java), conn, Context.BIND_AUTO_CREATE)
+        }.getOrDefault(false)
+        if (!ok) warmConn.set(null)
+    }
+
     fun stop(context: Context, deleteFiles: Boolean = false) {
         val app = context.applicationContext
         val m = messengerRef.getAndSet(null)

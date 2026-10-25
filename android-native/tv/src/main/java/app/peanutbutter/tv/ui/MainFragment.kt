@@ -45,6 +45,22 @@ class MainFragment : RowsSupportFragment() {
         verticalGridView?.isHorizontalScrollBarEnabled = false
         verticalGridView?.overScrollMode = View.OVER_SCROLL_NEVER
         alignFocusedRows()
+        // With a shelf focused, the tall hero row stayed half on screen and its
+        // Details button showed through behind the top bar. Fade it out then.
+        verticalGridView?.addOnChildViewHolderSelectedListener(
+            object : androidx.leanback.widget.OnChildViewHolderSelectedListener() {
+                override fun onChildViewHolderSelected(
+                    parent: androidx.recyclerview.widget.RecyclerView,
+                    child: androidx.recyclerview.widget.RecyclerView.ViewHolder?,
+                    position: Int,
+                    subposition: Int,
+                ) {
+                    val hero = parent.findViewHolderForAdapterPosition(0)?.itemView ?: return
+                    hero.animate().cancel()
+                    hero.animate().alpha(if (position <= 0) 1f else 0f).setDuration(180).start()
+                }
+            },
+        )
         verticalGridView?.setOnChildLaidOutListener { _, child, position, _ ->
             val row = child.findViewById<HorizontalGridView>(androidx.leanback.R.id.row_content)
             row?.keepFocusedItemVisible()

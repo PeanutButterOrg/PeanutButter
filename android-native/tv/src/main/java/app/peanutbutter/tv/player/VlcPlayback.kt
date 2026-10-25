@@ -196,6 +196,18 @@ class VlcPlayback(
         }
     }
 
+    override fun listAudioTracks(): List<Triple<String, String, Boolean>> {
+        val player = mp ?: return emptyList()
+        val current = player.audioTrack
+        return player.audioTracks.orEmpty()
+            .filter { it.id >= 0 } // -1 is "Disable"
+            .map { Triple(it.id.toString(), it.name ?: "Track ${it.id}", it.id == current) }
+    }
+
+    override fun selectAudioTrack(id: String) {
+        id.toIntOrNull()?.let { mp?.setAudioTrack(it) }
+    }
+
     override fun addExternalSubtitle(file: File, label: String, mimeType: String) {
         val player = mp ?: return
         // libvlc_media_slave_type_subtitle == 0; select=true asks VLC to enable it.
