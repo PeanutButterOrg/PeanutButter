@@ -23,6 +23,8 @@ interface PlaybackEngine {
     val isPlaying: Boolean
     /** 0–100 Exo/VLC buffer while opening; used to finish the pre-play progress bar. */
     val bufferedPercent: Int get() = 0
+    /** How far the player has buffered (ms from the start), 0 when unknown. */
+    val bufferedPositionMs: Long get() = 0L
 
     fun bindSubtitles(view: SubtitleView?)
     fun attachTexture(view: TextureView?) {}
@@ -45,6 +47,11 @@ interface PlaybackEngine {
 
     /** `null` turns captions off. */
     fun selectTextTrack(id: String?)
+
+    /** Audio tracks as (id, label, selected). Empty when the engine can't tell. */
+    fun listAudioTracks(): List<Triple<String, String, Boolean>> = emptyList()
+
+    fun selectAudioTrack(id: String) {}
 
     /** Side-load an SRT/VTT/ASS file and show it. */
     fun addExternalSubtitle(file: File, label: String, mimeType: String)

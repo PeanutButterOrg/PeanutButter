@@ -484,6 +484,9 @@ class SearchGridFragment : VerticalGridSupportFragment() {
             gridPresenter = VerticalGridPresenter(FocusHighlight.ZOOM_FACTOR_NONE, false).apply {
                 numberOfColumns = columns
                 shadowEnabled = false
+                // Leanback clips each item to a rounded outline of its cell,
+                // which cut the zoomed focus card (home rows turn it off too).
+                enableChildRoundedCorners(false)
             }
         } else {
             (gridPresenter as? VerticalGridPresenter)?.numberOfColumns = columns

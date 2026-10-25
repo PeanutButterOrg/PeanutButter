@@ -67,6 +67,9 @@ class TvPlayback(
     override val bufferedPercent: Int
         get() = exo.bufferedPercentage.coerceIn(0, 100)
 
+    override val bufferedPositionMs: Long
+        get() = exo.bufferedPosition.coerceAtLeast(0L)
+
     override fun seekTo(positionMs: Long) {
         // Always plain seek. Re-opening the media item mid-stream raced the
         // torrent HTTP server and produced black screens / PlaybackException.
@@ -238,6 +241,44 @@ class TvPlayback(
             .build()
     }
 
+    override fun listAudioTracks(): List<Triple<String, String, Boolean>> {
+        val out = ArrayList<Triple<String, String, Boolean>>()
+        val groups = exo.currentTracks.groups
+        for (gi in groups.indices) {
+            val group = groups[gi]
+            if (group.type != C.TRACK_TYPE_AUDIO) continue
+            for (ti in 0 until group.length) {
+                if (!group.isTrackSupported(ti)) continue
+                val fmt = group.getTrackFormat(ti)
+                val lang = fmt.language?.takeIf { it.isNotBlank() && it != "und" }
+                    ?.let { java.util.Locale.forLanguageTag(it).displayLanguage.ifBlank { it } }
+                val channels = when (fmt.channelCount) {
+                    1 -> "Mono"
+                    2 -> "Stereo"
+                    6 -> "5.1"
+                    8 -> "7.1"
+                    else -> null
+                }
+                val label = listOfNotNull(fmt.label?.takeIf { it.isNotBlank() } ?: lang, channels)
+                    .joinToString(" · ")
+                    .ifBlank { "Track ${out.size + 1}" }
+                out += Triple("$gi:$ti", label, group.isTrackSelected(ti))
+            }
+        }
+        return out
+    }
+
+    override fun selectAudioTrack(id: String) {
+        val parts = id.split(':')
+        val gi = parts.getOrNull(0)?.toIntOrNull() ?: return
+        val ti = parts.getOrNull(1)?.toIntOrNull() ?: return
+        val group = exo.currentTracks.groups.getOrNull(gi) ?: return
+        if (group.type != C.TRACK_TYPE_AUDIO || ti !in 0 until group.length) return
+        exo.trackSelectionParameters = exo.trackSelectionParameters.buildUpon()
+            .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, listOf(ti)))
+            .build()
+    }
+
     override fun addExternalSubtitle(file: File, label: String, mimeType: String) {
         // Never remount the progressive torrent MediaItem — that flash-kills captions
         // and often the video pipeline on BeyondTV. Paint SRT from the playhead instead.
@@ -270,14 +311,26 @@ class TvPlayback(
         val renderers = DefaultRenderersFactory(appContext)
             .setEnableDecoderFallback(true)
             .setExtensionRendererMode(mode)
+        // A real buffer so a slow piece doesn't stop playback. It used to keep
+        // at most 10 s, start with 0.1 s and resume after 0.6 s, so every swarm
+        // hiccup was a visible stall. Bytes are capped by the TV's RAM, so a
+        // 4K remux holds fewer seconds than a 1080p file instead of OOMing.
+        val am = appContext.getSystemService(android.content.Context.ACTIVITY_SERVICE)
+            as android.app.ActivityManager
+        val bufferBytes = if (am.isLowRamDevice || am.memoryClass < 256) {
+            48 * 1024 * 1024
+        } else {
+            96 * 1024 * 1024
+        }
         val load = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
-                /* minBufferMs */ 1_500,
-                /* maxBufferMs */ 10_000,
-                /* bufferForPlaybackMs */ 100,
-                /* bufferForPlaybackAfterRebufferMs */ 600,
+                /* minBufferMs */ 20_000,
+                /* maxBufferMs */ 60_000,
+                /* bufferForPlaybackMs */ 2_000,
+                /* bufferForPlaybackAfterRebufferMs */ 5_000,
             )
-            .setPrioritizeTimeOverSizeThresholds(true)
+            .setTargetBufferBytes(bufferBytes)
+            .setPrioritizeTimeOverSizeThresholds(false)
             .build()
         val http = DefaultHttpDataSource.Factory()
             .setAllowCrossProtocolRedirects(true)

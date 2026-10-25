@@ -7,6 +7,15 @@ use serde::Deserialize;
 use crate::error::{AppError, Result};
 use crate::graphql::types::StreamSource;
 
+/// A stream search gets up to a minute of Jackett before the Stremio add-ons
+/// are asked (slow indexers used to be cut at 5–8 s, so Torrentio answered
+/// while Jackett still had results coming). The three passes below add up to
+/// [STREAM_SEARCH_BUDGET]; each still returns early once the picker has enough.
+pub const STREAM_SEARCH_BUDGET: Duration = Duration::from_secs(60);
+const STREAM_TORZNAB_BUDGET: Duration = Duration::from_secs(25);
+const STREAM_INDEXER_BUDGET: Duration = Duration::from_secs(15);
+const STREAM_ALL_BUDGET: Duration = Duration::from_secs(20);
+
 #[derive(Clone)]
 pub struct JackettClient {
     http: reqwest::Client,
@@ -201,9 +210,9 @@ impl JackettClient {
             return Ok(found);
         }
 
-        // Last resort: aggregate search with a short budget (not 75s).
+        // Last resort: aggregate search with what's left of the minute.
         let all = match tokio::time::timeout(
-            Duration::from_secs(18),
+            STREAM_ALL_BUDGET,
             self.search_all_results(&q, kind, preferred_resolution, preferred_language),
         )
         .await
@@ -231,7 +240,7 @@ impl JackettClient {
         for cat in kind_category_ids(kind) {
             req = req.query(&[("Category", cat.to_string())]);
         }
-        let res = match tokio::time::timeout(Duration::from_secs(18), req.send()).await {
+        let res = match tokio::time::timeout(STREAM_ALL_BUDGET, req.send()).await {
             Ok(Ok(res)) => res,
             Ok(Err(e)) => return Err(self.redact_err(e)),
             Err(_) => {
@@ -379,7 +388,7 @@ impl JackettClient {
             let target = target.clone();
             set.spawn(async move {
                 let result = tokio::time::timeout(
-                    Duration::from_secs(8),
+                    STREAM_TORZNAB_BUDGET,
                     this.search_torznab_one(&id, caps.as_ref(), &target, &kind, season, episode),
                 )
                 .await;
@@ -657,7 +666,7 @@ impl JackettClient {
             let kind2 = kind.to_string();
             set.spawn(async move {
                 let result = tokio::time::timeout(
-                    Duration::from_secs(5),
+                    STREAM_INDEXER_BUDGET,
                     this.search_one_indexer(&id, &q, &kind2),
                 )
                 .await;

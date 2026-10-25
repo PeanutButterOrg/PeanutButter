@@ -64,6 +64,8 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
     private var seasonNum: Int? = null
     private var episodeNum: Int? = null
     private var resumeMs: Long = 0
+    /** Position the current media was opened at; a reopen before playback starts reuses it. */
+    private var openStartMs: Long = 0
     private var waitJob: Job? = null
     private var statusPollJob: Job? = null
     private var stopped = false
@@ -93,6 +95,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
     private var btnNext: TextView? = null
     private var btnSubs: TextView? = null
     private var btnAspect: TextView? = null
+    private var btnAudio: TextView? = null
     private var leaveDialog: AlertDialog? = null
 
     private var segments: List<MediaSegment> = emptyList()
@@ -162,6 +165,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         overlayActions?.bringToFront()
         btnSubs = findViewById(R.id.btn_subs)
         btnAspect = findViewById(R.id.btn_aspect)
+        btnAudio = findViewById(R.id.btn_audio)
 
         // Cover first — avoid black frame while torrent/player wake up.
         posterHud?.isVisible = true
@@ -230,6 +234,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         btnNext?.setOnClickListener { pulseAction(btnNext) { playNextEpisode() } }
         btnSubs?.setOnClickListener { pulseAction(btnSubs) { openSubtitles() } }
         btnAspect?.setOnClickListener { pulseAction(btnAspect) { openAspect() } }
+        btnAudio?.setOnClickListener { pulseAction(btnAudio) { openAudio() } }
         listOfNotNull(btnSkip, btnNext).forEach { chip ->
             chip.setOnFocusChangeListener { v, hasFocus ->
                 v.animate().cancel()
@@ -249,7 +254,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             }
         })
 
-        listOfNotNull(btnRew, btnPlay, btnFf, btnAspect, btnSubs, seek, btnSkip, btnNext).forEach {
+        listOfNotNull(btnRew, btnPlay, btnFf, btnAspect, btnAudio, btnSubs, seek, btnSkip, btnNext).forEach {
             it.isFocusable = true
             it.isFocusableInTouchMode = true
         }
@@ -496,7 +501,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             streamOpened && session.downloadMbps < 0.05 && !exoBuffering ->
                 "Playing"
             streamOpened && session.downloadMbps >= 0.05 ->
-                getString(R.string.playing_with_speed, bufPct.coerceIn(0, 100), session.downloadMbps)
+                playingLine(session.downloadMbps, session.peers)
             !streamOpened && (ready || hasSwarm || bufPct > 0) ->
                 prePlayBufferLine(
                     pct = bufPct.coerceAtLeast(1).coerceIn(0, 99),
@@ -533,6 +538,21 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         }
     }
 
+    /**
+     * "Playing · 1.2 MB/s · 48 peers · 35 s buffered". The old line showed the
+     * player's buffer as a share of the whole film, which read "0% buffered".
+     */
+    private fun playingLine(downloadMbps: Double, peers: Int): String {
+        val mp = player
+        val aheadS = if (mp != null) ((mp.bufferedPositionMs - mp.time) / 1000L).coerceAtLeast(0L) else 0L
+        return buildString {
+            append("Playing")
+            if (downloadMbps >= 0.05) append(String.format("  ·  %.1f MB/s", downloadMbps))
+            if (peers > 0) append("  ·  $peers peers")
+            if (aheadS > 0) append("  ·  ${aheadS}s buffered")
+        }
+    }
+
     private fun underrunBufferLine(downloadMbps: Double): String =
         if (downloadMbps >= 0.05) {
             String.format("Buffering… · %.1f MB/s", downloadMbps)
@@ -545,7 +565,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         return when {
             streamOpened && exoBuffering -> underrunBufferLine(downloadMbps)
             streamOpened && downloadMbps >= 0.05 ->
-                getString(R.string.playing_with_speed, pct, downloadMbps)
+                playingLine(downloadMbps, peers)
             else ->
                 prePlayBufferLine(pct.coerceAtLeast(1), downloadMbps, peers)
         }
@@ -854,7 +874,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                 session.downloadMbps < 0.02
         } == true && (lastKnownDurationMs <= 0 || lastGoodPosMs >= lastKnownDurationMs * 0.85)
         // Only treat as false EOF while the torrent is still downloading mid-file.
-        if (isStream && !nearEnd && !downloadDone && falseEofCount < 8) {
+        if (isStream && !nearEnd && !downloadDone && falseEofCount < 20) {
             falseEofCount++
             val recover = lastGoodPosMs.coerceAtLeast(0)
             Log.w(TAG, "false EOF #$falseEofCount — resume at $recover (len=$len)")
@@ -870,6 +890,16 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                     mp.play()
                 }
             }, 600L)
+            return
+        }
+        if (isStream && !nearEnd && !downloadDone) {
+            // Still mid-file after many reconnects: never close the movie on a
+            // false end. Keep the player open so OK / Play retries from here.
+            Log.w(TAG, "false EOF limit reached at $pos (len=$len) — staying open")
+            statusView?.text = getString(R.string.playback_error)
+            busy?.isVisible = false
+            saveWatchProgress(force = true)
+            showChrome()
             return
         }
         statusView?.text = "Ended"
@@ -993,8 +1023,15 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         try {
             Log.i(TAG, "attachAndPlay hw=$hwDecode $url")
             mp.attachSurface(findViewById(R.id.surface))
-            val start = resumeMs
+            // A reopen (stuck start, decoder fallback) must keep the resume point:
+            // it used to restart the movie from 0:00.
+            val start = when {
+                resumeMs > 0 -> resumeMs
+                lastGoodPosMs > 2_000L -> lastGoodPosMs
+                else -> openStartMs
+            }
             resumeMs = 0
+            openStartMs = start
             // If torrent start() already targeted resumeMs, do not soft-seek again
             // with a guessed duration (that yanked playhead 205→55 in logs).
             if (localTorrent && start > 2_000L && !torrentStartedWithResume && lastKnownDurationMs > 0) {
@@ -1415,6 +1452,9 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         if (pos > lastGoodPosMs) lastGoodPosMs = pos
         if (len > 0) {
             seek?.progress = ((pos.toDouble() / len) * SEEK_MAX).toInt().coerceIn(0, SEEK_MAX)
+            // Lighter track = what the player already has, like desktop.
+            val buffered = mp.bufferedPositionMs.coerceIn(pos, len)
+            seek?.secondaryProgress = ((buffered.toDouble() / len) * SEEK_MAX).toInt().coerceIn(0, SEEK_MAX)
             timeDur?.text = formatMs(len)
         } else {
             timeDur?.text = "--:--"
@@ -1537,6 +1577,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         chromeTop?.alpha = 1f
         btnAspect?.isVisible = false
         btnSubs?.isVisible = false
+        btnAudio?.isVisible = false
         chromeBottom?.isVisible = false
         topProgress?.isVisible = true
         posterHud?.isVisible = true
@@ -1555,6 +1596,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             chromeBottom?.isVisible = true
             btnAspect?.isVisible = true
             btnSubs?.isVisible = true
+            btnAudio?.isVisible = hasAltAudio()
             // Only fade in when coming from hidden — never reset alpha to 0 first.
             val topA = chromeTop?.alpha ?: 0f
             val botA = chromeBottom?.alpha ?: 0f
@@ -1576,6 +1618,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             }?.start()
             btnAspect?.isVisible = false
             btnSubs?.isVisible = false
+            btnAudio?.isVisible = false
         }
         syncActionChipVisibility()
         syncSubtitlePad()
@@ -1687,7 +1730,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         val focus = currentFocus
         val onActionChip = focus === btnSkip || focus === btnNext
         val onTransport = focus === btnPlay || focus === btnRew || focus === btnFf ||
-            focus === btnAspect || focus === btnSubs || focus === seek
+            focus === btnAspect || focus === btnAudio || focus === btnSubs || focus === seek
 
         // Skip / Next are their own layer — never force the full transport bar.
         if (onActionChip) {
@@ -1845,6 +1888,26 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             .show()
     }
 
+    /** Only offer the Audio chip when there's a real choice. */
+    private fun hasAltAudio(): Boolean = (player?.listAudioTracks()?.size ?: 0) > 1
+
+    private fun openAudio() {
+        showChrome()
+        val tracks = player?.listAudioTracks().orEmpty()
+        if (tracks.isEmpty()) return
+        AlertDialog.Builder(this)
+            .setTitle(R.string.audio_title)
+            .setSingleChoiceItems(
+                tracks.map { it.second }.toTypedArray(),
+                tracks.indexOfFirst { it.third }.coerceAtLeast(0),
+            ) { dialog, which ->
+                player?.selectAudioTrack(tracks[which].first)
+                dialog.dismiss()
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
     private fun openSubtitles() {
         showChrome()
         val app = application.asTv()
@@ -1936,7 +1999,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         private const val TAG = "PlayerActivity"
         private const val SEEK_MAX = 1000
         /** Exo stuck in BUFFERING this long before the first frame → reopen. */
-        private const val PRE_PLAY_REOPEN_MS = 25_000L
+        private const val PRE_PLAY_REOPEN_MS = 45_000L
         const val EXTRA_URL = "url"
         const val EXTRA_TITLE = "title"
         const val EXTRA_SESSION = "session"

@@ -109,8 +109,19 @@ fun VerticalGridView.pinPosterGrid() {
         if (lp is FrameLayout.LayoutParams) lp.gravity = Gravity.START or Gravity.TOP
         layoutParams = lp
     }
-    (parent as? ViewGroup)?.apply {
-        clipChildren = false
-        clipToPadding = false
+    // A focused card grows past its cell. Leanback nests the grid in several
+    // frames (grid dock, browse frame, fragment root…) and any one of them
+    // still clipping cut the zoomed card at the screen edge or under the
+    // title, so unclip the whole chain like the home screen does.
+    unclipAncestors()
+}
+
+/** Let a zoomed child draw past this view and every parent up to the window. */
+fun View.unclipAncestors() {
+    var p: ViewGroup? = this as? ViewGroup ?: parent as? ViewGroup
+    while (p != null) {
+        p.clipChildren = false
+        p.clipToPadding = false
+        p = p.parent as? ViewGroup
     }
 }

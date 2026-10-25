@@ -165,4 +165,7 @@
     <string name="update_check">Check for updates (version %1$s)</string>
     <string name="update_install_failed">Update failed: %1$s</string>
     <string name="update_signature_conflict">This update is signed with the new release key. Uninstall PeanutButter once, then install the new APK manually. Later updates will install normally.</string>
+    <string name="finding_sources">Finding sources…\nPress Back to cancel</string>
+    <string name="audio_button">Audio</string>
+    <string name="audio_title">Audio track</string>
 </resources>

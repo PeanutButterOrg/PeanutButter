@@ -319,5 +319,16 @@
             android:layout_height="wrap_content"
             android:layout_gravity="center"
             android:indeterminateTint="@color/pb_seed" />
+
+        <TextView
+            android:id="@+id/busy_label"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:layout_marginTop="64dp"
+            android:gravity="center"
+            android:text="@string/finding_sources"
+            android:textColor="#E6FFFFFF"
+            android:textSize="18sp" />
     </FrameLayout>
 </FrameLayout>
