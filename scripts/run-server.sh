@@ -15,6 +15,13 @@ COMPOSE=(docker compose -f docker-compose.server.yml)
 IMAGE="peanutbutter-api:0.2.0"
 TAG="0.2.0"
 
+# Newest vX.Y.Z tag (without the v), stamped into the API so its console
+# compares the real version with the latest release. Without it every local
+# build reported Cargo.toml's version and always offered an update.
+release_version() {
+  git -C "$ROOT" describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null | sed 's/^v//'
+}
+
 do_down=0
 do_rebuild=0
 do_save=0
@@ -47,7 +54,7 @@ build_args=(build)
 if [[ "$do_rebuild" -eq 1 ]]; then
   build_args+=(--no-cache)
 fi
-build_args+=(-t "$IMAGE" ./backend)
+build_args+=(--build-arg "PB_VERSION=$(release_version)" -t "$IMAGE" ./backend)
 
 echo "==> Building $IMAGE"
 docker "${build_args[@]}"

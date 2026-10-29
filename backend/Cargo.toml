@@ -1,6 +1,6 @@
 [package]
 name = "peanutbutter"
-version = "0.2.0"
+version = "0.3.5"
 edition = "2021"
 description = "Self-hosted media catalog API (TMDB / OMDb / AniList metadata)"
 license = "MIT"

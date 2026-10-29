@@ -145,9 +145,16 @@ wait_health() {
   fi
 }
 
+# Newest vX.Y.Z tag (without the v), stamped into the API so its console
+# compares the real version with the latest release. Without it every local
+# build reported Cargo.toml's version and always offered an update.
+release_version() {
+  git -C "$ROOT" describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null | sed 's/^v//'
+}
+
 build_image() {
   local no_cache="${1:-0}"
-  local args=(build -t "$IMAGE")
+  local args=(build --build-arg "PB_VERSION=$(release_version)" -t "$IMAGE")
   if [[ "$no_cache" -eq 1 ]]; then
     args+=(--no-cache)
   fi
@@ -322,7 +329,7 @@ remote_push() {
     "$ROOT/" "${host}:${remote_dir}/"
 
   echo "==> Building $IMAGE locally (this is the slow step — once)"
-  (cd "$ROOT" && docker build -t "$IMAGE" ./backend)
+  (cd "$ROOT" && docker build --build-arg "PB_VERSION=$(release_version)" -t "$IMAGE" ./backend)
 
   echo "==> Transferring image → $host (docker save | ssh load)"
   docker save "$IMAGE" | gzip -1 | ssh -o BatchMode=yes "$host" \
