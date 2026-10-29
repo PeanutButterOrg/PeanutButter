@@ -16,6 +16,7 @@ import '../graphql/client.dart';
 import '../graphql/queries.dart';
 import '../local_torrent.dart';
 import '../models.dart';
+import '../torrent_file_picker.dart';
 import '../platform/device_profile.dart';
 import '../platform/input_policy.dart';
 import '../platform/stream_seek_controller.dart';
@@ -43,6 +44,7 @@ class _NextEpisodeTarget {
     required this.catalogTitle,
     required this.kind,
     this.isNextSeason = false,
+    this.fileEpisode,
   });
 
   final int season;
@@ -52,6 +54,7 @@ class _NextEpisodeTarget {
   final String catalogTitle;
   final String kind;
   final bool isNextSeason;
+  final int? fileEpisode;
 }
 
 class PlayerScreen extends ConsumerStatefulWidget {
@@ -74,6 +77,7 @@ class PlayerScreen extends ConsumerStatefulWidget {
     this.magnet,
     this.localTorrent = false,
     this.streamFileIndex,
+    this.fileEpisode,
     this.listedSeeders = 0,
     this.listedPeers = 0,
     this.catalogTitle,
@@ -100,6 +104,8 @@ class PlayerScreen extends ConsumerStatefulWidget {
   final bool localTorrent;
   /// Explicit file inside a multi-file torrent / season pack.
   final int? streamFileIndex;
+  /// The episode number releases use when the catalog numbers it differently.
+  final int? fileEpisode;
   final int listedSeeders;
   final int listedPeers;
   /// Clean series/movie name for Jackett / play-next (not the SxxExx label).
@@ -1577,6 +1583,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
           catalogTitle: catalogTitle,
           kind: kind,
           isNextSeason: isNextSeason,
+          fileEpisode: releaseEpisode(episodeTitles(seasons), nextSeasonNum, nextEp.episodeNumber),
         );
       });
     } catch (_) {}
@@ -1790,7 +1797,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         kind: next.kind,
         titleId: widget.titleId,
         season: next.season,
-        episode: next.episode,
+        // Search and pick the file by the release's own number.
+        episode: next.fileEpisode ?? next.episode,
         preferredLanguages: ref.read(serverInfoProvider).valueOrNull?.preferredLanguages ??
             ref.read(settingsProvider).preferredLanguages,
         preferResume: false,
@@ -1812,6 +1820,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
               'episodeId': next.episodeId,
               'season': next.season,
               'episode': next.episode,
+              'fileEpisode': next.fileEpisode,
               'startMs': 0,
               'isStream': true,
               'sessionId': s.session.id,
@@ -1853,6 +1862,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
           'episodeId': next.episodeId,
           'season': next.season,
           'episode': next.episode,
+          'fileEpisode': next.fileEpisode,
           'startMs': 0,
           'isStream': true,
           'sessionId': started.session.id,
@@ -2177,7 +2187,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         final handle = await LocalTorrentEngine.instance.start(
           magnet: magnet,
           season: widget.season,
-          episode: widget.episode,
+          episode: widget.fileEpisode ?? widget.episode,
           fileIndex: widget.streamFileIndex,
           onStats: (local) {
             if (!mounted) return;

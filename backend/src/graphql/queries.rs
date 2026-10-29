@@ -817,10 +817,21 @@ impl Query {
             .into());
         }
         let files = state.streams.list_files(&magnet).await?;
+        let by_name: Vec<bool> = files
+            .iter()
+            .map(|f| matches_episode_name(&f.name, season, episode))
+            .collect();
+        // No name says S01E07: trust the add-on's pick (`so=` in the magnet).
+        let hint = if by_name.iter().any(|m| *m) {
+            None
+        } else {
+            selected_file_index(&magnet)
+        };
         let mut out: Vec<TorrentFile> = files
             .into_iter()
-            .map(|f| {
-                let recommended = matches_episode_name(&f.name, season, episode);
+            .zip(by_name)
+            .map(|(f, named)| {
+                let recommended = named || hint == Some(f.index);
                 TorrentFile {
                     index: f.index as i32,
                     name: f.name,
@@ -1275,10 +1286,17 @@ fn matches_episode_name(name: &str, season: Option<i32>, episode: Option<i32>) -
     let (Some(season), Some(episode)) = (season, episode) else {
         return false;
     };
-    let n = name.to_ascii_lowercase().replace(|c: char| !c.is_ascii_alphanumeric(), "");
-    let tag = format!("s{:02}e{:02}", season, episode);
-    let alt = format!("{}x{:02}", season, episode);
-    n.contains(&tag) || n.contains(&alt)
+    crate::stream::matches_episode(name, season, episode)
+}
+
+/// BEP 53 `so=` (select-only) file index in a magnet, set from add-ons' fileIdx.
+fn selected_file_index(magnet: &str) -> Option<usize> {
+    let query = magnet.split_once('?')?.1;
+    query
+        .split('&')
+        .find_map(|p| p.strip_prefix("so="))
+        .and_then(|v| v.split([',', '-']).next())
+        .and_then(|v| v.parse().ok())
 }
 
 /// Drop confirmed-dead rows, but never wipe the whole Jackett result set.

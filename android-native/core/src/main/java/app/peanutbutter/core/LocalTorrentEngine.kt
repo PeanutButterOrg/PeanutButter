@@ -37,6 +37,9 @@ object LocalTorrentEngine {
     private const val TAG = "LocalTorrent"
     /** Seconds of video kept downloading ahead of the player's read position. */
     private const val READAHEAD_SECONDS = 90.0
+    private const val URGENT_BYTES = 8L * 1024 * 1024
+    private const val START_BYTES = 4L * 1024 * 1024
+    private const val RESUME_BACK_BYTES = 8L * 1024 * 1024
     /** Fallback when the server hasn't sent its live list (serverInfo.streamTrackers). */
     private val publicTrackers = listOf(
         "udp://tracker.opentrackr.org:1337/announce",
@@ -75,6 +78,7 @@ object LocalTorrentEngine {
     @Volatile private var streamPieceLength: Long = 0
     @Volatile private var streamFirstPiece = 0
     @Volatile private var streamLastPiece = -1
+    @Volatile private var streamNumPieces = 0
     @Volatile private var readaheadFrom = -1
 
     val isSupported: Boolean get() = !nativeUnavailable
@@ -206,7 +210,7 @@ object LocalTorrentEngine {
 
         metadataLatch.set(false)
         // Keep magnet lean — stuffing dozens of trackers has crashed native on ARM TV.
-        val magnetUri = slimMagnet(magnet.trim())
+        val magnetUri = slimMagnet(TorrentFilePicker.withoutSelection(magnet.trim()))
         AppLog.i(TAG, "download() len=${magnetUri.length}")
         try {
             sm.download(magnetUri, dir, torrent_flags_t())
@@ -255,7 +259,7 @@ object LocalTorrentEngine {
             }
         AppLog.i(TAG, "torrent info files=${info.numFiles()} pieceLength=${info.pieceLength()}")
         val chosen = fileIndex?.takeIf { it in 0 until info.numFiles() }
-            ?: pickFile(info, season, episode)
+            ?: pickFile(info, season, episode, TorrentFilePicker.selectedIndex(magnet))
             ?: run {
                 stop(deleteFiles = false)
                 throw IllegalStateException("This source doesn’t contain a playable video file. Try another result.")
@@ -263,11 +267,20 @@ object LocalTorrentEngine {
         fileIndexRef.set(chosen)
         AppLog.i(TAG, "chosen file index=$chosen name=${runCatching { info.files().fileName(chosen) }.getOrNull()}")
 
+        // Only this file's pieces are wanted (the rest of a season pack is
+        // never downloaded). Set per piece, not with prioritizeFiles(): that
+        // one is applied later on the disk thread and then resets every piece
+        // of the file to its priority, wiping the head / playhead deadlines
+        // below (the first piece took 35 s while 57 MB of the file arrived).
         runCatching {
-            val priorities = Priority.array(Priority.IGNORE, info.numFiles())
-            priorities[chosen] = Priority.TOP_PRIORITY
-            handle.prioritizeFiles(priorities)
-        }.onFailure { AppLog.e(TAG, "prioritizeFiles failed", it) }
+            val fsAll = info.files()
+            val len = info.pieceLength().toLong().coerceAtLeast(1)
+            val from = (fsAll.fileOffset(chosen) / len).toInt()
+            val to = ((fsAll.fileOffset(chosen) + fsAll.fileSize(chosen) - 1) / len).toInt()
+            val prios = Priority.array(Priority.IGNORE, info.numPieces())
+            for (p in from..to) prios[p] = Priority.LOW
+            handle.prioritizePieces(prios)
+        }.onFailure { AppLog.e(TAG, "select file pieces failed", it) }
         // Deadlines (not sequential_download) drive streaming — sequential fights
         // playhead seeks and fills 0→resume (libtorrent streaming docs).
         runCatching { handle.unsetFlags(TorrentFlags.SEQUENTIAL_DOWNLOAD) }
@@ -281,6 +294,7 @@ object LocalTorrentEngine {
         streamPieceLength = pieceLength.toLong()
         streamFirstPiece = firstPiece
         streamLastPiece = lastPiece
+        streamNumPieces = info.numPieces()
         readaheadFrom = -1
         noteDuration(fileSize, durationMs)
 
@@ -298,7 +312,9 @@ object LocalTorrentEngine {
             0.0
         }
         val playPiece = if (wantResume) {
-            ((fs.fileOffset(chosen) + (fileSize * resumeRatio).toLong()) / pieceLength)
+            // The player resumes from the keyframe before the position, so
+            // start ~8 MB early: a guess just past it cost a second piece wait.
+            ((fs.fileOffset(chosen) + (fileSize * resumeRatio).toLong() - RESUME_BACK_BYTES) / pieceLength)
                 .toInt()
                 .coerceIn(firstPiece, lastPiece)
         } else {
@@ -348,7 +364,10 @@ object LocalTorrentEngine {
                 val p = lastPiece - i
                 if (p < playPiece + playWindow) break
                 runCatching {
-                    handle.setPieceDeadline(p, 300 + i * 100)
+                    // The player reads this index before its first frame (it
+                    // waited 11 s for it when it was low priority): right
+                    // after the head piece.
+                    handle.setPieceDeadline(p, 100 + i * 100)
                     handle.piecePriority(p, Priority.TOP_PRIORITY)
                 }
             }
@@ -366,11 +385,7 @@ object LocalTorrentEngine {
 
         // Ready when playhead has a contiguous head — not when 0→resume is filled.
         // Need enough for Exo to open + first decode without a post-100% stall.
-        val minPlayContiguous = when {
-            pieceLength >= 1_000_000 -> 2
-            pieceLength >= 512_000 -> 3
-            else -> 4
-        }.coerceAtMost(playWindow)
+        val minPlayContiguous = startPieces(pieceLength.toLong()).coerceAtMost(playWindow)
         // On resume the playhead piece is a guess from the duration, so don't
         // hold the start for several of them: open once the head is in and let
         // the player's real reads steer the window.
@@ -473,6 +488,15 @@ object LocalTorrentEngine {
                     torrentComplete = complete,
                 )
                 onStats?.invoke(stats)
+                val now = System.currentTimeMillis()
+                if (now - lastStartLogMs >= 3_000L) {
+                    lastStartLogMs = now
+                    AppLog.i(
+                        TAG,
+                        "starting peers=${stats.peers} seeds=${stats.seeders} rate=%.2fMB/s head=$headHave/$minHeadContiguous play=$playHave/$minPlayContiguous"
+                            .format(rate),
+                    )
+                }
                 if (headReady) {
                     AppLog.i(
                         TAG,
@@ -506,6 +530,7 @@ object LocalTorrentEngine {
             file = videoFile,
             fileSize = fileSize,
             onReadPiece = { piece -> liveHandle(sm)?.let { readaheadAt(it, piece) } },
+            onSeek = { piece -> liveHandle(sm)?.let { jumpTo(it, piece) } },
         )
         server.start()
         httpServer.set(server)
@@ -604,11 +629,7 @@ object LocalTorrentEngine {
         val last = ((fs.fileOffset(idx) + fileSize - 1) / pieceLength).toInt()
         val from = if (lastSoftPiece >= 0) lastSoftPiece.coerceIn(first, last) else first
         // Match startup gate: enough contiguous playhead for Exo to open.
-        val needPieces = when {
-            pieceLength >= 1_000_000 -> 2
-            pieceLength >= 512_000 -> 3
-            else -> 4
-        }.coerceAtMost(last - from + 1).coerceAtLeast(1)
+        val needPieces = startPieces(pieceLength.toLong()).coerceAtMost(last - from + 1).coerceAtLeast(1)
         val needBytes = needPieces.toDouble() * pieceLength
         var haveBytes = 0.0
         var p = from
@@ -683,45 +704,13 @@ object LocalTorrentEngine {
             // (libtorrent streaming docs + libtorrent_flutter).
             runCatching { handle.unsetFlags(TorrentFlags.SEQUENTIAL_DOWNLOAD) }
             if (aggressive) {
-                runCatching { handle.clearPieceDeadlines() }
-                val prios = Priority.array(Priority.DEFAULT, info.numPieces())
-                // Drop the gap behind the new playhead so bandwidth isn't wasted.
-                val headKeep = ((2L * 1024 * 1024) / pieceLength).toInt().coerceIn(1, 2)
-                // The target piece is estimated from position / duration; keep
-                // ~32 MB before it wanted (LOW) in case the real byte is earlier.
-                val margin = ((32L * 1024 * 1024) / pieceLength).toInt()
-                for (p in firstFile until piece.coerceAtMost(last + 1)) {
-                    if (p in prios.indices) {
-                        prios[p] = if (p >= piece - margin) Priority.LOW else Priority.IGNORE
-                    }
-                }
-                for (i in 0 until headKeep) {
-                    val p = firstFile + i
-                    if (p in prios.indices && p <= last) prios[p] = Priority.TOP_PRIORITY
-                }
-                val window = windowPieces(pieceLength.toLong())
-                for (i in 0 until window) {
-                    val p = piece + i
-                    if (p > last || p !in prios.indices) break
-                    prios[p] = Priority.TOP_PRIORITY
-                }
-                // Far future: wanted but not urgent (keeps st.progress honest).
-                for (p in (piece + window).coerceAtMost(last + 1)..last) {
-                    if (p in prios.indices) prios[p] = Priority.LOW
-                }
-                // Keep the container index at the tail (MKV cues / MP4 moov).
-                for (i in 0 until 2) {
-                    val p = last - i
-                    if (p >= piece + window && p in prios.indices) prios[p] = Priority.TOP_PRIORITY
-                }
-                runCatching { handle.prioritizePieces(prios) }
-                lastSoftPiece = piece
-                readaheadAt(handle, piece, force = true)
-                for (i in 0 until headKeep) {
-                    val p = firstFile + i
-                    if (p > last || p >= piece) break
-                    handle.setPieceDeadline(p, 3 + i * 6)
-                }
+                // Once the player streams over HTTP, its next Range request
+                // names the exact byte and moves the window there (jumpTo).
+                // Doing it here from position / duration guessed the wrong
+                // place and kept the old window downloading.
+                // Free the player's stuck read so its new request comes now.
+                httpServer.get()?.abortWaiting()
+                if (httpServer.get() == null) jumpTo(handle, piece)
             } else {
                 // Soft playhead nudge: refresh the read-ahead deadlines only.
                 if (lastSoftPiece < 0 || kotlin.math.abs(piece - lastSoftPiece) >= 3) {
@@ -766,6 +755,7 @@ object LocalTorrentEngine {
         streamReadyLatched = false
         bytesPerSec = 0.0
         streamLastPiece = -1
+        streamNumPieces = 0
         readaheadFrom = -1
         if (handle != null && handle.isValid && sm != null) {
             try {
@@ -811,6 +801,7 @@ object LocalTorrentEngine {
     }
 
     @Volatile private var lastHealthLogMs = 0L
+    private var lastStartLogMs = 0L
 
     /** Every 10 s while streaming: speed, peers and how much is ready past the reader. */
     private fun logStreamHealth(handle: TorrentHandle, st: org.libtorrent4j.TorrentStatus) {
@@ -823,12 +814,31 @@ object LocalTorrentEngine {
         var ahead = 0
         while (from + ahead <= last && runCatching { handle.havePiece(from + ahead) }.getOrDefault(false)) ahead++
         val secs = ahead * streamPieceLength / planBytesPerSec()
+        // Pieces being fetched right now: shows whether bandwidth is at the reader.
+        val inFlight = runCatching {
+            handle.getDownloadQueue().map { it.pieceIndex() }.sorted().take(12).joinToString(",")
+        }.getOrDefault("?")
         AppLog.i(
             TAG,
-            "health rate=%.2fMB/s peers=%d seeds=%d reader=%d ready_ahead=%d pieces (~%.0fs)".format(
-                st.downloadPayloadRate() / 1048576.0, st.numPeers(), st.numSeeds(), from, ahead, secs,
+            "health rate=%.2fMB/s peers=%d seeds=%d reader=%d ready_ahead=%d pieces (~%.0fs) fetching=[%s]".format(
+                st.downloadPayloadRate() / 1048576.0, st.numPeers(), st.numSeeds(), from, ahead, secs, inFlight,
             ),
         )
+    }
+
+    /**
+     * Pieces the player needs at the playhead before it opens: about 4 MB,
+     * at least one piece. Counting pieces alone made a 64 MB-piece torrent
+     * wait for 128 MB (minutes on a slow swarm) before the first frame.
+     */
+    private fun startPieces(pieceLength: Long): Int {
+        val byBytes = ((START_BYTES + pieceLength - 1) / pieceLength.coerceAtLeast(1)).toInt()
+        val cap = when {
+            pieceLength >= 1_000_000 -> 2
+            pieceLength >= 512_000 -> 3
+            else -> 4
+        }
+        return byBytes.coerceIn(1, cap)
     }
 
     private fun noteDuration(fileSize: Long, durationMs: Long) {
@@ -848,6 +858,31 @@ object LocalTorrentEngine {
     }
 
     /**
+     * The player jumped to [piece]: drop the old window and download from
+     * there. Pieces behind the playhead and every other file in the torrent
+     * are off (a season pack downloads only this episode); the window ahead
+     * is urgent and the rest of the file after it fills in slowly.
+     */
+    private fun jumpTo(handle: TorrentHandle, piece: Int) {
+        val first = streamFirstPiece
+        val last = streamLastPiece
+        val total = streamNumPieces
+        if (last < 0 || total <= last) return
+        val from = piece.coerceIn(first, last)
+        runCatching { handle.clearPieceDeadlines() }
+        val window = windowPieces(streamPieceLength)
+        val prios = Priority.array(Priority.IGNORE, total)
+        for (p in from..last) {
+            prios[p] = if (p < from + window) Priority.FIVE else Priority.LOW
+        }
+        runCatching { handle.prioritizePieces(prios) }
+        lastSoftPiece = from
+        readaheadAt(handle, from, force = true)
+        runCatching { handle.resume() }
+        AppLog.i(TAG, "jump to piece $from (window $window of $last)")
+    }
+
+    /**
      * Keep a sliding window of pieces wanted ahead of [piece] (the player's
      * read position). Each deadline is about half the time playback needs to
      * reach that piece, so the next piece is always the most urgent and later
@@ -862,13 +897,24 @@ object LocalTorrentEngine {
         readaheadFrom = from
         val msPerPiece = pieceLength * 1000.0 / planBytesPerSec()
         val n = windowPieces(pieceLength)
+        // Only the next ~8 MB get deadlines and top priority, so every peer
+        // works on the piece the player needs next. With deadlines on the
+        // whole window, peers spread over 9+ pieces and a 4 MB piece took
+        // 10 s at 2.6 MB/s after a seek. The rest of the window is still
+        // wanted, just behind those.
+        val urgent = (URGENT_BYTES / pieceLength).toInt().coerceAtLeast(2)
         for (i in 0 until n) {
             val p = from + i
             if (p > last) break
             if (runCatching { handle.havePiece(p) }.getOrDefault(false)) continue
             runCatching {
-                handle.setPieceDeadline(p, (i * msPerPiece * 0.5).toInt())
-                handle.piecePriority(p, Priority.TOP_PRIORITY)
+                if (i < urgent) {
+                    handle.setPieceDeadline(p, (i * msPerPiece * 0.5).toInt())
+                    handle.piecePriority(p, Priority.TOP_PRIORITY)
+                } else {
+                    handle.resetPieceDeadline(p)
+                    handle.piecePriority(p, Priority.FIVE)
+                }
             }
         }
     }
@@ -909,34 +955,15 @@ object LocalTorrentEngine {
         return uri
     }
 
-    private fun pickFile(info: TorrentInfo, season: Int?, episode: Int?): Int? {
+    private fun pickFile(info: TorrentInfo, season: Int?, episode: Int?, hint: Int?): Int? {
         val fs = info.files()
-        val videoExt = setOf(
-            "mkv", "mp4", "m4v", "mov", "avi", "webm", "ts", "m2ts", "mts",
-            "mpeg", "mpg", "vob", "flv", "wmv", "ogv", "3gp",
-        )
-        fun isVideo(i: Int): Boolean {
-            val name = fs.fileName(i).lowercase()
-            val ext = name.substringAfterLast('.', "")
-            return ext in videoExt
+        val entries = (0 until info.numFiles()).map { i ->
+            // Full path, so "Season 1/05 - Title.mkv" packs match too.
+            TorrentFilePicker.Entry(i, runCatching { fs.filePath(i) }.getOrElse { fs.fileName(i) }, fs.fileSize(i))
         }
-        var videos = (0 until info.numFiles()).filter(::isVideo)
-        if (videos.isEmpty()) return if (info.numFiles() > 0) 0 else null
-        videos = videos.filter { i ->
-            val h = " ${fs.fileName(i).lowercase().replace(Regex("[^a-z0-9]+"), " ")} "
-            !h.contains(" sample ") && !h.contains(" trailer ")
-        }.ifEmpty { (0 until info.numFiles()).filter(::isVideo) }
-
-        if (season != null && episode != null) {
-            val tag = "s${season.toString().padStart(2, '0')}e${episode.toString().padStart(2, '0')}"
-            val hits = videos.filter { i ->
-                val n = fs.fileName(i).lowercase().replace(Regex("[^a-z0-9]+"), "")
-                n.contains(tag) || n.contains("${season}x${episode.toString().padStart(2, '0')}")
-            }
-            if (hits.isNotEmpty()) videos = hits
-        }
-        return videos.maxByOrNull { fs.fileSize(it) }
+        return TorrentFilePicker.pick(entries, season, episode, hint)
     }
+
     /**
      * Same peer and piece tuning as the desktop engine (torrent_bridge.cpp).
      * On libtorrent's defaults the TV announced to one tracker, opened 30

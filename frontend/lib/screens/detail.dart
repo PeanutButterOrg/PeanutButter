@@ -8,6 +8,7 @@ import 'package:graphql_flutter/graphql_flutter.dart';
 
 import '../graphql/queries.dart';
 import '../models.dart';
+import '../torrent_file_picker.dart';
 import '../providers/catalog.dart';
 import '../providers/settings.dart';
 import '../theme.dart';
@@ -312,6 +313,12 @@ class _DetailBodyState extends ConsumerState<_DetailBody> {
           : (preferResume ?? (startMs == null ? resume : startMs > 0));
       final showPicker = forceBeginning || !wantResume;
 
+      // Releases may number the episode differently (Samurai Jack's S01E07
+      // is "IX"): search and pick the file by the number they use.
+      final fileEpisode = season != null && episode != null
+          ? releaseEpisode(episodeTitles(item.seasons), season, episode)
+          : null;
+
       void openPlayer(StreamStart started) {
         if (!context.mounted) return;
         final queryTitle = (season != null && episode != null)
@@ -330,6 +337,7 @@ class _DetailBodyState extends ConsumerState<_DetailBody> {
           'episodeId': episodeId ?? item.userState?.episodeId,
           'season': season,
           'episode': episode,
+          'fileEpisode': fileEpisode,
           'startMs': seek,
           'isStream': true,
           'sessionId': started.session.id,
@@ -354,7 +362,7 @@ class _DetailBodyState extends ConsumerState<_DetailBody> {
         kind: item.kind,
         titleId: item.id,
         season: season,
-        episode: episode,
+        episode: fileEpisode ?? episode,
         preferredLanguages: ref.read(serverInfoProvider).valueOrNull?.preferredLanguages ??
             ref.read(settingsProvider).preferredLanguages,
         preferResume: wantResume,

@@ -5,6 +5,8 @@ import 'package:flutter/foundation.dart';
 import 'package:libtorrent_flutter/libtorrent_flutter.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'torrent_file_picker.dart';
+
 /// Device-side streaming. Backend only supplies magnets / metadata.
 class LocalTorrentEngine {
   LocalTorrentEngine._();
@@ -145,7 +147,8 @@ class LocalTorrentEngine {
 
     final engine = LibtorrentFlutter.instance;
     final magnetUri =
-        TrackerManager.injectTrackers(_withPublicTrackers(_withServerTrackers(magnet)));
+        TrackerManager.injectTrackers(
+        _withPublicTrackers(_withServerTrackers(withoutFileSelection(magnet))));
     // streamOnly=false: streamOnly=true zeroes every file priority after
     // metadata, libtorrent marks the torrent "finished", and the session
     // sticks paused (~0 KB/s). Pause ourselves right after metadata instead,
@@ -198,7 +201,8 @@ class LocalTorrentEngine {
       // then resume() atomically. An extra pause left the torrent "finished"
       // (wanted=0) and stalled peer connections for minutes on Linux.
 
-      final chosen = fileIndex ?? _pickFile(files, season: season, episode: episode);
+      final chosen = fileIndex ??
+          _pickFile(files, season: season, episode: episode, hint: selectedFileIndex(magnet));
       if (chosen == null) {
         await stop();
         throw 'This source doesn’t contain a playable video file. Try another result.';
@@ -557,36 +561,16 @@ class LocalTorrentEngine {
     }
   }
 
-  int? _pickFile(List<FileInfo> files, {int? season, int? episode}) {
-    const videoExt = {'mkv', 'mp4', 'avi', 'webm', 'mov', 'm4v'};
-    bool isVideo(FileInfo f) {
-      final name = f.name.toLowerCase();
-      final ext = name.contains('.') ? name.split('.').last : '';
-      return videoExt.contains(ext) || f.isStreamable;
-    }
-
-    var videos = files.where(isVideo).toList();
-    if (videos.isEmpty) return files.isEmpty ? null : files.first.index;
-
-    videos = videos.where((f) {
-      final h = ' ${f.name.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), ' ')} ';
-      return !h.contains(' sample ') && !h.contains(' trailer ');
-    }).toList();
-    if (videos.isEmpty) {
-      videos = files.where(isVideo).toList();
-    }
-
-    if (season != null && episode != null) {
-      final tag = 's${season.toString().padLeft(2, '0')}e${episode.toString().padLeft(2, '0')}';
-      final hits = videos.where((f) {
-        final n = f.name.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '');
-        return n.contains(tag) || n.contains('${season}x${episode.toString().padLeft(2, '0')}');
-      }).toList();
-      if (hits.isNotEmpty) videos = hits;
-    }
-
-    videos.sort((a, b) => b.size.compareTo(a.size));
-    return videos.first.index;
+  int? _pickFile(List<FileInfo> files, {int? season, int? episode, int? hint}) {
+    return pickTorrentFile(
+      [
+        // Full path, so "Season 1/05 - Title.mkv" packs match too.
+        for (final f in files) PickEntry(f.index, f.path.isNotEmpty ? f.path : f.name, f.size),
+      ],
+      season: season,
+      episode: episode,
+      hint: hint,
+    );
   }
 }
 

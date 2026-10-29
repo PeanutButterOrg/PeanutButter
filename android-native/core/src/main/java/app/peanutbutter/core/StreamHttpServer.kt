@@ -27,6 +27,8 @@ class StreamHttpServer(
     private val fileSize: Long,
     /** Called when the player's read position enters a new piece (drives read-ahead). */
     private val onReadPiece: (Int) -> Unit = {},
+    /** The player jumped to another part of the file (seek or resume). */
+    private val onSeek: (Int) -> Unit = {},
 ) {
     private val running = AtomicBoolean(false)
     /**
@@ -37,6 +39,11 @@ class StreamHttpServer(
     private val generation = AtomicLong(0)
     @Volatile private var geometry: Geometry? = null
     @Volatile private var lastReadPiece = -1
+    /** Where the player's reading stands (byte after the last one sent). */
+    @Volatile private var servedPos = -1L
+    @Volatile private var startedAtMs = 0L
+    /** Bumped when the user seeks: requests stuck waiting for a piece give up. */
+    private val abortWaits = AtomicLong(0)
 
     private class Geometry(val pieceLength: Long, val fileOffset: Long, val lastPiece: Int)
     private var serverSocket: ServerSocket? = null
@@ -48,6 +55,7 @@ class StreamHttpServer(
 
     fun start() {
         if (running.getAndSet(true)) return
+        startedAtMs = System.currentTimeMillis()
         val ss = ServerSocket(0, 8, InetAddress.getByName("127.0.0.1"))
         serverSocket = ss
         url = "http://127.0.0.1:${ss.localPort}/stream"
@@ -62,6 +70,15 @@ class StreamHttpServer(
             }
         }
         Log.i(TAG, "HTTP stream listening on $url")
+    }
+
+    /**
+     * The user seeks: end requests blocked on a missing piece now. The player
+     * only sends the new request once the old read returns, which cost
+     * seconds per seek while the old piece was still downloading.
+     */
+    fun abortWaiting() {
+        abortWaits.incrementAndGet()
     }
 
     fun stopQuietly() {
@@ -88,17 +105,45 @@ class StreamHttpServer(
                 return
             }
             val gen = generation.incrementAndGet()
+            // Container index reads (MKV cues / MP4 moov at the end, while the
+            // player opens the file) are not where playback is, so they don't
+            // move the download. Later reads there are real seeks (credits).
+            val tail = start >= fileSize - TAIL_BYTES &&
+                System.currentTimeMillis() - startedAtMs < INDEX_READ_MS
+            if (!tail) noteJump(start)
             writeHeaders(output, start, end, length, headOnly = false)
-            streamRange(output, start, end, gen)
+            streamRange(output, start, end, gen, tail)
             output.flush()
         } catch (t: Throwable) {
             Log.w(TAG, "client error: ${t.message}")
+            // Reset, not a clean close: a response cut short with a normal
+            // close reads as end of file to the player (a false "ended").
+            runCatching { socket.setSoLinger(true, 0) }
         } finally {
             runCatching { socket.close() }
         }
     }
 
-    private fun streamRange(output: OutputStream, start: Long, end: Long, gen: Long) {
+    /**
+     * A request far from where the player was reading is a seek. Its byte is
+     * exact, unlike a guess from position / duration, so the download window
+     * jumps straight there.
+     */
+    private fun noteJump(start: Long) {
+        val prev = servedPos
+        // The player re-reads the file head while opening: not a seek, and
+        // moving the window there would drop the real one.
+        if (start < JUMP_BYTES) return
+        val jumped = prev < 0 || kotlin.math.abs(start - prev) > JUMP_BYTES
+        if (!jumped) return
+        val g = geometry() ?: return
+        val piece = ((g.fileOffset + start) / g.pieceLength).toInt().coerceAtMost(g.lastPiece)
+        AppLog.i(TAG, "seek detected ${prev / 1048576}MB -> ${start / 1048576}MB (piece $piece)")
+        lastReadPiece = piece
+        runCatching { onSeek(piece) }
+    }
+
+    private fun streamRange(output: OutputStream, start: Long, end: Long, gen: Long, tail: Boolean) {
         var pos = start
         val buf = ByteArray(256 * 1024)
         RandomAccessFile(file, "r").use { raf ->
@@ -120,6 +165,7 @@ class StreamHttpServer(
                 }
                 output.write(buf, 0, got)
                 pos += got
+                if (!tail) servedPos = pos
             }
         }
     }
@@ -147,10 +193,11 @@ class StreamHttpServer(
             runCatching { onReadPiece(first) }
         }
         val waitStart = System.currentTimeMillis()
+        val abortAt = abortWaits.get()
         val deadline = waitStart + 120_000L
         var nextUrge = 0L
         while (System.currentTimeMillis() < deadline && running.get()) {
-            if (gen != generation.get()) return false
+            if (gen != generation.get() || abortWaits.get() != abortAt) return false
             val live = handleProvider()?.takeIf { it.isValid } ?: return false
             var missing = false
             val now = System.currentTimeMillis()
@@ -295,5 +342,9 @@ class StreamHttpServer(
 
     companion object {
         private const val TAG = "StreamHttp"
+        private const val TAIL_BYTES = 16L * 1024 * 1024
+        private const val JUMP_BYTES = 8L * 1024 * 1024
+        /** Index reads at the file's end happen while the player opens it. */
+        private const val INDEX_READ_MS = 20_000L
     }
 }

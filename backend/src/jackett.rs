@@ -1049,7 +1049,7 @@ pub fn torrent_matches_episode(title: &str, season: i32, episode: i32) -> bool {
         return false;
     }
     let Ok(re) = regex::Regex::new(&format!(
-        r"(?i)(?:^|[^a-z0-9])(?:s0*{season}e0*{episode}|0*{season}x0*{episode}|season[ ._-]*0*{season}[ ._-]*(?:episode[ ._-]*)?0*{episode})(?:[^0-9]|$)"
+        r"(?i)(?:^|[^a-z0-9])(?:s0*{season}[ ._-]?e0*{episode}|0*{season}x0*{episode}|season[ ._-]*0*{season}[ ._-]*(?:episode[ ._-]*)?0*{episode})(?:[^0-9]|$)"
     )) else {
         return false;
     };
@@ -1870,6 +1870,9 @@ mod tests {
         assert!(super::torrent_matches_episode("Show Name 2x05 BluRay", 2, 5));
         assert!(!super::torrent_matches_episode("Show.Name.S02E15.1080p", 2, 5));
         assert!(!super::torrent_matches_episode("Show.Name.S12E05.1080p", 2, 5));
+        assert!(super::torrent_matches_episode("Show S02 E05 x", 2, 5));
+        assert!(!super::torrent_matches_episode("Show.S02E10.mkv", 2, 1));
+        assert!(!super::torrent_matches_episode("Show.12x05.mkv", 2, 5));
     }
 
     #[test]

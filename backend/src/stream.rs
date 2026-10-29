@@ -1254,17 +1254,9 @@ fn is_junk_video(name: &str, len: u64) -> bool {
     len > 0 && len < MIN_PLAYABLE_BYTES
 }
 
-fn episode_token(season: i32, episode: i32) -> String {
-    format!("s{season:02}e{episode:02}")
-}
-
-fn matches_episode(name: &str, season: i32, episode: i32) -> bool {
-    let h = padded_name(name).replace(' ', "");
-    h.contains(&episode_token(season, episode))
-        || h.contains(&format!("s{season}e{episode:02}"))
-        || h.contains(&format!("s{season:02}e{episode}"))
-        || h.contains(&format!("{season}x{episode:02}"))
-        || h.contains(&format!("{season}x{episode}"))
+pub(crate) fn matches_episode(name: &str, season: i32, episode: i32) -> bool {
+    // Bounded: E1 must not match E10, nor 1x07 match 11x07.
+    crate::jackett::torrent_matches_episode(name, season, episode)
 }
 
 fn resolution_score(name: &str, preferred: &str) -> i32 {

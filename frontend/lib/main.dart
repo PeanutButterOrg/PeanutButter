@@ -229,6 +229,7 @@ GoRouter _buildRouter(SettingsState Function() readSettings) {
               magnet: extra['magnet'] as String?,
               localTorrent: extra['localTorrent'] as bool? ?? false,
               streamFileIndex: extra['streamFileIndex'] as int?,
+              fileEpisode: extra['fileEpisode'] as int?,
               listedSeeders: extra['listedSeeders'] as int? ?? 0,
               listedPeers: extra['listedPeers'] as int? ?? 0,
               catalogTitle: extra['catalogTitle'] as String?,

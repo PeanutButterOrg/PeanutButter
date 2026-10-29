@@ -658,10 +658,14 @@ Future<StreamStart?> _showStreamingPickerDialogs({
             .whereType<Map<String, dynamic>>()
             .map(TorrentFileOption.fromJson)
             .toList();
+        final matches = files.where((f) => f.recommended).toList();
         if (files.isEmpty) {
           fileIndex = null;
         } else if (files.length == 1) {
           fileIndex = files.first.index;
+        } else if (matches.length == 1) {
+          // The pack names this episode exactly: play it, no file list.
+          fileIndex = matches.first.index;
         } else {
           if (!context.mounted) return null;
           files.sort((a, b) {
@@ -892,7 +896,11 @@ class _TvStreamingPickerPageState extends State<_TvStreamingPickerPage> {
               .whereType<Map<String, dynamic>>()
               .map(TorrentFileOption.fromJson)
               .toList();
-          if (files.length > 1) {
+          final matches = files.where((f) => f.recommended).toList();
+          if (files.length > 1 && matches.length == 1) {
+            // The pack names this episode exactly: play it, no file list.
+            fileIndex = matches.first.index;
+          } else if (files.length > 1) {
             files.sort((a, b) {
               if (a.recommended != b.recommended) return a.recommended ? -1 : 1;
               return b.sizeBytes.compareTo(a.sizeBytes);

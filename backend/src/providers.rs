@@ -246,6 +246,9 @@ struct StreamsResponse {
 struct AddonStream {
     #[serde(default, rename = "infoHash")]
     info_hash: Option<String>,
+    /// Which file in the torrent is this episode / movie (season packs).
+    #[serde(default, rename = "fileIdx")]
+    file_idx: Option<u32>,
     #[serde(default)]
     title: Option<String>,
     #[serde(default)]
@@ -344,6 +347,7 @@ fn to_source(s: AddonStream, addon: &str, kind: &str, preferred_language: &str) 
         .iter()
         .filter_map(|src| src.strip_prefix("tracker:").map(str::to_string))
         .collect();
+    let file_idx = s.file_idx;
     crate::jackett::external_source(
         &release,
         &hash,
@@ -354,6 +358,14 @@ fn to_source(s: AddonStream, addon: &str, kind: &str, preferred_language: &str) 
         kind,
         preferred_language,
     )
+    .map(|mut src| {
+        // BEP 53 select-only: apps read it to play the exact file of a
+        // season pack (and libtorrent itself skips the other files).
+        if let Some(i) = file_idx {
+            src.magnet.push_str(&format!("&so={i}"));
+        }
+        src
+    })
 }
 
 fn number_after(text: &str, marker: &str) -> Option<u64> {
@@ -435,6 +447,7 @@ mod tests {
         }))
         .unwrap();
         let src = to_source(s, "Torrentio", "movie", "").expect("kept");
+        assert!(src.magnet.ends_with("&so=0"), "{}", src.magnet);
         assert_eq!(src.seeders, 214);
         assert_eq!(src.health, "excellent");
         assert_eq!(src.size, "12.3 GB");

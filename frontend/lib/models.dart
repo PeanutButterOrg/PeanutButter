@@ -1045,3 +1045,10 @@ class MediaSegment {
     return target.clamp(0, durationMs);
   }
 }
+
+/// Season number → (episode number → title), for [releaseEpisode].
+Map<int, Map<int, String?>> episodeTitles(List<Season> seasons) => {
+      for (final s in seasons)
+        if (s.seasonNumber > 0)
+          s.seasonNumber: {for (final e in s.episodes) e.episodeNumber: e.name},
+    };
