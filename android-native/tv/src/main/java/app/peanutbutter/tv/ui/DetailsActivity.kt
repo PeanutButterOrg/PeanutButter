@@ -28,6 +28,7 @@ import app.peanutbutter.core.Season
 import app.peanutbutter.core.StreamQuality
 import app.peanutbutter.core.StreamSource
 import app.peanutbutter.core.TitleItem
+import app.peanutbutter.core.TorrentFilePicker
 import app.peanutbutter.core.seriesPlayTarget
 import app.peanutbutter.tv.PbGlide
 import app.peanutbutter.tv.R
@@ -549,8 +550,15 @@ class DetailsActivity : FragmentActivity() {
             }
         }
 
-        val query = if (season != null && episode != null) {
-            String.format("%s S%02dE%02d", t.displayTitle, season, episode)
+        // Releases may number the episode differently (see releaseEpisode):
+        // search for the number they use.
+        val searchEpisode = if (season != null && episode != null) {
+            TorrentFilePicker.releaseEpisode(t.seasons, season, episode) ?: episode
+        } else {
+            episode
+        }
+        val query = if (season != null && searchEpisode != null) {
+            String.format("%s S%02dE%02d", t.displayTitle, season, searchEpisode)
         } else {
             t.displayTitle
         }
@@ -586,7 +594,7 @@ class DetailsActivity : FragmentActivity() {
                     kind = t.kind.ifBlank { "MOVIE" },
                     titleId = t.id,
                     season = season,
-                    episode = episode,
+                    episode = searchEpisode,
                 )
                 val sources = StreamQuality.rankSources(
                     raw,
@@ -598,7 +606,12 @@ class DetailsActivity : FragmentActivity() {
                 }
                 SourcesDialog.show(
                     supportFragmentManager,
-                    query,
+                    // The episode the user chose, even when the search used the release's number.
+                    if (season != null && episode != null) {
+                        String.format("%s S%02dE%02d", t.displayTitle, season, episode)
+                    } else {
+                        query
+                    },
                     sources,
                     onRefresh = {
                         val live = api.streamingSearch(
@@ -606,7 +619,7 @@ class DetailsActivity : FragmentActivity() {
                             kind = t.kind.ifBlank { "MOVIE" },
                             titleId = t.id,
                             season = season,
-                            episode = episode,
+                            episode = searchEpisode,
                             live = true,
                         )
                         StreamQuality.rankSources(
@@ -688,6 +701,14 @@ class DetailsActivity : FragmentActivity() {
                     .putExtra(PlayerActivity.EXTRA_KIND, t.kind)
                     .putExtra(PlayerActivity.EXTRA_SEASON, season ?: -1)
                     .putExtra(PlayerActivity.EXTRA_EPISODE, episode ?: -1)
+                    .putExtra(
+                        PlayerActivity.EXTRA_FILE_EPISODE,
+                        if (season != null && episode != null) {
+                            TorrentFilePicker.releaseEpisode(t.seasons, season, episode) ?: -1
+                        } else {
+                            -1
+                        },
+                    )
                     .putExtra(PlayerActivity.EXTRA_RESUME_MS, seek)
                     .putExtra(
                         PlayerActivity.EXTRA_DURATION_MS,

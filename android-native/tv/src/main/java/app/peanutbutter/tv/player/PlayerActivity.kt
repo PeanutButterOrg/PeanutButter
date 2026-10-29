@@ -18,6 +18,7 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.core.view.isVisible
+import androidx.core.widget.doAfterTextChanged
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.lifecycleScope
 import app.peanutbutter.core.AppLog
@@ -29,6 +30,8 @@ import app.peanutbutter.core.StreamQuality
 import app.peanutbutter.core.TitleItem
 import app.peanutbutter.core.StreamSession
 import app.peanutbutter.core.TorrentClient
+import app.peanutbutter.core.TorrentFilePicker
+import app.peanutbutter.tv.ui.showRoundListDialog
 import app.peanutbutter.tv.PbGlide
 import app.peanutbutter.tv.R
 import app.peanutbutter.tv.asTv
@@ -76,6 +79,8 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
     private var localTorrent = false
     private var magnet: String? = null
     private var fileIndex: Int? = null
+    /** The episode number the release uses, when the catalog numbers it differently. */
+    private var fileEpisode: Int? = null
 
     private var titleView: TextView? = null
     private var statusView: TextView? = null
@@ -93,9 +98,11 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
     private var overlayActions: View? = null
     private var btnSkip: TextView? = null
     private var btnNext: TextView? = null
-    private var btnSubs: TextView? = null
-    private var btnAspect: TextView? = null
-    private var btnAudio: TextView? = null
+    private var btnSubs: View? = null
+    private var btnAspect: View? = null
+    private var btnAudio: View? = null
+    /** Speed / peers / buffer chip above the transport (desktop player's chip). */
+    private var statsChip: TextView? = null
     private var leaveDialog: AlertDialog? = null
 
     private var segments: List<MediaSegment> = emptyList()
@@ -166,6 +173,9 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         btnSubs = findViewById(R.id.btn_subs)
         btnAspect = findViewById(R.id.btn_aspect)
         btnAudio = findViewById(R.id.btn_audio)
+        statsChip = findViewById(R.id.stats_chip)
+        // Every status update also feeds the chip shown while playing.
+        statusView?.doAfterTextChanged { statsChip?.text = it }
 
         // Cover first — avoid black frame while torrent/player wake up.
         posterHud?.isVisible = true
@@ -194,6 +204,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         lastKnownDurationMs = intent.getLongExtra(EXTRA_DURATION_MS, 0L).coerceAtLeast(0)
         magnet = intent.getStringExtra(EXTRA_MAGNET)
         fileIndex = intent.getIntExtra(EXTRA_FILE_INDEX, -1).takeIf { it >= 0 }
+        fileEpisode = intent.getIntExtra(EXTRA_FILE_EPISODE, -1).takeIf { it > 0 }
         localTorrent = intent.getBooleanExtra(EXTRA_LOCAL, false) ||
             sessionId?.startsWith("local-") == true ||
             rawUrl?.contains("127.0.0.1") == true
@@ -338,7 +349,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
     }
 
     private suspend fun startLocalTorrentAndPlay(magnetUri: String) {
-        AppLog.i(TAG, "startLocalTorrent season=$seasonNum episode=$episodeNum")
+        AppLog.i(TAG, "startLocalTorrent season=$seasonNum episode=$episodeNum fileEpisode=$fileEpisode")
         statusView?.text = getString(R.string.finding_peers)
         busy?.isVisible = true
         topProgress?.isVisible = true
@@ -350,7 +361,8 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                     context = this@PlayerActivity,
                     magnet = magnetUri,
                     season = seasonNum,
-                    episode = episodeNum,
+                    // Picks the file: the release's number when it differs.
+                    episode = fileEpisode ?: episodeNum,
                     fileIndex = fileIndex,
                     resumeMs = resumeMs,
                     durationMs = lastKnownDurationMs,
@@ -1135,6 +1147,11 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                     )
                 }
                 segments = segs
+                AppLog.i(
+                    TAG,
+                    "segments title=$tid s=$seasonNum e=$episodeNum kind=$kind dur=$dur -> " +
+                        segs.joinToString { "${it.kind} ${it.startMs}-${it.endMs}" }.ifEmpty { "none" },
+                )
                 if (segs.isEmpty() && !haveDuration) segmentsLoaded = false
             } catch (e: Exception) {
                 Log.w(TAG, "mediaSegments failed", e)
@@ -1168,12 +1185,18 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             ?.filter { it.episodeNumber > episode }
             ?.minByOrNull { it.episodeNumber }
         if (later != null) {
-            return NextEpisode(season, later.episodeNumber, later.id, item.displayTitle, item.kind, item.posterUrl, item.backdropUrl)
+            return NextEpisode(
+                season, later.episodeNumber, later.id, item.displayTitle, item.kind, item.posterUrl, item.backdropUrl,
+                TorrentFilePicker.releaseEpisode(item.seasons, season, later.episodeNumber),
+            )
         }
         for (s in seasons) {
             if (s.seasonNumber <= season) continue
             val first = s.episodes.filter { it.episodeNumber > 0 }.minByOrNull { it.episodeNumber } ?: continue
-            return NextEpisode(s.seasonNumber, first.episodeNumber, first.id, item.displayTitle, item.kind, item.posterUrl, item.backdropUrl)
+            return NextEpisode(
+                s.seasonNumber, first.episodeNumber, first.id, item.displayTitle, item.kind, item.posterUrl, item.backdropUrl,
+                TorrentFilePicker.releaseEpisode(item.seasons, s.seasonNumber, first.episodeNumber),
+            )
         }
         return null
     }
@@ -1293,26 +1316,27 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         btnPlay?.nextFocusUpId = if (actionId != View.NO_ID) actionId else R.id.seek
         btnRew?.nextFocusUpId = if (actionId != View.NO_ID) actionId else R.id.seek
         btnFf?.nextFocusUpId = if (actionId != View.NO_ID) actionId else R.id.seek
-        btnFf?.nextFocusRightId = if (actionId != View.NO_ID) actionId else View.NO_ID
+        // Skip / Next sit bottom-left: reached by Left from the transport.
+        btnFf?.nextFocusRightId = View.NO_ID
         btnRew?.nextFocusLeftId = if (actionId != View.NO_ID) actionId else View.NO_ID
         seek?.nextFocusUpId = when {
             skipVisible -> R.id.btn_skip
             nextVisible -> R.id.btn_next
-            else -> R.id.btn_aspect
+            else -> R.id.btn_subs
         }
         if (skipVisible) {
             btnSkip?.nextFocusDownId = if (chromeVisible) R.id.seek else View.NO_ID
-            btnSkip?.nextFocusLeftId = if (chromeVisible) R.id.btn_ff else View.NO_ID
+            btnSkip?.nextFocusRightId = if (chromeVisible) R.id.btn_rew else View.NO_ID
             btnSkip?.nextFocusUpId = if (chromeVisible) R.id.btn_subs else View.NO_ID
-            btnSkip?.nextFocusRightId = View.NO_ID
+            btnSkip?.nextFocusLeftId = View.NO_ID
         }
         if (nextVisible) {
             btnNext?.nextFocusDownId = if (chromeVisible) R.id.seek else View.NO_ID
-            btnNext?.nextFocusLeftId = if (chromeVisible) R.id.btn_ff else View.NO_ID
+            btnNext?.nextFocusRightId = if (chromeVisible) R.id.btn_rew else View.NO_ID
             btnNext?.nextFocusUpId = if (skipVisible) R.id.btn_skip else {
                 if (chromeVisible) R.id.btn_subs else View.NO_ID
             }
-            btnNext?.nextFocusRightId = View.NO_ID
+            btnNext?.nextFocusLeftId = View.NO_ID
         }
     }
 
@@ -1324,11 +1348,11 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         val overlay = overlayActions ?: return
         val lp = overlay.layoutParams as? FrameLayout.LayoutParams ?: return
         val d = resources.displayMetrics.density
-        lp.gravity = android.view.Gravity.BOTTOM or android.view.Gravity.END
-        // Sit above the transport when it's up; otherwise float just above the safe edge.
-        lp.bottomMargin = ((if (chromeUp) 168 else 48) * d).toInt()
-        lp.marginEnd = (48 * d).toInt()
-        lp.marginStart = 0
+        // Bottom-left like the desktop player; above the transport when it's up.
+        lp.gravity = android.view.Gravity.BOTTOM or android.view.Gravity.START
+        lp.bottomMargin = ((if (chromeUp) 176 else 48) * d).toInt()
+        lp.marginStart = (48 * d).toInt()
+        lp.marginEnd = 0
         overlay.layoutParams = lp
         overlay.bringToFront()
         overlay.alpha = 1f
@@ -1355,7 +1379,9 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                 maybeWipeStreamCache()
                 val api = application.asTv().api
                 val label = String.format("%s S%02dE%02d", next.catalogTitle, next.season, next.episode)
-                val raw = api.lookupSources(label, next.kind, tid, next.season, next.episode)
+                val searchEp = next.fileEpisode ?: next.episode
+                val query = String.format("%s S%02dE%02d", next.catalogTitle, next.season, searchEp)
+                val raw = api.lookupSources(query, next.kind, tid, next.season, searchEp)
                 val source = StreamQuality.rankSources(raw, application.asTv().session.preferredQuality).firstOrNull()
                 if (source == null) {
                     Toast.makeText(this@PlayerActivity, R.string.no_sources, Toast.LENGTH_LONG).show()
@@ -1379,6 +1405,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                         .putExtra(EXTRA_KIND, next.kind)
                         .putExtra(EXTRA_SEASON, next.season)
                         .putExtra(EXTRA_EPISODE, next.episode)
+                        .putExtra(EXTRA_FILE_EPISODE, next.fileEpisode ?: -1)
                         .putExtra(EXTRA_RESUME_MS, 0L),
                 )
                 finish()
@@ -1625,6 +1652,10 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
     }
 
     private fun syncActionChipVisibility() {
+        // Title only on top once playing; live status moves to the chip.
+        statusView?.isVisible = !streamOpened
+        statsChip?.isVisible = streamOpened && isStream && chromeVisible &&
+            !statsChip?.text.isNullOrBlank()
         overlayActions?.bringToFront()
         overlayActions?.alpha = 1f
         if (btnSkip?.isVisible == true) btnSkip?.alpha = 1f
@@ -1735,10 +1766,13 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         // Skip / Next are their own layer — never force the full transport bar.
         if (onActionChip) {
             scheduleHideChrome()
-            if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT || keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
+            // The chips sit bottom-left: Right goes to the transport.
+            if (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT || keyCode == KeyEvent.KEYCODE_DPAD_DOWN ||
+                keyCode == KeyEvent.KEYCODE_DPAD_LEFT
+            ) {
                 if (chromeVisible) {
                     when (keyCode) {
-                        KeyEvent.KEYCODE_DPAD_LEFT -> btnFf?.requestFocus()
+                        KeyEvent.KEYCODE_DPAD_RIGHT -> btnRew?.requestFocus()
                         KeyEvent.KEYCODE_DPAD_DOWN -> seek?.requestFocus()
                     }
                     return true
@@ -1772,21 +1806,22 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             )
         ) {
             showChrome()
-            if (keyCode == KeyEvent.KEYCODE_DPAD_UP || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) {
+            // Skip / Play Next sit bottom-left: Up from the transport, or Left
+            // from Rewind, reaches them.
+            val toChip = (keyCode == KeyEvent.KEYCODE_DPAD_UP &&
+                (focus === btnPlay || focus === btnRew || focus === btnFf || focus === seek)) ||
+                (keyCode == KeyEvent.KEYCODE_DPAD_LEFT && focus === btnRew)
+            if (toChip) {
                 when {
-                    btnSkip?.isVisible == true &&
-                        (focus === btnPlay || focus === btnRew || focus === btnFf ||
-                            focus === seek || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT && focus === btnFf) -> {
-                        if (keyCode == KeyEvent.KEYCODE_DPAD_UP ||
-                            (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT && focus === btnFf)
-                        ) {
-                            btnSkip?.requestFocus()
-                            return true
-                        }
+                    btnSkip?.isVisible == true -> {
+                        btnSkip?.requestFocus()
+                        return true
                     }
-                    btnNext?.isVisible == true && btnSkip?.isVisible != true &&
-                        (focus === btnPlay || focus === btnRew || focus === btnFf ||
-                            (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT && focus === btnFf)) -> {
+                    btnNext?.isVisible == true && keyCode == KeyEvent.KEYCODE_DPAD_LEFT -> {
+                        btnNext?.requestFocus()
+                        return true
+                    }
+                    btnNext?.isVisible == true && focus !== seek -> {
                         btnNext?.requestFocus()
                         return true
                     }
@@ -1875,17 +1910,16 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             SessionStore.ASPECT_4_3 to R.string.aspect_4_3,
         )
         val current = application.asTv().session.aspectRatio
-        val labels = options.map { getString(it.second) }.toTypedArray()
-        AlertDialog.Builder(this)
-            .setTitle(R.string.aspect_title)
-            .setSingleChoiceItems(labels, options.indexOfFirst { it.first == current }.coerceAtLeast(0)) { dialog, which ->
-                val mode = options[which].first
-                application.asTv().session.aspectRatio = mode
-                player?.setAspectMode(mode)
-                dialog.dismiss()
-            }
-            .setNegativeButton(android.R.string.cancel, null)
-            .show()
+        showRoundListDialog(
+            activity = this,
+            title = getString(R.string.aspect_title),
+            options = options.map { getString(it.second) },
+            checked = options.indexOfFirst { it.first == current },
+        ) { which ->
+            val mode = options[which].first
+            application.asTv().session.aspectRatio = mode
+            player?.setAspectMode(mode)
+        }
     }
 
     /** Only offer the Audio chip when there's a real choice. */
@@ -1895,17 +1929,12 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         showChrome()
         val tracks = player?.listAudioTracks().orEmpty()
         if (tracks.isEmpty()) return
-        AlertDialog.Builder(this)
-            .setTitle(R.string.audio_title)
-            .setSingleChoiceItems(
-                tracks.map { it.second }.toTypedArray(),
-                tracks.indexOfFirst { it.third }.coerceAtLeast(0),
-            ) { dialog, which ->
-                player?.selectAudioTrack(tracks[which].first)
-                dialog.dismiss()
-            }
-            .setNegativeButton(android.R.string.cancel, null)
-            .show()
+        showRoundListDialog(
+            activity = this,
+            title = getString(R.string.audio_title),
+            options = tracks.map { it.second },
+            checked = tracks.indexOfFirst { it.third },
+        ) { which -> player?.selectAudioTrack(tracks[which].first) }
     }
 
     private fun openSubtitles() {
@@ -1993,6 +2022,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         val kind: String,
         val posterUrl: String?,
         val backdropUrl: String?,
+        val fileEpisode: Int? = null,
     )
 
     companion object {
@@ -2015,5 +2045,6 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         const val EXTRA_LOCAL = "local_torrent"
         const val EXTRA_MAGNET = "magnet"
         const val EXTRA_FILE_INDEX = "file_index"
+        const val EXTRA_FILE_EPISODE = "file_episode"
     }
 }

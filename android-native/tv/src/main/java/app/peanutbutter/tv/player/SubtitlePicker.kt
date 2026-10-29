@@ -1,12 +1,12 @@
 package app.peanutbutter.tv.player
 
 import android.app.AlertDialog
+import app.peanutbutter.tv.ui.showRoundListDialog
 import android.text.InputType
 import android.view.inputmethod.EditorInfo
 import android.view.ViewGroup
 import android.widget.EditText
 import android.widget.LinearLayout
-import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.fragment.app.FragmentActivity
@@ -227,42 +227,7 @@ class SubtitlePicker(
     }
 
     private fun showList(title: String, options: List<Pair<String, () -> Unit>>) {
-        val col = LinearLayout(activity).apply {
-            orientation = LinearLayout.VERTICAL
-            val pad = (18 * resources.displayMetrics.density).toInt()
-            setPadding(pad, pad / 2, pad, pad / 2)
-        }
-        val dialog = AlertDialog.Builder(activity)
-            .setTitle(title)
-            .setView(ScrollView(activity).apply {
-                addView(col, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-            })
-            .setNegativeButton(android.R.string.cancel, null)
-            .create()
-        options.forEachIndexed { index, (label, action) ->
-            val row = TextView(activity).apply {
-                text = label
-                textSize = 16f
-                setTextColor(activity.getColor(R.color.pb_white))
-                val py = (12 * resources.displayMetrics.density).toInt()
-                setPadding(py, py, py, py)
-                isFocusable = true
-                isFocusableInTouchMode = true
-                setBackgroundResource(R.drawable.kind_tab_bg)
-                setOnClickListener {
-                    dialog.dismiss()
-                    action()
-                }
-            }
-            val lp = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-            )
-            if (index > 0) lp.topMargin = (8 * activity.resources.displayMetrics.density).toInt()
-            col.addView(row, lp)
-        }
-        dialog.setOnShowListener { (col.getChildAt(0) as? TextView)?.requestFocus() }
-        dialog.show()
+        showRoundListDialog(activity, title, options.map { it.first }) { which -> options[which].second() }
     }
 
     private fun writeSubtitle(name: String, content: String): File {

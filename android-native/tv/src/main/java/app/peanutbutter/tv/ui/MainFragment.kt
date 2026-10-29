@@ -268,12 +268,18 @@ class MainFragment : RowsSupportFragment() {
                 return true
             }
             val list = row.adapter as? ArrayObjectAdapter ?: return false
-            list.clear()
-            items.take(18).forEach { list.add(it) }
+            // Diff instead of clear + add: re-adding every card made the whole
+            // home screen blink on each return from Details.
+            list.setItems(items.take(18), titleDiff)
             return true
         }
         // Shelf missing (was empty) — caller should full-bind if items is non-empty.
         return items.isEmpty()
+    }
+
+    private val titleDiff = object : androidx.leanback.widget.DiffCallback<TitleItem>() {
+        override fun areItemsTheSame(oldItem: TitleItem, newItem: TitleItem) = oldItem.id == newItem.id
+        override fun areContentsTheSame(oldItem: TitleItem, newItem: TitleItem) = oldItem == newItem
     }
 
     private fun revealBrowse() {

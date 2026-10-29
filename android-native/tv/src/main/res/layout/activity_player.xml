@@ -50,7 +50,8 @@
             android:background="@drawable/player_poster_scrim" />
     </FrameLayout>
 
-    <!-- Top: title / status / buffer — independent of transport. -->
+    <!-- Top: back / title / status on the left, track + aspect buttons on
+         the right (desktop player layout). -->
     <LinearLayout
         android:id="@+id/chrome_top"
         android:layout_width="match_parent"
@@ -59,16 +60,24 @@
         android:background="@drawable/player_chrome_top_scrim"
         android:elevation="8dp"
         android:orientation="vertical"
-        android:paddingStart="36dp"
-        android:paddingTop="28dp"
+        android:paddingStart="32dp"
+        android:paddingTop="24dp"
         android:paddingEnd="36dp"
-        android:paddingBottom="18dp">
+        android:paddingBottom="28dp">
 
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:gravity="center_vertical"
             android:orientation="horizontal">
+
+            <ImageView
+                android:layout_width="28dp"
+                android:layout_height="28dp"
+                android:layout_marginEnd="14dp"
+                android:contentDescription="@null"
+                android:src="@drawable/ic_arrow_back"
+                android:tint="@color/pb_white" />
 
             <LinearLayout
                 android:layout_width="0dp"
@@ -90,64 +99,58 @@
                     android:id="@+id/status"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="6dp"
+                    android:layout_marginTop="4dp"
                     android:textColor="#CCFFFFFF"
                     android:textSize="14sp" />
             </LinearLayout>
 
-            <TextView
-                android:id="@+id/btn_aspect"
-                android:layout_width="wrap_content"
-                android:layout_height="40dp"
-                android:layout_marginStart="16dp"
-                android:background="@drawable/bg_player_chip"
-                android:focusable="true"
-                android:focusableInTouchMode="true"
-                android:gravity="center"
-                android:minWidth="96dp"
-                android:nextFocusDown="@id/seek"
-                android:paddingHorizontal="16dp"
-                android:text="@string/aspect_button"
-                android:textColor="@color/pb_white"
-                android:textSize="14sp"
-                android:textStyle="bold"
-                android:visibility="gone" />
-
-            <TextView
+            <ImageButton
                 android:id="@+id/btn_audio"
-                android:layout_width="wrap_content"
-                android:layout_height="40dp"
-                android:layout_marginStart="10dp"
-                android:background="@drawable/bg_player_chip"
+                android:layout_width="52dp"
+                android:layout_height="52dp"
+                android:layout_marginStart="12dp"
+                android:background="@drawable/player_control_btn"
+                android:contentDescription="@string/audio_button"
                 android:focusable="true"
                 android:focusableInTouchMode="true"
-                android:gravity="center"
-                android:minWidth="96dp"
                 android:nextFocusDown="@id/seek"
-                android:paddingHorizontal="16dp"
-                android:text="@string/audio_button"
-                android:textColor="@color/pb_white"
-                android:textSize="14sp"
-                android:textStyle="bold"
-                android:visibility="gone" />
+                android:padding="13dp"
+                android:scaleType="fitCenter"
+                android:src="@drawable/ic_language"
+                android:visibility="gone"
+                android:tint="@color/pb_white" />
 
-            <TextView
+            <ImageButton
                 android:id="@+id/btn_subs"
-                android:layout_width="wrap_content"
-                android:layout_height="40dp"
-                android:layout_marginStart="10dp"
-                android:background="@drawable/bg_player_chip"
+                android:layout_width="52dp"
+                android:layout_height="52dp"
+                android:layout_marginStart="12dp"
+                android:background="@drawable/player_control_btn"
+                android:contentDescription="@string/subs_button"
                 android:focusable="true"
                 android:focusableInTouchMode="true"
-                android:gravity="center"
-                android:minWidth="112dp"
                 android:nextFocusDown="@id/seek"
-                android:paddingHorizontal="16dp"
-                android:text="@string/subs_button"
-                android:textColor="@color/pb_white"
-                android:textSize="14sp"
-                android:textStyle="bold"
-                android:visibility="gone" />
+                android:padding="13dp"
+                android:scaleType="fitCenter"
+                android:src="@drawable/ic_subtitles"
+                android:visibility="gone"
+                android:tint="@color/pb_white" />
+
+            <ImageButton
+                android:id="@+id/btn_aspect"
+                android:layout_width="52dp"
+                android:layout_height="52dp"
+                android:layout_marginStart="12dp"
+                android:background="@drawable/player_control_btn"
+                android:contentDescription="@string/aspect_button"
+                android:focusable="true"
+                android:focusableInTouchMode="true"
+                android:nextFocusDown="@id/seek"
+                android:padding="13dp"
+                android:scaleType="fitCenter"
+                android:src="@drawable/ic_aspect_ratio"
+                android:visibility="gone"
+                android:tint="@color/pb_white" />
         </LinearLayout>
 
         <ProgressBar
@@ -168,12 +171,12 @@
         android:id="@+id/overlay_actions"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_gravity="bottom|end"
-        android:layout_marginEnd="48dp"
+        android:layout_gravity="bottom|start"
+        android:layout_marginStart="48dp"
         android:layout_marginBottom="56dp"
         android:clipChildren="false"
         android:elevation="28dp"
-        android:gravity="end"
+        android:gravity="start"
         android:orientation="vertical">
 
         <TextView
@@ -187,6 +190,8 @@
             android:minWidth="148dp"
             android:nextFocusLeft="@id/btn_play"
             android:nextFocusDown="@id/btn_next"
+            android:drawableEnd="@drawable/ic_skip_next"
+            android:drawablePadding="8dp"
             android:paddingHorizontal="22dp"
             android:textColor="@color/pb_white"
             android:textSize="15sp"
@@ -205,6 +210,8 @@
             android:minWidth="148dp"
             android:nextFocusLeft="@id/btn_play"
             android:nextFocusUp="@id/btn_skip"
+            android:drawableStart="@drawable/ic_skip_next"
+            android:drawablePadding="8dp"
             android:paddingHorizontal="22dp"
             android:text="@string/play_next"
             android:textColor="@color/pb_white"
@@ -213,7 +220,25 @@
             android:visibility="gone" />
     </LinearLayout>
 
-    <!-- Bottom transport — only when user asks for controls. -->
+    <!-- Stream stats (speed / peers / buffer), above the transport like the
+         desktop player's chip. -->
+    <TextView
+        android:id="@+id/stats_chip"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|end"
+        android:layout_marginEnd="48dp"
+        android:layout_marginBottom="176dp"
+        android:background="@drawable/player_stats_chip"
+        android:elevation="9dp"
+        android:paddingHorizontal="14dp"
+        android:paddingVertical="7dp"
+        android:textColor="@color/pb_white"
+        android:textSize="13sp"
+        android:textStyle="bold"
+        android:visibility="gone" />
+
+    <!-- Bottom transport: scrubber pill + ±10 / play, as on desktop. -->
     <LinearLayout
         android:id="@+id/chrome_bottom"
         android:layout_width="match_parent"
@@ -223,61 +248,63 @@
         android:elevation="8dp"
         android:gravity="center_horizontal"
         android:orientation="vertical"
-        android:paddingHorizontal="40dp"
-        android:paddingTop="16dp"
-        android:paddingBottom="28dp"
+        android:paddingHorizontal="48dp"
+        android:paddingTop="24dp"
+        android:paddingBottom="32dp"
         android:visibility="gone">
-
-        <SeekBar
-            android:id="@+id/seek"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:clickable="true"
-            android:focusable="true"
-            android:focusableInTouchMode="true"
-            android:foreground="@drawable/seek_focus"
-            android:max="1000"
-            android:minHeight="28dp"
-            android:nextFocusUp="@id/btn_aspect"
-            android:nextFocusDown="@id/btn_play"
-            android:paddingVertical="10dp"
-            android:progressBackgroundTint="#33FFFFFF"
-            android:progressTint="@color/pb_seed"
-            android:secondaryProgressTint="#66FFFFFF"
-            android:thumbTint="@color/pb_white" />
 
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:background="@drawable/player_seek_pill"
             android:gravity="center_vertical"
-            android:orientation="horizontal">
+            android:orientation="horizontal"
+            android:paddingHorizontal="16dp"
+            android:paddingVertical="4dp">
 
             <TextView
                 android:id="@+id/time_pos"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
+                android:minWidth="56dp"
                 android:text="0:00"
                 android:textColor="#B3FFFFFF"
-                android:textSize="13sp" />
+                android:textSize="14sp" />
 
-            <View
+            <SeekBar
+                android:id="@+id/seek"
                 android:layout_width="0dp"
-                android:layout_height="1dp"
-                android:layout_weight="1" />
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:clickable="true"
+                android:focusable="true"
+                android:focusableInTouchMode="true"
+                android:foreground="@drawable/seek_focus"
+                android:max="1000"
+                android:minHeight="28dp"
+                android:nextFocusUp="@id/btn_subs"
+                android:nextFocusDown="@id/btn_play"
+                android:paddingVertical="10dp"
+                android:progressBackgroundTint="#3DFFFFFF"
+                android:progressTint="@color/pb_seed"
+                android:secondaryProgressTint="#66FFFFFF"
+                android:thumbTint="@color/pb_white" />
 
             <TextView
                 android:id="@+id/time_dur"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
+                android:gravity="end"
+                android:minWidth="56dp"
                 android:text="0:00"
                 android:textColor="#B3FFFFFF"
-                android:textSize="13sp" />
+                android:textSize="14sp" />
         </LinearLayout>
 
         <LinearLayout
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginTop="10dp"
+            android:layout_marginTop="14dp"
             android:gravity="center"
             android:orientation="horizontal">
 
@@ -289,18 +316,19 @@
                 android:contentDescription="@string/rewind"
                 android:focusable="true"
                 android:focusableInTouchMode="true"
+                android:nextFocusLeft="@id/btn_skip"
                 android:nextFocusRight="@id/btn_play"
                 android:nextFocusUp="@id/seek"
-                android:nextFocusLeft="@id/btn_skip"
-                android:padding="13dp"
+                android:padding="14dp"
+                android:scaleType="fitCenter"
                 android:src="@drawable/ic_replay_10"
                 android:tint="@color/pb_white" />
 
             <ImageButton
                 android:id="@+id/btn_play"
-                android:layout_width="68dp"
-                android:layout_height="68dp"
-                android:layout_marginHorizontal="20dp"
+                android:layout_width="64dp"
+                android:layout_height="64dp"
+                android:layout_marginHorizontal="22dp"
                 android:background="@drawable/player_control_btn"
                 android:contentDescription="@string/play"
                 android:focusable="true"
@@ -309,6 +337,7 @@
                 android:nextFocusRight="@id/btn_ff"
                 android:nextFocusUp="@id/seek"
                 android:padding="14dp"
+                android:scaleType="fitCenter"
                 android:src="@drawable/ic_play_arrow"
                 android:tint="@color/pb_white" />
 
@@ -323,7 +352,8 @@
                 android:nextFocusLeft="@id/btn_play"
                 android:nextFocusRight="@id/btn_skip"
                 android:nextFocusUp="@id/seek"
-                android:padding="13dp"
+                android:padding="14dp"
+                android:scaleType="fitCenter"
                 android:src="@drawable/ic_forward_10"
                 android:tint="@color/pb_white" />
         </LinearLayout>
