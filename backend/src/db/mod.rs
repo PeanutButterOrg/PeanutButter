@@ -41,6 +41,7 @@ const EMBEDDED_MIGRATION_028: &str = include_str!("migrations/028_device_keys.sq
 const EMBEDDED_MIGRATION_029: &str = include_str!("migrations/029_stream_providers.sql");
 const EMBEDDED_MIGRATION_030: &str = include_str!("migrations/030_server_auto_update.sql");
 const EMBEDDED_MIGRATION_031: &str = include_str!("migrations/031_console_sessions.sql");
+const EMBEDDED_MIGRATION_032: &str = include_str!("migrations/032_content_checked.sql");
 
 pub async fn connect(database_url: &str) -> Result<PgPool> {
     connect_with(database_url, 40, 4, Duration::from_secs(15)).await
@@ -117,6 +118,7 @@ pub async fn run_migrations(pool: &PgPool, extra_dir: Option<&Path>) -> Result<(
     apply_one(pool, "029_stream_providers", EMBEDDED_MIGRATION_029).await?;
     apply_one(pool, "030_server_auto_update", EMBEDDED_MIGRATION_030).await?;
     apply_one(pool, "031_console_sessions", EMBEDDED_MIGRATION_031).await?;
+    apply_one(pool, "032_content_checked", EMBEDDED_MIGRATION_032).await?;
 
     if let Some(dir) = extra_dir {
         if dir.is_dir() {
@@ -165,6 +167,7 @@ pub async fn run_migrations(pool: &PgPool, extra_dir: Option<&Path>) -> Result<(
                     || version == "029_stream_providers"
                     || version == "030_server_auto_update"
                     || version == "031_console_sessions"
+                    || version == "032_content_checked"
                 {
                     continue;
                 }

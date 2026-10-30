@@ -148,6 +148,16 @@ async fn main() -> Result<()> {
     let _scheduler = ingest::scheduler::start(ingest.clone()).await?;
     let _watcher = media::scanner::start_watcher(pool.clone(), config.clone(), search.clone())?;
 
+    // Remove explicit titles stored before the keyword check existed
+    // (resumable; titles it has checked are skipped on later starts).
+    let ingest_purge = ingest.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        if let Err(e) = ingest::tmdb::purge_explicit_titles(&ingest_purge).await {
+            tracing::warn!("explicit-content cleanup failed: {e}");
+        }
+    });
+
     let ingest_boot = ingest.clone();
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_secs(2)).await;

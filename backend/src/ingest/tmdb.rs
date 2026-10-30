@@ -236,6 +236,50 @@ struct Genre {
     name: String,
 }
 
+/// `/movie/{id}/keywords` returns `keywords`, `/tv/{id}/keywords` `results`.
+#[derive(Debug, Default, Deserialize)]
+struct TmdbKeywords {
+    #[serde(default)]
+    keywords: Vec<TmdbKeyword>,
+    #[serde(default)]
+    results: Vec<TmdbKeyword>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TmdbKeyword {
+    name: String,
+}
+
+impl TmdbKeywords {
+    fn names(&self) -> impl Iterator<Item = &str> {
+        self.keywords.iter().chain(&self.results).map(|k| k.name.as_str())
+    }
+}
+
+/// Why a TMDB title must never be stored, if it must not. One check for
+/// every way a title gets in (sync shelves, discover, search, ingest by id,
+/// refresh, lazy shelf pages).
+fn explicit_reason(
+    adult: Option<bool>,
+    genres: &[Genre],
+    keywords: Option<&TmdbKeywords>,
+    rating: Option<&str>,
+) -> Option<&'static str> {
+    if adult == Some(true) {
+        return Some("adult");
+    }
+    if genres.iter().any(|g| crate::content_filter::is_blocked_genre(&g.name)) {
+        return Some("blocked genre");
+    }
+    if keywords.is_some_and(|k| k.names().any(crate::content_filter::is_blocked_keyword)) {
+        return Some("erotic keyword");
+    }
+    if rating.is_some_and(crate::content_filter::is_blocked_content_rating) {
+        return Some("explicit rating");
+    }
+    None
+}
+
 #[derive(Debug, Deserialize)]
 struct VideoResults {
     results: Vec<Video>,
@@ -277,6 +321,8 @@ struct MovieDetails {
     images: Option<TmdbImages>,
     credits: Option<TmdbCredits>,
     release_dates: Option<ReleaseDateResults>,
+    #[serde(default)]
+    keywords: Option<TmdbKeywords>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -310,6 +356,8 @@ struct TvDetails {
     content_ratings: Option<TvRatingResults>,
     #[serde(default)]
     external_ids: Option<ExternalIds>,
+    #[serde(default)]
+    keywords: Option<TmdbKeywords>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1682,7 +1730,7 @@ async fn fetch_details_movie(ctx: &IngestContext, id: i32) -> Result<MovieDetail
     let locale = tmdb_locale(ctx);
     let img_lang = image_language_param(ctx);
     let url = format!(
-        "{TMDB}/movie/{id}?api_key={}&language={locale}&append_to_response=videos,images,credits,release_dates&include_image_language={img_lang}",
+        "{TMDB}/movie/{id}?api_key={}&language={locale}&append_to_response=videos,images,credits,release_dates,keywords&include_image_language={img_lang}",
         ctx.config.tmdb_key()
     );
     get_json(ctx, &url).await
@@ -1692,7 +1740,7 @@ async fn fetch_details_tv(ctx: &IngestContext, id: i32) -> Result<TvDetails> {
     let locale = tmdb_locale(ctx);
     let img_lang = image_language_param(ctx);
     let url = format!(
-        "{TMDB}/tv/{id}?api_key={}&language={locale}&append_to_response=videos,external_ids,images,credits,aggregate_credits,content_ratings&include_image_language={img_lang}",
+        "{TMDB}/tv/{id}?api_key={}&language={locale}&append_to_response=videos,external_ids,images,credits,aggregate_credits,content_ratings,keywords&include_image_language={img_lang}",
         ctx.config.tmdb_key()
     );
     get_json(ctx, &url).await
@@ -1709,8 +1757,16 @@ async fn upsert_movie_opts(
     details: MovieDetails,
     respect_language: bool,
 ) -> Result<Option<Uuid>> {
-    if details.adult == Some(true) {
-        debug!(tmdb_id = details.id, "skipping adult movie");
+    let rating = certification_from_releases(details.release_dates.as_ref());
+    if let Some(reason) = explicit_reason(
+        details.adult,
+        details.genres.as_deref().unwrap_or(&[]),
+        details.keywords.as_ref(),
+        rating.as_deref(),
+    ) {
+        // Also drop it if an earlier sync stored it.
+        let removed = purge_tmdb_title(ctx, details.id, "movie").await?;
+        info!(tmdb_id = details.id, reason, removed, "blocked explicit movie");
         return Ok(None);
     }
     if details
@@ -1719,16 +1775,6 @@ async fn upsert_movie_opts(
         .is_some_and(crate::content_filter::is_unreleased_date)
     {
         debug!(tmdb_id = details.id, "skipping unreleased movie");
-        return Ok(None);
-    }
-    if details
-        .genres
-        .as_deref()
-        .unwrap_or(&[])
-        .iter()
-        .any(|g| crate::content_filter::is_blocked_genre(&g.name))
-    {
-        debug!(tmdb_id = details.id, "skipping movie with blocked genre");
         return Ok(None);
     }
     if respect_language && !accepts_original_language(ctx, details.original_language.as_deref()) {
@@ -1764,7 +1810,8 @@ async fn upsert_movie_opts(
     replace_trailers(ctx, id, details.videos.as_ref()).await?;
     apply_extra_art(ctx, id, details.images.as_ref()).await?;
     replace_people(ctx, id, details.credits.as_ref()).await?;
-    apply_content_rating(ctx, id, certification_from_releases(details.release_dates.as_ref())).await?;
+    apply_content_rating(ctx, id, rating).await?;
+    mark_content_checked(ctx, id).await?;
     apply_released_at(ctx, id, details.release_date.as_deref()).await?;
     upsert_ratings(
         ctx,
@@ -1792,8 +1839,15 @@ async fn upsert_tv_opts(
     details: TvDetails,
     respect_language: bool,
 ) -> Result<Option<Uuid>> {
-    if details.adult == Some(true) {
-        debug!(tmdb_id = details.id, "skipping adult series");
+    let rating = certification_from_tv(details.content_ratings.as_ref());
+    if let Some(reason) = explicit_reason(
+        details.adult,
+        details.genres.as_deref().unwrap_or(&[]),
+        details.keywords.as_ref(),
+        rating.as_deref(),
+    ) {
+        let removed = purge_tmdb_title(ctx, details.id, "series").await?;
+        info!(tmdb_id = details.id, reason, removed, "blocked explicit series");
         return Ok(None);
     }
     if details
@@ -1802,16 +1856,6 @@ async fn upsert_tv_opts(
         .is_some_and(crate::content_filter::is_unreleased_date)
     {
         debug!(tmdb_id = details.id, "skipping unreleased series");
-        return Ok(None);
-    }
-    if details
-        .genres
-        .as_deref()
-        .unwrap_or(&[])
-        .iter()
-        .any(|g| crate::content_filter::is_blocked_genre(&g.name))
-    {
-        debug!(tmdb_id = details.id, "skipping series with blocked genre");
         return Ok(None);
     }
     if respect_language && !accepts_original_language(ctx, details.original_language.as_deref()) {
@@ -1862,7 +1906,8 @@ async fn upsert_tv_opts(
         pick_credits(details.credits.as_ref(), details.aggregate_credits.as_ref()),
     )
     .await?;
-    apply_content_rating(ctx, id, certification_from_tv(details.content_ratings.as_ref())).await?;
+    apply_content_rating(ctx, id, rating).await?;
+    mark_content_checked(ctx, id).await?;
     apply_released_at(ctx, id, details.first_air_date.as_deref()).await?;
     upsert_ratings(
         ctx,
@@ -2187,6 +2232,7 @@ pub(crate) async fn apply_content_rating(
             .bind(title_id)
             .execute(&ctx.pool)
             .await?;
+        forget_titles(ctx, &[title_id]).await;
         return Ok(());
     }
     sqlx::query(
@@ -2638,6 +2684,125 @@ fn year_from(date: &Option<String>) -> Option<i32> {
         .filter(|y| *y > 1800)
 }
 
+/// Delete a stored TMDB title (and what hangs off it). Returns rows removed.
+async fn purge_tmdb_title(ctx: &IngestContext, tmdb_id: i32, kind: &str) -> Result<u64> {
+    let ids: Vec<Uuid> =
+        sqlx::query_scalar("DELETE FROM titles WHERE tmdb_id = $1 AND kind = $2 RETURNING id")
+            .bind(tmdb_id)
+            .bind(kind)
+            .fetch_all(&ctx.pool)
+            .await?;
+    forget_titles(ctx, &ids).await;
+    Ok(ids.len() as u64)
+}
+
+/// After titles are deleted: rows without a foreign key, and search docs.
+async fn forget_titles(ctx: &IngestContext, ids: &[Uuid]) {
+    if ids.is_empty() {
+        return;
+    }
+    let _ = sqlx::query("DELETE FROM stream_progress WHERE title_id = ANY($1)")
+        .bind(ids)
+        .execute(&ctx.pool)
+        .await;
+    for id in ids {
+        if let Err(e) = ctx.search.delete_title(*id).await {
+            warn!(%id, "search delete failed: {e}");
+        }
+    }
+}
+
+async fn mark_content_checked(ctx: &IngestContext, title_id: Uuid) -> Result<()> {
+    sqlx::query("UPDATE titles SET content_checked_at = now() WHERE id = $1")
+        .bind(title_id)
+        .execute(&ctx.pool)
+        .await?;
+    Ok(())
+}
+
+/// One-time (resumable) cleanup of explicit titles stored before the
+/// keyword check existed. Runs at boot: drops titles already flagged by
+/// rating / genre, then asks TMDB for the keywords of every stored title
+/// not yet checked and removes the erotic / softcore ones.
+pub async fn purge_explicit_titles(ctx: &IngestContext) -> Result<()> {
+    if ctx.config.tmdb_key().is_empty() {
+        return Ok(());
+    }
+    let sql = format!(
+        r#"
+        DELETE FROM titles t
+        WHERE upper(trim(COALESCE(t.content_rating, ''))) IN ('NC-17', 'NC17', 'XXX', 'AO')
+           OR upper(COALESCE(t.content_rating, '')) LIKE '%XXX%'
+           OR EXISTS (
+                SELECT 1 FROM title_genres tg JOIN genres g ON g.id = tg.genre_id
+                WHERE tg.title_id = t.id
+                  AND (lower(g.name) IN ({list}) OR lower(g.name) LIKE '%porn%' OR lower(g.name) LIKE '%hentai%')
+           )
+        RETURNING t.id
+        "#,
+        list = crate::content_filter::BLOCKED_GENRE_SQL_LIST
+    );
+    let flagged: Vec<Uuid> = sqlx::query_scalar(&sql).fetch_all(&ctx.pool).await?;
+    forget_titles(ctx, &flagged).await;
+
+    let mut checked = 0u64;
+    let mut removed = 0u64;
+    let mut failed = 0u64;
+    let mut done = 0u64;
+    let mut after = Uuid::nil();
+    loop {
+        let batch: Vec<(Uuid, i32, String)> = sqlx::query_as(
+            r#"
+            SELECT id, tmdb_id, kind FROM titles
+            WHERE content_checked_at IS NULL AND tmdb_id IS NOT NULL
+              AND kind IN ('movie', 'series') AND id > $1
+            ORDER BY id LIMIT 200
+            "#,
+        )
+        .bind(after)
+        .fetch_all(&ctx.pool)
+        .await?;
+        let Some(last) = batch.last() else { break };
+        after = last.0;
+        for (id, tmdb_id, kind) in batch {
+            let media = if kind == "series" { "tv" } else { "movie" };
+            let url = format!("{TMDB}/{media}/{tmdb_id}/keywords?api_key={}", ctx.config.tmdb_key());
+            match get_json::<TmdbKeywords>(ctx, &url).await {
+                Ok(k) if k.names().any(crate::content_filter::is_blocked_keyword) => {
+                    sqlx::query("DELETE FROM titles WHERE id = $1").bind(id).execute(&ctx.pool).await?;
+                    forget_titles(ctx, &[id]).await;
+                    removed += 1;
+                }
+                Ok(_) => {
+                    mark_content_checked(ctx, id).await?;
+                    checked += 1;
+                }
+                // Gone from TMDB: nothing to check against.
+                Err(AppError::Provider(msg)) if msg.contains("404") => {
+                    mark_content_checked(ctx, id).await?;
+                }
+                // Left unchecked: retried on the next start.
+                Err(e) => {
+                    failed += 1;
+                    debug!(%id, tmdb_id, "keyword check failed: {e}");
+                }
+            }
+            done += 1;
+            if done % 500 == 0 {
+                info!(checked, removed, failed, "explicit-content check progress");
+            }
+        }
+    }
+    info!(
+        flagged = flagged.len(),
+        checked,
+        removed,
+        failed,
+        "explicit-content cleanup done"
+    );
+    Ok(())
+}
+
 async fn get_json<T: serde::de::DeserializeOwned>(ctx: &IngestContext, url: &str) -> Result<T> {
     wait_tmdb_slot().await;
     let resp = ctx
@@ -2655,6 +2820,42 @@ async fn get_json<T: serde::de::DeserializeOwned>(ctx: &IngestContext, url: &str
         )));
     }
     Ok(resp.json().await?)
+}
+
+#[cfg(test)]
+mod explicit_tests {
+    use super::*;
+
+    fn kw(names: &[&str]) -> TmdbKeywords {
+        TmdbKeywords {
+            keywords: names.iter().map(|n| TmdbKeyword { name: n.to_string() }).collect(),
+            results: vec![],
+        }
+    }
+
+    #[test]
+    fn blocks_erotic_titles_tmdb_does_not_flag() {
+        let drama = [Genre { name: "Drama".into() }, Genre { name: "Romance".into() }];
+        assert_eq!(
+            explicit_reason(Some(false), &drama, Some(&kw(&["sister-in-law", "erotic movie"])), Some("18")),
+            Some("erotic keyword")
+        );
+        assert_eq!(explicit_reason(Some(true), &drama, None, None), Some("adult"));
+        assert_eq!(explicit_reason(None, &drama, None, Some("NC-17")), Some("explicit rating"));
+        // TV keywords come back under `results`.
+        let tv: TmdbKeywords = serde_json::from_str(r#"{"results":[{"id":1,"name":"softcore"}]}"#).unwrap();
+        assert_eq!(explicit_reason(None, &drama, Some(&tv), None), Some("erotic keyword"));
+    }
+
+    #[test]
+    fn keeps_mature_mainstream_titles() {
+        let crime = [Genre { name: "Crime".into() }];
+        assert_eq!(
+            explicit_reason(Some(false), &crime, Some(&kw(&["erotic thriller", "drug dealer"])), Some("TV-MA")),
+            None
+        );
+        assert_eq!(explicit_reason(None, &crime, None, Some("R")), None);
+    }
 }
 
 #[cfg(test)]
