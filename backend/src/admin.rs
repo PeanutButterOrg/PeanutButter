@@ -1375,10 +1375,10 @@ The database is backed up first. Apps reconnect on their own after about a minut
                 checked = if su.auto { "checked" } else { "" },
             )
         } else {
-            r#"<p class="muted">One-click updates need this server to run the CI-built image with Watchtower. On the server, in the folder with your compose file, run once:</p>
-          <pre class="sync-log">docker compose -f docker-compose.server.yml -f docker-compose.autoupdate.yml pull api
-docker compose -f docker-compose.server.yml -f docker-compose.autoupdate.yml up -d</pre>
-          <p class="muted">Your data and settings stay. After that, updates happen from here.</p>"#.to_string()
+            r#"<p class="muted">One-click updates need this server to run the CI-built image with Watchtower. Switch once, from your computer or on the server in the PeanutButter folder:</p>
+          <pre class="sync-log">./scripts/manage-server.sh --remote YOUR_SERVER auto-updates
+./scripts/manage-server.sh auto-updates</pre>
+          <p class="muted">Your data and settings stay, and later pushes and reboots keep it. After that, updates happen from here.</p>"#.to_string()
         };
         let watcher = if su.busy {
             format!(

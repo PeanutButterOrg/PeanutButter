@@ -13,6 +13,8 @@
 #   push         Build API image on THIS machine, copy to remote, restart (fast)
 #   update       Build image on the target host (cache OK) and restart — keeps catalog DB
 #   reinstall    Rebuild image with --no-cache and restart — keeps catalog DB
+#   auto-updates Switch to the CI image + Watchtower so the console's "Update to …"
+#                button works (once; push / update / reboots keep it after that)
 #   enable       Install/fix systemd unit so stack auto-starts on every reboot
 #   start        Start existing stack (no rebuild)
 #   stop         Stop containers (keeps them for next boot — does NOT delete)
@@ -117,8 +119,31 @@ setup_docker_config() {
   fi
 }
 
+# Marker for console server updates: every compose call (and the boot unit)
+# then layers docker-compose.autoupdate.yml (GHCR image + Watchtower).
+AUTOUPDATE_MARKER=".pb-autoupdate"
+AUTOUPDATE_FILE="docker-compose.autoupdate.yml"
+
+auto_updates_on() {
+  [[ -f "$AUTOUPDATE_MARKER" ]]
+}
+
 compose() {
-  docker compose -f "$COMPOSE_FILE" "$@"
+  if auto_updates_on; then
+    docker compose -f "$COMPOSE_FILE" -f "$AUTOUPDATE_FILE" "$@"
+  else
+    docker compose -f "$COMPOSE_FILE" "$@"
+  fi
+}
+
+# The api image: pulled from GHCR when console updates are on, else built here.
+prepare_image() {
+  if auto_updates_on; then
+    echo "==> Pulling the release image (server updates come from the console)"
+    compose pull api
+  else
+    build_image "${1:-0}"
+  fi
 }
 
 wait_health() {
@@ -166,7 +191,7 @@ build_image() {
 cmd_update() {
   mkdir -p media
   ensure_public_url
-  build_image 0
+  prepare_image 0
   echo "==> Starting stack (volumes preserved)"
   compose up -d --remove-orphans
   ensure_boot_service
@@ -179,7 +204,7 @@ cmd_reinstall() {
   compose stop 2>/dev/null || true
   mkdir -p media
   ensure_public_url
-  build_image 1
+  prepare_image 1
   compose up -d --remove-orphans
   ensure_boot_service
   wait_health
@@ -214,6 +239,19 @@ cmd_restart() {
     compose restart
   fi
   wait_health
+}
+
+cmd_auto_updates() {
+  [[ -f "$AUTOUPDATE_FILE" ]] || die "missing $AUTOUPDATE_FILE"
+  mkdir -p media
+  ensure_public_url
+  echo "==> Switching to the release image + Watchtower (data and settings stay)"
+  touch "$AUTOUPDATE_MARKER"
+  compose pull api
+  compose up -d --remove-orphans
+  ensure_boot_service
+  wait_health
+  echo "Server updates now run from the console (Settings → Server)."
 }
 
 cmd_enable() {
@@ -291,6 +329,7 @@ remote_run() {
   # also deleted backend/src/media/ and broke the Docker build).
   rsync -az --delete \
     --exclude '/.git/' \
+    --exclude '/.pb-autoupdate' \
     --exclude '/frontend/build/' \
     --exclude '/backend/target/' \
     --exclude '/dist/*.tar.gz' \
@@ -318,6 +357,7 @@ remote_push() {
   ssh -o BatchMode=yes "$host" "mkdir -p '$remote_dir'"
   rsync -az --delete \
     --exclude '/.git/' \
+    --exclude '/.pb-autoupdate' \
     --exclude '/frontend/build/' \
     --exclude '/backend/target/' \
     --exclude '/dist/*.tar.gz' \
@@ -327,6 +367,14 @@ remote_push() {
     --exclude '/frontend/.dart_tool/' \
     --exclude '/frontend/node_modules/' \
     "$ROOT/" "${host}:${remote_dir}/"
+
+  # With console updates on, the server runs the GHCR image: a local build
+  # would replace it (and drop Watchtower), so just pull the release there.
+  if ssh -o BatchMode=yes "$host" "test -f '${remote_dir}/${AUTOUPDATE_MARKER}'"; then
+    echo "==> $host updates itself from GHCR; pulling the release instead of pushing a local build"
+    ssh -t "$host" "cd '$remote_dir' && chmod +x scripts/manage-server.sh && ./scripts/manage-server.sh update"
+    return
+  fi
 
   echo "==> Building $IMAGE locally (this is the slow step — once)"
   (cd "$ROOT" && docker build --build-arg "PB_VERSION=$(release_version)" -t "$IMAGE" ./backend)
@@ -389,6 +437,7 @@ local_run() {
     update)     cmd_update ;;
     reinstall)  cmd_reinstall ;;
     enable|install-service) cmd_enable ;;
+    auto-updates) cmd_auto_updates ;;
     start)      cmd_start ;;
     stop|down)  cmd_stop ;;
     restart)    cmd_restart ;;

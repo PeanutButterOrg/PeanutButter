@@ -1165,6 +1165,11 @@ fn year_boost_expr() -> &'static str {
     "CASE WHEN t.year >= date_part('year', CURRENT_DATE)::int - 1 THEN 3.0 WHEN t.year >= date_part('year', CURRENT_DATE)::int - 3 THEN 2.0 WHEN t.year >= date_part('year', CURRENT_DATE)::int - 7 THEN 1.35 ELSE 1.0 END"
 }
 
+/// 1 when the title was on TMDB's trending list in the latest sync (12 h of
+/// slack: one sync takes a while and lists overlap), else 0. Relative to the
+/// newest stamp, so a few failed syncs don't empty the shelf.
+const TRENDING_NOW_SQL: &str = "(CASE WHEN t.list_trending_at >= (SELECT max(t2.list_trending_at) FROM titles t2) - interval '12 hours' THEN 1 ELSE 0 END)";
+
 fn order_sql(kind: Option<TitleKind>, sort: SortField, dir: SortDir) -> String {
     let score = score_expr(kind);
     let votes = vote_support_expr(kind);
@@ -1216,15 +1221,19 @@ fn order_sql(kind: Option<TitleKind>, sort: SortField, dir: SortDir) -> String {
                 format!("{released} DESC NULLS LAST, t.title ASC, t.id ASC")
             }
         }
-        // Trending = PT `sort=trending` → watching / buzz.
+        // Trending = PT `sort=trending` → watching / buzz. Titles on TMDB's
+        // trending list in the latest sync come first: the stored popularity
+        // is only refreshed while a title is on a list, so titles that
+        // trended weeks ago kept their old score and stayed on top.
         SortField::Trending => {
+            let on_list = TRENDING_NOW_SQL;
             if asc {
                 format!(
-                    "{watching} ASC NULLS LAST, {votes} ASC NULLS LAST, ({score}) * ({year_boost}) ASC NULLS LAST, t.title ASC, t.id ASC"
+                    "{on_list} ASC, {watching} ASC NULLS LAST, {votes} ASC NULLS LAST, ({score}) * ({year_boost}) ASC NULLS LAST, t.title ASC, t.id ASC"
                 )
             } else {
                 format!(
-                    "{watching} DESC NULLS LAST, {votes} DESC NULLS LAST, ({score}) * ({year_boost}) DESC NULLS LAST, t.title ASC, t.id ASC"
+                    "{on_list} DESC, {watching} DESC NULLS LAST, {votes} DESC NULLS LAST, ({score}) * ({year_boost}) DESC NULLS LAST, t.title ASC, t.id ASC"
                 )
             }
         }

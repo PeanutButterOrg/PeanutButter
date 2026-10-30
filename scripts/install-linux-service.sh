@@ -91,7 +91,12 @@ detect_public_url() {
 }
 
 compose() {
-  as_docker_user docker compose -f "${INSTALL_ROOT}/${COMPOSE_FILE}" "$@"
+  local files=(-f "${INSTALL_ROOT}/${COMPOSE_FILE}")
+  # Console server updates on (manage-server.sh auto-updates): keep Watchtower.
+  if [[ -f "${INSTALL_ROOT}/.pb-autoupdate" ]]; then
+    files+=(-f "${INSTALL_ROOT}/docker-compose.autoupdate.yml")
+  fi
+  as_docker_user docker compose "${files[@]}" "$@"
 }
 
 # Prefer a small local image already present (avoids pulls on every enable).

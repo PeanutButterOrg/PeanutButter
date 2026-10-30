@@ -41,8 +41,12 @@ while (( attempt <= MAX_ATTEMPTS )); do
     continue
   fi
 
-  echo "[$attempt/$MAX_ATTEMPTS] docker compose up -d…"
-  if "$DOCKER_BIN" compose -f "$COMPOSE_FILE" up -d --remove-orphans; then
+  # Server updates from the console (manage-server.sh auto-updates) layer the
+  # CI image + Watchtower on top; without it a reboot went back to the old image.
+  files=(-f "$COMPOSE_FILE")
+  [[ -f .pb-autoupdate ]] && files+=(-f docker-compose.autoupdate.yml)
+  echo "[$attempt/$MAX_ATTEMPTS] docker compose ${files[*]} up -d…"
+  if "$DOCKER_BIN" compose "${files[@]}" up -d --remove-orphans; then
     echo "==== $(date -Is) boot-start OK ===="
     exit 0
   fi

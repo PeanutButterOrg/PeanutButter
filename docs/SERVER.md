@@ -139,8 +139,8 @@ Environment: `UPDATES_ENABLED=0` turns updates off, `UPDATES_REPO` sets the sour
 Every `vX.Y.Z` tag makes CI publish the server image as `ghcr.io/peanutbutterorg/peanutbutter-api:stable`. The console is served by the server, so it updates together with it. Switch to the CI image once, in the folder with your compose file:
 
 ```bash
-docker compose -f docker-compose.server.yml -f docker-compose.autoupdate.yml pull api
-docker compose -f docker-compose.server.yml -f docker-compose.autoupdate.yml up -d
+./scripts/manage-server.sh auto-updates            # on the server
+./scripts/manage-server.sh --remote HOST auto-updates   # or from your computer
 ```
 
 From then on, **Settings → Server** in the console shows the running version and any newer release:
