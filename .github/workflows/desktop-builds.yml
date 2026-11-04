@@ -84,7 +84,9 @@ jobs:
     name: Linux (deb + AppImage + portable)
     timeout-minutes: 75
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.linux }}
-    runs-on: ubuntu-latest
+    # Pinned: the vendored libmpv links against 24.04's libav / libplacebo, and
+    # ubuntu-latest moved to 26.04, where those libraries don't exist.
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: frontend
@@ -236,12 +238,21 @@ jobs:
       # plugin builds from source against this static vcpkg libtorrent.
       # Restore/save split: the post-job cache save is skipped when any later
       # step fails, which kept this ~25 min vcpkg build from ever being cached.
+      # The runner's compiler changes with its image, and then vcpkg rebuilds. With
+      # a fixed key the old cache still counted as a hit, so the 25-minute rebuild
+      # ran every time and was never saved. Key on the image; restore-keys still
+      # reuses an older cache whenever vcpkg finds it compatible.
+      - name: Read runner image version
+        id: runner-image
+        shell: pwsh
+        run: echo "version=$env:ImageVersion" >> $env:GITHUB_OUTPUT
       - name: Restore vcpkg cache
         id: vcpkg-cache
         uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}/vcpkg-bincache
-          key: vcpkg-libtorrent-x64-windows-static-md-v1
+          key: vcpkg-libtorrent-x64-windows-static-md-v2-${{ steps.runner-image.outputs.version }}
+          restore-keys: vcpkg-libtorrent-x64-windows-static-md-v2-
       - name: Install libtorrent (vcpkg, static)
         shell: pwsh
         run: |
@@ -260,7 +271,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ${{ runner.temp }}/vcpkg-bincache
-          key: vcpkg-libtorrent-x64-windows-static-md-v1
+          key: vcpkg-libtorrent-x64-windows-static-md-v2-${{ steps.runner-image.outputs.version }}
 
       - run: flutter build windows --release --build-name=$env:PB_VERSION --build-number=$env:PB_BUILD
 
@@ -352,7 +363,8 @@ jobs:
     name: macOS (universal arm64 + x86_64)
     timeout-minutes: 45
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.macos }}
-    runs-on: macos-latest
+    # Pinned, so a new macOS image can't change a release build unannounced.
+    runs-on: macos-15
     defaults:
       run:
         working-directory: frontend
