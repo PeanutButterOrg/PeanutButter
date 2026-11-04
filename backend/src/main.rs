@@ -138,6 +138,7 @@ async fn main() -> Result<()> {
     };
     // Wipe any leftover stream download folders from a previous run.
     app_state.streams.cleanup_stale().await;
+    app_state.streams.spawn_idle_reaper();
     let schema = build_schema(app_state.clone());
     let http_state = HttpState {
         app: app_state.clone(),

@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::SeekFrom;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -92,6 +93,24 @@ struct LiveStream {
     /// Retargets the sequential piece window when the player seeks.
     /// Dropping this sender stops the prefetch worker.
     prefetch_seek: Option<tokio::sync::mpsc::UnboundedSender<u64>>,
+    /// Last sign of a client (status poll, progress save, bytes sent), unix seconds.
+    /// Shared with response bodies, which outlive the lock on this struct.
+    last_seen: Arc<AtomicU64>,
+}
+
+/// With no client for this long, a session is stopped. An app that crashes or
+/// loses the network never says "stop", and the session kept downloading to disk.
+const IDLE_SESSION_LIMIT_SECS: u64 = 30 * 60;
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn session_is_idle(now: u64, last_seen: u64) -> bool {
+    now.saturating_sub(last_seen) >= IDLE_SESSION_LIMIT_SECS
 }
 
 fn stream_output_root(media_path: PathBuf) -> PathBuf {
@@ -170,6 +189,7 @@ impl StreamService {
             season,
             episode,
             prefetch_seek: None,
+            last_seen: Arc::new(AtomicU64::new(unix_now())),
         }));
         self.inner.sessions.write().await.insert(id.clone(), live.clone());
         let boot = live.clone();
@@ -479,6 +499,7 @@ impl StreamService {
         let map = self.inner.sessions.read().await;
         let live = map.get(session_id)?;
         let g = live.lock().await;
+        g.last_seen.store(unix_now(), Ordering::Relaxed);
         Some(self.to_graphql(session_id, &g).await)
     }
 
@@ -491,8 +512,35 @@ impl StreamService {
         // Progress saves fire every few seconds; retargeting from a bitrate guess
         // steals bandwidth from the live HTTP reader and freezes playback.
         // Seeks retarget via HTTP Range in serve_stream.
-        live.lock().await.resume_position = position.max(0);
+        let mut g = live.lock().await;
+        g.last_seen.store(unix_now(), Ordering::Relaxed);
+        g.resume_position = position.max(0);
         true
+    }
+
+    /// Stop sessions no client has touched for a while. Runs for the server's life.
+    pub fn spawn_idle_reaper(&self) {
+        let this = self.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(5 * 60));
+            loop {
+                tick.tick().await;
+                let mut idle = Vec::new();
+                {
+                    let map = this.inner.sessions.read().await;
+                    for (id, live) in map.iter() {
+                        let seen = live.lock().await.last_seen.load(Ordering::Relaxed);
+                        if session_is_idle(unix_now(), seen) {
+                            idle.push(id.clone());
+                        }
+                    }
+                }
+                for id in idle {
+                    tracing::info!(session = %id, "stopping idle stream session");
+                    this.stop(&id).await;
+                }
+            }
+        });
     }
 
     pub async fn stop(&self, session_id: &str) -> bool {
@@ -1357,7 +1405,13 @@ pub async fn serve_stream(
         .file_id
         .ok_or_else(|| AppError::Internal("stream file missing".into()))?;
     let file_name = g.file_name.clone().unwrap_or_else(|| "video.mkv".into());
+    let last_seen = g.last_seen.clone();
+    last_seen.store(unix_now(), Ordering::Relaxed);
     drop(g);
+    // An external player can read one long response for a whole film.
+    let touch = move |_: &std::io::Result<bytes::Bytes>| {
+        last_seen.store(unix_now(), Ordering::Relaxed);
+    };
 
     let mut stream = handle
         .stream(file_id)
@@ -1390,7 +1444,7 @@ pub async fn serve_stream(
                 .await
                 .map_err(AppError::Io)?;
             let length = end - start + 1;
-            let body = Body::from_stream(chunked_stream(stream.take(length)));
+            let body = Body::from_stream(futures::StreamExt::inspect(chunked_stream(stream.take(length)), touch));
             return Ok(Response::builder()
                 .status(StatusCode::PARTIAL_CONTENT)
                 .header(header::CONTENT_TYPE, mime)
@@ -1404,7 +1458,7 @@ pub async fn serve_stream(
         return crate::media::serve::range_not_satisfiable(len);
     }
 
-    let body = Body::from_stream(chunked_stream(stream));
+    let body = Body::from_stream(futures::StreamExt::inspect(chunked_stream(stream), touch));
     Ok(Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, mime)
@@ -1418,6 +1472,15 @@ pub async fn serve_stream(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sessions_go_idle_only_after_the_limit() {
+        assert!(!session_is_idle(1_000, 1_000));
+        assert!(!session_is_idle(1_000 + IDLE_SESSION_LIMIT_SECS - 1, 1_000));
+        assert!(session_is_idle(1_000 + IDLE_SESSION_LIMIT_SECS, 1_000));
+        // A clock step backwards must not end a session.
+        assert!(!session_is_idle(500, 1_000));
+    }
 
     #[test]
     fn skips_samples_and_picks_the_feature() {
