@@ -365,7 +365,9 @@ jobs:
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.macos }}
     # Pinned, so a new macOS image can't change a release build unannounced. Needs
     # Xcode 26: connectivity_plus uses the macOS 26 SDK, and macos-15 has Xcode 16.
-    runs-on: macos-26
+    # Intel: GitHub's arm64 machines kept failing with "not acquired" for lack of
+    # capacity. The build script compiles both architectures either way.
+    runs-on: macos-26-intel
     defaults:
       run:
         working-directory: frontend
@@ -550,7 +552,13 @@ jobs:
   # GitHub Release. Servers mirror it and offer it to apps as an update.
   release:
     name: Publish release
-    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+    # Goes out even if macOS failed (see OPTIONAL in release_manifest.py); a re-run
+    # of the macOS job then adds it to this same release.
+    if: >-
+      ${{ !cancelled() && startsWith(github.ref, 'refs/tags/v')
+      && needs.linux.result == 'success'
+      && needs.windows.result == 'success'
+      && needs.android-tv.result == 'success' }}
     needs: [linux, windows, macos, android-tv]
     runs-on: ubuntu-latest
     permissions:
@@ -567,7 +575,11 @@ jobs:
         run: |
           mkdir -p release
           cp artifacts/PeanutButter-windows-setup/PeanutButter-windows-x64-setup.exe release/
-          cp artifacts/PeanutButter-macos-universal/PeanutButter-macos-universal.zip release/
+          if [ -f artifacts/PeanutButter-macos-universal/PeanutButter-macos-universal.zip ]; then
+            cp artifacts/PeanutButter-macos-universal/PeanutButter-macos-universal.zip release/
+          else
+            echo "::warning::macOS build missing: publishing without it"
+          fi
           cp artifacts/PeanutButter-linux-appimage/PeanutButter-linux-x86_64.AppImage release/
           cp artifacts/PeanutButter-linux-deb/PeanutButter-linux-amd64.deb release/
           cp artifacts/PeanutButter-android-tv/PeanutButter-android-tv*.apk release/
@@ -599,6 +611,11 @@ jobs:
         run: |
           pre=""
           [[ "$GITHUB_REF_NAME" == *-* ]] && pre="--prerelease"
+          # A re-run after a failed macOS job updates the existing release.
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" release/* --repo "$GITHUB_REPOSITORY" --clobber
+            exit 0
+          fi
           gh release create "$GITHUB_REF_NAME" release/* \
             --repo "$GITHUB_REPOSITORY" \
             --title "PeanutButter ${GITHUB_REF_NAME#v}" \

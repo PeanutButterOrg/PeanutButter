@@ -28,6 +28,11 @@ ASSETS = {
     "android-tv-armeabi-v7a": "PeanutButter-android-tv-armeabi-v7a.apk",
 }
 
+# A release may go out without these: GitHub's macOS runners can be unavailable for
+# hours, and that shouldn't hold back every other platform. Apps on a missing
+# platform simply see no update.
+OPTIONAL = {"macos"}
+
 
 def sha256(path: Path) -> str:
     h = hashlib.sha256()
@@ -51,6 +56,8 @@ def main() -> int:
         path = release_dir / name
         if not path.is_file():
             print(f"missing release file: {path}", file=sys.stderr)
+            if platform in OPTIONAL:
+                continue
             return 1
         assets[platform] = {
             "name": name,
