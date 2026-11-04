@@ -999,10 +999,25 @@ class MediaSegment {
     );
   }
 
+  /// Where an intro / recap really ends: 90 s from its start when the end time is
+  /// missing or can't be right (most of the episode, or the end of the file).
+  /// Null for other segments.
+  int? _openingEnd(int durationMs) {
+    if (kind != 'INTRO' && kind != 'RECAP') return null;
+    final end = endMs;
+    final usable = end != null &&
+        end > startMs &&
+        end - startMs <= 8 * 60 * 1000 &&
+        !(durationMs >= 2 * 60 * 1000 && end >= durationMs - 15 * 1000);
+    return usable ? end : startMs + 90 * 1000;
+  }
+
   /// Whether [positionMs] is inside this segment (millisecond precision).
   bool contains(int positionMs, {required int durationMs}) {
     final start = startMs < 0 ? 0 : startMs;
-    final end = endMs ?? (durationMs > 0 ? durationMs : 1 << 62);
+    // Same end as skipping to: with a missing or bad end time Skip Intro used to
+    // treat the rest of the episode as intro and never went away.
+    final end = _openingEnd(durationMs) ?? endMs ?? (durationMs > 0 ? durationMs : 1 << 62);
     // Leave a tiny tail so Skip doesn't flicker at the last frame.
     final activeEnd = end > start + 400 ? end - 250 : end;
     return positionMs >= start && positionMs < activeEnd;

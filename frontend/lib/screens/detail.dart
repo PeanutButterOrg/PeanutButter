@@ -8,6 +8,7 @@ import 'package:graphql_flutter/graphql_flutter.dart';
 
 import '../graphql/queries.dart';
 import '../models.dart';
+import '../player_launch.dart';
 import '../torrent_file_picker.dart';
 import '../providers/catalog.dart';
 import '../providers/settings.dart';
@@ -268,6 +269,8 @@ class _DetailBodyState extends ConsumerState<_DetailBody> {
     final canStream = playTarget == null && jackettOn;
 
     void playFile(FileReference file, {int? startMs}) {
+      if (!PlayerLaunch.beginPlay()) return;
+      PlayerLaunch.endPlay();
       int? seasonNum;
       int? episodeNum;
       if (file.episodeId != null) {
@@ -308,6 +311,8 @@ class _DetailBodyState extends ConsumerState<_DetailBody> {
       bool fromBeginning = false,
       bool? preferResume,
     }) async {
+      if (!PlayerLaunch.beginPlay()) return;
+      try {
       // Resume → reuse last magnet. From-beginning / first play → torrent picker.
       final forceBeginning = fromBeginning;
       final wantResume = forceBeginning
@@ -322,7 +327,7 @@ class _DetailBodyState extends ConsumerState<_DetailBody> {
           : null;
 
       void openPlayer(StreamStart started) {
-        if (!context.mounted) return;
+        if (!context.mounted || playbackSessionActive) return;
         final queryTitle = (season != null && episode != null)
             ? '${item.title} S${season.toString().padLeft(2, '0')}E${episode.toString().padLeft(2, '0')}'
             : item.title;
@@ -378,6 +383,9 @@ class _DetailBodyState extends ConsumerState<_DetailBody> {
       if (started == null || opened) return;
       if (!context.mounted) return;
       openPlayer(started);
+      } finally {
+        PlayerLaunch.endPlay();
+      }
     }
 
     Future<void> playEpisode(Season season, Episode episode) async {

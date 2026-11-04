@@ -40,10 +40,19 @@ import kotlinx.coroutines.launch
 class DetailsActivity : FragmentActivity() {
     private var item: TitleItem? = null
     private var searching = false
+    private var lastPlayerLaunchMs = 0L
     private var searchJob: kotlinx.coroutines.Job? = null
     private var playSeason: Int? = null
     private var playEpisode: Int? = null
     private var playEpisodeId: String? = null
+
+    override fun onStop() {
+        // Left for the trailer app or Home while Play was still looking up
+        // sources: don't open a player over whatever is on screen now.
+        searchJob?.cancel()
+        searchJob = null
+        super.onStop()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -241,6 +250,8 @@ class DetailsActivity : FragmentActivity() {
             }
             PbGlide.thumb(trailerThumb, trailer.thumbnailUrl, wDp = 220, hDp = 124)
             trailerCard.setOnClickListener {
+                // Play is starting: the trailer app would end up behind a second video.
+                if (searching) return@setOnClickListener
                 startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(trailer.watchUrl)))
             }
         } else {
@@ -687,6 +698,10 @@ class DetailsActivity : FragmentActivity() {
         try {
             // Flutter parity: open the player immediately; torrent starts there.
             // Waiting for peers on DetailsActivity was killing this screen on TV.
+            // A double press must not stack two players.
+            val now = android.os.SystemClock.elapsedRealtime()
+            if (now - lastPlayerLaunchMs < 2_000L) return
+            lastPlayerLaunchMs = now
             val session = "local-${System.currentTimeMillis()}"
             AppLog.i(TAG, "launch player magnet=${magnet.take(48)}… session=$session")
             val seek = when {

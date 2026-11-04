@@ -199,23 +199,29 @@ data class MediaSegment(
 ) {
     fun contains(positionMs: Int, durationMs: Int): Boolean {
         val start = startMs.coerceAtLeast(0)
-        val end = endMs ?: if (durationMs > 0) durationMs else Int.MAX_VALUE / 2
+        // Same end as skipping to: with a missing or bad end time Skip Intro used
+        // to treat the rest of the episode as intro and never went away.
+        val end = openingEnd(durationMs) ?: endMs ?: if (durationMs > 0) durationMs else Int.MAX_VALUE / 2
         val activeEnd = if (end > start + 400) end - 250 else end
         return positionMs >= start && positionMs < activeEnd
     }
 
-    fun skipTargetMs(durationMs: Int): Int {
-        val isOpening = kind.equals("INTRO", true) || kind.equals("RECAP", true)
+    /**
+     * Where an intro / recap really ends: 90 s from its start when the end time
+     * is missing or can't be right (most of the episode, or the end of the file).
+     * Null for other segments.
+     */
+    private fun openingEnd(durationMs: Int): Int? {
+        if (!kind.equals("INTRO", true) && !kind.equals("RECAP", true)) return null
         val end = endMs
-        val target = when {
-            end != null && end > startMs -> {
-                val span = end - startMs
-                val absurd = isOpening && span > 8 * 60 * 1000
-                val nearEof = durationMs >= 2 * 60 * 1000 && end >= durationMs - 15_000
-                if (absurd || (isOpening && nearEof)) startMs + 90_000 else end + 50
-            }
-            else -> startMs + 90_000
-        }
+        val usable = end != null && end > startMs && end - startMs <= 8 * 60 * 1000 &&
+            !(durationMs >= 2 * 60 * 1000 && end >= durationMs - 15_000)
+        return if (usable) end else startMs + 90_000
+    }
+
+    fun skipTargetMs(durationMs: Int): Int {
+        val end = openingEnd(durationMs) ?: endMs
+        val target = if (end != null && end > startMs) end + 50 else startMs + 90_000
         return if (durationMs > 2000) target.coerceAtMost(durationMs - 2000) else target
     }
 }

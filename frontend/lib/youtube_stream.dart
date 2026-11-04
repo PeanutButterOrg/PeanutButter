@@ -1,3 +1,5 @@
+import 'player_launch.dart';
+import 'providers/settings.dart' show playbackSessionActive;
 import 'dart:async';
 
 import 'package:flutter/widgets.dart';
@@ -145,6 +147,8 @@ Future<void> playTrailer(
   required String title,
   String? preferredQuality,
 }) async {
+  final token = PlayerLaunch.beginTrailer();
+  if (token == null) return;
   final height = youtubeHeightForQuality(preferredQuality ?? '720p');
   YoutubeQualityOption? pick;
   try {
@@ -153,7 +157,7 @@ Future<void> playTrailer(
   } catch (_) {
     pick = null;
   }
-  if (!context.mounted) return;
+  if (!context.mounted || !PlayerLaunch.trailerWanted(token) || playbackSessionActive) return;
   context.push(
     '/player/trailer',
     extra: {
