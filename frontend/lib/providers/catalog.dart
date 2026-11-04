@@ -20,6 +20,8 @@ List<TitleItem> _dedupeTitles(List<TitleItem> existing, List<TitleItem> incoming
   return out;
 }
 
+const _catalogPerPage = 50;
+
 final selectedKindProvider = StateProvider<String>((ref) => 'MOVIE');
 
 final catalogEpochProvider = StateProvider<int>((ref) => 0);
@@ -161,7 +163,7 @@ class CatalogNotifier extends StateNotifier<CatalogState> {
       final result = await client.query(
         QueryOptions(
           document: gql(GET_CATALOG),
-          variables: filter.toVariables(page: page, perPage: 50),
+          variables: filter.toVariables(page: page, perPage: _catalogPerPage),
           fetchPolicy: FetchPolicy.networkOnly,
         ),
       );
@@ -187,7 +189,11 @@ class CatalogNotifier extends StateNotifier<CatalogState> {
       final merged = replace ? items : _dedupeTitles(state.items, items);
       state = state.copyWith(
         items: merged,
-        page: conn['page'] as int? ?? page,
+        // A short page: the server is still bringing titles in. Ask for it again,
+        // or the ones landing in the gap are skipped (merging drops repeats).
+        page: items.length >= _catalogPerPage || !(conn['hasNextPage'] as bool? ?? false)
+            ? (conn['page'] as int?) ?? page
+            : page - 1,
         hasNextPage: conn['hasNextPage'] as bool? ?? false,
         totalCount: conn['totalCount'] as int? ?? items.length,
         loading: false,
@@ -282,7 +288,7 @@ class LibraryNotifier extends StateNotifier<CatalogState> {
       final result = await client.query(
         QueryOptions(
           document: gql(GET_CATALOG),
-          variables: filter.toVariables(page: page, perPage: 50),
+          variables: filter.toVariables(page: page, perPage: _catalogPerPage),
           fetchPolicy: FetchPolicy.networkOnly,
         ),
       );
@@ -308,7 +314,11 @@ class LibraryNotifier extends StateNotifier<CatalogState> {
       final merged = replace ? items : _dedupeTitles(state.items, items);
       state = state.copyWith(
         items: merged,
-        page: conn['page'] as int? ?? page,
+        // A short page: the server is still bringing titles in. Ask for it again,
+        // or the ones landing in the gap are skipped (merging drops repeats).
+        page: items.length >= _catalogPerPage || !(conn['hasNextPage'] as bool? ?? false)
+            ? (conn['page'] as int?) ?? page
+            : page - 1,
         hasNextPage: conn['hasNextPage'] as bool? ?? false,
         totalCount: conn['totalCount'] as int? ?? items.length,
         loading: false,

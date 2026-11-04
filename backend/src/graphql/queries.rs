@@ -39,113 +39,38 @@ impl Query {
         let per_page = per_page.unwrap_or(24).clamp(1, 100);
         let offset = (page - 1) * per_page;
 
-        // Lazy TMDB pagination for empty shelves. Never wait on this while a full
-        // sync owns the ingest pool — serve whatever is already in Postgres.
         let mut remote_has_more = false;
-        let syncing = state.syncing.load(std::sync::atomic::Ordering::Relaxed);
         let personal = matches!(
             sort,
             SortField::ContinueWatching | SortField::Favorites | SortField::Watched
         );
-        // Filters (genre / years / rating): pull matching titles from TMDB
-        // Discover as the user scrolls, instead of unfiltered shelf pages that
-        // the filters would then mostly hide.
-        let discover = crate::ingest::tmdb::DiscoverFilter {
-            genre: filter.genre.clone(),
-            year_min: filter.year_min,
-            year_max: filter.year_max,
-            rating_min: filter.rating_min,
-        };
-        let discover_active = discover.is_active() && !personal;
-        if discover_active {
-            let kind = filter.kind.map(|k| match k {
-                TitleKind::Movie => "movie",
-                TitleKind::Series => "series",
-                TitleKind::Anime => "anime",
-            });
-            let ingest = crate::ingest::IngestContext::from(state);
-            remote_has_more = match tokio::time::timeout(
-                std::time::Duration::from_secs(6),
-                crate::ingest::tmdb::ensure_discover_pages_for_catalog(
-                    &ingest, kind, &discover, page, per_page,
-                ),
-            )
-            .await
-            {
+        if !personal {
+            let shelf = match sort {
+                SortField::Trending => Some("trending"),
+                SortField::Popularity => Some("popular"),
+                SortField::DateAdded => Some("fresh"),
+                _ => None,
+            };
+            // Runs on its own task: a slow TMDB only delays this response. Cancelling
+            // the fetch when the wait ends would throw away titles half-way in.
+            let job = tokio::spawn(fill_catalog_page(
+                crate::ingest::IngestContext::from(state),
+                filter.clone(),
+                shelf,
+                discover_order(sort),
+                state.config.live.preferred_language_codes(),
+                page,
+                per_page,
+            ));
+            remote_has_more = match tokio::time::timeout(CATALOG_FILL_WAIT, job).await {
                 Ok(Ok(more)) => more,
                 Ok(Err(e)) => {
-                    tracing::warn!(error = %e, page, "TMDB discover for filters failed");
+                    tracing::warn!(error = %e, page, "catalog fill task failed");
                     false
                 }
-                // Still fetching: the next scroll picks up what landed.
+                // Still fetching: what lands shows on the next request.
                 Err(_) => true,
             };
-            if !syncing {
-                let ingest_bg = crate::ingest::IngestContext::from(state);
-                let discover_bg = discover.clone();
-                let next = page + 1;
-                tokio::spawn(async move {
-                    let _ = crate::ingest::tmdb::ensure_discover_pages_for_catalog(
-                        &ingest_bg, kind, &discover_bg, next, per_page,
-                    )
-                    .await;
-                });
-            }
-        }
-        if let Some(shelf) = match sort {
-            _ if discover_active => None,
-            SortField::Trending => Some("trending"),
-            SortField::Popularity => Some("popular"),
-            SortField::DateAdded => Some("fresh"),
-            _ => None,
-        } {
-            let kind = filter.kind.map(|k| match k {
-                TitleKind::Movie => "movie",
-                TitleKind::Series => "series",
-                TitleKind::Anime => "anime",
-            });
-            let ingest = crate::ingest::IngestContext::from(state);
-            if syncing {
-                remote_has_more = crate::ingest::tmdb::shelf_has_more_for_catalog(&ingest, shelf, kind)
-                    .await
-                    .unwrap_or(true);
-            } else {
-                let ensure_depth = if page <= 1 { 3 } else { page };
-                remote_has_more = match tokio::time::timeout(
-                    std::time::Duration::from_secs(4),
-                    crate::ingest::tmdb::ensure_shelf_pages_for_catalog(
-                        &ingest,
-                        shelf,
-                        kind,
-                        ensure_depth,
-                        per_page,
-                    ),
-                )
-                .await
-                {
-                    Ok(Ok(more)) => more,
-                    Ok(Err(e)) => {
-                        tracing::warn!(error = %e, shelf, page, "TMDB shelf ensure failed");
-                        crate::ingest::tmdb::shelf_has_more_for_catalog(&ingest, shelf, kind)
-                            .await
-                            .unwrap_or(true)
-                    }
-                    Err(_) => {
-                        tracing::warn!(shelf, page, "TMDB shelf ensure timed out");
-                        true
-                    }
-                };
-                // Warm the next page in the background after we've served this one.
-                let warm_page = ensure_depth + 1;
-                let per_bg = per_page;
-                let ingest_bg = crate::ingest::IngestContext::from(state);
-                tokio::spawn(async move {
-                    let _ = crate::ingest::tmdb::ensure_shelf_pages_for_catalog(
-                        &ingest_bg, shelf, kind, warm_page, per_bg,
-                    )
-                    .await;
-                });
-            }
         }
 
         let continue_watching = sort == SortField::ContinueWatching;
@@ -1165,10 +1090,92 @@ fn year_boost_expr() -> &'static str {
     "CASE WHEN t.year >= date_part('year', CURRENT_DATE)::int - 1 THEN 3.0 WHEN t.year >= date_part('year', CURRENT_DATE)::int - 3 THEN 2.0 WHEN t.year >= date_part('year', CURRENT_DATE)::int - 7 THEN 1.35 ELSE 1.0 END"
 }
 
-/// 1 when the title was on TMDB's trending list in the latest sync (12 h of
-/// slack: one sync takes a while and lists overlap), else 0. Relative to the
-/// newest stamp, so a few failed syncs don't empty the shelf.
-const TRENDING_NOW_SQL: &str = "(CASE WHEN t.list_trending_at >= (SELECT max(t2.list_trending_at) FROM titles t2) - interval '12 hours' THEN 1 ELSE 0 END)";
+/// TMDB's position for the title on a list (see tmdb_shelf_items), or NULL.
+fn shelf_rank_sql(shelf: &str) -> String {
+    format!(
+        "(SELECT si.rank FROM tmdb_shelf_items si WHERE si.shelf = '{shelf}' AND si.tmdb_id = t.tmdb_id \
+         AND si.media = (CASE WHEN t.kind = 'movie' THEN 'movie' ELSE 'tv' END))"
+    )
+}
+
+/// How long a catalog request waits for TMDB before answering with what's here.
+const CATALOG_FILL_WAIT: std::time::Duration = std::time::Duration::from_secs(6);
+
+fn discover_order(sort: SortField) -> crate::ingest::tmdb::DiscoverOrder {
+    use crate::ingest::tmdb::DiscoverOrder;
+    match sort {
+        SortField::Rating => DiscoverOrder::Rating,
+        SortField::DateAdded | SortField::Year => DiscoverOrder::Newest,
+        _ => DiscoverOrder::Popular,
+    }
+}
+
+/// Bring in titles from TMDB until the requested page can be filled or TMDB runs
+/// out. Titles already stored are never downloaded again. Returns whether TMDB
+/// has more.
+async fn fill_catalog_page(
+    ingest: crate::ingest::IngestContext,
+    filter: TitleFilter,
+    shelf: Option<&'static str>,
+    order: crate::ingest::tmdb::DiscoverOrder,
+    langs: Vec<String>,
+    page: i32,
+    per_page: i32,
+) -> bool {
+    use crate::ingest::tmdb;
+    let kind = filter.kind.map(|k| match k {
+        TitleKind::Movie => "movie",
+        TitleKind::Series => "series",
+        TitleKind::Anime => "anime",
+    });
+    let discover = tmdb::DiscoverFilter {
+        genre: filter.genre.clone(),
+        year_min: filter.year_min,
+        year_max: filter.year_max,
+        rating_min: filter.rating_min,
+        order,
+    };
+    let filtered = discover.is_active();
+    let shelf = shelf.filter(|_| !filtered);
+    if !filtered && shelf.is_none() {
+        return false;
+    }
+    // Enough rows to fill this page, plus the next so scrolling doesn't wait.
+    let wanted = (i64::from(page) + 1) * i64::from(per_page);
+    let mut depth = page;
+    loop {
+        let more = if filtered {
+            tmdb::ensure_discover_pages_for_catalog(&ingest, kind, &discover, depth, per_page).await
+        } else {
+            tmdb::ensure_shelf_pages_for_catalog(&ingest, shelf.unwrap_or_default(), kind, depth, per_page).await
+        };
+        let more = match more {
+            Ok(more) => more,
+            Err(e) => {
+                tracing::warn!(error = %e, page, depth, "TMDB catalog fill failed");
+                return false;
+            }
+        };
+        if !more || ingest.syncing.load(std::sync::atomic::Ordering::Relaxed) {
+            return more;
+        }
+        let mut count = sqlx::QueryBuilder::new(
+            "SELECT COUNT(*) FROM titles t LEFT JOIN ratings r ON r.title_id = t.id WHERE 1=1",
+        );
+        apply_filters(&mut count, &filter);
+        apply_language_filter(&mut count, &langs);
+        let rows: i64 = count
+            .build_query_as::<(i64,)>()
+            .fetch_one(&ingest.pool)
+            .await
+            .map(|(n,)| n)
+            .unwrap_or(wanted);
+        if rows >= wanted || depth > page + 30 {
+            return more;
+        }
+        depth += 1;
+    }
+}
 
 fn order_sql(kind: Option<TitleKind>, sort: SortField, dir: SortDir) -> String {
     let score = score_expr(kind);
@@ -1176,27 +1183,29 @@ fn order_sql(kind: Option<TitleKind>, sort: SortField, dir: SortDir) -> String {
     let year_boost = year_boost_expr();
     let asc = matches!(dir, SortDir::Asc);
     // Popcorn Time classic sorts (popcorn-api movies controller):
-    //   trending  → rating.watching  (we store TMDB popularity ≈ Trakt watching)
-    //   rating    → rating.percentage + votes
     //   last added→ released (theatrical / first-air date)
-    // Popular in the app maps to PT's rating sort.
     let watching = "COALESCE(r.tmdb_popularity, NULLIF(r.anilist_popularity, 0)::double precision, 0)";
     let percentage = format!("({score})");
     let released = "COALESCE(t.released_at, make_date(COALESCE(NULLIF(t.year, 0), 1900), 1, 1))";
     match sort {
+        // Weighted by votes: a 10.0 from one vote used to top the list.
         SortField::Rating => {
+            let weighted = format!(
+                "(CASE WHEN {percentage} > 0 THEN ({percentage} * ({votes}) + 3250.0) / (({votes}) + 500.0) ELSE 0 END)"
+            );
             if asc {
-                format!("{percentage} ASC NULLS LAST, {votes} ASC NULLS LAST, t.title ASC, t.id ASC")
+                format!("{weighted} ASC, {votes} ASC NULLS LAST, t.title ASC, t.id ASC")
             } else {
-                format!("{percentage} DESC NULLS LAST, {votes} DESC NULLS LAST, t.title ASC, t.id ASC")
+                format!("{weighted} DESC, {votes} DESC NULLS LAST, t.title ASC, t.id ASC")
             }
         }
-        // Popular = PT `sort=rating` (score %, then votes).
+        // Popular = TMDB's popular list, in its order, then the popularity score.
         SortField::Popularity => {
+            let rank = shelf_rank_sql("popular");
             if asc {
-                format!("{percentage} ASC NULLS LAST, {votes} ASC NULLS LAST, t.title ASC, t.id ASC")
+                format!("{rank} DESC NULLS FIRST, {watching} ASC NULLS LAST, t.title ASC, t.id ASC")
             } else {
-                format!("{percentage} DESC NULLS LAST, {votes} DESC NULLS LAST, t.title ASC, t.id ASC")
+                format!("{rank} ASC NULLS LAST, {watching} DESC NULLS LAST, {votes} DESC NULLS LAST, t.title ASC, t.id ASC")
             }
         }
         SortField::Year => {
@@ -1221,19 +1230,16 @@ fn order_sql(kind: Option<TitleKind>, sort: SortField, dir: SortDir) -> String {
                 format!("{released} DESC NULLS LAST, t.title ASC, t.id ASC")
             }
         }
-        // Trending = PT `sort=trending` → watching / buzz. Titles on TMDB's
-        // trending list in the latest sync come first: the stored popularity
-        // is only refreshed while a title is on a list, so titles that
-        // trended weeks ago kept their old score and stayed on top.
+        // Trending = TMDB's trending list, in its order, then the popularity score.
         SortField::Trending => {
-            let on_list = TRENDING_NOW_SQL;
+            let on_list = shelf_rank_sql("trending");
             if asc {
                 format!(
-                    "{on_list} ASC, {watching} ASC NULLS LAST, {votes} ASC NULLS LAST, ({score}) * ({year_boost}) ASC NULLS LAST, t.title ASC, t.id ASC"
+                    "{on_list} DESC NULLS FIRST, {watching} ASC NULLS LAST, {votes} ASC NULLS LAST, ({score}) * ({year_boost}) ASC NULLS LAST, t.title ASC, t.id ASC"
                 )
             } else {
                 format!(
-                    "{on_list} DESC, {watching} DESC NULLS LAST, {votes} DESC NULLS LAST, ({score}) * ({year_boost}) DESC NULLS LAST, t.title ASC, t.id ASC"
+                    "{on_list} ASC NULLS LAST, {watching} DESC NULLS LAST, {votes} DESC NULLS LAST, ({score}) * ({year_boost}) DESC NULLS LAST, t.title ASC, t.id ASC"
                 )
             }
         }

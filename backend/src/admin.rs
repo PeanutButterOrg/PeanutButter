@@ -1097,7 +1097,6 @@ async fn render(
         if authed { "Console" } else { "Sign in" },
         &body,
         authed,
-        tab == "catalog",
     ))
 }
 
@@ -1947,14 +1946,9 @@ The database is backed up first. Apps reconnect on their own after about a minut
 }
 
 
-fn shell(title: &str, body: &str, authed: bool, wide: bool) -> String {
-    let width = if !authed {
-        "440px"
-    } else if wide {
-        "1280px"
-    } else {
-        "1160px"
-    };
+fn shell(title: &str, body: &str, authed: bool) -> String {
+    // One width for every tab: switching 1160 / 1280 px made the page jump.
+    let width = if authed { "1280px" } else { "440px" };
     format!(
         r#"<!doctype html>
 <html lang="en">
@@ -1983,6 +1977,8 @@ fn shell(title: &str, body: &str, authed: bool, wide: bool) -> String {
     --shadow: 0 1px 0 #ffffff08 inset, 0 12px 32px -18px #000000cc;
   }}
   * {{ box-sizing: border-box; }}
+  /* Keep the scrollbar's space on short tabs too, or the layout shifts sideways. */
+  html {{ scrollbar-gutter: stable; overflow-y: scroll; }}
   html, body {{ margin: 0; min-height: 100%; }}
   body {{
     font: 15px/1.55 "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;

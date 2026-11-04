@@ -983,7 +983,7 @@ pub async fn fetch_movies(ctx: &IngestContext) -> Result<()> {
             tagged.entry(id).or_default().merge(tags);
         }
     }
-    let all_ids: Vec<(i32, ShelfTags)> = tagged.into_iter().collect();
+    let all_ids = skip_recently_refreshed(ctx, tagged.into_iter().collect(), "movie").await;
     let total = all_ids.len();
     info!(
         total,
@@ -1092,7 +1092,7 @@ pub async fn fetch_tv(ctx: &IngestContext) -> Result<()> {
             tagged.entry(id).or_default().merge(tags);
         }
     }
-    let all_ids: Vec<(i32, ShelfTags)> = tagged.into_iter().collect();
+    let all_ids = skip_recently_refreshed(ctx, tagged.into_iter().collect(), "tv").await;
     let total = all_ids.len();
     info!(
         total,
@@ -1237,6 +1237,15 @@ async fn list_movie_ids(
             .unwrap_or(max_pages)
             .clamp(1, TMDB_LIST_MAX_PAGES);
         if let Some((shelf, media)) = record {
+            let _ = db::record_tmdb_shelf_items(
+                &ctx.pool,
+                shelf,
+                media,
+                page,
+                TMDB_LIST_PAGE_SIZE,
+                &batch,
+            )
+            .await;
             let _ = db::record_tmdb_shelf_page(
                 &ctx.pool,
                 shelf,
@@ -1301,6 +1310,15 @@ async fn list_tv_ids(
             .unwrap_or(max_pages)
             .clamp(1, TMDB_LIST_MAX_PAGES);
         if let Some((shelf, media)) = record {
+            let _ = db::record_tmdb_shelf_items(
+                &ctx.pool,
+                shelf,
+                media,
+                page,
+                TMDB_LIST_PAGE_SIZE,
+                &batch,
+            )
+            .await;
             let _ = db::record_tmdb_shelf_page(
                 &ctx.pool,
                 shelf,
@@ -1354,6 +1372,16 @@ pub struct DiscoverFilter {
     pub year_min: Option<i32>,
     pub year_max: Option<i32>,
     pub rating_min: Option<f64>,
+    /// What the catalog is sorted by, so new titles come from the same end of the list.
+    pub order: DiscoverOrder,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum DiscoverOrder {
+    #[default]
+    Popular,
+    Rating,
+    Newest,
 }
 
 impl DiscoverFilter {
@@ -1369,7 +1397,13 @@ impl DiscoverFilter {
     /// `/discover/{media}?…`, or None when the genre doesn't exist on TMDB
     /// (nothing there could match, so don't fetch).
     fn path(&self, media: &str, genre_id: Option<Option<i32>>) -> Option<String> {
-        let mut path = format!("/discover/{media}?sort_by=popularity.desc&include_adult=false");
+        let date_field = if media == "tv" { "first_air_date" } else { "primary_release_date" };
+        let sort_by = match self.order {
+            DiscoverOrder::Popular => "popularity.desc".to_string(),
+            DiscoverOrder::Rating => "vote_average.desc".to_string(),
+            DiscoverOrder::Newest => format!("{date_field}.desc"),
+        };
+        let mut path = format!("/discover/{media}?sort_by={sort_by}&include_adult=false");
         match genre_id {
             Some(Some(id)) => path.push_str(&format!("&with_genres={id}")),
             Some(None) => return None,
@@ -1385,10 +1419,17 @@ impl DiscoverFilter {
         }
         if let Some(y) = self.year_max {
             path.push_str(&format!("&{lte}={y}-12-31"));
+        } else if self.order == DiscoverOrder::Newest {
+            // Newest first would otherwise be all unreleased titles.
+            let today = chrono::Utc::now().date_naive();
+            path.push_str(&format!("&{lte}={today}"));
         }
         if let Some(r) = self.rating_min.filter(|r| *r > 0.0) {
-            // A floor on votes keeps 2-vote 10/10 obscurities out.
-            path.push_str(&format!("&vote_average.gte={r:.1}&vote_count.gte=100"));
+            path.push_str(&format!("&vote_average.gte={r:.1}"));
+        }
+        // A floor on votes keeps 2-vote 10/10 obscurities out.
+        if self.rating_min.is_some_and(|r| r > 0.0) || self.order == DiscoverOrder::Rating {
+            path.push_str("&vote_count.gte=100");
         }
         Some(path)
     }
@@ -1475,9 +1516,12 @@ pub async fn ensure_discover_pages_for_catalog(
         // Filters discard some results (language lock, blocked genres): one page of slack.
         (pages + 1).clamp(1, TMDB_LIST_MAX_PAGES)
     };
+    // Anime comes from AniList: titles from TMDB's TV list are stored as series,
+    // so fetching them here never adds anything to an anime page.
     let medias: Vec<&str> = match kind {
         Some("movie") => vec!["movie"],
-        Some("series") | Some("anime") => vec!["tv"],
+        Some("series") => vec!["tv"],
+        Some("anime") => vec![],
         _ => vec!["movie", "tv"],
     };
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -1504,8 +1548,8 @@ pub async fn ensure_discover_pages_for_catalog(
             let (ids, total_pages) = fetch_list_page_ids(ctx, &path, true, page).await?;
             total = total_pages.min(TMDB_LIST_MAX_PAGES);
             done = page;
-            discover_progress().insert(key.clone(), (done, total));
             if ids.is_empty() {
+                discover_progress().insert(key.clone(), (done, total));
                 break;
             }
             let kinds: &[&str] = if media == "tv" { &["series", "anime"] } else { &["movie"] };
@@ -1535,6 +1579,9 @@ pub async fn ensure_discover_pages_for_catalog(
                 .buffer_unordered(TMDB_CONCURRENCY.min(6))
                 .collect::<Vec<_>>()
                 .await;
+            // Only now: marking the page done before its titles were stored meant a
+            // cancelled request lost them for good, and filters stopped finding new titles.
+            discover_progress().insert(key.clone(), (done, total));
         }
         has_more |= done < total;
     }
@@ -1564,7 +1611,9 @@ pub async fn ensure_shelf_pages_for_catalog(
 
     let medias: Vec<&str> = match kind {
         Some("movie") => vec!["movie"],
-        Some("series") | Some("anime") => vec!["tv"],
+        Some("series") => vec!["tv"],
+        // Anime comes from AniList, not TMDB's lists.
+        Some("anime") => vec![],
         _ => vec!["movie", "tv"],
     };
 
@@ -1575,6 +1624,65 @@ pub async fn ensure_shelf_pages_for_catalog(
     shelf_has_more_remote(ctx, shelf, kind).await
 }
 
+/// A sync re-reads the same lists every few hours: titles refreshed in the last
+/// day only get their shelf tags, not another round of TMDB detail calls.
+async fn skip_recently_refreshed(
+    ctx: &IngestContext,
+    ids: Vec<(i32, ShelfTags)>,
+    media: &str,
+) -> Vec<(i32, ShelfTags)> {
+    let only_ids: Vec<i32> = ids.iter().map(|(id, _)| *id).collect();
+    let kinds: &[&str] = if media == "tv" { &["series", "anime"] } else { &["movie"] };
+    let fresh: Vec<(i32, Uuid)> = sqlx::query_as(
+        r#"
+        SELECT t.tmdb_id, t.id FROM titles t
+        JOIN ratings r ON r.title_id = t.id
+        WHERE t.tmdb_id = ANY($1) AND t.kind = ANY($2)
+          AND r.updated_at > now() - interval '24 hours'
+        "#,
+    )
+    .bind(&only_ids)
+    .bind(kinds)
+    .fetch_all(&ctx.pool)
+    .await
+    .unwrap_or_default();
+    let fresh: std::collections::HashMap<i32, Uuid> = fresh.into_iter().collect();
+    let mut todo = Vec::with_capacity(ids.len());
+    for (id, tags) in ids {
+        match fresh.get(&id) {
+            Some(title_id) => {
+                if let Err(e) = mark_shelf_tags(ctx, *title_id, tags).await {
+                    warn!(tmdb_id = id, error = %e, "shelf tag update failed");
+                }
+            }
+            None => todo.push((id, tags)),
+        }
+    }
+    todo
+}
+
+/// Stamp titles already in the catalog as on this list; returns the ids still
+/// to download.
+async fn tag_known_titles(ctx: &IngestContext, ids: &[i32], media: &str, tags: ShelfTags) -> Vec<i32> {
+    let kinds: &[&str] = if media == "tv" { &["series", "anime"] } else { &["movie"] };
+    let known: Vec<(i32, Uuid)> = sqlx::query_as(
+        "SELECT tmdb_id, id FROM titles WHERE tmdb_id = ANY($1) AND kind = ANY($2)",
+    )
+    .bind(ids)
+    .bind(kinds)
+    .fetch_all(&ctx.pool)
+    .await
+    .unwrap_or_default();
+    let mut seen = std::collections::HashSet::new();
+    for (tmdb_id, title_id) in known {
+        seen.insert(tmdb_id);
+        if let Err(e) = mark_shelf_tags(ctx, title_id, tags).await {
+            warn!(tmdb_id, error = %e, "shelf tag update failed");
+        }
+    }
+    ids.iter().copied().filter(|id| !seen.contains(id)).collect()
+}
+
 async fn shelf_has_more_remote(
     ctx: &IngestContext,
     shelf: &str,
@@ -1582,7 +1690,9 @@ async fn shelf_has_more_remote(
 ) -> Result<bool> {
     let medias: Vec<&str> = match kind {
         Some("movie") => vec!["movie"],
-        Some("series") | Some("anime") => vec!["tv"],
+        Some("series") => vec!["tv"],
+        // Anime comes from AniList, not TMDB's lists.
+        Some("anime") => vec![],
         _ => vec!["movie", "tv"],
     };
     for media in medias {
@@ -1609,7 +1719,9 @@ async fn ensure_shelf_media_pages(
         return Ok(());
     };
     let tags = ShelfTags::from_path(path);
-    let mut page = db::tmdb_shelf_max_page(&ctx.pool, shelf, media).await? + 1;
+    // From the top: pages go stale after 12 h (see tmdb_shelf_page_synced), and
+    // deep pages were never refreshed once fetched.
+    let mut page = 1;
     let known_total = db::tmdb_shelf_total_pages(&ctx.pool, shelf, media).await?;
     let mut total_cap = if known_total > 0 {
         known_total.min(TMDB_LIST_MAX_PAGES)
@@ -1626,6 +1738,15 @@ async fn ensure_shelf_media_pages(
         let ids = fetch_list_page_ids(ctx, path, false, page).await?;
         let (page_ids, total_pages) = ids;
         total_cap = total_pages.min(TMDB_LIST_MAX_PAGES);
+        let _ = db::record_tmdb_shelf_items(
+            &ctx.pool,
+            shelf,
+            media,
+            page,
+            TMDB_LIST_PAGE_SIZE,
+            &page_ids,
+        )
+        .await;
         let _ = db::record_tmdb_shelf_page(
             &ctx.pool,
             shelf,
@@ -1639,8 +1760,11 @@ async fn ensure_shelf_media_pages(
             break;
         }
 
-        // Ingest this page's titles (detail + shelf tag) so catalog can return them.
-        stream::iter(page_ids)
+        // Titles already here only get the tag; never download them again.
+        let new_ids = tag_known_titles(ctx, &page_ids, media, tags).await;
+
+        // Ingest the new titles (detail + shelf tag) so catalog can return them.
+        stream::iter(new_ids)
             .map(|id| {
                 let ctx = ctx.clone();
                 async move {
@@ -2900,6 +3024,7 @@ mod discover_tests {
     #[test]
     fn builds_discover_paths() {
         let f = DiscoverFilter {
+            order: DiscoverOrder::Popular,
             genre: Some("Horror".into()),
             year_min: Some(1980),
             year_max: Some(1989),

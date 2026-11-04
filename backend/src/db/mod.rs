@@ -42,6 +42,7 @@ const EMBEDDED_MIGRATION_029: &str = include_str!("migrations/029_stream_provide
 const EMBEDDED_MIGRATION_030: &str = include_str!("migrations/030_server_auto_update.sql");
 const EMBEDDED_MIGRATION_031: &str = include_str!("migrations/031_console_sessions.sql");
 const EMBEDDED_MIGRATION_032: &str = include_str!("migrations/032_content_checked.sql");
+const EMBEDDED_MIGRATION_033: &str = include_str!("migrations/033_shelf_items.sql");
 
 pub async fn connect(database_url: &str) -> Result<PgPool> {
     connect_with(database_url, 40, 4, Duration::from_secs(15)).await
@@ -119,6 +120,7 @@ pub async fn run_migrations(pool: &PgPool, extra_dir: Option<&Path>) -> Result<(
     apply_one(pool, "030_server_auto_update", EMBEDDED_MIGRATION_030).await?;
     apply_one(pool, "031_console_sessions", EMBEDDED_MIGRATION_031).await?;
     apply_one(pool, "032_content_checked", EMBEDDED_MIGRATION_032).await?;
+    apply_one(pool, "033_shelf_items", EMBEDDED_MIGRATION_033).await?;
 
     if let Some(dir) = extra_dir {
         if dir.is_dir() {
@@ -168,6 +170,7 @@ pub async fn run_migrations(pool: &PgPool, extra_dir: Option<&Path>) -> Result<(
                     || version == "030_server_auto_update"
                     || version == "031_console_sessions"
                     || version == "032_content_checked"
+                    || version == "033_shelf_items"
                 {
                     continue;
                 }
@@ -299,6 +302,7 @@ pub async fn tmdb_shelf_page_synced(
         SELECT EXISTS(
             SELECT 1 FROM tmdb_shelf_pages
             WHERE shelf = $1 AND media = $2 AND page = $3
+              AND synced_at > now() - interval '12 hours'
         )
         "#,
     )
@@ -308,6 +312,46 @@ pub async fn tmdb_shelf_page_synced(
     .fetch_one(pool)
     .await?;
     Ok(exists)
+}
+
+/// TMDB's order for one page of a list. Page 1 is a new snapshot, so it also
+/// drops entries that haven't been seen for a while.
+pub async fn record_tmdb_shelf_items(
+    pool: &PgPool,
+    shelf: &str,
+    media: &str,
+    page: i32,
+    page_size: i32,
+    tmdb_ids: &[i32],
+) -> Result<()> {
+    if page <= 1 {
+        sqlx::query(
+            "DELETE FROM tmdb_shelf_items WHERE shelf = $1 AND media = $2 AND synced_at < now() - interval '12 hours'",
+        )
+        .bind(shelf)
+        .bind(media)
+        .execute(pool)
+        .await?;
+    }
+    let ranks: Vec<i32> = (0..tmdb_ids.len() as i32)
+        .map(|i| (page.max(1) - 1) * page_size + i)
+        .collect();
+    sqlx::query(
+        r#"
+        INSERT INTO tmdb_shelf_items (shelf, media, tmdb_id, rank, synced_at)
+        SELECT $1, $2, u.id, u.rank, now() FROM UNNEST($3::int[], $4::int[]) AS u(id, rank)
+        ON CONFLICT (shelf, media, tmdb_id) DO UPDATE SET
+            rank = EXCLUDED.rank,
+            synced_at = now()
+        "#,
+    )
+    .bind(shelf)
+    .bind(media)
+    .bind(tmdb_ids)
+    .bind(&ranks)
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 pub async fn record_tmdb_shelf_page(

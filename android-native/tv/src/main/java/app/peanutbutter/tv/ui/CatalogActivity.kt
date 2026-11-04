@@ -373,19 +373,21 @@ class CatalogFragment : VerticalGridSupportFragment() {
                     kind = kind,
                     sort = sortNow,
                     page = pageToLoad,
-                    perPage = 48,
+                    perPage = PER_PAGE,
                     genre = genre,
                     yearMin = year,
                     yearMax = year,
                     ratingMin = ratingMin,
                 )
                 if (gen != loadGen) return@launch
-                result.items.forEach {
+                result.items.filter { new -> loaded.none { it.id == new.id } }.forEach {
                     loaded.add(it)
                     gridAdapter.add(it)
                 }
                 hasNext = result.hasNextPage
-                page = pageToLoad + 1
+                // A short page: the server is still bringing titles in. Ask for it
+                // again, or the ones landing in the gap are skipped.
+                if (result.items.size >= PER_PAGE || !result.hasNextPage) page = pageToLoad + 1
             } catch (e: Exception) {
                 Log.e(TAG, "catalog load failed kind=$kind sort=$sort", e)
                 Toast.makeText(
@@ -393,7 +395,7 @@ class CatalogFragment : VerticalGridSupportFragment() {
                     e.message ?: getString(R.string.error_generic),
                     Toast.LENGTH_LONG,
                 ).show()
-                hasNext = false
+                // Keep paging: the next scroll tries again.
             } finally {
                 if (gen == loadGen) {
                     loading = false
@@ -405,5 +407,6 @@ class CatalogFragment : VerticalGridSupportFragment() {
 
     companion object {
         private const val TAG = "CatalogFragment"
+        private const val PER_PAGE = 48
     }
 }

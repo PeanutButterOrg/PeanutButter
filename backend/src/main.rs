@@ -221,7 +221,14 @@ async fn main() -> Result<()> {
         .route("/sync/logs", get(crate::admin::sync_logs))
         .route("/sync/start", axum::routing::post(crate::admin::sync_start))
         .route("/sync/flush", axum::routing::post(crate::admin::sync_flush))
-        .route("/graphql", get(graphiql).post(graphql_handler))
+        // Catalog pages are large, very compressible JSON. Only here: media routes
+        // serve byte ranges and must stay as they are.
+        .route(
+            "/graphql",
+            get(graphiql)
+                .post(graphql_handler)
+                .layer(tower_http::compression::CompressionLayer::new()),
+        )
         .route("/files/{id}", get(media::serve_file).head(media::serve_file))
         .route("/stream/{id}", get(stream::serve_stream).head(stream::serve_stream))
         .route("/art/tmdb/{size}/{*path}", get(media::proxy_tmdb).head(media::proxy_tmdb))
