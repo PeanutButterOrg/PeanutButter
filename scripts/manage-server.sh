@@ -313,6 +313,41 @@ cmd_purge() {
   echo "Purged containers, volumes, and API image."
 }
 
+# Every remote step logs in without a prompt, so say what to do when it can't.
+check_ssh() {
+  local host="$1"
+  ssh -o BatchMode=yes -o ConnectTimeout=10 "$host" true && return 0
+  die "can't log in to $host with an SSH key. From this machine, run: ssh-copy-id $host
+A reset connection means sshd is briefly refusing this address after failed logins: wait up to 10 minutes, then retry."
+}
+
+sync_repo() {
+  local host="$1"
+  local remote_dir="$2"
+  check_ssh "$host"
+  ssh -o BatchMode=yes "$host" "mkdir -p '$remote_dir'"
+  # Build output excluded below stays on the host, so clear what older syncs copied.
+  ssh -o BatchMode=yes "$host" "cd '$remote_dir' && rm -rf android-native/build android-native/*/build android-native/.gradle android-native/.kotlin"
+  # Anchor excludes with / so only repo-root paths match (plain "media/"
+  # also deleted backend/src/media/ and broke the Docker build).
+  rsync -az --delete \
+    --exclude '/.git/' \
+    --exclude '/.pb-autoupdate' \
+    --exclude '/android-native/build/' \
+    --exclude '/android-native/*/build/' \
+    --exclude '/android-native/.gradle/' \
+    --exclude '/android-native/.kotlin/' \
+    --exclude '/frontend/build/' \
+    --exclude '/backend/target/' \
+    --exclude '/dist/*.tar.gz' \
+    --exclude '/media/' \
+    --exclude '/.dart_tool/' \
+    --exclude '/node_modules/' \
+    --exclude '/frontend/.dart_tool/' \
+    --exclude '/frontend/node_modules/' \
+    "$ROOT/" "${host}:${remote_dir}/"
+}
+
 remote_run() {
   local host="$1"
   local remote_dir="${PB_APP_DIR:-/DATA/AppData/peanutbutter}"
@@ -324,21 +359,7 @@ remote_run() {
   fi
 
   echo "==> Syncing repo → ${host}:${remote_dir}"
-  ssh -o BatchMode=yes "$host" "mkdir -p '$remote_dir'"
-  # Anchor excludes with / so only repo-root paths match (plain "media/"
-  # also deleted backend/src/media/ and broke the Docker build).
-  rsync -az --delete \
-    --exclude '/.git/' \
-    --exclude '/.pb-autoupdate' \
-    --exclude '/frontend/build/' \
-    --exclude '/backend/target/' \
-    --exclude '/dist/*.tar.gz' \
-    --exclude '/media/' \
-    --exclude '/.dart_tool/' \
-    --exclude '/node_modules/' \
-    --exclude '/frontend/.dart_tool/' \
-    --exclude '/frontend/node_modules/' \
-    "$ROOT/" "${host}:${remote_dir}/"
+  sync_repo "$host" "$remote_dir"
   echo "==> Running on $host: manage-server.sh $cmd"
   # Prefer login shell so PATH/docker group apply; never use sudo docker on Zima.
   ssh -t "$host" "cd '$remote_dir' && chmod +x scripts/manage-server.sh && ./scripts/manage-server.sh $cmd"
@@ -354,19 +375,7 @@ remote_push() {
   fi
 
   echo "==> Syncing compose/scripts → ${host}:${remote_dir}"
-  ssh -o BatchMode=yes "$host" "mkdir -p '$remote_dir'"
-  rsync -az --delete \
-    --exclude '/.git/' \
-    --exclude '/.pb-autoupdate' \
-    --exclude '/frontend/build/' \
-    --exclude '/backend/target/' \
-    --exclude '/dist/*.tar.gz' \
-    --exclude '/media/' \
-    --exclude '/.dart_tool/' \
-    --exclude '/node_modules/' \
-    --exclude '/frontend/.dart_tool/' \
-    --exclude '/frontend/node_modules/' \
-    "$ROOT/" "${host}:${remote_dir}/"
+  sync_repo "$host" "$remote_dir"
 
   # With console updates on, the server runs the GHCR image: a local build
   # would replace it (and drop Watchtower), so just pull the release there.
