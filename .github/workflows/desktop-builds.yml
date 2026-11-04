@@ -363,8 +363,9 @@ jobs:
     name: macOS (universal arm64 + x86_64)
     timeout-minutes: 45
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.macos }}
-    # Pinned, so a new macOS image can't change a release build unannounced.
-    runs-on: macos-15
+    # Pinned, so a new macOS image can't change a release build unannounced. Needs
+    # Xcode 26: connectivity_plus uses the macOS 26 SDK, and macos-15 has Xcode 16.
+    runs-on: macos-26
     defaults:
       run:
         working-directory: frontend
