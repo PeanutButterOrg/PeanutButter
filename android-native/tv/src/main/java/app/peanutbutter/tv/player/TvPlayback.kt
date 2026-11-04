@@ -5,6 +5,7 @@ import android.net.Uri
 import android.util.Log
 import android.view.SurfaceView
 import android.view.View
+import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
@@ -64,6 +65,29 @@ class TvPlayback(
     override val isPlaying: Boolean
         get() = exo.isPlaying
 
+    override val wantsToPlay: Boolean
+        get() = exo.playWhenReady
+
+    override val isBuffering: Boolean
+        get() = exo.playbackState == Player.STATE_BUFFERING
+
+    override val needsRestart: Boolean
+        get() = exo.playbackState == Player.STATE_IDLE || exo.playbackState == Player.STATE_ENDED
+
+    override val selectedTextTrackId: String?
+        get() {
+            if (srtOverlay.active) return "ext:sideload"
+            val groups = exo.currentTracks.groups
+            for (gi in groups.indices) {
+                val group = groups[gi]
+                if (group.type != C.TRACK_TYPE_TEXT) continue
+                for (ti in 0 until group.length) {
+                    if (group.isTrackSelected(ti)) return "$gi:$ti"
+                }
+            }
+            return null
+        }
+
     override val bufferedPercent: Int
         get() = exo.bufferedPercentage.coerceIn(0, 100)
 
@@ -73,11 +97,10 @@ class TvPlayback(
     override fun seekTo(positionMs: Long) {
         // Always plain seek. Re-opening the media item mid-stream raced the
         // torrent HTTP server and produced black screens / PlaybackException.
+        // A seek keeps the play / pause state: a paused player stays paused.
         val target = positionMs.coerceAtLeast(0L)
         exo.seekTo(target)
-        if (!exo.playWhenReady) {
-            exo.playWhenReady = true
-        }
+        if (exo.playbackState == Player.STATE_IDLE && exo.currentMediaItem != null) exo.prepare()
     }
 
     fun attachFrame(layout: AspectRatioFrameLayout?) {
@@ -179,7 +202,13 @@ class TvPlayback(
     }
 
     override fun play() {
-        exo.playWhenReady = true
+        // After an error or stop() the player is idle and play() alone does
+        // nothing: recovery sat on "Buffering…" forever. prepare() keeps the position.
+        when (exo.playbackState) {
+            Player.STATE_IDLE -> if (exo.currentMediaItem != null) exo.prepare()
+            Player.STATE_ENDED -> exo.seekTo(0L)
+            else -> Unit
+        }
         exo.play()
     }
 
@@ -199,10 +228,14 @@ class TvPlayback(
             val group = groups[gi]
             if (group.type != C.TRACK_TYPE_TEXT) continue
             for (ti in 0 until group.length) {
+                // Picking a format this device can't render looked like "subtitles don't change".
+                if (!group.isTrackSupported(ti)) continue
                 val fmt = group.getTrackFormat(ti)
+                val lang = fmt.language?.takeIf { it.isNotBlank() && it != "und" }
+                    ?.let { java.util.Locale.forLanguageTag(it).displayLanguage.ifBlank { it } }
                 val label = fmt.label?.takeIf { it.isNotBlank() }
-                    ?: fmt.language?.takeIf { it.isNotBlank() }
-                    ?: "Subtitle"
+                    ?: lang
+                    ?: "Subtitle ${out.size + 1}"
                 out += "$gi:$ti" to label
             }
         }
@@ -211,7 +244,7 @@ class TvPlayback(
 
     override fun selectTextTrack(id: String?) {
         if (id == null) {
-            srtOverlay.clear()
+            srtOverlay.deselect()
             exo.trackSelectionParameters = exo.trackSelectionParameters.buildUpon()
                 .clearOverridesOfType(C.TRACK_TYPE_TEXT)
                 .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
@@ -228,7 +261,7 @@ class TvPlayback(
             srtOverlay.selectExternal()
             return
         }
-        srtOverlay.clear()
+        srtOverlay.deselect()
         val parts = id.split(':')
         val gi = parts.getOrNull(0)?.toIntOrNull() ?: return
         val ti = parts.getOrNull(1)?.toIntOrNull() ?: return
@@ -327,7 +360,9 @@ class TvPlayback(
                 /* minBufferMs */ 20_000,
                 /* maxBufferMs */ 60_000,
                 /* bufferForPlaybackMs */ 2_000,
-                /* bufferForPlaybackAfterRebufferMs */ 5_000,
+                // Longer than the start buffer: on a swarm slower than the bitrate
+                // a short refill means stop-play-stop every few seconds.
+                /* bufferForPlaybackAfterRebufferMs */ 8_000,
             )
             .setTargetBufferBytes(bufferBytes)
             .setPrioritizeTimeOverSizeThresholds(false)
@@ -351,6 +386,15 @@ class TvPlayback(
             .setRenderersFactory(renderers)
             .setLoadControl(load)
             .setMediaSourceFactory(mediaSources)
+            // Pause for calls / other apps instead of playing over them.
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(C.USAGE_MEDIA)
+                    .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+                    .build(),
+                /* handleAudioFocus */ true,
+            )
+            .setHandleAudioBecomingNoisy(true)
             .build()
             .also { player ->
                 player.addListener(object : Player.Listener {
@@ -410,6 +454,14 @@ class TvPlayback(
                     }
 
                     override fun onEvents(player: Player, events: Player.Events) {
+                        if (events.containsAny(
+                                Player.EVENT_PLAY_WHEN_READY_CHANGED,
+                                Player.EVENT_PLAYBACK_STATE_CHANGED,
+                                Player.EVENT_PLAYBACK_SUPPRESSION_REASON_CHANGED,
+                            )
+                        ) {
+                            listener.onStateChanged()
+                        }
                         if (events.contains(Player.EVENT_POSITION_DISCONTINUITY) ||
                             events.contains(Player.EVENT_IS_PLAYING_CHANGED)
                         ) {

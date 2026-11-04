@@ -468,7 +468,7 @@ class LocalTorrentEngine {
   }
 
   /// Keep piece download going while the player is paused (HTTP reader may idle).
-  void keepDownloading() {
+  void keepDownloading({int preloadBytes = 32 * 1024 * 1024}) {
     final id = _torrentId;
     if (id == null || !_ready) return;
     try {
@@ -482,7 +482,7 @@ class LocalTorrentEngine {
       }
       final sid = _streamId;
       if (sid != null) {
-        engine.preloadStream(sid, preloadBytes: 32 * 1024 * 1024);
+        engine.preloadStream(sid, preloadBytes: preloadBytes);
       }
     } catch (_) {}
   }

@@ -14,6 +14,27 @@ class TorrentFilePickerTest {
     private fun pick(f: List<TorrentFilePicker.Entry>, s: Int?, e: Int?, hint: Int? = null) =
         TorrentFilePicker.pick(f, s, e, hint)?.let { f[it].path }
 
+    private fun season(vararg names: String) = Season(
+        id = "s1",
+        seasonNumber = 1,
+        episodes = names.mapIndexed { i, n -> Episode(id = "e${i + 1}", episodeNumber = i + 1, name = n) },
+    )
+
+    @Test
+    fun viewingOrderFollowsTheEpisodesOwnNumbers() {
+        val s = season("I", "II", "IV", "III")
+        assertEquals(listOf("I", "II", "III", "IV"), TorrentFilePicker.inViewingOrder(listOf(s), s).map { it.name })
+        assertEquals(3, TorrentFilePicker.viewingNumber(listOf(s), 1, 4))
+    }
+
+    @Test
+    fun viewingOrderKeepsCatalogOrderForNormalAndClashingTitles() {
+        val plain = season("Pilot", "The Second One")
+        assertEquals(listOf(1, 2), TorrentFilePicker.inViewingOrder(listOf(plain), plain).map { it.episodeNumber })
+        val clash = season("I", "I", "II")
+        assertEquals(listOf(1, 2, 3), TorrentFilePicker.inViewingOrder(listOf(clash), clash).map { it.episodeNumber })
+    }
+
     private val pack = files(
         "Show S01/Show.S01E01.1080p.mkv" to 2 * gb,
         "Show S01/Show.S01E02.1080p.mkv" to 2 * gb,

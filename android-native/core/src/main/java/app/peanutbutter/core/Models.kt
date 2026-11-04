@@ -174,7 +174,7 @@ fun TitleItem.seriesPlayTarget(): Pair<Season, Episode>? {
         seasons.filter { it.episodes.isNotEmpty() }.sortedBy { it.seasonNumber }
     }
     if (pool.isEmpty()) return null
-    val flat = pool.flatMap { s -> s.episodes.sortedBy { it.episodeNumber }.map { s to it } }
+    val flat = pool.flatMap { s -> TorrentFilePicker.inViewingOrder(seasons, s).map { s to it } }
     if (flat.isEmpty()) return null
     val resumeId = episodeId
     var idx = 0

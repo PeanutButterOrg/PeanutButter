@@ -53,20 +53,26 @@ class SrtOverlay {
         }
     }
 
-    fun clear() {
+    /** Stop showing it, but keep it in the menu so it can be picked again. */
+    fun deselect() {
         active = false
-        cues = emptyList()
-        label = "Subtitle"
         lastText = null
         main.removeCallbacks(tick)
         view?.setCues(emptyList())
     }
 
+    fun clear() {
+        deselect()
+        cues = emptyList()
+        label = "Subtitle"
+    }
+
     fun listEntry(): Pair<String, String>? =
-        if (active) "ext:sideload" to label else null
+        if (cues.isNotEmpty()) "ext:sideload" to label else null
 
     fun selectExternal() {
-        if (!active) return
+        if (cues.isEmpty()) return
+        active = true
         lastText = null
         paint()
         main.removeCallbacks(tick)
@@ -104,7 +110,7 @@ class SrtOverlay {
 
     companion object {
         fun parse(raw: String): List<TimedCue> {
-            val normalized = raw.replace("\r\n", "\n").replace('\r', '\n').trim()
+            val normalized = raw.removePrefix("\uFEFF").replace("\r\n", "\n").replace('\r', '\n').trim()
             if (normalized.isEmpty()) return emptyList()
             val body = if (normalized.startsWith("WEBVTT", ignoreCase = true)) {
                 normalized.substringAfter('\n')

@@ -212,8 +212,10 @@ class _DetailBodyState extends ConsumerState<_DetailBody> {
 
       final resumeId = item.userState?.episodeId;
       final flat = <({Season season, Episode episode})>[];
-      for (final s in item.seasons) {
-        for (final e in s.episodes) {
+      final titles = episodeTitles(item.seasons);
+      for (final s in [...item.seasons]
+        ..sort((a, b) => a.seasonNumber.compareTo(b.seasonNumber))) {
+        for (final e in episodesInViewingOrder(s, titles)) {
           flat.add((season: s, episode: e));
         }
       }
@@ -1180,7 +1182,9 @@ class _SeasonListState extends State<_SeasonList> {
   List<Episode> _episodesOf(Season season) {
     // Never invent placeholder episodes from episodeCount — those are often
     // unreleased slots. Only show real, already-aired episodes.
-    return season.episodes.where((e) => e.isReleased).toList();
+    return episodesInViewingOrder(season, episodeTitles(widget.item.seasons))
+        .where((e) => e.isReleased)
+        .toList();
   }
 
   void _setExpanded(int index, bool open, List<Season> seasons) {
@@ -1288,7 +1292,7 @@ class _SeasonListState extends State<_SeasonList> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      '${e.episodeNumber}. ${e.name ?? 'Episode'}',
+                      '${releaseEpisode(episodeTitles(widget.item.seasons), season.seasonNumber, e.episodeNumber) ?? e.episodeNumber}. ${e.name ?? 'Episode'}',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(

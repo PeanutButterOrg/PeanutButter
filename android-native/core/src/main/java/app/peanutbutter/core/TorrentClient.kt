@@ -10,10 +10,10 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.Message
 import android.os.Messenger
+import android.os.SystemClock
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.coroutines.withTimeout
 import java.util.concurrent.atomic.AtomicReference
 
 /** Client for [TorrentService] running in `:torrent` process. */
@@ -61,18 +61,44 @@ object TorrentClient {
         resumeMs: Long = 0L,
         durationMs: Long = 0L,
         onStats: ((LocalStreamStats) -> Unit)? = null,
-        timeoutMs: Long = 210_000L,
-    ): LocalStreamHandle = withTimeout(timeoutMs) {
+        /** Give up after this long with no data arriving. */
+        noProgressTimeoutMs: Long = 180_000L,
+    ): LocalStreamHandle {
         // Replace active torrent but keep downloaded pieces unless app-exit wipe.
         stop(context, deleteFiles = false)
-        suspendCancellableCoroutine { cont ->
+        return suspendCancellableCoroutine { cont ->
             val app = context.applicationContext
+            // No total time limit: a slow but working swarm must get to play. A
+            // fixed limit (210 s) dropped the "ready" that arrived after it while
+            // stats kept repainting "Buffering 99%", so the player hung with no error.
+            var bestPct = -1.0
+            var lastProgressAt = SystemClock.elapsedRealtime()
+            val watchdog = object : Runnable {
+                override fun run() {
+                    if (!cont.isActive) return
+                    if (SystemClock.elapsedRealtime() - lastProgressAt >= noProgressTimeoutMs) {
+                        AppLog.e("TorrentClient", "no data for ${noProgressTimeoutMs}ms — giving up")
+                        stop(app)
+                        cont.resumeWithException(
+                            IllegalStateException("Nobody is sending this file right now. Try another source."),
+                        )
+                        return
+                    }
+                    main.postDelayed(this, 5_000L)
+                }
+            }
+            main.postDelayed(watchdog, 5_000L)
 
             val reply = Messenger(Handler(Looper.getMainLooper()) { msg ->
                 when (msg.what) {
                     TorrentService.MSG_STATS -> {
                         val s = msg.data.toStats()
                         lastStats = s
+                        if (s.bufferPct > bestPct || s.downloadMbps >= 0.01) {
+                            bestPct = maxOf(bestPct, s.bufferPct)
+                            lastProgressAt = SystemClock.elapsedRealtime()
+                        }
+                        if (cont.isCancelled) return@Handler true
                         onStats?.invoke(s)
                         onStatsUpdated?.invoke(s)
                     }
@@ -140,10 +166,7 @@ object TorrentClient {
             connRef.set(conn)
 
             cont.invokeOnCancellation {
-                // Keep service bound after success; only tear down on cancel before ready.
-                if (!cont.isCompleted) {
-                    stop(app)
-                }
+                main.removeCallbacks(watchdog)
             }
 
             val ok = app.bindService(
@@ -214,6 +237,15 @@ object TorrentClient {
         }
     }
 
+    /** The player paused or resumed: keep downloading ahead while it's paused. */
+    fun setPaused(paused: Boolean) {
+        runCatching {
+            val msg = Message.obtain(null, TorrentService.MSG_PAUSED)
+            msg.data = Bundle().apply { putBoolean(TorrentService.KEY_PAUSED, paused) }
+            messengerRef.get()?.send(msg)
+        }
+    }
+
     /** Soft playhead retarget during buffering — no deadline wipe / HTTP probe. */
     fun retargetPlayhead(positionMs: Long, durationMs: Long) =
         seekTo(positionMs, durationMs, aggressive = false)
@@ -225,5 +257,6 @@ object TorrentClient {
         peers = getInt(TorrentService.KEY_PEERS),
         ready = getBoolean(TorrentService.KEY_READY),
         torrentComplete = getBoolean(TorrentService.KEY_COMPLETE),
+        downloadedTo = getDouble(TorrentService.KEY_DOWNLOADED_TO),
     )
 }

@@ -285,9 +285,9 @@
                 android:nextFocusUp="@id/btn_subs"
                 android:nextFocusDown="@id/btn_play"
                 android:paddingVertical="10dp"
-                android:progressBackgroundTint="#3DFFFFFF"
+                android:progressBackgroundTint="#33FFFFFF"
                 android:progressTint="@color/pb_seed"
-                android:secondaryProgressTint="#66FFFFFF"
+                android:secondaryProgressTint="#B3FFFFFF"
                 android:thumbTint="@color/pb_white" />
 
             <TextView

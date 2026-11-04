@@ -13,6 +13,13 @@
             <stroke android:width="2.5dp" android:color="@color/pb_white" />
         </shape>
     </item>
+    <!-- Toggle is on (captions showing). -->
+    <item android:state_selected="true">
+        <shape android:shape="oval">
+            <solid android:color="#9E000000" />
+            <stroke android:width="2dp" android:color="@color/pb_seed" />
+        </shape>
+    </item>
     <item>
         <shape android:shape="oval">
             <solid android:color="#9E000000" />

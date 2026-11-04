@@ -598,6 +598,7 @@ object LocalTorrentEngine {
                     peers = st.numPeers().coerceAtLeast(0),
                     ready = true,
                     torrentComplete = complete,
+                    downloadedTo = if (complete) 1.0 else downloadedToFraction(handle),
                 )
             }
             val playheadPct = playheadBufferPct(handle, info, idx)
@@ -613,6 +614,17 @@ object LocalTorrentEngine {
         } catch (_: Throwable) {
             null
         }
+    }
+
+    /** How far into the file the data is unbroken from the playhead (0–1), for the seek bar. */
+    private fun downloadedToFraction(handle: TorrentHandle): Double {
+        val from = readaheadFrom
+        val first = streamFirstPiece
+        val last = streamLastPiece
+        if (from < 0 || last < first) return 0.0
+        var p = from
+        while (p <= last && runCatching { handle.havePiece(p) }.getOrDefault(false)) p++
+        return ((p - first).toDouble() / (last - first + 1)).coerceIn(0.0, 1.0)
     }
 
     /**
@@ -673,6 +685,20 @@ object LocalTorrentEngine {
      *                   Soft playhead nudges must pass false so we don't thrash the swarm
      *                   (that caused underruns → black screen / player error).
      */
+    /**
+     * While paused the player stops reading, so the window stops moving and only
+     * scattered pieces of the rest would arrive. Keep filling in order from the
+     * playhead instead, so a long pause means smooth playback after it.
+     */
+    fun fillWhilePaused() {
+        val handle = liveHandle(session ?: return) ?: return
+        val last = streamLastPiece
+        if (last < 0) return
+        var p = readaheadFrom.coerceAtLeast(streamFirstPiece)
+        while (p <= last && runCatching { handle.havePiece(p) }.getOrDefault(false)) p++
+        if (p <= last) readaheadAt(handle, p, force = true)
+    }
+
     fun seekTo(positionMs: Long, durationMs: Long, aggressive: Boolean = true) {
         val sm = session ?: return
         val handle = liveHandle(sm) ?: return
@@ -1029,6 +1055,8 @@ data class LocalStreamStats(
     val peers: Int,
     val ready: Boolean,
     val torrentComplete: Boolean = false,
+    /** Share of the file downloaded without gaps from the playhead (0–1). */
+    val downloadedTo: Double = 0.0,
 ) {
     companion object {
         fun empty() = LocalStreamStats(0.0, 0.0, 0, 0, false)

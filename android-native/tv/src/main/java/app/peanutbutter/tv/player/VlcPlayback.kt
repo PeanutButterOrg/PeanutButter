@@ -47,6 +47,9 @@ class VlcPlayback(
     override val isPlaying: Boolean
         get() = mp?.isPlaying == true
 
+    override var wantsToPlay: Boolean = false
+        private set
+
     override fun bindSubtitles(view: SubtitleView?) {
         view?.setCues(emptyList())
     }
@@ -98,17 +101,19 @@ class VlcPlayback(
     }
 
     override fun play() {
+        wantsToPlay = true
         mp?.play()
     }
 
     override fun seekTo(positionMs: Long) {
         val player = mp ?: return
         player.time = positionMs.coerceAtLeast(0L)
-        // Scrubbing must resume — VLC can sit paused after a time jump.
-        player.play()
+        // VLC can sit paused after a time jump; only resume if it was playing.
+        if (wantsToPlay) player.play()
     }
 
     override fun pause() {
+        wantsToPlay = false
         mp?.pause()
     }
 

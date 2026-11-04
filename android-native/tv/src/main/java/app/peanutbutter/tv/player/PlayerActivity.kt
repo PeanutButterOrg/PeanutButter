@@ -124,6 +124,11 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
     private var softErrorCount = 0
     private var lastSoftErrorMs = 0L
     private var bufferingSinceMs = 0L
+    /** Position when the retry counters last reset; they only reset on real progress. */
+    private var recoveryAnchorMs = 0L
+    private var nextRetryAtMs = 0L
+    private var segmentsRetryAtMs = 0L
+    private var endCountdownLeft = 0
     private var lastTorrentNudgeMs = 0L
     private var lastKnownDurationMs: Long = 0
     private var lastSession: StreamSession? = null
@@ -134,8 +139,26 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
     /** True while user/OS has playback paused — drives chrome without Aspect/CC. */
     private var userPaused = false
     private var torrentStartedWithResume = false
+    private var torrentStartFailed = false
+    private var pausedSentToEngine = false
+    /** Share of the file downloaded without gaps from the playhead. */
+    private var torrentDownloadedTo = 0.0
 
     private val hideChrome = Runnable { setChrome(false) }
+    /** Short rebuffers shouldn't flash a spinner. */
+    private val showRebufferSpinner = Runnable { if (streamOpened) busy?.isVisible = true }
+    private val endCountdown = object : Runnable {
+        override fun run() {
+            if (stopped) return
+            endCountdownLeft--
+            if (endCountdownLeft <= 0) {
+                if (!isFinishing) finish()
+                return
+            }
+            btnNext?.text = getString(R.string.play_next_countdown, endCountdownLeft)
+            main.postDelayed(this, 1_000L)
+        }
+    }
     private val commitSeek = Runnable { commitPendingSeek() }
     /** Progressive torrents stall at the download edge until a Range re-request. */
     private val bufferStallRecover = Runnable { recoverFromBufferStall() }
@@ -271,7 +294,24 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         }
 
         seek?.max = SEEK_MAX
-        seek?.keyProgressIncrement = (SEEK_MAX / 50).coerceAtLeast(1) // ~2% per D-pad
+        // D-pad steps by time, not a share of the file (2% was 2.4 min on a long
+        // film); holding the key speeds up.
+        seek?.setOnKeyListener { _, code, event ->
+            val sign = when (code) {
+                KeyEvent.KEYCODE_DPAD_LEFT -> -1L
+                KeyEvent.KEYCODE_DPAD_RIGHT -> 1L
+                else -> return@setOnKeyListener false
+            }
+            if (event.action == KeyEvent.ACTION_DOWN) {
+                val step = when {
+                    event.repeatCount >= 20 -> 60_000L
+                    event.repeatCount >= 8 -> 30_000L
+                    else -> 10_000L
+                }
+                seekBy(sign * step)
+            }
+            true
+        }
         seek?.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
                 if (!fromUser) return
@@ -367,7 +407,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                     resumeMs = resumeMs,
                     durationMs = lastKnownDurationMs,
                     onStats = { stats ->
-                        if (!stopped) main.post { showLocalTorrentStatus(stats) }
+                        if (!stopped && !torrentStartFailed) main.post { showLocalTorrentStatus(stats) }
                     },
                 )
             }
@@ -388,6 +428,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             startLocalStatusPolling()
         } catch (t: Throwable) {
             AppLog.e(TAG, "startLocalTorrent failed", t)
+            torrentStartFailed = true // late stats must not repaint over the error
             if (!stopped) {
                 statusView?.text = t.message?.takeIf { it.isNotBlank() }
                     ?: getString(R.string.stream_start_failed)
@@ -414,6 +455,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
     }
 
     private fun handleLocalStatsTick(tick: LocalStreamStats) {
+        torrentDownloadedTo = tick.downloadedTo
         showLocalTorrentStatus(tick)
         // URL ready / file complete but Exo never reached onPlaying — keep
         // attaching and recover stuck pre-play (common when download hits 100%
@@ -488,9 +530,6 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             applyBufferingChrome()
         } else {
             topProgress?.isVisible = false
-            if (userSeeking) {
-                seek?.secondaryProgress = (bufPct / 100.0 * SEEK_MAX).toInt().coerceIn(0, SEEK_MAX)
-            }
         }
 
         val hasSwarm = session.peers > 0 || session.seeders > 0 || session.downloadMbps > 0.01
@@ -498,16 +537,13 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
 
         // While playing, only update the status line if chrome is already up —
         // never force the buffering banner back on.
-        if (streamOpened && !userSeeking && !chromeVisible && !userPaused) {
-            busy?.isVisible = false
-            return
-        }
+        if (streamOpened && !userSeeking && !chromeVisible && !userPaused) return
 
         // Match 6ee3433: keep Buffering X% · speed · peers until Exo is actually
         // playing — do not swap to a bare "Starting stream" once the URL exists.
         val line = when {
             session.isError -> session.status
-            userPaused -> "Paused"
+            userPaused -> pausedLine(session.downloadMbps, session.peers)
             streamOpened && exoBuffering && chromeVisible ->
                 underrunBufferLine(session.downloadMbps)
             streamOpened && session.downloadMbps < 0.05 && !exoBuffering ->
@@ -525,7 +561,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         }
         applyStatusLine(line)
         // Spinner while waiting for first playable data — never on user pause.
-        busy?.isVisible = (!streamOpened) && !userSeeking && !userPaused
+        if (!streamOpened) busy?.isVisible = !userSeeking && !userPaused
         if (userPaused || streamOpened) {
             topProgress?.isVisible = false
             posterHud?.isVisible = false
@@ -563,6 +599,13 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             if (peers > 0) append("  ·  $peers peers")
             if (aheadS > 0) append("  ·  ${aheadS}s buffered")
         }
+    }
+
+    /** It keeps downloading while paused; show that it does. */
+    private fun pausedLine(downloadMbps: Double, peers: Int): String = buildString {
+        append("Paused")
+        if (downloadMbps >= 0.05) append(String.format("  ·  %.1f MB/s", downloadMbps))
+        if (peers > 0) append("  ·  $peers peers")
     }
 
     private fun underrunBufferLine(downloadMbps: Double): String =
@@ -728,7 +771,6 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                             runCatching { player?.play() }
                         }
                     } else {
-                        busy?.isVisible = false
                         topProgress?.isVisible = false
                         if (chromeVisible && !userSeeking && !userPaused && percent < 100) {
                             val mbps = lastSession?.downloadMbps ?: 0.0
@@ -748,28 +790,33 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                 val mp = player ?: return
                 main.post {
                     Log.i(TAG, "ExoPlayer playing pos=${mp.time} len=${mp.length}")
+                    val firstOpen = !streamOpened
                     streamOpened = true
                     exoBuffering = false
                     userPaused = false
                     torrentReadyLatched = true
-                    falseEofCount = 0
-                    stallRecoverCount = 0
-                    softErrorCount = 0
+                    cancelEndCountdown()
                     prePlayRecoveries = 0
                     mediaAttachAtMs = 0L
                     cancelBufferStallWatch()
                     topProgress?.progress = 100
                     topProgress?.secondaryProgress = 100
-                    busy?.isVisible = false
                     topProgress?.isVisible = false
                     posterHud?.isVisible = false
-                    btnPlay?.setImageResource(R.drawable.ic_pause)
-                    // Clean start: hide transport; Skip/Next may appear on their own layer.
-                    chromeVisible = false
-                    applyPlayingChrome(showTransport = false)
-                    findViewById<View>(R.id.player_root)?.requestFocus()
-                    main.removeCallbacks(tickProgress)
-                    main.post(tickProgress)
+                    renderTransport()
+                    if (firstOpen) {
+                        // Clean start: hide transport; Skip/Next may appear on their own layer.
+                        // Only here: this also fires after every pause, seek and rebuffer,
+                        // where it closed the controls and took focus from the user.
+                        busy?.isVisible = false
+                        chromeVisible = false
+                        applyPlayingChrome(showTransport = false)
+                        findViewById<View>(R.id.player_root)?.requestFocus()
+                        main.removeCallbacks(tickProgress)
+                        main.post(tickProgress)
+                    } else {
+                        scheduleHideChrome()
+                    }
                     maybeLoadSegments()
                 }
             }
@@ -779,14 +826,18 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                     userPaused = true
                     exoBuffering = false
                     if (!userSeeking) statusView?.text = "Paused"
-                    btnPlay?.setImageResource(R.drawable.ic_play_arrow)
+                    renderTransport()
                     // User pause ≠ underrun buffering — show full transport chrome.
-                    busy?.isVisible = false
                     topProgress?.isVisible = false
                     applyPlayingChrome(showTransport = true)
                     showChrome()
-                    btnPlay?.requestFocus()
+                    val focus = currentFocus
+                    if (focus == null || focus.id == R.id.player_root) btnPlay?.requestFocus()
                 }
+            }
+
+            override fun onStateChanged() {
+                main.post { renderTransport() }
             }
 
             override fun onError(isDecoderError: Boolean) {
@@ -808,9 +859,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                         if (now - lastSoftErrorMs < gap) return@post
                         lastSoftErrorMs = now
                         softErrorCount++
-                        val recover = lastGoodPosMs.coerceAtLeast(0L).let {
-                            if (it > 3_000L) (it - 1_500L).coerceAtLeast(0L) else 0L
-                        }
+                        val recover = lastGoodPosMs.coerceAtLeast(0L)
                         val mbps = lastSession?.downloadMbps ?: 0.0
                         statusView?.text = if (mbps > 0.05) {
                             String.format("Buffering… · %.1f MB/s", mbps)
@@ -838,12 +887,9 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                                 if (!streamOpened && softErrorCount >= 3 && !pendingUrl.isNullOrBlank()) {
                                     mediaAttached = false
                                     attachAndPlay()
-                                } else if (streamOpened || lastGoodPosMs > 0) {
-                                    if (mbps < 0.15) {
-                                        mp.seekTo(recover)
-                                    }
-                                    mp.play()
                                 } else {
+                                    // prepare() resumes from the same position. Seeking back
+                                    // here replayed the same seconds on every error.
                                     mp.play()
                                 }
                             }
@@ -852,8 +898,9 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                     }
                     statusView?.text = getString(R.string.playback_error)
                     busy?.isVisible = false
-                    mediaAttached = false
                     showChrome()
+                    renderTransport()
+                    btnPlay?.requestFocus()
                 }
             }
 
@@ -901,7 +948,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                     if (recover > 1_000) mp.seekTo(recover)
                     mp.play()
                 }
-            }, 600L)
+            }, (600L * falseEofCount).coerceAtMost(5_000L)) // let the pieces arrive
             return
         }
         if (isStream && !nearEnd && !downloadDone) {
@@ -916,8 +963,48 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         }
         statusView?.text = "Ended"
         saveWatchProgress(force = true, complete = true)
-        // Exit immediately when playback finishes (no linger / auto Play-Next wait).
-        if (!stopped && !isFinishing) finish()
+        if (stopped || isFinishing) return
+        // Same as desktop / phone: offer the next episode for 30 s, then leave.
+        if (nextEpisode != null) {
+            endCountdownLeft = END_COUNTDOWN_S
+            btnNext?.text = getString(R.string.play_next_countdown, endCountdownLeft)
+            showPlayNext(true)
+            btnNext?.requestFocus()
+            main.removeCallbacks(endCountdown)
+            main.postDelayed(endCountdown, 1_000L)
+            return
+        }
+        finish()
+    }
+
+    private fun cancelEndCountdown() {
+        if (endCountdownLeft <= 0) return
+        endCountdownLeft = 0
+        main.removeCallbacks(endCountdown)
+        btnNext?.setText(R.string.play_next)
+    }
+
+    /**
+     * Play / pause icon, paused flag and rebuffer spinner, all from the player's
+     * own state. Icons used to be set by hand in a few callbacks and drifted.
+     */
+    private fun renderTransport() {
+        val mp = player ?: return
+        val showPlay = !mp.wantsToPlay || mp.needsRestart
+        btnPlay?.setImageResource(if (showPlay) R.drawable.ic_play_arrow else R.drawable.ic_pause)
+        if (!streamOpened) return
+        userPaused = !mp.wantsToPlay
+        if (localTorrent && userPaused != pausedSentToEngine) {
+            pausedSentToEngine = userPaused
+            TorrentClient.setPaused(userPaused)
+        }
+        main.removeCallbacks(showRebufferSpinner)
+        if (mp.isBuffering && (mp.wantsToPlay || userSeeking)) {
+            main.postDelayed(showRebufferSpinner, REBUFFER_SPINNER_DELAY_MS)
+        } else {
+            busy?.isVisible = false
+        }
+        scheduleHideChrome()
     }
 
     private fun armBufferStallWatch() {
@@ -926,8 +1013,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         if (bufferingSinceMs != 0L) return // already armed; don't reset on % ticks
         bufferingSinceMs = System.currentTimeMillis()
         main.removeCallbacks(bufferStallRecover)
-        // Give the swarm time to fill the next pieces before seeking Exo.
-        main.postDelayed(bufferStallRecover, 16_000L)
+        main.postDelayed(bufferStallRecover, BUFFER_STALL_CHECK_MS)
     }
 
     private fun cancelBufferStallWatch() {
@@ -949,50 +1035,27 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         TorrentClient.retargetPlayhead(pos, dur)
     }
 
+    /**
+     * Still buffering after a long wait. Never seek back: replaying the last
+     * second on every stall was the "stops and plays again from the same point"
+     * loop, and each resume reset its limit. Point the swarm at the playhead and
+     * wait; only with no data at all, reopen at the same position a couple of times.
+     */
     private fun recoverFromBufferStall() {
+        bufferingSinceMs = 0L
         if (stopped || !isStream || userSeeking) return
         val mp = player ?: return
-        if (mp.isPlaying) {
-            cancelBufferStallWatch()
-            return
-        }
+        if (mp.isPlaying || !mp.wantsToPlay) return
+        nudgeTorrentAtPlayhead()
         val mbps = lastSession?.downloadMbps ?: 0.0
-        // While pieces are still arriving, wait — seeking Exo mid-underrun makes it worse.
-        if (mbps >= 0.12) {
-            nudgeTorrentAtPlayhead()
-            bufferingSinceMs = 0L
-            main.removeCallbacks(bufferStallRecover)
-            main.postDelayed(bufferStallRecover, 10_000L)
-            statusView?.text = String.format("Buffering… · %.1f MB/s", mbps)
-            busy?.isVisible = true
-            return
+        if (mbps < 0.05 && stallRecoverCount < MAX_STALL_REOPENS) {
+            stallRecoverCount++
+            Log.w(TAG, "no data while stalled — reopen #$stallRecoverCount at $lastGoodPosMs")
+            mediaAttached = false
+            runCatching { mp.stop() }
+            attachAndPlay()
         }
-        if (stallRecoverCount >= 4) {
-            Log.w(TAG, "buffer stall recover gave up after $stallRecoverCount tries")
-            return
-        }
-        stallRecoverCount++
-        val pos = lastGoodPosMs.coerceAtLeast(mp.time).coerceAtLeast(0L)
-        val recover = (pos - 1_000L).coerceAtLeast(0L)
-        Log.w(TAG, "buffer stall #$stallRecoverCount — soft seek to $recover (was $pos mbps=$mbps)")
-        statusView?.text = "Catching up…"
-        busy?.isVisible = true
-        if (localTorrent) {
-            TorrentClient.retargetPlayhead(
-                recover,
-                mp.length.takeIf { it > 0 } ?: lastKnownDurationMs,
-            )
-        }
-        runCatching {
-            mp.seekTo(recover)
-            mp.play()
-        }
-        bufferingSinceMs = 0L
-        main.removeCallbacks(bufferStallRecover)
-        main.postDelayed({
-            if (stopped || userSeeking) return@postDelayed
-            if (player?.isPlaying != true) armBufferStallWatch()
-        }, 10_000L)
+        armBufferStallWatch()
     }
 
     private fun attachAndPlay() {
@@ -1061,7 +1124,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                     Log.w(TAG, "pre-play watchdog — nudge attachAndPlay")
                     attachAndPlay()
                 }
-            }, 7_000L)
+            }, PRE_PLAY_REOPEN_MS + 1_000L)
         } catch (e: Exception) {
             Log.e(TAG, "attachAndPlay failed", e)
             statusView?.text = e.message ?: getString(R.string.playback_error)
@@ -1077,11 +1140,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         seekToken++
         val token = seekToken
         statusView?.text = "Seeking ${formatMs(seekTargetMs)}…"
-        busy?.isVisible = true
-        // Don't pause progressive streams while settling — pause+seek often snaps to t=0.
-        if (!isStream) {
-            runCatching { player?.pause() }
-        }
+        cancelEndCountdown()
         main.removeCallbacks(commitSeek)
         main.postDelayed({
             if (token != seekToken) return@postDelayed
@@ -1108,10 +1167,8 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             }
             mp.seekTo(target)
             lastGoodPosMs = target
-            mp.play()
-            btnPlay?.setImageResource(R.drawable.ic_pause)
+            recoveryAnchorMs = target
             statusView?.text = "Buffering at ${formatMs(target)}…"
-            busy?.isVisible = true
         } catch (e: Exception) {
             Log.e(TAG, "seek failed", e)
         }
@@ -1119,13 +1176,14 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             if (token == seekToken) {
                 userSeeking = false
                 seekTargetMs = -1
-                if (player?.isPlaying == true) busy?.isVisible = false
+                renderTransport()
             }
         }, 1_500L)
     }
 
     private fun maybeLoadSegments() {
         val tid = titleId ?: return
+        if (System.currentTimeMillis() < segmentsRetryAtMs) return
         val dur = player?.length?.toInt()?.coerceAtLeast(0) ?: 0
         val haveDuration = dur > 30_000
         if (segmentsLoaded) {
@@ -1155,13 +1213,15 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                 if (segs.isEmpty() && !haveDuration) segmentsLoaded = false
             } catch (e: Exception) {
                 Log.w(TAG, "mediaSegments failed", e)
-                if (!haveDuration) segmentsLoaded = false
+                segmentsLoaded = false
+                segmentsRetryAtMs = System.currentTimeMillis() + RETRY_LOOKUP_MS
             }
         }
     }
 
     private fun loadNextEpisode() {
         if (nextLoaded || nextEpisode != null) return
+        if (System.currentTimeMillis() < nextRetryAtMs) return // this runs from the 400 ms tick
         val tid = titleId ?: return
         val season = seasonNum ?: return
         val episode = episodeNum ?: return
@@ -1173,6 +1233,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                 nextEpisode = findNextEpisode(item, season, episode)
             } catch (e: Exception) {
                 nextLoaded = false
+                nextRetryAtMs = System.currentTimeMillis() + RETRY_LOOKUP_MS
                 Log.w(TAG, "next episode lookup failed", e)
             }
         }
@@ -1181,9 +1242,13 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
     private fun findNextEpisode(item: TitleItem, season: Int, episode: Int): NextEpisode? {
         val seasons = item.seasons.filter { it.seasonNumber > 0 }.sortedBy { it.seasonNumber }
         val current = seasons.firstOrNull { it.seasonNumber == season }
-        val later = current?.episodes
-            ?.filter { it.episodeNumber > episode }
-            ?.minByOrNull { it.episodeNumber }
+        val today = java.time.LocalDate.now().toString()
+        fun aired(e: app.peanutbutter.core.Episode) = e.airDate?.take(10)?.let { it <= today } ?: true
+        // Same order as the episode list on the details screen.
+        val later = current?.let { TorrentFilePicker.inViewingOrder(item.seasons, it) }
+            ?.dropWhile { it.episodeNumber != episode }
+            ?.drop(1)
+            ?.firstOrNull(::aired)
         if (later != null) {
             return NextEpisode(
                 season, later.episodeNumber, later.id, item.displayTitle, item.kind, item.posterUrl, item.backdropUrl,
@@ -1192,7 +1257,8 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         }
         for (s in seasons) {
             if (s.seasonNumber <= season) continue
-            val first = s.episodes.filter { it.episodeNumber > 0 }.minByOrNull { it.episodeNumber } ?: continue
+            val first = TorrentFilePicker.inViewingOrder(item.seasons, s)
+                .firstOrNull { it.episodeNumber > 0 && aired(it) } ?: continue
             return NextEpisode(
                 s.seasonNumber, first.episodeNumber, first.id, item.displayTitle, item.kind, item.posterUrl, item.backdropUrl,
                 TorrentFilePicker.releaseEpisode(item.seasons, s.seasonNumber, first.episodeNumber),
@@ -1206,7 +1272,8 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         maybeLoadSegments()
         loadNextEpisode()
         val mp = player ?: return
-        val pos = mp.time.toInt()
+        // During a seek use its target: the old position would bring Skip straight back.
+        val pos = (if (seekTargetMs >= 0) seekTargetMs else mp.time).toInt()
         val dur = mp.length.toInt()
         val opening = segments.firstOrNull {
             (it.kind.equals("INTRO", true) || it.kind.equals("RECAP", true)) && it.contains(pos, dur)
@@ -1216,7 +1283,8 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         val wasSkip = btnSkip?.isVisible == true
         if (showSkip) {
             btnSkip?.text = opening?.label?.ifBlank { null } ?: getString(R.string.skip_intro)
-            revealActionChip(btnSkip, focusIfNew = !wasSkip)
+            // Don't take focus from someone using the controls.
+            revealActionChip(btnSkip, focusIfNew = !wasSkip && !chromeVisible)
         } else if (wasSkip && currentFocus === btnSkip) {
             btnSkip?.isVisible = false
             findViewById<View>(R.id.player_root)?.requestFocus()
@@ -1231,7 +1299,9 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             markedComplete = true
             saveWatchProgress(force = true, complete = true)
         }
-        showPlayNext(!showSkip && (nearEnd || inCredits) && nextEpisode != null)
+        showPlayNext(
+            endCountdownLeft > 0 || (!showSkip && (nearEnd || inCredits) && nextEpisode != null),
+        )
         updateOverlayFocusChain()
         placeSkipButtons(chromeVisible)
     }
@@ -1249,7 +1319,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         val was = playNextVisible
         playNextVisible = true
         // Own layer — do not dump the whole transport chrome.
-        revealActionChip(btnNext, focusIfNew = !was)
+        revealActionChip(btnNext, focusIfNew = !was && !chromeVisible)
         updateOverlayFocusChain()
     }
 
@@ -1444,7 +1514,15 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
 
     private fun togglePlay() {
         val mp = player ?: return
-        if (mp.isPlaying) mp.pause() else mp.play()
+        // By intent, not isPlaying: that's false while buffering, so Pause did nothing.
+        if (mp.wantsToPlay && !mp.needsRestart) {
+            mp.pause()
+        } else {
+            softErrorCount = 0
+            stallRecoverCount = 0
+            mp.play()
+        }
+        renderTransport()
         showChrome()
     }
 
@@ -1477,10 +1555,21 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         val len = mp.length
         val pos = mp.time
         if (pos > lastGoodPosMs) lastGoodPosMs = pos
+        // Retry limits come back only after real progress; a one-second resume
+        // between failures used to reset them, so the loops never ended.
+        if (pos - recoveryAnchorMs > RECOVERY_RESET_MS) {
+            recoveryAnchorMs = pos
+            falseEofCount = 0
+            stallRecoverCount = 0
+            softErrorCount = 0
+        }
+        if (chromeVisible) btnSubs?.isSelected = mp.selectedTextTrackId != null
         if (len > 0) {
             seek?.progress = ((pos.toDouble() / len) * SEEK_MAX).toInt().coerceIn(0, SEEK_MAX)
-            // Lighter track = what the player already has, like desktop.
-            val buffered = mp.bufferedPositionMs.coerceIn(pos, len)
+            // Lighter track = what's ready to play: the player's own buffer (at most
+            // a minute) or, usually further, what the torrent has without gaps.
+            val buffered = maxOf(mp.bufferedPositionMs, (torrentDownloadedTo * len).toLong())
+                .coerceIn(pos, len)
             seek?.secondaryProgress = ((buffered.toDouble() / len) * SEEK_MAX).toInt().coerceIn(0, SEEK_MAX)
             timeDur?.text = formatMs(len)
         } else {
@@ -1493,6 +1582,9 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
     /** Write resume position so the home Continue watching row can list this title. */
     private fun saveWatchProgress(force: Boolean = false, complete: Boolean = false) {
         val id = titleId?.takeIf { it.isNotBlank() } ?: return
+        // Once finished, a later plain save would park the resume point back near
+        // the end and put the episode back in Continue watching.
+        if (markedComplete && !complete) return
         val mp = player
         val length = mp?.length?.takeIf { it > 0L } ?: lastKnownDurationMs.takeIf { it > 0L } ?: 0L
         var pos = when {
@@ -1504,6 +1596,8 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         // Every save is two mutations (progress + stream bookmark); 15s keeps
         // resume accurate without a server write every few seconds.
         if (!force && !complete && lastSavedPosMs >= 0L && kotlin.math.abs(pos - lastSavedPosMs) < 15_000L) return
+        // onPause + onStop + onDestroy all flush: send it once.
+        if (force && !complete && pos == lastSavedPosMs) return
         val dur = length.takeIf { it > 0L }
         lastSavedPosMs = pos
         if (complete) markedComplete = true
@@ -1678,8 +1772,9 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                     btnSkip?.requestFocus()
                 btnNext?.isVisible == true && currentFocus === btnNext ->
                     btnNext?.requestFocus()
-                currentFocus === btnSkip || currentFocus === btnNext ->
-                    Unit
+                // Back to the chip, so OK skips as it did before the controls opened.
+                btnSkip?.isVisible == true -> btnSkip?.requestFocus()
+                btnNext?.isVisible == true -> btnNext?.requestFocus()
                 else -> findViewById<View>(R.id.player_root)?.requestFocus()
             }
             updateOverlayFocusChain()
@@ -1721,8 +1816,9 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
 
     private fun scheduleHideChrome() {
         main.removeCallbacks(hideChrome)
-        if (streamOpened && !userSeeking && !userPaused && !isBufferingUi() && chromeVisible) {
-            main.postDelayed(hideChrome, 6_000L)
+        // Not while a menu is open or the player is paused: the controls stay up.
+        if (streamOpened && !userSeeking && !userPaused && chromeVisible && hasWindowFocus()) {
+            main.postDelayed(hideChrome, CHROME_HIDE_MS)
         }
     }
 
@@ -1744,8 +1840,15 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         confirmLeave()
     }
 
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) scheduleHideChrome() else main.removeCallbacks(hideChrome)
+    }
+
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        if (!streamOpened && event.keyCode != KeyEvent.KEYCODE_BACK) return true
+        // Before playback only the controls are dead; volume keys must still work.
+        if (!streamOpened && event.keyCode in PLAYER_KEYS) return true
+        if (event.action == KeyEvent.ACTION_DOWN && chromeVisible) scheduleHideChrome()
         return super.dispatchKeyEvent(event)
     }
 
@@ -1756,7 +1859,36 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             handleBackPress()
             return true
         }
-        if (!streamOpened) return true
+        if (!streamOpened) return super.onKeyDown(keyCode, event)
+
+        // Media keys work wherever focus is. Only the first press of a held key toggles.
+        val firstPress = (event?.repeatCount ?: 0) == 0
+        when (keyCode) {
+            KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
+                if (firstPress) togglePlay()
+                return true
+            }
+            KeyEvent.KEYCODE_MEDIA_PLAY -> {
+                if (firstPress && (player?.wantsToPlay != true || player?.needsRestart == true)) togglePlay()
+                return true
+            }
+            KeyEvent.KEYCODE_MEDIA_PAUSE -> {
+                if (firstPress && player?.wantsToPlay == true) togglePlay()
+                return true
+            }
+            KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> {
+                seekBy(10_000)
+                return true
+            }
+            KeyEvent.KEYCODE_MEDIA_REWIND -> {
+                seekBy(-10_000)
+                return true
+            }
+            KeyEvent.KEYCODE_MEDIA_NEXT -> {
+                if (firstPress && btnNext?.isVisible == true) playNextEpisode()
+                return true
+            }
+        }
 
         val focus = currentFocus
         val onActionChip = focus === btnSkip || focus === btnNext
@@ -1777,24 +1909,18 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                     }
                     return true
                 }
-                // No transport up: Left/Down does nothing destructive; stay on chip.
-                if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN &&
-                    focus === btnSkip && btnNext?.isVisible == true
-                ) {
-                    btnNext?.requestFocus()
-                    return true
-                }
+                // Controls hidden: open them. This used to do nothing, so during an
+                // intro or the credits the controls could not be reached at all.
+                showChrome()
+                btnPlay?.requestFocus()
                 return true
             }
             return super.onKeyDown(keyCode, event)
         }
 
         // OK / Enter always toggles playback and reveals chrome (even over soft buttons).
-        if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER ||
-            keyCode == KeyEvent.KEYCODE_ENTER ||
-            keyCode == KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE
-        ) {
-            togglePlay()
+        if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER) {
+            if (firstPress) togglePlay()
             showChrome()
             btnPlay?.requestFocus()
             return true
@@ -1848,14 +1974,6 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                         return true
                     }
                 }
-            }
-            KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> {
-                seekBy(10_000)
-                return true
-            }
-            KeyEvent.KEYCODE_MEDIA_REWIND -> {
-                seekBy(-10_000)
-                return true
             }
             KeyEvent.KEYCODE_DPAD_RIGHT -> {
                 showChrome()
@@ -1958,6 +2076,9 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
 
     override fun onStop() {
         saveWatchProgress(force = true)
+        // Home / screensaver: don't keep playing behind another app. It stays
+        // paused on return; before the first frame the surface callback resumes it.
+        runCatching { player?.pause() }
         super.onStop()
     }
 
@@ -1974,6 +2095,8 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         main.removeCallbacks(tickProgress)
         main.removeCallbacks(commitSeek)
         main.removeCallbacks(bufferStallRecover)
+        main.removeCallbacks(showRebufferSpinner)
+        main.removeCallbacks(endCountdown)
         val sid = sessionId
         if (localTorrent || sid?.startsWith("local-") == true) {
             // Closing the player always stops the torrent. Downloaded pieces are
@@ -2030,6 +2153,20 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         private const val SEEK_MAX = 1000
         /** Exo stuck in BUFFERING this long before the first frame → reopen. */
         private const val PRE_PLAY_REOPEN_MS = 45_000L
+        private const val CHROME_HIDE_MS = 5_000L
+        private const val REBUFFER_SPINNER_DELAY_MS = 400L
+        private const val BUFFER_STALL_CHECK_MS = 20_000L
+        private const val MAX_STALL_REOPENS = 2
+        /** Playback must move this far before retry limits reset. */
+        private const val RECOVERY_RESET_MS = 30_000L
+        private const val RETRY_LOOKUP_MS = 30_000L
+        private const val END_COUNTDOWN_S = 30
+        private val PLAYER_KEYS = setOf(
+            KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_DPAD_LEFT,
+            KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER,
+            KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_MEDIA_PLAY, KeyEvent.KEYCODE_MEDIA_PAUSE,
+            KeyEvent.KEYCODE_MEDIA_FAST_FORWARD, KeyEvent.KEYCODE_MEDIA_REWIND,
+        )
         const val EXTRA_URL = "url"
         const val EXTRA_TITLE = "title"
         const val EXTRA_SESSION = "session"

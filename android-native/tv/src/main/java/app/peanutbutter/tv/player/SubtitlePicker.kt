@@ -20,6 +20,7 @@ import app.peanutbutter.tv.ui.hideKeyboard
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 
 /** Player caption menu: embedded tracks, OpenSubtitles, Wyzie (lazy download), or a link. */
@@ -34,7 +35,10 @@ class SubtitlePicker(
 ) {
     fun show() {
         activity.lifecycleScope.launch {
-            val info = withContext(Dispatchers.IO) { runCatching { api.serverInfo() }.getOrNull() }
+            // The menu mostly lists local tracks; a slow server must not hold it back.
+            val info = withTimeoutOrNull(3_000L) {
+                withContext(Dispatchers.IO) { runCatching { api.serverInfo() }.getOrNull() }
+            }
             val tracks = player()?.listTextTracks().orEmpty()
             val langs = languages().ifEmpty { setOf("en") }
             val preferred = langs.firstOrNull().orEmpty().ifBlank { "en" }
@@ -43,6 +47,8 @@ class SubtitlePicker(
             tracks.forEach { (id, label) ->
                 options += label to { player()?.selectTextTrack(id) }
             }
+            val current = player()?.selectedTextTrackId
+            val checked = if (current == null) 0 else tracks.indexOfFirst { it.first == current } + 1
             val subsReady = info?.subtitlesConfigured == true ||
                 info?.opensubtitlesConfigured == true ||
                 info?.wyzieConfigured == true
@@ -58,11 +64,11 @@ class SubtitlePicker(
                         options += label to { fetchOpenSubtitles(code) }
                     }
                 }
-            } else {
+            } else if (info != null) {
                 options += activity.getString(R.string.subs_add_key) to { promptKey() }
             }
             options += activity.getString(R.string.subs_from_link) to { promptLink() }
-            showList(activity.getString(R.string.subs_title), options)
+            showList(activity.getString(R.string.subs_title), options, checked)
         }
     }
 
@@ -226,8 +232,8 @@ class SubtitlePicker(
         input.requestFocus()
     }
 
-    private fun showList(title: String, options: List<Pair<String, () -> Unit>>) {
-        showRoundListDialog(activity, title, options.map { it.first }) { which -> options[which].second() }
+    private fun showList(title: String, options: List<Pair<String, () -> Unit>>, checked: Int = -1) {
+        showRoundListDialog(activity, title, options.map { it.first }, checked) { which -> options[which].second() }
     }
 
     private fun writeSubtitle(name: String, content: String): File {

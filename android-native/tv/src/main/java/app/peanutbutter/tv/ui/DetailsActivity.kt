@@ -197,6 +197,9 @@ class DetailsActivity : FragmentActivity() {
         Log.i(TAG, "bind kind=${t.kind} seasonsRaw=${t.seasons.size} people=${t.people.size}")
     }
 
+    /** Every season being listed, for the episodes' viewing order. */
+    private var allSeasons: List<Season> = emptyList()
+
     private fun playableSeasons(t: TitleItem): List<Season> =
         t.seasons.filter { s ->
             s.seasonNumber > 0 &&
@@ -259,6 +262,7 @@ class DetailsActivity : FragmentActivity() {
         container.isVisible = true
 
         val progressId = t.episodeId
+        allSeasons = seasons
         val sections = seasons.map { season -> buildSeasonSection(season, progressId) }
         sections.forEachIndexed { index, section ->
             container.addView(
@@ -298,7 +302,7 @@ class DetailsActivity : FragmentActivity() {
     }
 
     private fun buildSeasonSection(season: Season, progressId: String?): SeasonSection {
-        val episodes = season.episodes.sortedBy { it.episodeNumber }
+        val episodes = TorrentFilePicker.inViewingOrder(allSeasons, season)
         val header = LayoutInflater.from(this).inflate(R.layout.item_season_section, null)
         header.id = View.generateViewId()
         bindSeasonHeader(header, season, episodes, containsResume = episodes.any { it.id == progressId })
@@ -397,7 +401,11 @@ class DetailsActivity : FragmentActivity() {
         val progress = card.findViewById<ProgressBar>(R.id.episode_progress)
         val watchedMark = card.findViewById<ImageView>(R.id.episode_watched)
 
-        code.text = getString(R.string.episode_code, season.seasonNumber, ep.episodeNumber)
+        code.text = getString(
+            R.string.episode_code,
+            season.seasonNumber,
+            TorrentFilePicker.viewingNumber(allSeasons, season.seasonNumber, ep.episodeNumber),
+        )
         name.text = ep.titleLabel
         val started = !ep.watched && ep.watchProgress > 0.02
         watchedMark.isVisible = ep.watched

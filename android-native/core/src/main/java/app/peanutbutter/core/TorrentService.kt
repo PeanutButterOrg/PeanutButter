@@ -42,8 +42,14 @@ class TorrentService : Service() {
             MSG_STOP -> {
                 val delete = msg.data?.getBoolean(KEY_DELETE_FILES, false) == true
                 AppLog.i(TAG, "MSG_STOP deleteFiles=$delete")
+                main.removeCallbacks(pausedFill)
                 job?.cancel()
                 runCatching { LocalTorrentEngine.stop(deleteFiles = delete) }
+                true
+            }
+            MSG_PAUSED -> {
+                main.removeCallbacks(pausedFill)
+                if (msg.data?.getBoolean(KEY_PAUSED, false) == true) main.post(pausedFill)
                 true
             }
             MSG_STATS -> {
@@ -56,6 +62,7 @@ class TorrentService : Service() {
                     putInt(KEY_PEERS, stats?.peers ?: 0)
                     putBoolean(KEY_READY, stats?.ready == true)
                     putBoolean(KEY_COMPLETE, stats?.torrentComplete == true)
+                    putDouble(KEY_DOWNLOADED_TO, stats?.downloadedTo ?: 0.0)
                 }
                 reply(replyTo, MSG_STATS, b)
                 true
@@ -74,6 +81,13 @@ class TorrentService : Service() {
 
     private val messenger = Messenger(handler)
 
+    private val pausedFill = object : Runnable {
+        override fun run() {
+            runCatching { LocalTorrentEngine.fillWhilePaused() }
+            main.postDelayed(this, 3_000L)
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         AppLog.init(this)
@@ -85,6 +99,7 @@ class TorrentService : Service() {
 
     override fun onDestroy() {
         AppLog.i(TAG, "onDestroy")
+        main.removeCallbacks(pausedFill)
         job?.cancel()
         scope.cancel()
         // Never wipe files here — UI process decides via MSG_STOP / AppExitCleanup.
@@ -126,6 +141,7 @@ class TorrentService : Service() {
                             putInt(KEY_PEERS, stats.peers)
                             putBoolean(KEY_READY, stats.ready)
                             putBoolean(KEY_COMPLETE, stats.torrentComplete)
+                            putDouble(KEY_DOWNLOADED_TO, stats.downloadedTo)
                         }
                         reply(replyTo, MSG_STATS, b)
                     },
@@ -169,6 +185,7 @@ class TorrentService : Service() {
         const val MSG_STOP = 2
         const val MSG_STATS = 3
         const val MSG_SEEK = 4
+        const val MSG_PAUSED = 5
         const val MSG_READY = 10
         const val MSG_ERROR = 11
 
@@ -189,5 +206,7 @@ class TorrentService : Service() {
         const val KEY_DURATION_MS = "duration_ms"
         const val KEY_DELETE_FILES = "delete_files"
         const val KEY_AGGRESSIVE = "aggressive"
+        const val KEY_PAUSED = "paused"
+        const val KEY_DOWNLOADED_TO = "downloaded_to"
     }
 }

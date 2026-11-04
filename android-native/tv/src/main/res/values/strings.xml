@@ -24,6 +24,7 @@
     <string name="trailer">Trailer</string>
     <string name="skip_intro">Skip Intro</string>
     <string name="play_next">Play Next</string>
+    <string name="play_next_countdown">Play Next · %1$ds</string>
     <string name="more_options">More options</string>
     <string name="stream">Stream</string>
     <string name="find_sources">Find sources</string>

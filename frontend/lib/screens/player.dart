@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'dart:io' show Platform;
+import 'dart:ui' show PointerDeviceKind;
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart' show PointerScrollEvent, PointerSignalEvent;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -163,10 +165,17 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   StreamSubscription<bool>? _playingSub;
   StreamSubscription<int?>? _widthSub;
   StreamSubscription<Duration>? _durationSub;
+  StreamSubscription<Track>? _trackSub;
   Timer? _streamPoll;
   Timer? _pauseBufferTimer;
   Timer? _bufferStallTimer;
   bool _seeking = false;
+  /// Play state to restore after a seek (playback pauses while one settles).
+  bool? _resumeAfterSeek;
+  /// Slider thumb while dragging; the position stream must not move it.
+  Duration? _scrubPos;
+  BoxFit _videoFit = BoxFit.contain;
+  bool _lastPointerWasTouch = false;
   int _seekToken = 0;
   Duration _lastGoodPos = Duration.zero;
   Duration _lastSeekTarget = Duration.zero;
@@ -176,6 +185,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   DateTime? _lastSnapBackAt;
   int _snapBackTries = 0;
   int _falseEofCount = 0;
+  Duration _falseEofAnchor = Duration.zero;
   _NextEpisodeTarget? _nextEpisode;
   bool _playNextVisible = false;
   bool _playNextDismissed = false;
@@ -187,12 +197,13 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   /// Desktop/mouse + TV chrome: seek ±10s + audio/subs (auto-hide).
   bool _chromeVisible = true;
   Timer? _chromeHideTimer;
-  static const int _chromeHideSecs = 4;
+  static const int _chromeHideSecs = 5;
   static const Duration _chromeAnim = Duration(milliseconds: 280);
   final FocusNode _rootFocus = FocusNode(debugLabel: 'playerRoot');
   final FocusNode _backFocus = FocusNode(debugLabel: 'playerBack');
   final FocusNode _audioFocus = FocusNode(debugLabel: 'playerAudio');
   final FocusNode _subsFocus = FocusNode(debugLabel: 'playerSubs');
+  final FocusNode _aspectFocus = FocusNode(debugLabel: 'playerAspect');
   final FocusNode _volumeFocus = FocusNode(debugLabel: 'playerVolume');
   final FocusNode _fullscreenFocus = FocusNode(debugLabel: 'playerFullscreen');
   final FocusNode _rewindFocus = FocusNode(debugLabel: 'playerRewind');
@@ -249,6 +260,14 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   bool _segmentsLoading = false;
   bool _segmentsFetched = false;
   int? _pendingSegmentDurationMs;
+
+  /// The fullscreen route only rebuilds on [_overlayEpoch]: without this its
+  /// play / mute / captions icons stayed stale.
+  @override
+  void setState(VoidCallback fn) {
+    super.setState(fn);
+    if (_inFullscreen) _notifyOverlays();
+  }
 
   bool get _isTrailer => widget.fileId == 'trailer' || (widget.youtubeKey != null && widget.youtubeKey!.isNotEmpty && widget.fileId == 'trailer');
 
@@ -378,7 +397,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     _playingSub?.cancel();
     _widthSub?.cancel();
     _durationSub?.cancel();
+    _trackSub?.cancel();
     _posSub = player.stream.position.listen(_onPosition);
+    // What mpv really selected (it auto-picks default tracks): the menus and the
+    // CC icon used to say "Off" with subtitles on screen.
+    _trackSub = player.stream.track.listen(_onTrackSelected);
     _bufferingSub = player.stream.buffering.listen((value) {
       if (!mounted) return;
       setState(() => _buffering = value);
@@ -410,7 +433,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
       if (!mounted) return;
       setState(() {
         _audioTracks = audio;
-        _activeAudioId ??= player.state.track.audio.id;
+        final aid = player.state.track.audio.id;
+        if (aid != 'auto' && aid != 'no') _activeAudioId = aid;
         _embeddedSubs = embedded;
       });
       unawaited(_applyPreferredAudioLanguage(audio));
@@ -428,6 +452,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         _armChromeHideTimer();
       } else if (!widget.isStream || _streamOpened) {
         _onPausedKeepBuffering();
+        // Controls stay up while paused, same as the TV app. Not during a
+        // seek's short pause, which would flash them.
+        if (_resumeAfterSeek != true) _bumpChrome();
       }
     });
     // Rebuild when video dimensions appear (torrent streams often start with no duration).
@@ -441,6 +468,25 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
               (d.inMilliseconds - _lastSegmentFetchDuration).abs() > 5000)) {
         unawaited(_loadMediaSegments(durationMs: d.inMilliseconds));
       }
+    });
+  }
+
+  void _onTrackSelected(Track track) {
+    if (!mounted) return;
+    final sid = track.subtitle.id;
+    var nextSub = _activeSubId;
+    if (sid == 'no') {
+      // Side-loaded subtitles report their own ids, so only clear in-file ones.
+      if (nextSub?.startsWith('emb:') ?? false) nextSub = null;
+    } else if (_fileSubtitleTracks.any((t) => t.id == sid)) {
+      nextSub = 'emb:$sid';
+    }
+    final aid = track.audio.id;
+    final nextAudio = aid == 'auto' || aid == 'no' ? _activeAudioId : aid;
+    if (nextSub == _activeSubId && nextAudio == _activeAudioId) return;
+    setState(() {
+      _activeSubId = nextSub;
+      _activeAudioId = nextAudio;
     });
   }
 
@@ -471,7 +517,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     if (event is! KeyDownEvent && event is! KeyRepeatEvent) return false;
     // Another route (Settings / dialogs) is on top — do not steal keys or
     // thrash chrome (causes full-screen blink on Back).
-    if (!_playerRouteIsCurrent) return false;
+    // (Fullscreen is its own route on top of this one and still ours.)
+    if (!_chromeRouteActive) return false;
     // While the leave-confirm dialog is up, don't steal Select/OK from its buttons.
     if (_confirmExitOpen) {
       if (tvIsBackKey(event.logicalKey)) {
@@ -479,6 +526,19 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         return true;
       }
       return false;
+    }
+
+    // A menu or dialog on top of the fullscreen route keeps its own keys.
+    final focused = FocusManager.instance.primaryFocus?.context;
+    if (focused != null && ModalRoute.of(focused) is PopupRoute) return false;
+
+    // Holding a key must not flip play / pause over and over.
+    if (event is KeyRepeatEvent &&
+        (tvIsActivateKey(event.logicalKey) ||
+            event.logicalKey == LogicalKeyboardKey.mediaPlay ||
+            event.logicalKey == LogicalKeyboardKey.mediaPause ||
+            event.logicalKey == LogicalKeyboardKey.mediaPlayPause)) {
+      return !_chromeControlFocused;
     }
 
     final chromeFocused = _chromeControlFocused;
@@ -497,10 +557,13 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
       return false;
     }
 
+    // Keyboard desktops: the usual player shortcuts.
+    if (!DeviceProfile.current.prefersDpad && _handleDesktopKey(event)) return true;
+
     if (dir == TvNavDir.left) {
       final revealed = _revealChromeForTv();
       if (revealed) {
-        _playFocus.requestFocus();
+        _focusControl(_playFocus);
         return true;
       }
       if (_canSeek) _seekRelative(-10);
@@ -510,7 +573,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     if (dir == TvNavDir.right) {
       final revealed = _revealChromeForTv();
       if (revealed) {
-        _playFocus.requestFocus();
+        _focusControl(_playFocus);
         return true;
       }
       if (_canSeek) _seekRelative(10);
@@ -518,16 +581,41 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
       return true;
     }
     if (dir == TvNavDir.up) {
-      _bumpChrome();
-      _audioFocus.requestFocus();
+      _focusControl(_playbackStarted && _activeSegment != null ? _skipFocus : _subsFocus);
       return true;
     }
     if (dir == TvNavDir.down) {
-      _bumpChrome();
-      _playFocus.requestFocus();
+      _focusControl(_playFocus);
       return true;
     }
     return _handlePlayerKey(event.logicalKey);
+  }
+
+  /// Up / Down volume, M mute, F fullscreen.
+  bool _handleDesktopKey(KeyEvent event) {
+    final key = event.logicalKey;
+    if (key == LogicalKeyboardKey.arrowUp || key == LogicalKeyboardKey.arrowDown) {
+      _nudgeVolume(key == LogicalKeyboardKey.arrowUp ? 5 : -5);
+      return true;
+    }
+    if (event is! KeyDownEvent) return false;
+    if (key == LogicalKeyboardKey.keyM) {
+      unawaited(_toggleMute());
+      return true;
+    }
+    if (key == LogicalKeyboardKey.keyF) {
+      unawaited(_toggleFullscreen());
+      return true;
+    }
+    return false;
+  }
+
+  /// Show the controls, then focus [node] once they are built and focusable.
+  void _focusControl(FocusNode node) {
+    _bumpChrome();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && node.canRequestFocus) node.requestFocus();
+    });
   }
 
   bool get _chromeControlFocused {
@@ -536,6 +624,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     return primary == _backFocus ||
         primary == _audioFocus ||
         primary == _subsFocus ||
+        primary == _aspectFocus ||
         primary == _volumeFocus ||
         primary == _fullscreenFocus ||
         primary == _rewindFocus ||
@@ -546,6 +635,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         _backFocus.hasFocus ||
         _audioFocus.hasFocus ||
         _subsFocus.hasFocus ||
+        _aspectFocus.hasFocus ||
         _volumeFocus.hasFocus ||
         _fullscreenFocus.hasFocus ||
         _rewindFocus.hasFocus ||
@@ -576,9 +666,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         key == LogicalKeyboardKey.mediaPlay ||
         key == LogicalKeyboardKey.mediaPause ||
         key == LogicalKeyboardKey.mediaPlayPause) {
-      if (isAndroidTv && !_chromeControlFocused) {
-        _playFocus.requestFocus();
-      }
+      if (isAndroidTv && !_chromeControlFocused) _focusControl(_playFocus);
       _playOrPause();
       return true;
     }
@@ -608,15 +696,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         _playNextFocus.requestFocus();
         return true;
       }
-      _audioFocus.requestFocus();
+      _focusControl(_subsFocus);
       return true;
     }
     if (key == LogicalKeyboardKey.arrowDown) {
-      if (_skipFocus.hasFocus || _playNextFocus.hasFocus) {
-        _playFocus.requestFocus();
-        return true;
-      }
-      _playFocus.requestFocus();
+      _focusControl(_playFocus);
       return true;
     }
     if (key == LogicalKeyboardKey.pageUp || key == LogicalKeyboardKey.pageDown) {
@@ -800,15 +884,14 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     final demuxCap = widget.isStream ? '96MiB' : '64MiB';
     native.setProperty('demuxer-max-bytes', demuxCap);
     native.setProperty('demuxer-max-back-bytes', '32MiB');
-    // Keep readahead modest for streams so seeks don't wait for a huge demuxer fill.
-    native.setProperty('demuxer-readahead-secs', widget.isStream ? '20' : '120');
-    native.setProperty('cache-secs', widget.isStream ? '30' : '120');
-    // Don't auto-pause on underrun for torrents — that looked like random
-    // pause/resume and fought with our old stall-recovery loop.
-    native.setProperty('cache-pause', widget.isStream ? 'no' : 'yes');
-    if (!widget.isStream) {
-      native.setProperty('cache-pause-wait', '3');
-    }
+    // Enough ahead to ride out slow pieces and to keep filling while paused.
+    native.setProperty('demuxer-readahead-secs', widget.isStream ? '60' : '120');
+    native.setProperty('cache-secs', widget.isStream ? '60' : '120');
+    // Pause on underrun and refill before resuming. Without this a swarm slower
+    // than the bitrate plays a moment, stalls, plays a moment, and the buffering
+    // state (and spinner) never reports it.
+    native.setProperty('cache-pause', 'yes');
+    native.setProperty('cache-pause-wait', widget.isStream ? '6' : '3');
     // Linux: software decode into the Flutter GL texture — disable hwdec
     // interop (VAAPI-EGL blue frames) without switching to the fragile S/W VO.
     if (isLinux) {
@@ -929,13 +1012,26 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
       }
       _lastFalseEofAt = now;
       _falseEofCount += 1;
-      // Give up after repeated false EOFs near the start — don't thrash.
-      if (_falseEofCount > 8 && !progressed) {
+      // Repeated false ends at one spot: stop looping over the same seconds and
+      // let the user retry with Play.
+      if (_falseEofCount > 8 || (_falseEofCount > 3 && !progressed)) {
+        if (mounted) {
+          setState(() {
+            _buffering = false;
+            _playing = false;
+          });
+          _bumpChrome();
+        }
         return;
       }
       final recoverMs = last.inMilliseconds > pos.inMilliseconds
           ? last.inMilliseconds
           : pos.inMilliseconds;
+      // Give the missing pieces time to arrive before reading there again.
+      await Future<void>.delayed(
+        Duration(milliseconds: (_falseEofCount * 800).clamp(0, 5000)),
+      );
+      if (!mounted || _closing || _playerReleased) return;
       try {
         if (recoverMs > 500) {
           final target = Duration(milliseconds: recoverMs);
@@ -968,7 +1064,15 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         player.state.duration <= Duration.zero) {
       return;
     }
+    // During a seek's short pause, change what happens when it lands.
+    if (_resumeAfterSeek != null) {
+      setState(() {
+        _resumeAfterSeek = !_resumeAfterSeek!;
+      });
+      return;
+    }
     _playPauseBusy = true;
+    if (!player.state.playing) _falseEofCount = 0; // Play is the manual retry
     final shouldPause = player.state.playing;
     if (mounted) setState(() => _playing = !shouldPause);
     unawaited(() async {
@@ -1003,6 +1107,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         LocalTorrentEngine.instance.isActive) {
       LocalTorrentEngine.instance.keepDownloading();
     }
+    // The longer the pause, the further ahead it fills (a torrent stream's
+    // download otherwise stops at the first 32 MB).
+    var preloadMb = 32;
     _pauseBufferTimer?.cancel();
     _pauseBufferTimer = Timer.periodic(const Duration(seconds: 2), (_) {
       if (!mounted || _closing || _playerReleased) return;
@@ -1012,7 +1119,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         return;
       }
       if (widget.localTorrent || LocalTorrentEngine.instance.isActive) {
-        LocalTorrentEngine.instance.keepDownloading();
+        preloadMb = (preloadMb + 16).clamp(32, 1024);
+        LocalTorrentEngine.instance.keepDownloading(
+          preloadBytes: preloadMb * 1024 * 1024,
+        );
       }
     });
   }
@@ -1041,8 +1151,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     return _hasVideo || _player != null;
   }
 
-  /// Desktop media_kit: use our onChangeEnd scrubber instead of its drag-seek.
-  bool get _useDesktopSafeSeekBar {
+  /// Desktop: volume and fullscreen buttons, keyboard; no touch gestures.
+  bool get _hasWindowControls {
     if (kIsWeb) return false;
     return Platform.isWindows || Platform.isLinux || Platform.isMacOS;
   }
@@ -1059,8 +1169,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     if (!_canSeek) return;
     final player = _player;
     if (player == null) return;
-    final pos =
-        player.state.position.inMilliseconds > 0 ? player.state.position : _lastGoodPos;
+    // While a seek settles the player hasn't moved: count from the target, or
+    // pressing +10 three times only moves 10 s.
+    final pos = _seeking
+        ? _lastSeekTarget
+        : (player.state.position.inMilliseconds > 0 ? player.state.position : _lastGoodPos);
     final dur = player.state.duration;
     var target = pos + Duration(seconds: seconds);
     if (target < Duration.zero) target = Duration.zero;
@@ -1069,7 +1182,14 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   }
 
   /// Queue a seek. Streams wait 3s to settle; local files seek immediately.
-  Future<void> _seekPlayback(Duration target, {bool immediate = false}) async {
+  ///
+  /// [resume] plays afterwards whatever the state: a start-up resume seek runs
+  /// before the player reports playing, and Skip means carry on watching.
+  Future<void> _seekPlayback(
+    Duration target, {
+    bool immediate = false,
+    bool resume = false,
+  }) async {
     if (target < Duration.zero) target = Duration.zero;
     _lastSeekTarget = target;
     _lastGoodPos = target;
@@ -1080,6 +1200,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
       });
     }
     // Pause while settling so the old frame doesn't keep playing.
+    if (resume) {
+      _resumeAfterSeek = true;
+    } else {
+      _resumeAfterSeek ??= _player?.state.playing ?? true;
+    }
     if (widget.isStream) {
       try {
         await _player?.pause();
@@ -1143,8 +1268,17 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         ),
       );
       if (token != _seekToken) return;
-      await player.play();
-    } catch (_) {}
+      // A seek keeps the play / pause state: seeking while paused stays paused.
+      final resume = _resumeAfterSeek ?? true;
+      _resumeAfterSeek = null;
+      if (resume) {
+        await player.play();
+      } else if (mounted) {
+        setState(() => _buffering = false);
+      }
+    } catch (_) {
+      _resumeAfterSeek = null;
+    }
 
     Future<void>.delayed(const Duration(milliseconds: 2000), () {
       if (!mounted || token != _seekToken) return;
@@ -1194,6 +1328,54 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     }
   }
 
+  /// Volume is 0–100; remembers the level for unmute.
+  void _nudgeVolume(double delta) {
+    final player = _player;
+    if (player == null) return;
+    final next = (player.state.volume + delta).clamp(0.0, 100.0).toDouble();
+    unawaited(player.setVolume(next));
+    _bumpChrome();
+    setState(() {
+      _muted = next <= 0.5;
+      if (next > 0.5) _volumeBeforeMute = next;
+    });
+  }
+
+  Future<void> _toggleMute() async {
+    _bumpChrome();
+    final player = _player;
+    if (player == null) return;
+    final vol = player.state.volume;
+    if (_muted || vol <= 0.5) {
+      await player.setVolume(_volumeBeforeMute <= 0.5 ? 80.0 : _volumeBeforeMute);
+      if (mounted) setState(() => _muted = false);
+    } else {
+      _volumeBeforeMute = vol;
+      await player.setVolume(0);
+      if (mounted) setState(() => _muted = true);
+    }
+  }
+
+  Future<void> _toggleFullscreen() async {
+    _bumpChrome();
+    // In fullscreen this lives in media_kit's fullscreen route; _videoKey's
+    // context is the windowed Video, where isFullscreen() is false, so
+    // toggleFullscreen(ctx) tried to enter again.
+    if (_inFullscreen) {
+      await _tryExitFullscreen();
+      return;
+    }
+    final video = _videoKey.currentState;
+    if (video == null || !video.mounted) return;
+    try {
+      await video.enterFullscreen();
+    } catch (e) {
+      debugPrint('PeanutButter enterFullscreen failed: $e');
+      return;
+    }
+    if (mounted) setState(() => _inFullscreen = true);
+  }
+
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
@@ -1208,6 +1390,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     _playingSub?.cancel();
     _widthSub?.cancel();
     _durationSub?.cancel();
+    _trackSub?.cancel();
     _streamPoll?.cancel();
     _playNextTick?.cancel();
     _pauseBufferTimer?.cancel();
@@ -1218,6 +1401,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     _backFocus.dispose();
     _audioFocus.dispose();
     _subsFocus.dispose();
+    _aspectFocus.dispose();
     _volumeFocus.dispose();
     _fullscreenFocus.dispose();
     if (!kIsWeb && Platform.isMacOS) _windowChannel.setMethodCallHandler(null);
@@ -1298,6 +1482,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     _playingSub?.cancel();
     _widthSub?.cancel();
     _durationSub?.cancel();
+    _trackSub?.cancel();
     _streamPoll?.cancel();
     _streamPoll = null;
     _pauseBufferTimer?.cancel();
@@ -1413,7 +1598,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
       if (!ignoring) {
         _lastGoodPos = position;
       }
-      if (position.inMilliseconds > 5000) {
+      // Only real progress resets the limit; "past 5 s" was true for the whole
+      // movie, so the false-end loop never stopped.
+      if (position - _falseEofAnchor > const Duration(seconds: 30)) {
+        _falseEofAnchor = position;
         _falseEofCount = 0;
       }
       if (_seeking &&
@@ -1436,8 +1624,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     }
 
     // Don't clear Skip Intro when the demuxer briefly reports t=0.
-    final segmentPos =
-        bogusReset ? _lastGoodPos.inMilliseconds : position.inMilliseconds;
+    // During a seek use its target: the old position would bring Skip straight back.
+    final segmentPos = _seeking
+        ? _lastSeekTarget.inMilliseconds
+        : (bogusReset ? _lastGoodPos.inMilliseconds : position.inMilliseconds);
     _updateActiveSegment(segmentPos);
     _updatePlayNextPrompt(bogusReset ? _lastGoodPos : position);
     if (ignoring || bogusReset) return;
@@ -1445,7 +1635,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     final now = DateTime.now();
     final due = !_savedOnce
         ? position.inMilliseconds >= 2000
-        : now.difference(_lastProgress) >= const Duration(seconds: 5);
+        // Each save is two mutations; 15 s matches the TV app.
+        : now.difference(_lastProgress) >= const Duration(seconds: 15);
     if (!due) return;
     _savedOnce = true;
     _lastProgress = now;
@@ -1489,9 +1680,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
       if (mounted) {
         setState(() => _activeSegment = hit);
         _notifyOverlays();
+        // Don't take focus from someone using the controls.
         if (hit != null &&
             (hit.kind == 'INTRO' || hit.kind == 'RECAP') &&
-            DeviceProfile.current.prefersDpad) {
+            DeviceProfile.current.prefersDpad &&
+            !_chromeVisible) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (mounted && _skipFocus.canRequestFocus) {
               _skipFocus.requestFocus();
@@ -1527,7 +1720,13 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         ),
       );
       final json = result.data?['title'] as Map<String, dynamic>?;
-      if (json == null) return;
+      if (json == null) {
+        // A blip at start must not lose Play Next for the whole episode.
+        Future<void>.delayed(const Duration(seconds: 30), () {
+          if (mounted && _nextEpisode == null) unawaited(_resolveNextEpisode());
+        });
+        return;
+      }
       final catalogTitle = (json['title'] as String?)?.trim().isNotEmpty == true
           ? json['title'] as String
           : (widget.catalogTitle ?? widget.title);
@@ -1549,10 +1748,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
       var nextSeasonNum = season;
       var isNextSeason = false;
       if (curSeason != null) {
-        final eps = List<Episode>.from(curSeason.episodes.where((e) => e.isReleased))
-          ..sort((a, b) => a.episodeNumber.compareTo(b.episodeNumber));
-        for (final e in eps) {
-          if (e.episodeNumber > episode) {
+        // Same order as the episode list on the details screen.
+        final titles = episodeTitles(seasons);
+        final eps = episodesInViewingOrder(curSeason, titles);
+        final at = eps.indexWhere((e) => e.episodeNumber == episode);
+        for (final e in eps.skip(at + 1)) {
+          if (e.isReleased) {
             nextEp = e;
             break;
           }
@@ -1561,8 +1762,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
       if (nextEp == null) {
         for (final s in seasons) {
           if (s.seasonNumber <= season) continue;
-          final eps = List<Episode>.from(s.episodes.where((e) => e.isReleased))
-            ..sort((a, b) => a.episodeNumber.compareTo(b.episodeNumber));
+          final eps = episodesInViewingOrder(s, episodeTitles(seasons))
+              .where((e) => e.isReleased)
+              .toList();
           if (eps.isNotEmpty) {
             nextEp = eps.first;
             nextSeasonNum = s.seasonNumber;
@@ -1625,14 +1827,22 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   void _armChromeHideTimer() {
     _chromeHideTimer?.cancel();
     _chromeHideTimer = Timer(const Duration(seconds: _chromeHideSecs), () {
-      if (!mounted || !_chromeRouteActive) return;
-      // Keep chrome while a control is focused — reschedule silently (no setState).
-      if (_chromeControlFocused) {
+      if (!mounted) return;
+      // Stay up behind a menu, while paused, or while dragging the scrubber. It
+      // used to give up here without re-arming, leaving the controls up forever.
+      final paused = !_playing && _resumeAfterSeek != true;
+      if (!_chromeRouteActive || paused || _scrubPos != null) {
         _armChromeHideTimer();
         return;
       }
       _setChromeVisible(false);
-      if (!_inFullscreen && !_rootFocus.hasFocus) _rootFocus.requestFocus();
+      // Skip / Play Next aren't part of the controls and keep their focus.
+      if (!_inFullscreen &&
+          !_rootFocus.hasFocus &&
+          !_skipFocus.hasFocus &&
+          !_playNextFocus.hasFocus) {
+        _rootFocus.requestFocus();
+      }
     });
   }
 
@@ -1646,17 +1856,20 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     required Offset hiddenOffset,
   }) {
     final show = _showChrome;
-    return IgnorePointer(
-      ignoring: !show,
-      child: AnimatedOpacity(
-        opacity: show ? 1 : 0,
-        duration: _chromeAnim,
-        curve: Curves.easeOutCubic,
-        child: AnimatedSlide(
-          offset: show ? Offset.zero : hiddenOffset,
+    return ExcludeFocus(
+      excluding: !show,
+      child: IgnorePointer(
+        ignoring: !show,
+        child: AnimatedOpacity(
+          opacity: show ? 1 : 0,
           duration: _chromeAnim,
           curve: Curves.easeOutCubic,
-          child: child,
+          child: AnimatedSlide(
+            offset: show ? Offset.zero : hiddenOffset,
+            duration: _chromeAnim,
+            curve: Curves.easeOutCubic,
+            child: child,
+          ),
         ),
       ),
     );
@@ -1667,6 +1880,19 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     // Don't surface Play Next while still connecting / buffering the first pieces.
     if (!force && !_playbackStarted) return;
     if (!force && _playNextVisible) return;
+    // The countdown (then leaving) is only for a finished episode. It used to
+    // start when the prompt appeared, so long credits closed the player mid-way,
+    // even after seeking back to the middle of the episode.
+    if (!force) {
+      if (mounted && !_playNextVisible) {
+        setState(() => _playNextVisible = true);
+        _notifyOverlays();
+        if (DeviceProfile.current.prefersDpad && !_chromeVisible) {
+          _focusControl(_playNextFocus);
+        }
+      }
+      return;
+    }
     _playNextArmedAt ??= DateTime.now();
     _playNextTick?.cancel();
     _playNextTick = Timer.periodic(const Duration(seconds: 1), (_) {
@@ -1695,13 +1921,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
       _playNextSecondsLeft = _playNextAutoHideSecs;
     });
     _notifyOverlays();
-    if (DeviceProfile.current.prefersDpad) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && _playNextFocus.canRequestFocus) {
-          _playNextFocus.requestFocus();
-        }
-      });
-    }
+    if (DeviceProfile.current.prefersDpad) _focusControl(_playNextFocus);
+  }
+
+  void _cancelPlayNextCountdown() {
+    _playNextTick?.cancel();
+    _playNextArmedAt = null;
   }
 
   void _updatePlayNextPrompt(Duration position) {
@@ -1752,7 +1977,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
             (durMs >= 5 * 60 * 1000 && posMs >= (durMs * 0.97).round()));
     final shouldShow = inCredits || nearEnd;
     if (!shouldShow) {
-      if (_playNextVisible && _playNextArmedAt == null && mounted) {
+      _cancelPlayNextCountdown();
+      if (_playNextVisible && mounted) {
         setState(() => _playNextVisible = false);
         _notifyOverlays();
       }
@@ -2006,11 +2232,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
       setState(() => _activeSegment = null);
       _notifyOverlays();
     }
-    await _seekPlayback(target, immediate: true);
-    // Keep playing after the skip — progressive streams can pause on seek.
-    try {
-      await _player?.play();
-    } catch (_) {}
+    await _seekPlayback(target, immediate: true, resume: true);
   }
 
   Future<void> _saveProgress({
@@ -2023,6 +2245,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     final titleId = widget.titleId;
     if (titleId == null || _isTrailer) return;
     if (_progressFlushed) return;
+    // Once finished, a later plain save would park the resume point back near
+    // the end and put the episode back in Continue watching.
+    if (_episodeMarkedComplete && !complete) {
+      if (closing) _progressFlushed = true;
+      return;
+    }
     final player = _player;
     final pos = position ?? player?.state.position ?? Duration.zero;
     final dur = duration ?? player?.state.duration;
@@ -2562,7 +2790,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
       try {
         await _player!.stream.duration.firstWhere((d) => d.inMilliseconds > 0).timeout(const Duration(seconds: 20));
       } catch (_) {}
-      await _seekPlayback(Duration(milliseconds: widget.startMs), immediate: true);
+      await _seekPlayback(Duration(milliseconds: widget.startMs), immediate: true, resume: true);
     }
   }
 
@@ -2815,6 +3043,13 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     }
   }
 
+  /// Tracks inside the video. mpv also lists side-loaded subtitles as tracks,
+  /// which showed each one twice in the menu, once wrongly marked "(in video)".
+  List<SubtitleTrack> get _fileSubtitleTracks => [
+        for (final t in _embeddedSubs)
+          if (!_subs.any((s) => s.label == t.title)) t,
+      ];
+
   String _embeddedSubLabel(SubtitleTrack t) {
     final lang = (t.language ?? '').trim();
     final title = (t.title ?? '').trim();
@@ -3066,14 +3301,14 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
             if (!_chromeVisible) _bumpChrome();
           },
           child: Listener(
-            onPointerDown: (_) => _bumpChrome(),
+            onPointerDown: _onPointerDown,
+            onPointerSignal: _onPointerSignal,
             child: Scaffold(
       backgroundColor: Colors.black,
       body: Stack(
         fit: StackFit.expand,
         children: [
-          // Full-bleed on every platform so media_kit's seekbar sits at the
-          // window bottom (Center letterboxing stacked it on the torrent bar).
+          // Full-bleed on every platform.
           Positioned.fill(child: _videoSurface()),
           if (widget.isStream && _showStreamHud) Positioned.fill(child: _bufferOverlay()),
           if (_streamError != null)
@@ -3087,127 +3322,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
                 ),
               ),
             ),
-          Positioned(
-            top: 8,
-            left: 4,
-            right: 12,
-            child: _chromeLayer(
-              hiddenOffset: const Offset(0, -0.35),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.center,
-                children: [
-                  TvFocus(
-                    child: IconButton(
-                      focusNode: _backFocus,
-                      onPressed: _onBackPressed,
-                      icon: const Icon(Icons.arrow_back, color: Colors.white),
-                    ),
-                  ),
-                  if (!_isTrailer) _playerTitleChrome(),
-                ],
-              ),
-            ),
-          ),
-          // Same transport chrome on Win/Linux/mac: scrubber + ±10/play.
-          // Auto-hides with the rest of the player chrome.
-          if (_showSeekControls && _useDesktopSafeSeekBar && _showChrome)
-            Positioned(
-              left: 24,
-              right: 24,
-              bottom: 28,
-              child: _chromeLayer(
-                hiddenOffset: const Offset(0, 0.45),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    _playbackSeekBar(),
-                    const SizedBox(height: 10),
-                    _seekSkipBar(),
-                  ],
-                ),
-              ),
-            ),
-          // Windowed: align with the seeding chip on the scaffold. Fullscreen
-          // copies live inside media_kit controls (native fullscreen route).
-          if (!_inFullscreen) ..._skipAndPlayNextOverlays(),
-          // Stats chip — sits above the seekbar, never over it. Fades in and
-          // out with the controls (or a real buffering stall).
-          if (widget.isStream)
-            Positioned(
-              right: _actionChipInset,
-              bottom: _streamStatsChipBottom,
-              child: IgnorePointer(
-                child: AnimatedOpacity(
-                  opacity: _showStreamChip ? 1 : 0,
-                  duration: _chromeAnim,
-                  curve: Curves.easeOutCubic,
-                  child: _streamStatsChip(),
-                ),
-              ),
-            ),
-          Positioned(
-            top: 12,
-            right: 12,
-            child: _chromeLayer(
-              hiddenOffset: const Offset(0, -0.35),
-              child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (_isTrailer && _trailerQualities.length > 1)
-                  PopupMenuButton<YoutubeQualityOption>(
-                    color: PtTheme.panel,
-                    tooltip: 'Trailer quality',
-                    icon: const Icon(Icons.high_quality_outlined, color: Colors.white),
-                    onOpened: _bumpChrome,
-                    onSelected: (q) {
-                      _bumpChrome();
-                      _switchTrailerQuality(q);
-                    },
-                    itemBuilder: (context) => [
-                      for (final q in _trailerQualities)
-                        CheckedPopupMenuItem(
-                          value: q,
-                          checked: q.height == _trailerHeight,
-                          child: Text(q.label),
-                        ),
-                    ],
-                  ),
-                if (!_isTrailer) ...[
-                  if (_subsLoading)
-                    const Padding(
-                      padding: EdgeInsets.only(right: 8),
-                      child: SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white70),
-                      ),
-                    ),
-                  _audioTrackMenu(),
-                  _subtitleTrackMenu(),
-                ],
-                if (widget.files.length > 1)
-                  PopupMenuButton<FileReference>(
-                    color: PtTheme.panel,
-                    icon: const Icon(Icons.high_quality_outlined, color: Colors.white),
-                    onOpened: _bumpChrome,
-                    onSelected: (f) {
-                      _bumpChrome();
-                      setState(() => _url = f.playbackUrl);
-                      _open(f.playbackUrl, fileId: f.id);
-                    },
-                    itemBuilder: (context) => [
-                      for (final f in widget.files)
-                        PopupMenuItem(value: f, child: Text(f.quality ?? f.container ?? 'file')),
-                    ],
-                  ),
-                if (_useDesktopSafeSeekBar) ...[
-                  _volumeButton(),
-                  _fullscreenButton(),
-                ],
-              ],
-            ),
-            ),
-          ),
+          if (!_hasWindowControls) Positioned.fill(child: _touchLayer()),
+          // In fullscreen the same controls live in media_kit's route (_videoControls).
+          if (!_inFullscreen) ..._chromeOverlays(),
         ],
       ),
             ),
@@ -3217,66 +3334,238 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     );
   }
 
-  Widget _volumeButton() {
-    final vol = _player?.state.volume ?? 100;
-    final muted = _muted || vol <= 0.5;
-    return TvFocus(
-      child: IconButton(
-        focusNode: _volumeFocus,
-        tooltip: muted ? 'Unmute' : 'Mute',
-        icon: Icon(
-          muted
-              ? Icons.volume_off_rounded
-              : vol < 40
-                  ? Icons.volume_down_rounded
-                  : Icons.volume_up_rounded,
-          color: Colors.white,
-        ),
-        onPressed: () async {
-          _bumpChrome();
-          final player = _player;
-          if (player == null) return;
-          if (muted) {
-            final restore = _volumeBeforeMute <= 0.5 ? 80.0 : _volumeBeforeMute;
-            await player.setVolume(restore);
-            if (mounted) setState(() => _muted = false);
+  void _onPointerDown(PointerDownEvent event) {
+    _lastPointerWasTouch = event.kind == PointerDeviceKind.touch;
+    // Touch toggles the controls in _touchLayer instead.
+    if (!_lastPointerWasTouch) _bumpChrome();
+  }
+
+  void _onPointerSignal(PointerSignalEvent event) {
+    if (_hasWindowControls && event is PointerScrollEvent && event.scrollDelta.dy != 0) {
+      _nudgeVolume(event.scrollDelta.dy < 0 ? 5 : -5);
+    }
+  }
+
+  /// Phones: tap shows / hides the controls, double-tap a side seeks ±10 s.
+  Widget _touchLayer() {
+    return LayoutBuilder(
+      builder: (context, constraints) => GestureDetector(
+        behavior: HitTestBehavior.translucent,
+        onTap: () {
+          if (!_lastPointerWasTouch) return;
+          if (_chromeVisible) {
+            _setChromeVisible(false);
           } else {
-            _volumeBeforeMute = vol;
-            await player.setVolume(0);
-            if (mounted) setState(() => _muted = true);
+            _bumpChrome();
           }
         },
+        onDoubleTapDown: (details) {
+          if (_lastPointerWasTouch && _canSeek) {
+            _seekRelative(details.localPosition.dx < constraints.maxWidth / 2 ? -10 : 10);
+          }
+        },
+        onDoubleTap: () {},
       ),
     );
   }
 
-  Widget _fullscreenButton() {
-    return TvFocus(
-      child: IconButton(
-        focusNode: _fullscreenFocus,
-        tooltip: _inFullscreen ? 'Exit fullscreen' : 'Fullscreen',
-        icon: Icon(
-          _inFullscreen ? Icons.fullscreen_exit_rounded : Icons.fullscreen_rounded,
-          color: Colors.white,
+  bool get _showRebufferSpinner =>
+      _streamError == null &&
+      !_showStreamHud &&
+      _buffering &&
+      (_playing || _resumeAfterSeek == true);
+
+  /// Every control over the video. One list, so windowed and fullscreen (and
+  /// every platform) always show the same buttons in the same places.
+  List<Widget> _chromeOverlays() {
+    return [
+      Positioned(
+        top: 8,
+        left: 4,
+        right: 12,
+        child: _chromeLayer(
+          hiddenOffset: const Offset(0, -0.35),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              _RoundButton(
+                focusNode: _backFocus,
+                icon: Icons.arrow_back,
+                tooltip: 'Back',
+                onPressed: _onBackPressed,
+              ),
+              const SizedBox(width: 8),
+              if (!_isTrailer) _playerTitleChrome() else const Spacer(),
+              if (_isTrailer && _trailerQualities.length > 1)
+                PopupMenuButton<YoutubeQualityOption>(
+                  color: PtTheme.panel,
+                  tooltip: 'Trailer quality',
+                  icon: const Icon(Icons.high_quality_outlined, color: Colors.white),
+                  onOpened: _bumpChrome,
+                  onSelected: (q) {
+                    _bumpChrome();
+                    _switchTrailerQuality(q);
+                  },
+                  itemBuilder: (context) => [
+                    for (final q in _trailerQualities)
+                      CheckedPopupMenuItem(
+                        value: q,
+                        checked: q.height == _trailerHeight,
+                        child: Text(q.label),
+                      ),
+                  ],
+                ),
+              if (!_isTrailer) ...[
+                if (_subsLoading)
+                  const Padding(
+                    padding: EdgeInsets.only(right: 8),
+                    child: SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white70),
+                    ),
+                  ),
+                // Only when there's a real choice, like the TV app.
+                if (_audioTracks.length > 1) ...[
+                  _audioTrackMenu(),
+                  const SizedBox(width: 8),
+                ],
+                _subtitleTrackMenu(),
+                const SizedBox(width: 8),
+                _aspectMenu(),
+              ],
+              if (widget.files.length > 1)
+                PopupMenuButton<FileReference>(
+                  color: PtTheme.panel,
+                  icon: const Icon(Icons.high_quality_outlined, color: Colors.white),
+                  onOpened: _bumpChrome,
+                  onSelected: (f) {
+                    _bumpChrome();
+                    setState(() => _url = f.playbackUrl);
+                    _open(f.playbackUrl, fileId: f.id);
+                  },
+                  itemBuilder: (context) => [
+                    for (final f in widget.files)
+                      PopupMenuItem(value: f, child: Text(f.quality ?? f.container ?? 'file')),
+                  ],
+                ),
+              if (_hasWindowControls) ...[
+                const SizedBox(width: 8),
+                _volumeButton(),
+                const SizedBox(width: 8),
+                _fullscreenButton(),
+              ],
+            ],
+          ),
         ),
+      ),
+      if (_showSeekControls)
+        Positioned(
+          left: 24,
+          right: 24,
+          bottom: 28,
+          child: _chromeLayer(
+            hiddenOffset: const Offset(0, 0.45),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _playbackSeekBar(),
+                const SizedBox(height: 10),
+                _seekSkipBar(),
+              ],
+            ),
+          ),
+        ),
+      if (_showRebufferSpinner)
+        const IgnorePointer(
+          child: Center(
+            child: SizedBox(
+              width: 44,
+              height: 44,
+              child: CircularProgressIndicator(strokeWidth: 3, color: Colors.white),
+            ),
+          ),
+        ),
+      ..._skipAndPlayNextOverlays(),
+      // Stats chip — sits above the seekbar, never over it. Fades in and
+      // out with the controls (or a real buffering stall).
+      if (widget.isStream)
+        Positioned(
+          right: _actionChipInset,
+          bottom: _streamStatsChipBottom,
+          child: IgnorePointer(
+            child: AnimatedOpacity(
+              opacity: _showStreamChip ? 1 : 0,
+              duration: _chromeAnim,
+              curve: Curves.easeOutCubic,
+              child: _streamStatsChip(),
+            ),
+          ),
+        ),
+    ];
+  }
+
+  Widget _volumeButton() {
+    final vol = _player?.state.volume ?? 100;
+    final muted = _muted || vol <= 0.5;
+    return _RoundButton(
+      focusNode: _volumeFocus,
+      tooltip: muted ? 'Unmute' : 'Mute',
+      icon: muted
+          ? Icons.volume_off_rounded
+          : vol < 40
+              ? Icons.volume_down_rounded
+              : Icons.volume_up_rounded,
+      onPressed: () => unawaited(_toggleMute()),
+    );
+  }
+
+  Widget _fullscreenButton() {
+    return _RoundButton(
+      focusNode: _fullscreenFocus,
+      tooltip: _inFullscreen ? 'Exit fullscreen' : 'Fullscreen',
+      icon: _inFullscreen ? Icons.fullscreen_exit_rounded : Icons.fullscreen_rounded,
+      onPressed: () => unawaited(_toggleFullscreen()),
+    );
+  }
+
+  Widget _aspectMenu() {
+    return Builder(
+      builder: (context) => _RoundButton(
+        focusNode: _aspectFocus,
+        tooltip: 'Aspect ratio',
+        icon: Icons.aspect_ratio,
         onPressed: () async {
           _bumpChrome();
-          // In fullscreen this button lives in media_kit's fullscreen route;
-          // _videoKey's context is the windowed Video, where isFullscreen()
-          // is false, so toggleFullscreen(ctx) tried to enter again.
-          if (_inFullscreen) {
-            await _tryExitFullscreen();
-            return;
-          }
-          final video = _videoKey.currentState;
-          if (video == null || !video.mounted) return;
-          try {
-            await video.enterFullscreen();
-          } catch (e) {
-            debugPrint('PeanutButter enterFullscreen failed: $e');
-            return;
-          }
-          if (mounted) setState(() => _inFullscreen = true);
+          final box = context.findRenderObject() as RenderBox?;
+          if (box == null) return;
+          final origin = box.localToGlobal(Offset.zero);
+          final fit = await showMenu<BoxFit>(
+            context: context,
+            color: PtTheme.panel,
+            position: RelativeRect.fromLTRB(
+              origin.dx,
+              origin.dy + box.size.height,
+              origin.dx + box.size.width,
+              origin.dy,
+            ),
+            items: [
+              for (final (value, label) in const [
+                (BoxFit.contain, 'Fit'),
+                (BoxFit.none, 'Original'),
+                (BoxFit.cover, 'Fill'),
+                (BoxFit.fill, 'Stretch'),
+              ])
+                CheckedPopupMenuItem<BoxFit>(
+                  value: value,
+                  checked: _videoFit == value,
+                  child: Text(label),
+                ),
+            ],
+          );
+          if (fit == null || !mounted) return;
+          _bumpChrome();
+          setState(() => _videoFit = fit);
         },
       ),
     );
@@ -3285,11 +3574,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   Widget _audioTrackMenu() {
     return Builder(
       builder: (context) {
-        return TvFocus(
-          child: IconButton(
+        return _RoundButton(
             focusNode: _audioFocus,
             tooltip: 'Audio language',
-            icon: const Icon(Icons.language, color: Colors.white),
+            icon: Icons.language,
             onPressed: () async {
               _bumpChrome();
               final items = <PopupMenuEntry<String>>[];
@@ -3334,7 +3622,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
               _player?.setAudioTrack(match.first);
               setState(() => _activeAudioId = id);
             },
-          ),
         );
       },
     );
@@ -3343,16 +3630,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   Widget _subtitleTrackMenu() {
     return Builder(
       builder: (context) {
-        return TvFocus(
-          child: IconButton(
-            focusNode: _subsFocus,
-            tooltip: 'Subtitles',
-            icon: Icon(
-              _activeSubId == null ? Icons.closed_caption_off : Icons.closed_caption,
-              color: Colors.white,
-            ),
-            onPressed: () => unawaited(_openSubtitleMenu(context)),
-          ),
+        return _RoundButton(
+          focusNode: _subsFocus,
+          tooltip: 'Subtitles',
+          icon: _activeSubId == null ? Icons.closed_caption_off : Icons.closed_caption,
+          selected: _activeSubId != null,
+          onPressed: () => unawaited(_openSubtitleMenu(context)),
         );
       },
     );
@@ -3398,7 +3681,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
           checked: _activeSubId == null,
           child: const Text('Off'),
         ),
-        for (final track in _embeddedSubs)
+        for (final track in _fileSubtitleTracks)
           CheckedPopupMenuItem(
             value: 'emb:${track.id}',
             checked: _activeSubId == 'emb:${track.id}',
@@ -3523,23 +3806,13 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   static const double _actionChipBottom = 72;
   // Seekbar (bottom:28) + seek row (~48) + skip row (~48) + gap — keep clear.
   static const double _streamChipAboveSeekBar = 156;
-  // When the seed chip is visible, lift Skip / Play Next one chip row above it.
-  static const double _actionChipStackLift = 52;
 
   /// Buffer/speed/peers chip must never cover the seekbar.
-  double get _streamStatsChipBottom {
-    if (_showChrome && _showSeekControls && _useDesktopSafeSeekBar) {
-      return _streamChipAboveSeekBar;
-    }
-    return _actionChipBottom;
-  }
+  double get _streamStatsChipBottom =>
+      _showChrome && _showSeekControls ? _streamChipAboveSeekBar : _actionChipBottom;
 
-  double get _skipPlayNextBottom {
-    final seedVisible =
-        _showStreamChip && !_showStreamHud && widget.isStream;
-    final base = seedVisible ? _streamStatsChipBottom : _actionChipBottom;
-    return seedVisible ? base + _actionChipStackLift : base;
-  }
+  /// Bottom-left; the stats chip is bottom-right, so they share a height.
+  double get _skipPlayNextBottom => _streamStatsChipBottom;
 
   List<Widget> _skipAndPlayNextOverlays() {
     final bottom = _skipPlayNextBottom;
@@ -3566,71 +3839,30 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     ];
   }
 
-  Widget _mediaKitControls(VideoState state) {
-    final fullscreen = isFullscreen(state.context);
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        IgnorePointer(
-          ignoring: isAndroidTv,
-          child: AdaptiveVideoControls(state),
-        ),
-        // Native fullscreen uses a separate route; scaffold chips won't show.
-        // ValueListenableBuilder keeps countdown / skip / scrubber state fresh.
-        if (fullscreen)
-          Positioned.fill(
-            // Mouse moves in fullscreen bring the controls back (the player
-            // route's own MouseRegion is under this route).
-            child: MouseRegion(
-              opaque: false,
-              onHover: (_) => _bumpChrome(),
-              child: ValueListenableBuilder<int>(
-              valueListenable: _overlayEpoch,
-              builder: (context, _, __) {
-                return Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    ..._skipAndPlayNextOverlays(),
-                    if (_useDesktopSafeSeekBar)
-                      Positioned(
-                        top: 12,
-                        right: 12,
-                        child: _chromeLayer(
-                          hiddenOffset: const Offset(0, -0.35),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              _volumeButton(),
-                              _fullscreenButton(),
-                            ],
-                          ),
-                        ),
-                      ),
-                    // Always built; _chromeLayer fades them in and out.
-                    if (_showSeekControls && _useDesktopSafeSeekBar)
-                      Positioned(
-                        left: 24,
-                        right: 24,
-                        bottom: 28,
-                        child: _chromeLayer(
-                          hiddenOffset: const Offset(0, 0.45),
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              _playbackSeekBar(),
-                              const SizedBox(height: 10),
-                              _seekSkipBar(),
-                            ],
-                          ),
-                        ),
-                      ),
-                  ],
-                );
-              },
-            ),
+  /// media_kit's own controls are off everywhere: two sets of controls fought
+  /// over keys and spinners, and phones looked nothing like desktop. Only the
+  /// fullscreen route needs our overlay here; it sits above the player screen.
+  Widget _videoControls(VideoState state) {
+    if (!isFullscreen(state.context)) return const SizedBox.shrink();
+    return SizedBox.expand(
+      child: MouseRegion(
+        opaque: false,
+        onHover: (_) {
+          if (!_chromeVisible) _bumpChrome();
+        },
+        child: Listener(
+          behavior: HitTestBehavior.translucent,
+          onPointerDown: _onPointerDown,
+          onPointerSignal: _onPointerSignal,
+          child: ValueListenableBuilder<int>(
+            valueListenable: _overlayEpoch,
+            builder: (context, _, __) => Stack(
+              fit: StackFit.expand,
+              children: _chromeOverlays(),
             ),
           ),
-      ],
+        ),
+      ),
     );
   }
 
@@ -3682,11 +3914,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   }
 
   Widget _playNextButton(_NextEpisodeTarget next) {
+    final name = next.isNextSeason ? 'Next Season' : 'Play Next';
     final title = _playNextBusy
         ? 'Starting next…'
-        : next.isNextSeason
-            ? 'Next Season  ·  ${_playNextSecondsLeft}s'
-            : 'Play Next  ·  ${_playNextSecondsLeft}s';
+        : _playNextArmedAt != null
+            ? '$name  ·  ${_playNextSecondsLeft}s'
+            : name;
     return SafeArea(
       child: _ActionChipFocus(
         focusNode: _playNextFocus,
@@ -3765,73 +3998,44 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   }
 
   Widget _seekSkipBar() {
-    Widget skipButton({
-      required IconData icon,
-      required int seconds,
-      required FocusNode focusNode,
-    }) {
-      final enabled = _canSeek;
-      return Opacity(
-        opacity: enabled ? 1 : 0.45,
-        child: Material(
-          color: Colors.black.withValues(alpha: 0.62),
-          shape: const CircleBorder(),
-          child: InkWell(
-            focusNode: focusNode,
-            customBorder: const CircleBorder(),
-            onTap: enabled
-                ? () {
-                    _bumpChrome();
-                    _seekRelative(seconds);
-                  }
-                : null,
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: Icon(icon, color: Colors.white, size: 26),
-            ),
-          ),
-        ),
-      );
-    }
-
-    // No SafeArea here — desktop MediaQuery padding differs by OS and was
-    // stacking weird insets on Linux/macOS. Positioned chrome owns placement.
+    final enabled = _canSeek;
+    // During a seek's short pause, show what happens when it lands.
+    final showPause = _resumeAfterSeek ?? _playing;
     return Row(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
-        skipButton(icon: Icons.replay_10, seconds: -10, focusNode: _rewindFocus),
-        const SizedBox(width: 18),
-        Material(
-          color: Colors.black.withValues(alpha: 0.62),
-          shape: const CircleBorder(),
-          child: InkWell(
-            focusNode: _playFocus,
-            customBorder: const CircleBorder(),
-            onTap: () {
-              _bumpChrome();
-              _playOrPause();
-            },
-            child: Padding(
-              padding: const EdgeInsets.all(10),
-              child: Icon(
-                _playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
-                color: Colors.white,
-                size: 32,
-              ),
-            ),
-          ),
+        _RoundButton(
+          focusNode: _rewindFocus,
+          icon: Icons.replay_10,
+          tooltip: 'Back 10 seconds',
+          size: 52,
+          onPressed: enabled ? () => _seekRelative(-10) : null,
         ),
         const SizedBox(width: 18),
-        skipButton(icon: Icons.forward_10, seconds: 10, focusNode: _forwardFocus),
+        _RoundButton(
+          focusNode: _playFocus,
+          icon: showPause ? Icons.pause_rounded : Icons.play_arrow_rounded,
+          tooltip: showPause ? 'Pause' : 'Play',
+          size: 60,
+          onPressed: _playOrPause,
+        ),
+        const SizedBox(width: 18),
+        _RoundButton(
+          focusNode: _forwardFocus,
+          icon: Icons.forward_10,
+          tooltip: 'Forward 10 seconds',
+          size: 52,
+          onPressed: enabled ? () => _seekRelative(10) : null,
+        ),
       ],
     );
   }
 
   String _fmtClock(Duration d) {
     final h = d.inHours;
-    final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final m = d.inMinutes.remainder(60);
     final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');
-    return h > 0 ? '$h:$m:$s' : '$m:$s';
+    return h > 0 ? '$h:${m.toString().padLeft(2, '0')}:$s' : '$m:$s';
   }
 
   /// Scrubber that seeks only on release (safe for Windows libmpv).
@@ -3840,9 +4044,13 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   Widget _playbackSeekBar() {
     final player = _player;
     if (player == null) return _playbackSeekBarAt();
+    // Also on the buffer: while paused the position stands still but the fill grows.
     return StreamBuilder<Duration>(
       stream: player.stream.position,
-      builder: (context, _) => _playbackSeekBarAt(),
+      builder: (context, _) => StreamBuilder<Duration>(
+        stream: player.stream.buffer,
+        builder: (context, _) => _playbackSeekBarAt(),
+      ),
     );
   }
 
@@ -3853,10 +4061,15 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
       return p.inMilliseconds > 0 ? p : _lastGoodPos;
     }
 
-    final pos = mediaKitPos();
+    final pos = _scrubPos ?? mediaKitPos();
     final dur = _player?.state.duration ?? Duration.zero;
     final maxMs = dur.inMilliseconds > 0 ? dur.inMilliseconds.toDouble() : 1.0;
     final value = pos.inMilliseconds.clamp(0, maxMs.toInt()).toDouble();
+    // Lighter track = what the player already has, like the TV app.
+    final buffered = (_player?.state.buffer ?? Duration.zero)
+        .inMilliseconds
+        .clamp(0, maxMs.toInt())
+        .toDouble();
 
     return DecoratedBox(
       decoration: BoxDecoration(
@@ -3879,24 +4092,31 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
                   overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
                   activeTrackColor: AppTheme.seed,
                   inactiveTrackColor: Colors.white24,
+                  secondaryActiveTrackColor: Colors.white70,
                   thumbColor: Colors.white,
                 ),
-                child: Slider(
-                  value: value,
-                  max: maxMs,
-                  onChangeStart: (_) => _bumpChrome(),
-                  onChanged: _canSeek
-                      ? (v) {
-                          setState(() {
-                            _lastGoodPos = Duration(milliseconds: v.round());
-                          });
-                        }
-                      : null,
-                  onChangeEnd: _canSeek
-                      ? (v) => unawaited(
-                            _seekPlayback(Duration(milliseconds: v.round())),
-                          )
-                      : null,
+                // Arrow keys seek through the player's own handler; a focused
+                // Slider would take them and never commit the seek.
+                child: ExcludeFocus(
+                  child: Slider(
+                    value: value,
+                    secondaryTrackValue: buffered,
+                    max: maxMs,
+                    onChangeStart: (_) => _bumpChrome(),
+                    onChanged: _canSeek
+                        ? (v) {
+                            // The position stream used to pull the thumb back mid-drag.
+                            setState(() => _scrubPos = Duration(milliseconds: v.round()));
+                          }
+                        : null,
+                    onChangeEnd: _canSeek
+                        ? (v) {
+                            setState(() => _scrubPos = null);
+                            _bumpChrome();
+                            unawaited(_seekPlayback(Duration(milliseconds: v.round())));
+                          }
+                        : null,
+                  ),
                 ),
               ),
             ),
@@ -3910,83 +4130,33 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     );
   }
 
+  /// Captions clear of the seek bar while the controls are up.
+  static const _subsLow = SubtitleViewConfiguration(
+    padding: EdgeInsets.fromLTRB(16, 0, 16, 28),
+  );
+  static const _subsAboveControls = SubtitleViewConfiguration(
+    padding: EdgeInsets.fromLTRB(16, 0, 16, 150),
+  );
+
   Widget _videoSurface() {
     final controller = _controller;
     if (controller == null) return const SizedBox.shrink();
-    // Desktop: no swipe/double-tap seeks (bypass our safe scrubber and crash Windows).
-    final seekOk =
-        !_useDesktopSafeSeekBar && (_canSeek || _showSeekControls);
-    final video = MaterialVideoControlsTheme(
-      normal: MaterialVideoControlsThemeData(
-        seekGesture: seekOk,
-        seekOnDoubleTap: seekOk,
-        seekBarContainerHeight: 36.0,
-        seekBarHeight: 2.4,
-        seekBarThumbSize: 12.8,
-      ),
-      fullscreen: MaterialVideoControlsThemeData(
-        seekGesture: seekOk,
-        seekOnDoubleTap: seekOk,
-        seekBarContainerHeight: 36.0,
-        seekBarHeight: 2.4,
-        seekBarThumbSize: 12.8,
-      ),
-      child: MaterialDesktopVideoControlsTheme(
-        // Desktop: our scaffold chrome owns seek/play/volume/fullscreen.
-        // An empty media_kit bar avoids the dual-chrome mess (56px bar +
-        // gradient + OS SafeArea padding) that made Linux/mac look broken
-        // while Windows happened to look fine.
-        normal: MaterialDesktopVideoControlsThemeData(
-          displaySeekBar: false,
-          toggleFullscreenOnDoublePress: !_useDesktopSafeSeekBar,
-          modifyVolumeOnScroll: true,
-          controlsHoverDuration: const Duration(seconds: 3),
-          padding: EdgeInsets.zero,
-          bottomButtonBar: _useDesktopSafeSeekBar
-              ? const []
-              : const [
-                  MaterialDesktopSkipPreviousButton(),
-                  MaterialDesktopPlayOrPauseButton(),
-                  MaterialDesktopSkipNextButton(),
-                  MaterialDesktopVolumeButton(),
-                  MaterialDesktopPositionIndicator(),
-                  Spacer(),
-                  MaterialDesktopFullscreenButton(),
-                ],
-        ),
-        fullscreen: MaterialDesktopVideoControlsThemeData(
-          displaySeekBar: false,
-          toggleFullscreenOnDoublePress: !_useDesktopSafeSeekBar,
-          modifyVolumeOnScroll: true,
-          controlsHoverDuration: const Duration(seconds: 3),
-          padding: EdgeInsets.zero,
-          bottomButtonBar: _useDesktopSafeSeekBar
-              ? const []
-              : const [
-                  MaterialDesktopSkipPreviousButton(),
-                  MaterialDesktopPlayOrPauseButton(),
-                  MaterialDesktopSkipNextButton(),
-                  MaterialDesktopVolumeButton(),
-                  MaterialDesktopPositionIndicator(),
-                  Spacer(),
-                  MaterialDesktopFullscreenButton(),
-                ],
-        ),
-        child: Video(
-          key: _videoKey,
-          controller: controller,
-          controls: _mediaKitControls,
-          wakelock: true,
-          onEnterFullscreen: () async {
-            if (mounted) setState(() => _inFullscreen = true);
-            await _setNativeFullscreen(true);
-          },
-          onExitFullscreen: () async {
-            if (mounted) setState(() => _inFullscreen = false);
-            await _setNativeFullscreen(false);
-          },
-        ),
-      ),
+    final video = Video(
+      key: _videoKey,
+      controller: controller,
+      fit: _videoFit,
+      controls: _videoControls,
+      wakelock: true,
+      subtitleViewConfiguration:
+          _showChrome && _showSeekControls ? _subsAboveControls : _subsLow,
+      onEnterFullscreen: () async {
+        if (mounted) setState(() => _inFullscreen = true);
+        await _setNativeFullscreen(true);
+      },
+      onExitFullscreen: () async {
+        if (mounted) setState(() => _inFullscreen = false);
+        await _setNativeFullscreen(false);
+      },
     );
     // Keep Video mounted for decode, but don't paint a black empty surface —
     // the pre-roll HUD covers the scaffold until the stream opens.
@@ -3995,6 +4165,65 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
       return Opacity(opacity: 0, child: IgnorePointer(child: video));
     }
     return video;
+  }
+}
+
+/// Round player button, same on every platform and the TV app: dark circle,
+/// white ring when focused, accent ring when a toggle is on.
+class _RoundButton extends StatefulWidget {
+  const _RoundButton({
+    required this.focusNode,
+    required this.icon,
+    required this.tooltip,
+    required this.onPressed,
+    this.size = 44,
+    this.selected = false,
+  });
+
+  final FocusNode focusNode;
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback? onPressed;
+  final double size;
+  final bool selected;
+
+  @override
+  State<_RoundButton> createState() => _RoundButtonState();
+}
+
+class _RoundButtonState extends State<_RoundButton> {
+  bool _focused = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final enabled = widget.onPressed != null;
+    final ring = _focused
+        ? Border.all(color: Colors.white, width: 2.5)
+        : widget.selected
+            ? Border.all(color: AppTheme.seed, width: 2)
+            : null;
+    return Opacity(
+      opacity: enabled ? 1 : 0.45,
+      child: Tooltip(
+        message: widget.tooltip,
+        child: Material(
+          color: Colors.black.withValues(alpha: _focused ? 0.9 : 0.62),
+          shape: const CircleBorder(),
+          child: InkWell(
+            focusNode: widget.focusNode,
+            customBorder: const CircleBorder(),
+            onFocusChange: (focused) => setState(() => _focused = focused),
+            onTap: widget.onPressed,
+            child: Container(
+              width: widget.size,
+              height: widget.size,
+              decoration: BoxDecoration(shape: BoxShape.circle, border: ring),
+              child: Icon(widget.icon, color: Colors.white, size: widget.size * 0.54),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }
 

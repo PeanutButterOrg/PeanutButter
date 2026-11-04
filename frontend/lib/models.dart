@@ -1,3 +1,5 @@
+import 'torrent_file_picker.dart';
+
 class TitleItem {
   const TitleItem({
     required this.id,
@@ -1052,3 +1054,18 @@ Map<int, Map<int, String?>> episodeTitles(List<Season> seasons) => {
         if (s.seasonNumber > 0)
           s.seasonNumber: {for (final e in s.episodes) e.episodeNumber: e.name},
     };
+
+/// A season in viewing order. TMDB can list a show out of order (Samurai Jack:
+/// E5 "VII", E6 "V"); when the episodes carry their own number, that wins. Any
+/// clash in those numbers falls back to the catalog's order.
+List<Episode> episodesInViewingOrder(
+  Season season,
+  Map<int, Map<int, String?>> titles,
+) {
+  final byCatalog = List<Episode>.from(season.episodes)
+    ..sort((a, b) => a.episodeNumber.compareTo(b.episodeNumber));
+  int number(Episode e) =>
+      releaseEpisode(titles, season.seasonNumber, e.episodeNumber) ?? e.episodeNumber;
+  if (byCatalog.map(number).toSet().length != byCatalog.length) return byCatalog;
+  return byCatalog..sort((a, b) => number(a).compareTo(number(b)));
+}

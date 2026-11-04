@@ -56,6 +56,22 @@ object TorrentFilePicker {
         return releaseEpisode(ep.name, episode, earlier, size(cur))
     }
 
+    /**
+     * A season in viewing order. TMDB can list a show out of order (Samurai
+     * Jack: E5 "VII", E6 "V"); when the episodes carry their own number, that
+     * wins. Any clash in those numbers falls back to the catalog's order.
+     */
+    fun inViewingOrder(seasons: List<Season>, season: Season): List<Episode> {
+        val byCatalog = season.episodes.sortedBy { it.episodeNumber }
+        val numbers = byCatalog.map { viewingNumber(seasons, season.seasonNumber, it.episodeNumber) }
+        if (numbers.toSet().size != numbers.size) return byCatalog
+        return byCatalog.zip(numbers).sortedBy { it.second }.map { it.first }
+    }
+
+    /** The number to show for an episode: its own, when the catalog's differs. */
+    fun viewingNumber(seasons: List<Season>, season: Int, episode: Int): Int =
+        releaseEpisode(seasons, season, episode) ?: episode
+
     private fun numberInTitle(title: String?): Int? {
         val head = title?.trim()?.substringBefore(':')?.trim()?.lowercase() ?: return null
         val m = Regex("""^(?:(?:episode|chapter|ep\.?|part)\s*)?([ivxlcdm]+|\d{1,4})\.?$""").find(head)

@@ -16,11 +16,21 @@ interface PlaybackEngine {
         fun onEnded()
         fun onTime(positionMs: Long)
         fun onDuration(durationMs: Long)
+        /** Play intent or playback state changed: refresh the transport. */
+        fun onStateChanged() {}
     }
 
     val length: Long
     var time: Long
     val isPlaying: Boolean
+    /** The user's intent. Stays true during buffering, unlike [isPlaying]. */
+    val wantsToPlay: Boolean
+    /** Waiting for data while the player has something to play. */
+    val isBuffering: Boolean get() = false
+    /** Failed or finished: Play has to restart it, and Pause means nothing. */
+    val needsRestart: Boolean get() = false
+    /** Id from [listTextTracks] being shown, or null when captions are off. */
+    val selectedTextTrackId: String? get() = null
     /** 0–100 Exo/VLC buffer while opening; used to finish the pre-play progress bar. */
     val bufferedPercent: Int get() = 0
     /** How far the player has buffered (ms from the start), 0 when unknown. */
