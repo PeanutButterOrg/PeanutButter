@@ -22,6 +22,16 @@ List<TitleItem> _dedupeTitles(List<TitleItem> existing, List<TitleItem> incoming
 
 const _catalogPerPage = 50;
 
+/// The page to count as loaded. A short page while more is coming doesn't
+/// count, so it's requested again and titles landing in the gap aren't skipped.
+int catalogPageAfter({
+  required int page,
+  required int items,
+  required int perPage,
+  required bool hasNext,
+}) =>
+    items >= perPage || !hasNext ? page : page - 1;
+
 final selectedKindProvider = StateProvider<String>((ref) => 'MOVIE');
 
 final catalogEpochProvider = StateProvider<int>((ref) => 0);
@@ -191,9 +201,12 @@ class CatalogNotifier extends StateNotifier<CatalogState> {
         items: merged,
         // A short page: the server is still bringing titles in. Ask for it again,
         // or the ones landing in the gap are skipped (merging drops repeats).
-        page: items.length >= _catalogPerPage || !(conn['hasNextPage'] as bool? ?? false)
-            ? (conn['page'] as int?) ?? page
-            : page - 1,
+        page: catalogPageAfter(
+          page: (conn['page'] as int?) ?? page,
+          items: items.length,
+          perPage: _catalogPerPage,
+          hasNext: conn['hasNextPage'] as bool? ?? false,
+        ),
         hasNextPage: conn['hasNextPage'] as bool? ?? false,
         totalCount: conn['totalCount'] as int? ?? items.length,
         loading: false,
@@ -316,9 +329,12 @@ class LibraryNotifier extends StateNotifier<CatalogState> {
         items: merged,
         // A short page: the server is still bringing titles in. Ask for it again,
         // or the ones landing in the gap are skipped (merging drops repeats).
-        page: items.length >= _catalogPerPage || !(conn['hasNextPage'] as bool? ?? false)
-            ? (conn['page'] as int?) ?? page
-            : page - 1,
+        page: catalogPageAfter(
+          page: (conn['page'] as int?) ?? page,
+          items: items.length,
+          perPage: _catalogPerPage,
+          hasNext: conn['hasNextPage'] as bool? ?? false,
+        ),
         hasNextPage: conn['hasNextPage'] as bool? ?? false,
         totalCount: conn['totalCount'] as int? ?? items.length,
         loading: false,

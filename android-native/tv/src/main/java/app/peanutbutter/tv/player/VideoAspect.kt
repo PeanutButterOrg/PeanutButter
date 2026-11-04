@@ -3,6 +3,7 @@ package app.peanutbutter.tv.player
 import android.view.Gravity
 import android.view.View
 import android.widget.FrameLayout
+import kotlin.math.roundToInt
 
 /**
  * Sizes the video surface itself. Many TV decoders stretch the picture to
@@ -25,8 +26,8 @@ internal object VideoAspect {
         if (mode == "original" && videoW > 0 && videoH > 0) {
             val scale = minOf(vw.toFloat() / videoW, vh.toFloat() / videoH).coerceAtMost(1f)
             return Box(
-                (videoW * scale).toInt().coerceAtLeast(1),
-                (videoH * scale).toInt().coerceAtLeast(1),
+                (videoW * scale).roundToInt().coerceAtLeast(1),
+                (videoH * scale).roundToInt().coerceAtLeast(1),
             )
         }
         val ratio = when (mode) {
@@ -37,11 +38,11 @@ internal object VideoAspect {
         val viewRatio = vw.toFloat() / vh
         val cover = mode == "fill"
         return if (ratio > viewRatio) {
-            if (cover) Box((vh * ratio).toInt().coerceAtLeast(1), vh)
-            else Box(vw, (vw / ratio).toInt().coerceAtLeast(1))
+            if (cover) Box((vh * ratio).roundToInt().coerceAtLeast(1), vh)
+            else Box(vw, (vw / ratio).roundToInt().coerceAtLeast(1))
         } else {
-            if (cover) Box(vw, (vw / ratio).toInt().coerceAtLeast(1))
-            else Box((vh * ratio).toInt().coerceAtLeast(1), vh)
+            if (cover) Box(vw, (vw / ratio).roundToInt().coerceAtLeast(1))
+            else Box((vh * ratio).roundToInt().coerceAtLeast(1), vh)
         }
     }
 

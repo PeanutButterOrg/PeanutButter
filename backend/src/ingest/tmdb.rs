@@ -3041,6 +3041,22 @@ mod discover_tests {
         let tv = DiscoverFilter { year_min: Some(2010), ..Default::default() }.path("tv", None).unwrap();
         assert!(tv.contains("first_air_date.gte=2010-01-01"));
         assert!(!DiscoverFilter { genre: Some("All".into()), ..Default::default() }.is_active());
+
+        // The fetch follows the catalog's sort.
+        let rated = DiscoverFilter {
+            genre: Some("Horror".into()),
+            order: DiscoverOrder::Rating,
+            ..Default::default()
+        }
+        .path("movie", None)
+        .unwrap();
+        assert!(rated.contains("sort_by=vote_average.desc"), "{rated}");
+        assert!(rated.contains("vote_count.gte=100"), "{rated}");
+        let newest = DiscoverFilter { year_min: Some(2020), order: DiscoverOrder::Newest, ..Default::default() }
+            .path("tv", None)
+            .unwrap();
+        assert!(newest.contains("sort_by=first_air_date.desc"), "{newest}");
+        assert!(newest.contains("first_air_date.lte="), "unreleased titles stay out: {newest}");
         assert!(!DiscoverFilter::default().is_active());
     }
 }

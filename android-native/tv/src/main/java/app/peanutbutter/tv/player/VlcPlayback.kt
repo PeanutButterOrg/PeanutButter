@@ -177,8 +177,13 @@ class VlcPlayback(
                 VideoAspect.place(layout, box)
             }
             mp?.vlcVout?.setWindowSize(box.width, box.height)
+            // Again after layout: VLC reads the surface size, which only changes then.
+            layout.post { mp?.vlcVout?.setWindowSize(box.width, box.height) }
         }
         val player = mp ?: return
+        // Clear first: a forced ratio otherwise stayed in effect when switching
+        // straight to another one, until Fit / Original reset it.
+        player.aspectRatio = null
         when (aspectMode) {
             "stretch" -> {
                 val dm = appContext.resources.displayMetrics

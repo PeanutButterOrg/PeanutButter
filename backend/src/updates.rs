@@ -79,6 +79,20 @@ pub struct UpdateStatus {
     pub busy: bool,
     /// Newest release on GitHub (also offered as the server image), e.g. "v0.3.1".
     pub latest_tag: Option<String>,
+    /// File being mirrored right now, with overall bytes across the release.
+    pub download_file: Option<String>,
+    pub download_done: u64,
+    pub download_total: u64,
+}
+
+impl UpdateStatus {
+    /// Whole percent of the release mirrored so far.
+    pub fn download_percent(&self) -> u8 {
+        if self.download_total == 0 {
+            return 0;
+        }
+        ((self.download_done.saturating_mul(100) / self.download_total).min(100)) as u8
+    }
 }
 
 struct Service {
@@ -260,6 +274,7 @@ impl Service {
     async fn download_asset(&self, url: &str, dest: &Path, asset: &Asset) -> Result<(), AppError> {
         let res = self.http.get(url).send().await?.error_for_status()?;
         let mut file = tokio::fs::File::create(dest).await?;
+        self.set_status(|s| s.download_file = Some(asset.name.clone()));
         let mut hasher = Sha256::new();
         let mut size = 0u64;
         let mut stream = res.bytes_stream();
@@ -271,6 +286,7 @@ impl Service {
             }
             hasher.update(&chunk);
             file.write_all(&chunk).await?;
+            self.set_status(|s| s.download_done += chunk.len() as u64);
         }
         file.flush().await?;
         let digest = hex::encode(hasher.finalize());
@@ -325,7 +341,18 @@ impl Service {
         }
 
         info!(tag = %manifest.tag, "mirroring app update");
-        self.set_status(|s| s.busy = true);
+        let total: u64 = manifest
+            .assets
+            .iter()
+            .filter(|(platform, asset)| PLATFORMS.contains(&platform.as_str()) && safe_name(&asset.name))
+            .map(|(_, asset)| asset.size)
+            .sum();
+        self.set_status(|s| {
+            s.busy = true;
+            s.download_file = None;
+            s.download_done = 0;
+            s.download_total = total;
+        });
         let staging = self.dir.join(format!(".staging-{}", manifest.tag));
         let _ = tokio::fs::remove_dir_all(&staging).await;
         tokio::fs::create_dir_all(&staging).await?;
@@ -351,7 +378,10 @@ impl Service {
             Ok(())
         }
         .await;
-        self.set_status(|s| s.busy = false);
+        self.set_status(|s| {
+            s.busy = false;
+            s.download_file = None;
+        });
         if let Err(e) = result {
             let _ = tokio::fs::remove_dir_all(&staging).await;
             return Err(e);
@@ -562,6 +592,20 @@ mod tests {
         assert!(!verify_signature(b"{}", "not base64!"));
         let zero_sig = "A".repeat(86) + "==";
         assert!(!verify_signature(b"{\"schema\":1}", &zero_sig));
+    }
+
+    #[test]
+    fn download_percent_is_bounded() {
+        let at = |done, total| UpdateStatus {
+            download_done: done,
+            download_total: total,
+            ..Default::default()
+        }
+        .download_percent();
+        assert_eq!(at(0, 0), 0);
+        assert_eq!(at(50, 200), 25);
+        assert_eq!(at(200, 200), 100);
+        assert_eq!(at(300, 200), 100);
     }
 
     #[test]

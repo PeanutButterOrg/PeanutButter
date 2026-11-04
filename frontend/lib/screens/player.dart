@@ -3,7 +3,8 @@ import 'dart:io' show Platform;
 import 'dart:ui' show PointerDeviceKind;
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter/gestures.dart' show PointerScrollEvent, PointerSignalEvent;
+import 'package:flutter/gestures.dart'
+    show PointerExitEvent, PointerHoverEvent, PointerScrollEvent, PointerSignalEvent;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -197,7 +198,17 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   /// Desktop/mouse + TV chrome: seek ±10s + audio/subs (auto-hide).
   bool _chromeVisible = true;
   Timer? _chromeHideTimer;
-  static const int _chromeHideSecs = 5;
+  static const int _chromeHideSecs = 3;
+  /// Resuming or seeking means back to watching: get out of the way sooner.
+  static const Duration _chromeHideAfterResume = Duration(milliseconds: 1500);
+  /// Mouse is over a control: it never hides under the pointer.
+  bool _pointerOnControls = false;
+  /// The cursor only shows while the mouse is being used, not on keyboard actions.
+  bool _mouseActive = false;
+  Offset? _mouseAnchor;
+  /// Small notice for actions that don't need the controls (volume, mute).
+  String? _hudText;
+  Timer? _hudTimer;
   static const Duration _chromeAnim = Duration(milliseconds: 280);
   final FocusNode _rootFocus = FocusNode(debugLabel: 'playerRoot');
   final FocusNode _backFocus = FocusNode(debugLabel: 'playerBack');
@@ -406,9 +417,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
       if (!mounted) return;
       setState(() => _buffering = value);
       if (value) {
-        // Don't keep bumping chrome on every underrun tick — that left the
-        // seekbar permanently visible on desktop during progressive streams.
-        if (!_streamOpened || !_playing) _bumpChrome();
+        // A rebuffer shows its spinner; it's no reason to open the controls.
+        if (!_streamOpened) _bumpChrome();
         _armBufferStallWatch();
       } else {
         _bufferStallTimer?.cancel();
@@ -448,8 +458,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
       if (!mounted) return;
       setState(() => _playing = playing);
       if (playing) {
-        // Start auto-hide once playback is actually moving.
-        _armChromeHideTimer();
+        // Start auto-hide once playback is actually moving: sooner on a resume
+        // or a seek than on the first start, when the title is worth a look.
+        _armChromeHideTimer(
+          after: _lastGoodPos.inMilliseconds > 2000 ? _chromeHideAfterResume : null,
+        );
       } else if (!widget.isStream || _streamOpened) {
         _onPausedKeepBuffering();
         // Controls stay up while paused, same as the TV app. Not during a
@@ -529,12 +542,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     }
 
     // A menu or dialog on top of the fullscreen route keeps its own keys.
-    final focused = FocusManager.instance.primaryFocus?.context;
-    if (focused != null && ModalRoute.of(focused) is PopupRoute) return false;
+    if (_popupOnTop) return false;
 
     // Holding a key must not flip play / pause over and over.
     if (event is KeyRepeatEvent &&
         (tvIsActivateKey(event.logicalKey) ||
+            tvIsBackKey(event.logicalKey) ||
             event.logicalKey == LogicalKeyboardKey.mediaPlay ||
             event.logicalKey == LogicalKeyboardKey.mediaPause ||
             event.logicalKey == LogicalKeyboardKey.mediaPlayPause)) {
@@ -547,8 +560,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
 
     // When a chrome control already has focus, let FocusTraversal / buttons
     // handle D-pad and Select — do not steal for seek / play-pause.
+    // (Keyboards: arrows always seek / change volume, Tab moves between buttons.)
+    final dpad = DeviceProfile.current.prefersDpad;
     if (chromeFocused &&
-        (dir != null ||
+        ((dir != null && dpad) ||
             tvIsActivateKey(event.logicalKey) ||
             event.logicalKey == LogicalKeyboardKey.select ||
             event.logicalKey == LogicalKeyboardKey.enter ||
@@ -558,7 +573,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     }
 
     // Keyboard desktops: the usual player shortcuts.
-    if (!DeviceProfile.current.prefersDpad && _handleDesktopKey(event)) return true;
+    _setMouseActive(false);
+    if (!dpad && _handleDesktopKey(event)) return true;
 
     if (dir == TvNavDir.left) {
       final revealed = _revealChromeForTv();
@@ -661,7 +677,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   }
 
   bool _handlePlayerKey(LogicalKeyboardKey key) {
-    _bumpChrome();
     if (tvIsActivateKey(key) ||
         key == LogicalKeyboardKey.mediaPlay ||
         key == LogicalKeyboardKey.mediaPause ||
@@ -946,7 +961,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
               _buffering = true;
               _playing = true;
             });
-            _bumpChrome();
           }
         } catch (_) {}
       }());
@@ -1162,6 +1176,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   }
 
   void _seekRelative(int seconds) {
+    _bumpChrome();
     unawaited(_seekRelativeAsync(seconds));
   }
 
@@ -1232,7 +1247,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         _buffering = true;
         _seeking = true;
       });
-      _bumpChrome();
     }
 
     // Retarget again at commit (in case settle scrub moved further).
@@ -1334,7 +1348,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     if (player == null) return;
     final next = (player.state.volume + delta).clamp(0.0, 100.0).toDouble();
     unawaited(player.setVolume(next));
-    _bumpChrome();
+    _showHud(next <= 0.5 ? 'Muted' : 'Volume ${next.round()}%');
     setState(() {
       _muted = next <= 0.5;
       if (next > 0.5) _volumeBeforeMute = next;
@@ -1342,19 +1356,58 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   }
 
   Future<void> _toggleMute() async {
-    _bumpChrome();
     final player = _player;
     if (player == null) return;
     final vol = player.state.volume;
     if (_muted || vol <= 0.5) {
-      await player.setVolume(_volumeBeforeMute <= 0.5 ? 80.0 : _volumeBeforeMute);
+      final restore = _volumeBeforeMute <= 0.5 ? 80.0 : _volumeBeforeMute;
+      await player.setVolume(restore);
+      _showHud('Volume ${restore.round()}%');
       if (mounted) setState(() => _muted = false);
     } else {
       _volumeBeforeMute = vol;
       await player.setVolume(0);
+      _showHud('Muted');
       if (mounted) setState(() => _muted = true);
     }
   }
+
+  void _showHud(String text) {
+    if (!mounted) return;
+    setState(() => _hudText = text);
+    _hudTimer?.cancel();
+    _hudTimer = Timer(const Duration(milliseconds: 1200), () {
+      if (mounted) setState(() => _hudText = null);
+    });
+  }
+
+  void _setMouseActive(bool active) {
+    if (_mouseActive == active || !mounted) return;
+    setState(() => _mouseActive = active);
+  }
+
+  /// Real mouse movement reveals the controls; desk bumps and sensor jitter don't.
+  void _onMouseHover(PointerHoverEvent event) {
+    final anchor = _mouseAnchor;
+    if (anchor == null || (event.position - anchor).distance >= 6) {
+      _mouseAnchor = event.position;
+      if (anchor == null) return;
+      _setMouseActive(true);
+      _bumpChrome();
+    }
+  }
+
+  /// Left the window: hide soon, unless paused (the timer checks).
+  void _onMouseExit(PointerExitEvent event) {
+    _pointerOnControls = false;
+    _mouseAnchor = null;
+    if (_chromeVisible) _armChromeHideTimer(after: _chromeHideAfterResume);
+  }
+
+  /// The pointer is hidden with the controls, in a window and in fullscreen.
+  MouseCursor get _videoCursor => _hasWindowControls && !(_chromeVisible && _mouseActive)
+      ? SystemMouseCursors.none
+      : MouseCursor.defer;
 
   Future<void> _toggleFullscreen() async {
     _bumpChrome();
@@ -1396,6 +1449,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     _pauseBufferTimer?.cancel();
     _bufferStallTimer?.cancel();
     _chromeHideTimer?.cancel();
+    _hudTimer?.cancel();
     _overlayEpoch.dispose();
     _rootFocus.dispose();
     _backFocus.dispose();
@@ -1824,17 +1878,28 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     _armChromeHideTimer();
   }
 
-  void _armChromeHideTimer() {
+  bool get _popupOnTop {
+    final focused = FocusManager.instance.primaryFocus?.context;
+    return focused != null && ModalRoute.of(focused) is PopupRoute;
+  }
+
+  void _armChromeHideTimer({Duration? after}) {
     _chromeHideTimer?.cancel();
-    _chromeHideTimer = Timer(const Duration(seconds: _chromeHideSecs), () {
+    _chromeHideTimer = Timer(after ?? const Duration(seconds: _chromeHideSecs), () {
       if (!mounted) return;
-      // Stay up behind a menu, while paused, or while dragging the scrubber. It
-      // used to give up here without re-arming, leaving the controls up forever.
+      // Stay up behind a menu, while paused, under the mouse, or while dragging
+      // the scrubber; check again later. It used to give up here without
+      // re-arming, leaving the controls up forever.
       final paused = !_playing && _resumeAfterSeek != true;
-      if (!_chromeRouteActive || paused || _scrubPos != null) {
+      if (!_chromeRouteActive ||
+          _popupOnTop ||
+          paused ||
+          _pointerOnControls ||
+          _scrubPos != null) {
         _armChromeHideTimer();
         return;
       }
+      _mouseActive = false;
       _setChromeVisible(false);
       // Skip / Play Next aren't part of the controls and keep their focus.
       if (!_inFullscreen &&
@@ -1860,15 +1925,20 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
       excluding: !show,
       child: IgnorePointer(
         ignoring: !show,
-        child: AnimatedOpacity(
-          opacity: show ? 1 : 0,
-          duration: _chromeAnim,
-          curve: Curves.easeOutCubic,
-          child: AnimatedSlide(
-            offset: show ? Offset.zero : hiddenOffset,
+        child: MouseRegion(
+          opaque: false,
+          onEnter: (_) => _pointerOnControls = true,
+          onExit: (_) => _pointerOnControls = false,
+          child: AnimatedOpacity(
+            opacity: show ? 1 : 0,
             duration: _chromeAnim,
             curve: Curves.easeOutCubic,
-            child: child,
+            child: AnimatedSlide(
+              offset: show ? Offset.zero : hiddenOffset,
+              duration: _chromeAnim,
+              curve: Curves.easeOutCubic,
+              child: child,
+            ),
           ),
         ),
       ),
@@ -3295,11 +3365,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         descendantsAreFocusable: true,
         onKeyEvent: _onFocusKey,
         child: MouseRegion(
-          // Only reveal when hidden — continuous hover/move used to reset the
-          // hide timer forever so the seekbar never went away on desktop.
-          onHover: (_) {
-            if (!_chromeVisible) _bumpChrome();
-          },
+          cursor: _videoCursor,
+          onHover: _onMouseHover,
+          onExit: _onMouseExit,
           child: Listener(
             onPointerDown: _onPointerDown,
             onPointerSignal: _onPointerSignal,
@@ -3337,7 +3405,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   void _onPointerDown(PointerDownEvent event) {
     _lastPointerWasTouch = event.kind == PointerDeviceKind.touch;
     // Touch toggles the controls in _touchLayer instead.
-    if (!_lastPointerWasTouch) _bumpChrome();
+    if (!_lastPointerWasTouch) {
+      _setMouseActive(true);
+      _bumpChrome();
+    }
   }
 
   void _onPointerSignal(PointerSignalEvent event) {
@@ -3473,6 +3544,33 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
                 const SizedBox(height: 10),
                 _seekSkipBar(),
               ],
+            ),
+          ),
+        ),
+      if (_hudText != null)
+        Positioned(
+          top: 72,
+          left: 0,
+          right: 0,
+          child: IgnorePointer(
+            child: Center(
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: 0.72),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+                  child: Text(
+                    _hudText!,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ),
             ),
           ),
         ),
@@ -3845,11 +3943,16 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   Widget _videoControls(VideoState state) {
     if (!isFullscreen(state.context)) return const SizedBox.shrink();
     return SizedBox.expand(
-      child: MouseRegion(
-        opaque: false,
-        onHover: (_) {
-          if (!_chromeVisible) _bumpChrome();
-        },
+      child: ValueListenableBuilder<int>(
+        valueListenable: _overlayEpoch,
+        // Separate from the stack below: only the cursor depends on it here.
+        builder: (context, _, child) => MouseRegion(
+          opaque: false,
+          cursor: _videoCursor,
+          onHover: _onMouseHover,
+          onExit: _onMouseExit,
+          child: child,
+        ),
         child: Listener(
           behavior: HitTestBehavior.translucent,
           onPointerDown: _onPointerDown,

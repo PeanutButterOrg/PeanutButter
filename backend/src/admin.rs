@@ -268,6 +268,40 @@ fn redirect_console_tab(notice: Option<&str>, highlight: Option<&str>, tab: Opti
     response
 }
 
+/// Follows /updates/progress on the Settings tab; reloads when a download ends.
+const UPDATE_PROGRESS_JS: &str = r#"
+document.addEventListener('DOMContentLoaded', function () {
+  var appsBox = document.getElementById('apps-update-progress');
+  if (!appsBox || window.__pbUpdatePoll) return;
+  window.__pbUpdatePoll = true;
+  var fill = document.getElementById('apps-update-fill');
+  var text = document.getElementById('apps-update-text');
+  var serverBox = document.getElementById('server-update-progress');
+  var wasBusy = false;
+  function mb(n) { return Math.round(n / 1048576) + ' MB'; }
+  function tick() {
+    if (document.hidden) return;
+    fetch('/updates/progress', { credentials: 'same-origin', cache: 'no-store' })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (p) {
+        if (!p) return;
+        appsBox.hidden = !p.apps.busy;
+        serverBox.hidden = !p.server.busy;
+        if (p.apps.busy) {
+          fill.style.width = p.apps.percent + '%';
+          text.textContent = p.apps.percent + '%  ·  ' + mb(p.apps.done) + ' of ' + mb(p.apps.total) +
+            (p.apps.file ? '  ·  ' + p.apps.file : '');
+        }
+        if (wasBusy && !p.apps.busy && !p.server.busy) location.reload();
+        wasBusy = p.apps.busy || p.server.busy;
+      })
+      .catch(function () {});
+  }
+  tick();
+  setInterval(tick, 1500);
+});
+"#;
+
 fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -349,6 +383,33 @@ pub struct SyncLogJson {
     pub level: String,
     pub phase: Option<String>,
     pub message: String,
+}
+
+/// GET /updates/progress — live state for the console's update progress bars.
+pub async fn update_progress(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    if !session_ok(&state, &headers).await {
+        return Ok(StatusCode::UNAUTHORIZED.into_response());
+    }
+    let apps = crate::updates::status().await;
+    let server = crate::server_update::status().await;
+    Ok(Json(serde_json::json!({
+        "apps": {
+            "busy": apps.busy,
+            "file": apps.download_file,
+            "done": apps.download_done,
+            "total": apps.download_total,
+            "percent": apps.download_percent(),
+        },
+        "server": {
+            "busy": server.busy,
+            "message": server.message,
+            "running": server.running,
+        },
+    }))
+    .into_response())
 }
 
 /// GET /sync/logs — recent sync event lines for the console Sync tab.
@@ -861,7 +922,10 @@ pub async fn action(
         }
         "check_updates" => {
             tab = Some("settings");
-            notice = Some(crate::updates::check_now().await);
+            // In the background: a release is gigabytes, and the page used to hang
+            // until it was all downloaded. The progress bar follows it.
+            tokio::spawn(crate::updates::check_now());
+            notice = Some("Checking for a new release…".into());
         }
         "set_password" => {
             tab = Some("settings");
@@ -1401,9 +1465,15 @@ The database is backed up first. Apps reconnect on their own after about a minut
             r#"<div class="row-head"><h2>Server</h2>{pill}</div>
           <p class="lead">Running <strong>{running}</strong>. {latest_line} The console updates together with the server.</p>
           {message}
+          <div id="server-update-progress" {server_hidden}>
+            <div class="sync-bar indeterminate"><span></span></div>
+          </div>
           {controls}
           {backup}
-          {watcher}"#,
+          {watcher}
+          <script>{progress_js}</script>"#,
+            server_hidden = if su.busy { "" } else { "hidden" },
+            progress_js = UPDATE_PROGRESS_JS,
             pill = if su.update_available {
                 r#"<span class="pill warn">Update available</span>"#
             } else {
@@ -1439,11 +1509,17 @@ The database is backed up first. Apps reconnect on their own after about a minut
             r#"<h2 style="margin-top:1.6rem">App updates</h2>
           <p class="lead">Signed releases from <code>{repo}</code> are mirrored here every few hours; apps on this network update from this server. {state}</p>
           {error}
+          <div id="apps-update-progress" {hidden}>
+            <div class="sync-bar"><span id="apps-update-fill" style="width:{pct}%"></span></div>
+            <p class="muted" id="apps-update-text"></p>
+          </div>
           <form method="post" action="/" class="grid-form">
             <input type="hidden" name="action" value="check_updates" />
             <div class="actions"><button type="submit">Check now</button></div>
           </form>"#,
             repo = html_escape(&u.repo),
+            hidden = if u.busy { "" } else { "hidden" },
+            pct = u.download_percent(),
         )
     };
 
@@ -2153,6 +2229,8 @@ fn shell(title: &str, body: &str, authed: bool) -> String {
   .sync-meter {{ margin: 0.5rem 0 1.1rem; }}
   .sync-bar {{ height: 10px; border-radius: 999px; background: #ffffff10; overflow: hidden; }}
   .sync-bar > span {{ display: block; height: 100%; width: 0; border-radius: 999px; background: linear-gradient(90deg, #3d6fb8, var(--accent)); transition: width 0.35s ease; }}
+  .sync-bar.indeterminate > span {{ width: 35%; animation: pb-slide 1.3s ease-in-out infinite; }}
+  @keyframes pb-slide {{ from {{ margin-left: -35%; }} to {{ margin-left: 100%; }} }}
   .sync-meta {{ display: flex; justify-content: space-between; gap: 1rem; margin-top: 0.55rem; color: var(--muted); }}
   .sync-meta strong {{ color: var(--ink); font-size: 1.15rem; }}
   .sync-stats {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 0.7rem; margin-top: 0.5rem; }}
@@ -2204,4 +2282,23 @@ fn shell(title: &str, body: &str, authed: bool) -> String {
 </body>
 </html>"#
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn console_width_is_the_same_on_every_tab_and_keeps_scrollbar_space() {
+        let page = shell("Console", "body", true);
+        assert!(page.contains("max-width: 1280px"));
+        assert!(page.contains("scrollbar-gutter: stable"));
+        assert!(shell("Sign in", "body", false).contains("max-width: 440px"));
+    }
+
+    #[test]
+    fn progress_script_waits_for_the_page_and_polls_the_route() {
+        assert!(UPDATE_PROGRESS_JS.contains("DOMContentLoaded"));
+        assert!(UPDATE_PROGRESS_JS.contains("/updates/progress"));
+    }
 }

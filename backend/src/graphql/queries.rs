@@ -1327,3 +1327,34 @@ fn retain_tryable_sources(sources: Vec<StreamSource>) -> Vec<StreamSource> {
         kept
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trending_and_popular_follow_tmdb_list_order_first() {
+        let trending = order_sql(Some(TitleKind::Movie), SortField::Trending, SortDir::Desc);
+        assert!(trending.starts_with("(SELECT si.rank"), "{trending}");
+        assert!(trending.contains("si.shelf = 'trending'"));
+        assert!(trending.contains("ASC NULLS LAST"));
+        let popular = order_sql(Some(TitleKind::Series), SortField::Popularity, SortDir::Desc);
+        assert!(popular.contains("si.shelf = 'popular'"), "{popular}");
+    }
+
+    #[test]
+    fn rating_sort_is_weighted_by_votes() {
+        let rating = order_sql(Some(TitleKind::Movie), SortField::Rating, SortDir::Desc);
+        assert!(rating.contains("3250.0"), "{rating}");
+        assert!(rating.contains("+ 500.0"), "{rating}");
+    }
+
+    #[test]
+    fn new_titles_come_from_the_same_end_of_the_list_as_the_sort() {
+        use crate::ingest::tmdb::DiscoverOrder;
+        assert_eq!(discover_order(SortField::Rating), DiscoverOrder::Rating);
+        assert_eq!(discover_order(SortField::DateAdded), DiscoverOrder::Newest);
+        assert_eq!(discover_order(SortField::Year), DiscoverOrder::Newest);
+        assert_eq!(discover_order(SortField::Trending), DiscoverOrder::Popular);
+    }
+}

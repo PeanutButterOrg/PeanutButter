@@ -219,6 +219,7 @@ async fn main() -> Result<()> {
         .route("/tokens", get(crate::admin::page).post(crate::admin::action))
         .route("/sync/status", get(crate::admin::sync_status))
         .route("/sync/logs", get(crate::admin::sync_logs))
+        .route("/updates/progress", get(crate::admin::update_progress))
         .route("/sync/start", axum::routing::post(crate::admin::sync_start))
         .route("/sync/flush", axum::routing::post(crate::admin::sync_flush))
         // Catalog pages are large, very compressible JSON. Only here: media routes

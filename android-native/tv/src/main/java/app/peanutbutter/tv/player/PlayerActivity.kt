@@ -141,6 +141,8 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
     private var torrentStartedWithResume = false
     private var torrentStartFailed = false
     private var pausedSentToEngine = false
+    /** How long the controls stay up after the last action. */
+    private var hideDelayMs = CHROME_HIDE_MS
     /** Share of the file downloaded without gaps from the playhead. */
     private var torrentDownloadedTo = 0.0
 
@@ -1520,6 +1522,8 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         } else {
             softErrorCount = 0
             stallRecoverCount = 0
+            // Resuming means back to watching: get out of the way soon.
+            hideDelayMs = CHROME_HIDE_AFTER_RESUME_MS
             mp.play()
         }
         renderTransport()
@@ -1818,7 +1822,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         main.removeCallbacks(hideChrome)
         // Not while a menu is open or the player is paused: the controls stay up.
         if (streamOpened && !userSeeking && !userPaused && chromeVisible && hasWindowFocus()) {
-            main.postDelayed(hideChrome, CHROME_HIDE_MS)
+            main.postDelayed(hideChrome, hideDelayMs)
         }
     }
 
@@ -1848,15 +1852,18 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         // Before playback only the controls are dead; volume keys must still work.
         if (!streamOpened && event.keyCode in PLAYER_KEYS) return true
-        if (event.action == KeyEvent.ACTION_DOWN && chromeVisible) scheduleHideChrome()
+        if (event.action == KeyEvent.ACTION_DOWN && chromeVisible) {
+            hideDelayMs = CHROME_HIDE_MS
+            scheduleHideChrome()
+        }
         return super.dispatchKeyEvent(event)
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         // Handle Back before showChrome() — otherwise the second Back re-shows
         // chrome and never reaches the exit dialog.
-        if (keyCode == KeyEvent.KEYCODE_BACK) {
-            handleBackPress()
+        if (keyCode == KeyEvent.KEYCODE_BACK || keyCode == KeyEvent.KEYCODE_ESCAPE) {
+            if ((event?.repeatCount ?: 0) == 0) handleBackPress()
             return true
         }
         if (!streamOpened) return super.onKeyDown(keyCode, event)
@@ -1919,7 +1926,9 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         }
 
         // OK / Enter always toggles playback and reveals chrome (even over soft buttons).
-        if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER) {
+        if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER ||
+            keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER || keyCode == KeyEvent.KEYCODE_SPACE
+        ) {
             if (firstPress) togglePlay()
             showChrome()
             btnPlay?.requestFocus()
@@ -1976,20 +1985,13 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                 }
             }
             KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                showChrome()
-                if (userPaused) {
-                    btnPlay?.requestFocus()
-                    return true
-                }
+                // A quick seek with the controls hidden only shows them briefly.
+                hideDelayMs = CHROME_HIDE_AFTER_SEEK_MS
                 seekBy(10_000)
                 return true
             }
             KeyEvent.KEYCODE_DPAD_LEFT -> {
-                showChrome()
-                if (userPaused) {
-                    btnPlay?.requestFocus()
-                    return true
-                }
+                hideDelayMs = CHROME_HIDE_AFTER_SEEK_MS
                 seekBy(-10_000)
                 return true
             }
@@ -2154,6 +2156,8 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         /** Exo stuck in BUFFERING this long before the first frame → reopen. */
         private const val PRE_PLAY_REOPEN_MS = 45_000L
         private const val CHROME_HIDE_MS = 5_000L
+        private const val CHROME_HIDE_AFTER_RESUME_MS = 1_500L
+        private const val CHROME_HIDE_AFTER_SEEK_MS = 2_500L
         private const val REBUFFER_SPINNER_DELAY_MS = 400L
         private const val BUFFER_STALL_CHECK_MS = 20_000L
         private const val MAX_STALL_REOPENS = 2
@@ -2164,6 +2168,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         private val PLAYER_KEYS = setOf(
             KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_DPAD_LEFT,
             KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER,
+            KeyEvent.KEYCODE_NUMPAD_ENTER, KeyEvent.KEYCODE_SPACE,
             KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_MEDIA_PLAY, KeyEvent.KEYCODE_MEDIA_PAUSE,
             KeyEvent.KEYCODE_MEDIA_FAST_FORWARD, KeyEvent.KEYCODE_MEDIA_REWIND,
         )

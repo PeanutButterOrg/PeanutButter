@@ -120,10 +120,22 @@ class TvPlayback(
     }
 
     override fun setAspectMode(mode: String) {
+        val changed = mode != aspectMode
         aspectMode = mode
         placedW = 0
         placedH = 0
         applyAspect()
+        // Some TV decoders keep the picture's old geometry when only the surface
+        // size changes. Rebinding after layout makes them take the new shape.
+        val view = surfaceView
+        if (changed && view != null && exo.isPlaying) {
+            view.post {
+                if (surfaceView === view) {
+                    exo.clearVideoSurface()
+                    exo.setVideoSurfaceView(view)
+                }
+            }
+        }
     }
 
     private fun applyAspect() {

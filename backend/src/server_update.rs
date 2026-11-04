@@ -209,29 +209,31 @@ pub async fn update_now(http: &reqwest::Client) -> Result<String> {
         .await
         .map(|t| t.trim().to_string())
         .map_err(|_| AppError::BadRequest("The Watchtower token is missing; restart the stack once.".into()))?;
-    let s = state();
-    if s.busy.swap(true, Ordering::SeqCst) {
+    if state().busy.swap(true, Ordering::SeqCst) {
         return Err(AppError::BadRequest("An update is already running.".into()));
     }
 
-    match backup().await {
-        Ok(path) => {
-            let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-            *s.last_backup.lock().unwrap_or_else(|e| e.into_inner()) = Some(name);
-        }
-        Err(e) => {
-            s.busy.store(false, Ordering::SeqCst);
-            set_message(format!("Update cancelled: the database backup failed ({e})."));
-            return Err(AppError::BadRequest(format!(
-                "Update cancelled: the database backup failed ({e})."
-            )));
-        }
-    }
-
     let latest = status().await.latest.unwrap_or_else(|| "the latest release".into());
-    set_message(format!("Updating to {latest}… the console will be back in about a minute."));
+    let started_for = latest.clone();
     let http = http.clone();
+    // On its own task: the console page used to wait for the whole backup.
     tokio::spawn(async move {
+        set_message("Backing up the database…".to_string());
+        match backup().await {
+            Ok(path) => {
+                let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                *state().last_backup.lock().unwrap_or_else(|e| e.into_inner()) = Some(name);
+            }
+            Err(e) => {
+                state().busy.store(false, Ordering::SeqCst);
+                warn!(error = %e, "server update cancelled");
+                set_message(format!("Update cancelled: the database backup failed ({e})."));
+                return;
+            }
+        }
+        set_message(format!(
+            "Downloading {latest}… the server restarts by itself when it's ready."
+        ));
         // Watchtower answers when it has finished; if the image changed this
         // process is stopped long before that.
         let res = http
@@ -254,9 +256,7 @@ pub async fn update_now(http: &reqwest::Client) -> Result<String> {
         set_message(msg);
         state().busy.store(false, Ordering::SeqCst);
     });
-    Ok(format!(
-        "Backed up the database and started the update to {latest}. The console reloads when the new version is up."
-    ))
+    Ok(format!("Updating to {started_for}. Progress shows here; the page reloads when the new version is up."))
 }
 
 /// `pg_dump` of the whole database to PB_BACKUP_DIR, newest five kept.
