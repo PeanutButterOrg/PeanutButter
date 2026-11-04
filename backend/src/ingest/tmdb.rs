@@ -1138,8 +1138,9 @@ pub async fn fetch_tv(ctx: &IngestContext) -> Result<()> {
     Ok(())
 }
 
-/// Like [fetch_details] for a title the user searched for (ignores the
-/// preferred-language lock; adult / unreleased / blocked genres still apply).
+/// Like [fetch_details] for a title the user searched for or one already in the
+/// catalog (ignores the preferred-language lock; adult / unreleased / blocked
+/// genres still apply).
 pub async fn fetch_details_explicit(ctx: &IngestContext, tmdb_id: i32, kind: &str) -> Result<Uuid> {
     let id = if kind == "series" {
         let details = fetch_details_tv(ctx, tmdb_id).await?;
@@ -1160,6 +1161,16 @@ pub async fn fetch_details(ctx: &IngestContext, tmdb_id: i32, kind: &str) -> Res
         upsert_movie(ctx, details).await?
     };
     id.ok_or_else(|| AppError::Message("title skipped by preferred language filter".into()))
+}
+
+/// Which TMDB endpoint a stored title refreshes from: anything that isn't a movie
+/// (series, anime) lives under /tv.
+fn refresh_media(kind: &str) -> &'static str {
+    if kind == "movie" {
+        "movie"
+    } else {
+        "series"
+    }
 }
 
 pub async fn refresh_stale_titles(ctx: &IngestContext) -> Result<()> {
@@ -1185,9 +1196,23 @@ pub async fn refresh_stale_titles(ctx: &IngestContext) -> Result<()> {
 
     for (id, tmdb_id, kind) in rows {
         let Some(tmdb_id) = tmdb_id else { continue };
-        match fetch_details(ctx, tmdb_id, &kind).await {
+        // The language lock decides what gets added, not what stays up to date: a
+        // title already in the catalog refreshes whatever its language.
+        match fetch_details_explicit(ctx, tmdb_id, refresh_media(&kind)).await {
             Ok(_) => debug!(%id, tmdb_id, "refreshed title"),
-            Err(e) => warn!(%id, tmdb_id, error = %e, "stale refresh failed"),
+            Err(e) => {
+                warn!(%id, tmdb_id, error = %e, "stale refresh failed");
+                // The batch takes the oldest rows first, so a title that keeps
+                // failing would hold its slot forever and starve the rest. Send it
+                // to the back of the queue.
+                if let Err(e) = sqlx::query("UPDATE titles SET updated_at = now() WHERE id = $1")
+                    .bind(id)
+                    .execute(&ctx.pool)
+                    .await
+                {
+                    warn!(%id, error = %e, "could not requeue failed title");
+                }
+            }
         }
     }
     Ok(())
@@ -3014,6 +3039,18 @@ mod title_ref_tests {
         assert_eq!(parse_title_ref("the matrix"), None);
         assert_eq!(parse_title_ref("tt"), None);
         assert_eq!(parse_title_ref("Tron: Legacy"), None);
+    }
+}
+
+#[cfg(test)]
+mod refresh_tests {
+    use super::*;
+
+    #[test]
+    fn only_movies_refresh_from_the_movie_endpoint() {
+        assert_eq!(refresh_media("movie"), "movie");
+        assert_eq!(refresh_media("series"), "series");
+        assert_eq!(refresh_media("anime"), "series");
     }
 }
 

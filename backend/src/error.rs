@@ -77,16 +77,42 @@ impl AppError {
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        tracing::error!(error = ?self, "request failed");
+        // A rejected request (unpaired device, wrong id) is normal traffic. Only a
+        // failure on the server's side belongs at error level.
+        let status = self.status();
+        if status.is_server_error() {
+            tracing::error!(error = ?self, "request failed");
+        } else {
+            tracing::debug!(error = ?self, %status, "request rejected");
+        }
         let body = serde_json::json!({
             "error": self.to_string(),
         });
-        (self.status(), axum::Json(body)).into_response()
+        (status, axum::Json(body)).into_response()
     }
 }
 
 impl From<meilisearch_sdk::errors::Error> for AppError {
     fn from(value: meilisearch_sdk::errors::Error) -> Self {
         AppError::Search(value.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejected_requests_are_not_server_errors() {
+        for e in [
+            AppError::Unauthorized("x".into()),
+            AppError::Forbidden("x".into()),
+            AppError::NotFound("x".into()),
+            AppError::BadRequest("x".into()),
+            AppError::TooManyRequests("x".into()),
+        ] {
+            assert!(!e.status().is_server_error(), "{e:?}");
+        }
+        assert!(AppError::Internal("x".into()).status().is_server_error());
     }
 }
