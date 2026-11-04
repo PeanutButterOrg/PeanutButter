@@ -295,18 +295,15 @@ impl Query {
         }
 
         // Drop unreleased titles (future released_at / year) — same rule as catalog/home.
-        let rows: Vec<TitleRow> = sqlx::query_as(&format!(
-            r#"
-            SELECT {TITLE_COLUMNS}
-            FROM titles t
-            WHERE t.id = ANY($1)
-              AND (t.released_at IS NULL OR t.released_at <= CURRENT_DATE)
-              AND (t.year IS NULL OR t.year <= EXTRACT(YEAR FROM CURRENT_DATE)::int)
-            "#
-        ))
-        .bind(&ids)
-        .fetch_all(&state.pool)
-        .await?;
+        // The adult block too: catalog and home had it, search didn't.
+        let mut qb = sqlx::QueryBuilder::new("SELECT ");
+        qb.push(TITLE_COLUMNS);
+        qb.push(" FROM titles t WHERE t.id = ANY(");
+        qb.push_bind(ids.clone());
+        qb.push(")");
+        apply_adult_block(&mut qb);
+        apply_released_only(&mut qb);
+        let rows: Vec<TitleRow> = qb.build_query_as().fetch_all(&state.pool).await?;
 
         let mut by_id: std::collections::HashMap<Uuid, TitleRow> =
             rows.into_iter().map(|r| (r.id, r)).collect();

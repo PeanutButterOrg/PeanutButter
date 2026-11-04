@@ -1401,7 +1401,7 @@ pub async fn serve_stream(
                 .body(body)
                 .map_err(|e| AppError::Internal(e.to_string()))?);
         }
-        return Err(AppError::BadRequest("invalid range".into()));
+        return crate::media::serve::range_not_satisfiable(len);
     }
 
     let body = Body::from_stream(chunked_stream(stream));

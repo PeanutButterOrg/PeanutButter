@@ -97,6 +97,16 @@ class StreamHttpServer(
                 writeStatus(output, 404, "Not Found", 0)
                 return
             }
+            if (isPastEnd(request.rangeHeader, fileSize)) {
+                // End of file for the player. Clamping to the last byte gave it a
+                // one-byte answer it then tried to read as video.
+                output.write(
+                    "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */$fileSize\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        .toByteArray(),
+                )
+                output.flush()
+                return
+            }
             val (start, end) = parseRange(request.rangeHeader, fileSize)
             val length = end - start + 1
             if (request.method == "HEAD") {
@@ -269,6 +279,8 @@ class StreamHttpServer(
         }
     }
 
+    private fun isPastEnd(header: String?, size: Long): Boolean = rangeStartsPastEnd(header, size)
+
     private fun writeStatus(out: OutputStream, code: Int, msg: String, length: Int) {
         val body = msg.toByteArray()
         out.write("HTTP/1.1 $code $msg\r\nContent-Length: ${body.size}\r\nConnection: close\r\n\r\n".toByteArray())
@@ -347,4 +359,11 @@ class StreamHttpServer(
         /** Index reads at the file's end happen while the player opens it. */
         private const val INDEX_READ_MS = 20_000L
     }
+}
+
+/** A `bytes=N-` request where N is at or past the end of the file. */
+internal fun rangeStartsPastEnd(header: String?, size: Long): Boolean {
+    if (header == null || size <= 0) return false
+    val start = header.removePrefix("bytes=").substringBefore('-').trim().toLongOrNull() ?: return false
+    return start >= size
 }

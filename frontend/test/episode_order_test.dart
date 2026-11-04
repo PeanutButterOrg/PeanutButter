@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:peanutbutter/local_torrent.dart';
 import 'package:peanutbutter/models.dart';
 import 'package:peanutbutter/providers/catalog.dart';
 
@@ -31,5 +32,18 @@ void main() {
     expect(after(50, true), 3);
     expect(after(20, true), 2);
     expect(after(20, false), 3);
+  });
+
+  test('old downloads go first until the rest fits the limit', () {
+    const entries = [
+      DownloadEntry('new', 4, 300),
+      DownloadEntry('old', 4, 100),
+      DownloadEntry('mid', 4, 200),
+    ];
+    List<String> gone(int budget) =>
+        downloadsToDelete(entries, budget).map((e) => e.path).toList();
+    expect(gone(8), ['old']);
+    expect(gone(5), ['old', 'mid']);
+    expect(gone(12), isEmpty);
   });
 }

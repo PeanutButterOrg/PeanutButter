@@ -49,7 +49,7 @@ GraphQLClient createGraphQLClient(
 const FetchPolicy catalogFetchPolicy = FetchPolicy.cacheAndNetwork;
 // One-shot search must not return a stale cache hit and drop the network
 // result. A newer keystroke also has to be able to discard the older response.
-const FetchPolicy searchFetchPolicy = FetchPolicy.networkOnly;
+const FetchPolicy searchFetchPolicy = FetchPolicy.noCache;
 
 /// True only when the PeanutButter server rejected this device's token.
 ///

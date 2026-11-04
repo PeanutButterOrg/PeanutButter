@@ -55,6 +55,40 @@ class LocalTorrentEngine {
     } catch (_) {}
   }
 
+  /// Streamed pieces stay for fast resume, but only up to a limit: nothing
+  /// removed them unless "Clear cache on exit" was on.
+  Future<void> _trimSaveDir() async {
+    final root = _savePath;
+    if (root == null) return;
+    try {
+      final entries = <DownloadEntry>[];
+      await for (final e in Directory(root).list(recursive: false)) {
+        var bytes = 0;
+        var newest = (await e.stat()).modified.millisecondsSinceEpoch;
+        if (e is Directory) {
+          await for (final f in e.list(recursive: true)) {
+            if (f is! File) continue;
+            final st = await f.stat();
+            bytes += st.size;
+            final m = st.modified.millisecondsSinceEpoch;
+            if (m > newest) newest = m;
+          }
+        } else {
+          bytes = (await e.stat()).size;
+        }
+        entries.add(DownloadEntry(e.path, bytes, newest));
+      }
+      for (final old in downloadsToDelete(entries, kDownloadBudgetBytes)) {
+        final type = await FileSystemEntity.type(old.path);
+        if (type == FileSystemEntityType.directory) {
+          await Directory(old.path).delete(recursive: true);
+        } else {
+          await File(old.path).delete();
+        }
+      }
+    } catch (_) {}
+  }
+
   Future<void> _clearSaveDir() async {
     final root = _savePath;
     if (root == null || root.isEmpty) return;
@@ -82,6 +116,8 @@ class LocalTorrentEngine {
       final tmp = await getTemporaryDirectory();
       _savePath = '${tmp.path}/peanutbutter-streams';
       await Directory(_savePath!).create(recursive: true);
+      // Before any torrent starts: nothing is in use yet.
+      await _trimSaveDir();
       // IPv4-only random port. Default "0.0.0.0:0,[::]:0" also binds Docker /
       // veth interfaces on Linux and announces junk endpoints to the swarm.
       await LibtorrentFlutter.init(
@@ -646,4 +682,27 @@ class LocalStreamStats {
   final String stateLabel;
   final bool torrentComplete;
   final bool swarmActive;
+}
+
+const int kDownloadBudgetBytes = 10 * 1024 * 1024 * 1024;
+
+class DownloadEntry {
+  const DownloadEntry(this.path, this.bytes, this.lastUsedMs);
+
+  final String path;
+  final int bytes;
+  final int lastUsedMs;
+}
+
+/// Oldest first, until what's left fits in [budget].
+List<DownloadEntry> downloadsToDelete(List<DownloadEntry> entries, int budget) {
+  var used = entries.fold<int>(0, (sum, e) => sum + e.bytes);
+  final oldestFirst = [...entries]..sort((a, b) => a.lastUsedMs.compareTo(b.lastUsedMs));
+  final out = <DownloadEntry>[];
+  for (final e in oldestFirst) {
+    if (used <= budget) break;
+    out.add(e);
+    used -= e.bytes;
+  }
+  return out;
 }

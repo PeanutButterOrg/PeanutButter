@@ -207,6 +207,7 @@ object LocalTorrentEngine {
         val sm = session ?: throw IllegalStateException("Torrent session not ready")
         val dir = saveDir ?: throw IllegalStateException("Save path missing")
         if (!dir.exists()) dir.mkdirs()
+        runCatching { DownloadBudget.trim(dir) }.onFailure { AppLog.e(TAG, "download trim failed", it) }
 
         metadataLatch.set(false)
         // Keep magnet lean — stuffing dozens of trackers has crashed native on ARM TV.

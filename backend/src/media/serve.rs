@@ -44,10 +44,10 @@ pub async fn serve_file(
         if let Some((start, end)) = parse_range(range, len) {
             return range_response(file, start, end, len, &mime).await;
         }
-        return Err(AppError::BadRequest("invalid range".into()));
+        return range_not_satisfiable(len);
     }
 
-    let stream = ReaderStream::new(file);
+    let stream = ReaderStream::with_capacity(file, READ_CHUNK);
     let body = Body::from_stream(stream);
     Ok(Response::builder()
         .status(StatusCode::OK)
@@ -57,6 +57,18 @@ pub async fn serve_file(
         .header(header::CACHE_CONTROL, "private, max-age=3600")
         .body(body)
         .map_err(|e| AppError::Internal(e.to_string()))?)
+}
+
+/// The default 4 KB means a disk read and a socket write per 4 KB of video.
+const READ_CHUNK: usize = 256 * 1024;
+
+/// 416, which players read as "end of file". A 400 here is a fatal playback error.
+pub(crate) fn range_not_satisfiable(total: u64) -> Result<Response, AppError> {
+    Response::builder()
+        .status(StatusCode::RANGE_NOT_SATISFIABLE)
+        .header(header::CONTENT_RANGE, format!("bytes */{total}"))
+        .body(Body::empty())
+        .map_err(|e| AppError::Internal(e.to_string()))
 }
 
 async fn range_response(
@@ -69,7 +81,7 @@ async fn range_response(
     file.seek(SeekFrom::Start(start)).await?;
     let length = end - start + 1;
     let limited = file.take(length);
-    let stream = ReaderStream::new(limited);
+    let stream = ReaderStream::with_capacity(limited, READ_CHUNK);
     let body = Body::from_stream(stream);
     Ok(Response::builder()
         .status(StatusCode::PARTIAL_CONTENT)
@@ -113,7 +125,15 @@ pub(crate) fn parse_range(header: &str, len: u64) -> Option<(u64, u64)> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_range;
+    use super::{parse_range, range_not_satisfiable};
+    use axum::http::{header, StatusCode};
+
+    #[test]
+    fn range_past_the_end_is_416_with_the_size() {
+        let res = range_not_satisfiable(100).unwrap();
+        assert_eq!(res.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+        assert_eq!(res.headers()[header::CONTENT_RANGE], "bytes */100");
+    }
 
     #[test]
     fn range_start_end() {

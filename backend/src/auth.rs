@@ -122,6 +122,11 @@ pub async fn resolve_token(state: &HttpState, provided: &str) -> Result<AuthSess
     Ok(session)
 }
 
+/// Console pages' JSON feeds: signed in with the console cookie, not a device key.
+fn is_console_feed(path: &str) -> bool {
+    path.starts_with("/sync/") || path == "/updates/progress"
+}
+
 fn is_media_get(method: &Method, path: &str) -> bool {
     (method == Method::GET || method == Method::HEAD)
         && (path.starts_with("/stream/")
@@ -153,7 +158,7 @@ pub async fn gate(
         return Ok(next.run(req).await);
     }
     // Console Sync tab uses the admin session cookie (not a device token).
-    if path.starts_with("/sync/") {
+    if is_console_feed(&path) {
         if crate::admin::has_session(&state, req.headers()).await {
             return Ok(next.run(req).await);
         }
@@ -253,6 +258,15 @@ mod tests {
         assert_eq!(crate::pin::format_code("482193"), "482 193");
         assert!(crate::pin::codes_equal("482 193", "482193"));
         assert!(!crate::pin::is_pairing_code("not-a-pin"));
+    }
+
+    #[test]
+    fn console_feeds_use_the_console_session() {
+        assert!(is_console_feed("/sync/status"));
+        assert!(is_console_feed("/updates/progress"));
+        // Apps fetch these with their device key.
+        assert!(!is_console_feed("/updates/latest"));
+        assert!(!is_console_feed("/updates/files/v1/app.apk"));
     }
 
     #[test]

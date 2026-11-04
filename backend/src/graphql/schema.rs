@@ -8,5 +8,7 @@ pub type AppSchema = Schema<Query, Mutation, EmptySubscription>;
 pub fn build_schema(state: AppState) -> AppSchema {
     Schema::build(Query, Mutation, EmptySubscription)
         .data(state)
+        // Far past any app query; stops a runaway nested one tying up the database.
+        .limit_depth(24)
         .finish()
 }

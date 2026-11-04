@@ -174,7 +174,7 @@ class CatalogNotifier extends StateNotifier<CatalogState> {
         QueryOptions(
           document: gql(GET_CATALOG),
           variables: filter.toVariables(page: page, perPage: _catalogPerPage),
-          fetchPolicy: FetchPolicy.networkOnly,
+          fetchPolicy: FetchPolicy.noCache,
         ),
       );
       // Provider disposed or a newer refresh started while we waited.
@@ -302,7 +302,7 @@ class LibraryNotifier extends StateNotifier<CatalogState> {
         QueryOptions(
           document: gql(GET_CATALOG),
           variables: filter.toVariables(page: page, perPage: _catalogPerPage),
-          fetchPolicy: FetchPolicy.networkOnly,
+          fetchPolicy: FetchPolicy.noCache,
         ),
       );
       // Provider disposed or a newer refresh started while we waited.
@@ -402,7 +402,7 @@ final homeFeedProvider = FutureProvider.family<HomeFeed, String>((ref, kind) asy
         QueryOptions(
           document: gql(GET_HOME_FEED),
           variables: {'kind': kind},
-          fetchPolicy: FetchPolicy.networkOnly,
+          fetchPolicy: FetchPolicy.noCache,
         ),
       )
       .timeout(const Duration(seconds: 30));
@@ -459,7 +459,7 @@ final favoritesFeedProvider = FutureProvider<FavoritesFeed>((ref) async {
               'page': 1,
               'perPage': 48,
             },
-            fetchPolicy: FetchPolicy.networkOnly,
+            fetchPolicy: FetchPolicy.noCache,
           ),
         )
         .timeout(const Duration(seconds: 30));
@@ -496,7 +496,7 @@ final watchedFeedProvider = FutureProvider<FavoritesFeed>((ref) async {
               'page': 1,
               'perPage': 48,
             },
-            fetchPolicy: FetchPolicy.networkOnly,
+            fetchPolicy: FetchPolicy.noCache,
           ),
         )
         .timeout(const Duration(seconds: 30));
@@ -578,7 +578,7 @@ final detailProvider = FutureProvider.autoDispose.family<TitleItem?, String>((re
     QueryOptions(
       document: gql(GET_TITLE),
       variables: {'id': id},
-      fetchPolicy: FetchPolicy.networkOnly,
+      fetchPolicy: FetchPolicy.noCache,
     ),
   );
   if (result.hasException) {
