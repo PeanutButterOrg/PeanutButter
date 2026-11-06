@@ -264,6 +264,8 @@ class MainActivity : FragmentActivity() {
         val kind = selectedKind
         lifecycleScope.launch {
             try {
+                // The player's last save may still be on its way.
+                app.awaitWrites()
                 val feed = app.api.homeFeed(kind)
                 feedCache[kind] = feed
                 if (kind != selectedKind) return@launch

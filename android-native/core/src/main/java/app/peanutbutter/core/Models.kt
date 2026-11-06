@@ -43,12 +43,12 @@ data class TitleItem(
     val watchProgress: Double
         get() {
             if (watched) return 0.0
-            // Prefer in-episode fraction when we have a resume position — series-wide
-            // progressPercent can be tiny (ep1 of 100 ≈ 0.01) and hide the bar.
+            // The server's figure covers the whole season for a series, not the episode
+            // playing. Keep a sliver so early progress still shows on the card.
+            if (progressPercent > 0.0) return progressPercent.coerceIn(0.02, 1.0)
             if (positionMs > 2000L && durationMs > 0L) {
                 return (positionMs.toDouble() / durationMs).coerceIn(0.0, 0.98)
             }
-            if (progressPercent > 0.0) return progressPercent.coerceIn(0.0, 1.0)
             if (positionMs > 2000L) return 0.08
             return 0.0
         }

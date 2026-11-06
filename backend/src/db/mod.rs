@@ -1899,9 +1899,10 @@ pub struct CatalogListRow {
 
 /// 0–1 progress for poster bars.
 /// Movies: position/duration.
-/// Series/anime: (episodes before current + in-episode fraction) / total episodes.
+/// Series/anime: share of the current episode's season this device has watched.
 pub async fn title_progress_percent(
     pool: &PgPool,
+    token_id: Uuid,
     title_id: Uuid,
     episode_id: Option<Uuid>,
     position_ms: i64,
@@ -1929,44 +1930,64 @@ pub async fn title_progress_percent(
     if kind != "series" && kind != "anime" {
         return Ok(ep_frac);
     }
-    let total: i64 = sqlx::query_scalar(
+    let Some(eid) = episode_id else {
+        return Ok(ep_frac);
+    };
+    let (total, watched_others, current_watched): (i64, i64, bool) = sqlx::query_as(
         r#"
-        SELECT COUNT(*)::bigint
+        SELECT COUNT(*)::bigint,
+               (COUNT(*) FILTER (WHERE ep.watched AND e.id <> $1))::bigint,
+               COALESCE(BOOL_OR(ep.watched AND e.id = $1), FALSE)
         FROM episodes e
-        JOIN seasons s ON s.id = e.season_id
-        WHERE s.title_id = $1 AND s.season_number > 0
+        LEFT JOIN episode_progress ep ON ep.episode_id = e.id AND ep.token_id = $2
+        WHERE e.season_id = (SELECT season_id FROM episodes WHERE id = $1)
         "#,
     )
-    .bind(title_id)
+    .bind(eid)
+    .bind(token_id)
     .fetch_one(pool)
     .await?;
+    Ok(season_progress(total, watched_others, current_watched, ep_frac))
+}
+
+/// Episodes watched this season, plus how far into the current one, out of all of
+/// them. Without season data, falls back to the current episode alone.
+fn season_progress(total: i64, watched_others: i64, current_watched: bool, ep_frac: f64) -> f64 {
     if total <= 0 {
-        return Ok(ep_frac);
+        return ep_frac;
     }
-    let Some(eid) = episode_id else {
-        return Ok((ep_frac / total as f64).clamp(0.0, 0.99));
-    };
-    let idx: Option<i64> = sqlx::query_scalar(
-        r#"
-        WITH ordered AS (
-            SELECT e.id,
-                   ROW_NUMBER() OVER (ORDER BY s.season_number ASC, e.episode_number ASC) AS rn
-            FROM episodes e
-            JOIN seasons s ON s.id = e.season_id
-            WHERE s.title_id = $1 AND s.season_number > 0
-        )
-        SELECT rn FROM ordered WHERE id = $2
-        "#,
-    )
-    .bind(title_id)
-    .bind(eid)
-    .fetch_optional(pool)
-    .await?;
-    let Some(rn) = idx else {
-        return Ok(ep_frac.clamp(0.0, 0.99));
-    };
-    let done_before = (rn - 1).max(0) as f64;
-    Ok(((done_before + ep_frac) / total as f64).clamp(0.0, 0.99))
+    let current = if current_watched { 1.0 } else { ep_frac };
+    ((watched_others as f64 + current) / total as f64).clamp(0.0, 1.0)
+}
+
+#[cfg(test)]
+mod season_progress_tests {
+    use super::season_progress;
+
+    #[test]
+    fn counts_the_whole_season_not_the_playing_episode() {
+        // Episode 3 of 10, halfway through, after watching the first two.
+        assert!((season_progress(10, 2, false, 0.5) - 0.25).abs() < 1e-9);
+        // Nearly finished episode one of ten is still about a tenth of the season.
+        assert!((season_progress(10, 0, false, 0.9) - 0.09).abs() < 1e-9);
+    }
+
+    #[test]
+    fn counts_only_episodes_actually_watched() {
+        // Jumped straight to episode 8: nothing before it counts.
+        assert!((season_progress(10, 0, false, 0.5) - 0.05).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_finished_episode_counts_in_full() {
+        assert!((season_progress(10, 2, true, 0.0) - 0.3).abs() < 1e-9);
+        assert_eq!(season_progress(4, 3, true, 0.0), 1.0);
+    }
+
+    #[test]
+    fn falls_back_to_the_episode_without_season_data() {
+        assert_eq!(season_progress(0, 0, false, 0.4), 0.4);
+    }
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]

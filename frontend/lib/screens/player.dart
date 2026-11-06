@@ -1687,14 +1687,22 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     if (ignoring || bogusReset) return;
     if (widget.titleId == null || _isTrailer || _progressFlushed) return;
     final now = DateTime.now();
+    // An episode started from the top counts right away, so the series moves on to
+    // it without waiting for the first periodic save.
+    final episodeStarted =
+        !_savedOnce && _isUuid(widget.episodeId) && widget.startMs <= 2000 && _playbackStarted;
     final due = !_savedOnce
-        ? position.inMilliseconds >= 2000
+        ? episodeStarted || position.inMilliseconds >= 2000
         // Each save is two mutations; 15 s matches the TV app.
         : now.difference(_lastProgress) >= const Duration(seconds: 15);
     if (!due) return;
     _savedOnce = true;
     _lastProgress = now;
-    unawaited(_saveProgress(position: position));
+    unawaited(_saveProgress(
+      position: position,
+      episodeStarted: episodeStarted,
+      invalidateHome: episodeStarted,
+    ));
   }
 
   void _updateActiveSegment(int positionMs) {
@@ -2066,11 +2074,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     });
     _notifyOverlays();
     try {
-      await _saveProgress(complete: true, closing: true);
-      if (!mounted) return;
+      // Stop the old episode first: the loading screen is covering it from here on.
       try {
         await _player?.pause();
       } catch (_) {}
+      await _saveProgress(complete: true, closing: true);
+      if (!mounted) return;
 
       // Clear the finished episode's pieces when the setting is on — before the next magnet.
       final wipe = ref.read(settingsProvider).clearCacheOnExit;
@@ -2172,7 +2181,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         },
       );
     } finally {
-      if (mounted) setState(() => _playNextBusy = false);
+      if (mounted) {
+        setState(() => _playNextBusy = false);
+        _notifyOverlays();
+      }
     }
   }
 
@@ -2311,6 +2323,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     bool closing = false,
     bool invalidateHome = false,
     bool complete = false,
+    bool episodeStarted = false,
   }) async {
     final titleId = widget.titleId;
     if (titleId == null || _isTrailer) return;
@@ -2324,7 +2337,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     final player = _player;
     final pos = position ?? player?.state.position ?? Duration.zero;
     final dur = duration ?? player?.state.duration;
-    if (!complete && pos.inMilliseconds < 2000) {
+    if (!complete && !episodeStarted && pos.inMilliseconds < 2000) {
       if (closing) _progressFlushed = true;
       return;
     }
@@ -3934,7 +3947,44 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
           bottom: bottom,
           child: _playNextButton(_nextEpisode!),
         ),
+      if (_playNextBusy && _nextEpisode != null)
+        Positioned.fill(child: _playNextLoading(_nextEpisode!)),
     ];
+  }
+
+  /// Play Next: covers the old episode while the next one is found.
+  Widget _playNextLoading(_NextEpisodeTarget next) {
+    return ColoredBox(
+      color: Colors.black.withValues(alpha: 0.85),
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SizedBox(
+                width: 44,
+                height: 44,
+                child: CircularProgressIndicator(strokeWidth: 3, color: Colors.white),
+              ),
+              const SizedBox(height: 20),
+              const Text(
+                'Starting next episode…',
+                style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w700),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                next.label,
+                textAlign: TextAlign.center,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(color: Colors.white.withValues(alpha: 0.75), fontSize: 14),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   /// media_kit's own controls are off everywhere: two sets of controls fought

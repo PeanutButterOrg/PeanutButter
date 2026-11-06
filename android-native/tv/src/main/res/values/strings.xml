@@ -33,6 +33,7 @@
     <string name="refresh_sources">Refresh from Jackett</string>
     <string name="refreshing_sources">Refreshing live results…</string>
     <string name="looking_up_sources">Looking up sources…</string>
+    <string name="next_episode_loading">Starting next episode…</string>
     <string name="resuming_stream">Resuming previous stream…</string>
     <string name="no_sources">No healthy sources found</string>
     <string name="favourites">Favourites</string>

@@ -794,6 +794,11 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                     Log.i(TAG, "ExoPlayer playing pos=${mp.time} len=${mp.length}")
                     val firstOpen = !streamOpened
                     streamOpened = true
+                    // An episode started from the top counts right away, so the series
+                    // moves on to it without waiting for the first periodic save.
+                    if (firstOpen && episodeId != null && openStartMs <= 2_000L) {
+                        saveWatchProgress(force = true, episodeStarted = true)
+                    }
                     exoBuffering = false
                     userPaused = false
                     torrentReadyLatched = true
@@ -1440,10 +1445,14 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         btnNext?.isSelected = true
         btnNext?.requestFocus()
         statusView?.text = getString(R.string.looking_up_sources)
-        // Title-only feedback — don't open the whole transport bar.
-        chromeTop?.isVisible = true
-        chromeTop?.animate()?.cancel()
-        chromeTop?.alpha = 1f
+        // Finding a source takes a while: stop the old episode and say what's happening.
+        val wasPlaying = player?.wantsToPlay == true
+        runCatching { player?.pause() }
+        val loading = findViewById<View>(R.id.next_loading)
+        findViewById<TextView>(R.id.next_loading_label).text =
+            String.format("%s · S%02dE%02d", next.catalogTitle, next.season, next.episode)
+        loading.isVisible = true
+        loading.bringToFront()
         lifecycleScope.launch {
             try {
                 saveWatchProgress(force = true, complete = true)
@@ -1488,7 +1497,16 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                 nextBusy = false
                 btnNext?.isEnabled = true
                 btnNext?.isSelected = false
-                if (btnNext?.isVisible == true) btnNext?.requestFocus()
+                // Handed off: stay covered until the new player takes over.
+                if (!handedOffToNext) {
+                    loading.isVisible = false
+                    if (wasPlaying) {
+                        // Still watching this episode, so keep saving its position.
+                        markedComplete = false
+                        runCatching { player?.play() }
+                    }
+                    if (btnNext?.isVisible == true) btnNext?.requestFocus()
+                }
             }
         }
     }
@@ -1584,7 +1602,11 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
     }
 
     /** Write resume position so the home Continue watching row can list this title. */
-    private fun saveWatchProgress(force: Boolean = false, complete: Boolean = false) {
+    private fun saveWatchProgress(
+        force: Boolean = false,
+        complete: Boolean = false,
+        episodeStarted: Boolean = false,
+    ) {
         val id = titleId?.takeIf { it.isNotBlank() } ?: return
         // Once finished, a later plain save would park the resume point back near
         // the end and put the episode back in Continue watching.
@@ -1596,7 +1618,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             else -> lastGoodPosMs
         }
         if (complete && length > 0L) pos = maxOf(pos, length)
-        if (!complete && pos < 2_000L) return
+        if (!complete && !episodeStarted && pos < 2_000L) return
         // Every save is two mutations (progress + stream bookmark); 15s keeps
         // resume accurate without a server write every few seconds.
         if (!force && !complete && lastSavedPosMs >= 0L && kotlin.math.abs(pos - lastSavedPosMs) < 15_000L) return
@@ -1631,19 +1653,11 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                 )
             }
         }
-        if (force) {
-            // Pause / stop / destroy / episode end. This used to runBlocking on the
-            // main thread; OkHttp ignores coroutine timeouts, so an unreachable
-            // server froze the UI for the full connect timeout (ANR on exit).
-            // The app-scoped queue outlives this Activity and keeps writes ordered.
-            application.asTv().backgroundWrites.launch {
-                runCatching { write() }
-            }
-        } else {
-            lifecycleScope.launch(Dispatchers.IO) {
-                runCatching { write() }
-            }
-        }
+        // This used to runBlocking on the main thread for pause / stop / episode end;
+        // OkHttp ignores coroutine timeouts, so an unreachable server froze the UI for
+        // the full connect timeout (ANR on exit). The app-scoped queue outlives this
+        // Activity and keeps a finished episode's save ahead of the next one's.
+        application.asTv().enqueueWrite(write)
     }
 
     private fun formatMs(ms: Long): String {

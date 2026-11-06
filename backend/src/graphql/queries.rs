@@ -86,9 +86,10 @@ impl Query {
         }
         qb.push(" WHERE 1=1");
         apply_filters(&mut qb, &filter);
-        apply_language_filter(&mut qb, &state.config.live.preferred_language_codes());
         if continue_watching {
-            qb.push(" AND p.watched = FALSE AND p.position_ms > 2000");
+            qb.push(CONTINUE_WATCHING_SQL);
+        } else {
+            apply_language_filter(&mut qb, &state.config.live.preferred_language_codes());
         }
         if favorites {
             qb.push(" AND p.favorite = TRUE");
@@ -115,9 +116,10 @@ impl Query {
         }
         count_qb.push(" WHERE 1=1");
         apply_filters(&mut count_qb, &filter);
-        apply_language_filter(&mut count_qb, &state.config.live.preferred_language_codes());
         if continue_watching {
-            count_qb.push(" AND p.watched = FALSE AND p.position_ms > 2000");
+            count_qb.push(CONTINUE_WATCHING_SQL);
+        } else {
+            apply_language_filter(&mut count_qb, &state.config.live.preferred_language_codes());
         }
         if favorites {
             count_qb.push(" AND p.favorite = TRUE");
@@ -855,7 +857,6 @@ impl Query {
             &state.config.public_url,
             24,
             auth.token_id,
-            &langs,
         )
         .await?;
         Ok(HomeFeed {
@@ -951,24 +952,35 @@ async fn fetch_home_row(
         .collect())
 }
 
+/// In progress: a resume position, or a series whose last episode was finished
+/// (position back to 0) with more episodes after it.
+const CONTINUE_WATCHING_SQL: &str = " AND p.watched = FALSE AND (\
+    p.position_ms > 2000 OR EXISTS (\
+        SELECT 1 FROM episodes cur \
+        JOIN seasons cs ON cs.id = cur.season_id \
+        JOIN seasons ns ON ns.title_id = cs.title_id AND ns.season_number > 0 \
+        JOIN episodes nx ON nx.season_id = ns.id \
+        WHERE cur.id = p.episode_id \
+          AND (ns.season_number, nx.episode_number) > (cs.season_number, cur.episode_number)\
+    ))";
+
 async fn fetch_continue_watching(
     pool: &sqlx::PgPool,
     public_url: &str,
     limit: i64,
     token_id: Uuid,
-    langs: &[String],
 ) -> sqlx::Result<Vec<Title>> {
-    // Mixed movies / series / anime — same row on every home tab.
+    // Mixed movies / series / anime — same row on every home tab. Browse filters
+    // (language lock, release date) don't apply: this is what the user is watching.
     let mut qb = sqlx::QueryBuilder::new("SELECT ");
     qb.push(TITLE_COLUMNS);
     qb.push(
         " FROM titles t JOIN user_progress p ON p.title_id = t.id AND p.token_id = ",
     );
     qb.push_bind(token_id);
-    qb.push(" WHERE p.watched = FALSE AND p.position_ms > 2000");
+    qb.push(" WHERE 1=1");
+    qb.push(CONTINUE_WATCHING_SQL);
     apply_adult_block(&mut qb);
-    apply_released_only(&mut qb);
-    apply_language_filter(&mut qb, langs);
     qb.push(" ORDER BY p.updated_at DESC LIMIT ");
     qb.push_bind(limit);
     let rows: Vec<TitleRow> = qb.build_query_as().fetch_all(pool).await?;

@@ -46,6 +46,28 @@ class DetailsActivity : FragmentActivity() {
     private var playEpisode: Int? = null
     private var playEpisodeId: String? = null
 
+    /** The player saved progress: show it (and the next episode to play) on return. */
+    private var reloadOnReturn = false
+
+    override fun onResume() {
+        super.onResume()
+        if (!reloadOnReturn) return
+        reloadOnReturn = false
+        val id = intent.getStringExtra(EXTRA_ID).orEmpty()
+        val app = application.asTv()
+        lifecycleScope.launch {
+            try {
+                app.awaitWrites()
+                val loaded = app.api.title(id)
+                item = loaded
+                bind(loaded)
+                if (currentFocus == null) findViewById<View>(R.id.btn_play).requestFocus()
+            } catch (e: Exception) {
+                AppLog.i("DetailsActivity", "refresh after player failed: ${e.message}")
+            }
+        }
+    }
+
     override fun onStop() {
         // Left for the trailer app or Home while Play was still looking up
         // sources: don't open a player over whatever is on screen now.
@@ -709,6 +731,7 @@ class DetailsActivity : FragmentActivity() {
                 resumeMs != null && resumeMs > 0 -> resumeMs
                 else -> t.positionMs.coerceAtLeast(0)
             }
+            reloadOnReturn = true
             startActivity(
                 Intent(this, PlayerActivity::class.java)
                     .putExtra(PlayerActivity.EXTRA_TITLE, label)

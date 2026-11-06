@@ -612,6 +612,7 @@ impl Title {
         let mut us = UserState::from(row);
         us.progress_percent = crate::db::title_progress_percent(
             &state.pool,
+            auth.token_id,
             self.id,
             us.episode_id,
             us.position_ms,

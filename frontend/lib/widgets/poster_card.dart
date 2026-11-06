@@ -201,8 +201,10 @@ class _PosterCardState extends ConsumerState<PosterCard> {
   double _progressOf(TitleItem item) {
     final state = item.userState;
     if (state == null || state.watched) return 0;
-    if (state.progressPercent > 0.02) {
-      return state.progressPercent.clamp(0.0, 1.0);
+    // The server's figure covers the whole season for a series, not the episode
+    // playing. Keep a sliver so early progress still shows on the card.
+    if (state.progressPercent > 0) {
+      return state.progressPercent.clamp(0.02, 1.0);
     }
     if (state.positionMs < 2000) return 0;
     final duration = state.durationMs ?? 0;

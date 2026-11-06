@@ -19,9 +19,11 @@ import app.peanutbutter.core.SessionStore
 import app.peanutbutter.core.TorrentClient
 import app.peanutbutter.tv.ui.PairingActivity
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.Executors
 
 class TvApp : Application() {
@@ -45,6 +47,29 @@ class TvApp : Application() {
                 Thread(r, "pb-bg-writes").apply { isDaemon = true }
             }.asCoroutineDispatcher(),
         )
+    }
+
+    private val writeLock = Any()
+    private var lastWrite: Job? = null
+
+    /**
+     * Run server writes strictly one after another. The queue's single thread alone
+     * doesn't do that: a write gives up the thread while it waits on the network.
+     */
+    fun enqueueWrite(write: suspend () -> Unit) {
+        synchronized(writeLock) {
+            val previous = lastWrite
+            lastWrite = backgroundWrites.launch {
+                previous?.join()
+                runCatching { write() }
+            }
+        }
+    }
+
+    /** Wait for queued saves before reading progress back, but never for long. */
+    suspend fun awaitWrites() {
+        val pending = synchronized(writeLock) { lastWrite } ?: return
+        withTimeoutOrNull(3_000L) { pending.join() }
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())

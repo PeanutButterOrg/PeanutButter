@@ -394,6 +394,11 @@ impl Mutation {
             ON CONFLICT (token_id, title_id) DO UPDATE SET
                 watched = EXCLUDED.watched,
                 position_ms = CASE WHEN EXCLUDED.watched THEN 0 ELSE user_progress.position_ms END,
+                -- Unmarked with nothing to resume: don't list it as in progress.
+                episode_id = CASE
+                    WHEN NOT EXCLUDED.watched AND user_progress.position_ms <= 2000 THEN NULL
+                    ELSE user_progress.episode_id
+                END,
                 updated_at = now()
             "#,
         )
@@ -451,8 +456,10 @@ impl Mutation {
                 file_id = COALESCE(EXCLUDED.file_id, user_progress.file_id),
                 position_ms = EXCLUDED.position_ms,
                 duration_ms = COALESCE(EXCLUDED.duration_ms, user_progress.duration_ms),
+                -- A real rewatch (past the first minute) is in progress again.
                 watched = CASE
                     WHEN EXCLUDED.watched THEN TRUE
+                    WHEN EXCLUDED.position_ms > 60000 THEN FALSE
                     ELSE user_progress.watched
                 END,
                 updated_at = now()
