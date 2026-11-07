@@ -109,7 +109,8 @@ class PosterCardPresenter(
             if (title.favorite) dp(root, 3) else 0
         val services = root.findViewById<LinearLayout>(R.id.service_badges)
         services.removeAllViews()
-        title.services.forEachIndexed { i, tag ->
+        // One mark is enough, even when the title is on several services.
+        title.services.take(1).forEachIndexed { i, tag ->
             val badge = ServiceBadges.of(tag)
             services.addView(
                 TextView(root.context).apply {

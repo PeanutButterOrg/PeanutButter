@@ -215,7 +215,7 @@ class _PosterCardState extends ConsumerState<PosterCard> {
 
   /// Liked / watched in one chip styled like the rating chip (same dark
   /// glass, radius and height), so it sits quietly on any poster art.
-  /// On the Trending row it also carries the streaming services' tags.
+  /// On the Trending row it also carries one streaming service's mark.
   Widget _stateChip(UserState? state, List<ServiceTag> services, {required bool compact}) {
     final accent = Theme.of(context).colorScheme.primary;
     final size = compact ? 12.0 : 14.0;
@@ -226,7 +226,8 @@ class _PosterCardState extends ConsumerState<PosterCard> {
         Icon(Icons.favorite_rounded, size: size, color: Colors.white.withValues(alpha: 0.92)),
       if (watched)
         Icon(Icons.check_circle_rounded, size: size, color: accent),
-      for (final s in services)
+      // One mark is enough, even when the title is on several services.
+      for (final s in services.take(1))
         Text(
           s.badge.label,
           style: TextStyle(
@@ -238,7 +239,7 @@ class _PosterCardState extends ConsumerState<PosterCard> {
         ),
     ];
     return Semantics(
-      label: [if (liked) 'Liked', if (watched) 'Watched', ...services.map((s) => s.name)].join(', '),
+      label: [if (liked) 'Liked', if (watched) 'Watched', ...services.take(1).map((s) => s.name)].join(', '),
       child: Container(
         padding: EdgeInsets.symmetric(horizontal: compact ? 5 : 6, vertical: compact ? 3 : 4),
         decoration: BoxDecoration(
