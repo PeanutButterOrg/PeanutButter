@@ -90,6 +90,22 @@
                 android:text="@string/filter_genre"
                 android:textColor="@color/pb_white"
                 android:textSize="12sp" />
+
+            <!-- Trending only, when catalog add-ons supply streaming services. -->
+            <TextView
+                android:id="@+id/filter_service"
+                android:layout_width="wrap_content"
+                android:layout_height="32dp"
+                android:layout_marginStart="6dp"
+                android:background="@drawable/kind_tab_bg"
+                android:focusable="true"
+                android:focusableInTouchMode="true"
+                android:gravity="center"
+                android:paddingHorizontal="10dp"
+                android:text="@string/filter_service"
+                android:textColor="@color/pb_white"
+                android:textSize="12sp"
+                android:visibility="gone" />
         </LinearLayout>
 
         <FrameLayout

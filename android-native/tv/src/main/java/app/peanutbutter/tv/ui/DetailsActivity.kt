@@ -215,6 +215,7 @@ class DetailsActivity : FragmentActivity() {
         updateWatchedFav(t)
         watchedBtn.setOnClickListener { toggleWatched() }
         favBtn.setOnClickListener { toggleFavorite() }
+        bindFollow(t, isSeries)
 
         // Flutter order: cast → trailer → seasons (all visible, page scrolls)
         bindCastAndTrailer(t)
@@ -540,6 +541,53 @@ class DetailsActivity : FragmentActivity() {
                 item = t
                 updateWatchedFav(t)
                 UserStateEdits.setWatched(t.id, t.watched)
+                Toast.makeText(this@DetailsActivity, e.message, Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private var following = false
+
+    /** Series only: "Notify me" of new episodes. Hidden on servers without it. */
+    private fun bindFollow(t: TitleItem, isSeries: Boolean) {
+        val btn = findViewById<ImageButton>(R.id.btn_follow)
+        btn.isVisible = false
+        if (!isSeries) return
+        lifecycleScope.launch {
+            val now = application.asTv().api.isFollowing(t.id) ?: return@launch
+            following = now
+            showFollow()
+            btn.isVisible = true
+            btn.setOnClickListener { toggleFollow(t.id) }
+        }
+    }
+
+    private fun showFollow() {
+        findViewById<ImageButton>(R.id.btn_follow).setImageResource(
+            if (following) R.drawable.ic_notifications else R.drawable.ic_notifications_none,
+        )
+    }
+
+    private fun toggleFollow(titleId: String) {
+        val next = !following
+        following = next
+        showFollow()
+        if (next && android.os.Build.VERSION.SDK_INT >= 33 &&
+            !app.peanutbutter.tv.EpisodeNotifier.canNotify(this)
+        ) {
+            requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 41)
+        }
+        lifecycleScope.launch {
+            try {
+                application.asTv().api.setFollow(titleId, next)
+                Toast.makeText(
+                    this@DetailsActivity,
+                    if (next) R.string.notify_on else R.string.notify_off,
+                    Toast.LENGTH_SHORT,
+                ).show()
+            } catch (e: Exception) {
+                following = !next
+                showFollow()
                 Toast.makeText(this@DetailsActivity, e.message, Toast.LENGTH_SHORT).show()
             }
         }

@@ -44,7 +44,14 @@ impl Query {
             sort,
             SortField::ContinueWatching | SortField::Favorites | SortField::Watched
         );
-        if !personal {
+        // The lists a service filter matches (add-ons name them "HBO Max",
+        // "Max", …; the filter uses the same id as the cards' logos).
+        let service_names = match filter.service.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            Some(id) => Some(service_list_names(&state.pool, id).await?),
+            None => None,
+        };
+        // A service filter shows that service's lists, not TMDB's shelves.
+        if !personal && service_names.is_none() {
             let shelf = match sort {
                 SortField::Trending => Some("trending"),
                 SortField::Popularity => Some("popular"),
@@ -86,6 +93,11 @@ impl Query {
         }
         qb.push(" WHERE 1=1");
         apply_filters(&mut qb, &filter);
+        if let Some(names) = &service_names {
+            qb.push(" AND EXISTS (SELECT 1 FROM addon_catalog_items a WHERE ");
+            push_service_match(&mut qb, names);
+            qb.push(")");
+        }
         if continue_watching {
             qb.push(CONTINUE_WATCHING_SQL);
         } else {
@@ -99,7 +111,15 @@ impl Query {
         }
 
         qb.push(" ORDER BY ");
-        qb.push(order_sql(filter.kind, sort, dir));
+        if let Some(names) = &service_names {
+            // The service list's own order: its best-ranked titles first.
+            qb.push("(SELECT MIN(a.rank) FROM addon_catalog_items a WHERE ");
+            push_service_match(&mut qb, names);
+            qb.push(") ASC, ");
+            qb.push(order_sql(filter.kind, sort, dir));
+        } else {
+            qb.push(order_sql(filter.kind, sort, dir));
+        }
         qb.push(" LIMIT ");
         qb.push_bind(per_page as i64);
         qb.push(" OFFSET ");
@@ -116,6 +136,11 @@ impl Query {
         }
         count_qb.push(" WHERE 1=1");
         apply_filters(&mut count_qb, &filter);
+        if let Some(names) = &service_names {
+            count_qb.push(" AND EXISTS (SELECT 1 FROM addon_catalog_items a WHERE ");
+            push_service_match(&mut count_qb, names);
+            count_qb.push(")");
+        }
         if continue_watching {
             count_qb.push(CONTINUE_WATCHING_SQL);
         } else {
@@ -135,7 +160,7 @@ impl Query {
         let mut items: Vec<Title> =
             rows.into_iter().map(|r| Title::from_row(r, &state.config.public_url)).collect();
         // "See all" on Trending: the same service logos as the home row.
-        if sort == SortField::Trending {
+        if sort == SortField::Trending || service_names.is_some() {
             attach_services(&state.pool, &mut items).await?;
         }
         Ok(TitleConnection {
@@ -346,6 +371,41 @@ impl Query {
             has_next_page: loaded >= per_page || (page * per_page) < estimated_total,
             page: page as i32,
         })
+    }
+
+    /// New episodes of series this device follows that it hasn't shown yet.
+    async fn episode_alerts(
+        &self,
+        ctx: &Context<'_>,
+    ) -> async_graphql::Result<Vec<crate::graphql::types::EpisodeAlert>> {
+        let state = ctx.data::<AppState>()?;
+        let auth = ctx.data::<crate::auth::AuthSession>()?;
+        Ok(crate::follows::pending(&state.pool, auth.token_id)
+            .await?
+            .into_iter()
+            .map(|r| crate::graphql::types::EpisodeAlert::from_row(r, &state.config.public_url))
+            .collect())
+    }
+
+    /// Streaming services with titles of this kind on their catalog add-on lists,
+    /// most titles first: the provider filter on the Trending screens.
+    async fn streaming_services(
+        &self,
+        ctx: &Context<'_>,
+        kind: Option<TitleKind>,
+    ) -> async_graphql::Result<Vec<crate::graphql::types::ServiceTag>> {
+        let state = ctx.data::<AppState>()?;
+        let rows: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT a.service, COUNT(DISTINCT t.id) FROM addon_catalog_items a \
+             JOIN titles t ON t.imdb_id = a.imdb_id \
+               AND a.media = CASE WHEN t.kind = 'movie' THEN 'movie' ELSE 'series' END \
+             WHERE ($1::text IS NULL OR t.kind = $1) \
+             GROUP BY a.service",
+        )
+        .bind(kind.map(|k| k.as_db()))
+        .fetch_all(&state.pool)
+        .await?;
+        Ok(services_by_size(rows))
     }
 
     async fn genres(&self, ctx: &Context<'_>) -> async_graphql::Result<Vec<String>> {
@@ -963,6 +1023,39 @@ async fn fetch_home_row(
         .collect())
 }
 
+/// The catalog list names ("HBO Max", "Max") that a service id ("hbo") covers.
+async fn service_list_names(pool: &sqlx::PgPool, id: &str) -> sqlx::Result<Vec<String>> {
+    let names: Vec<String> = sqlx::query_scalar("SELECT DISTINCT service FROM addon_catalog_items")
+        .fetch_all(pool)
+        .await?;
+    let id = id.to_ascii_lowercase();
+    Ok(names
+        .into_iter()
+        .filter(|n| crate::addon_catalogs::service_id(n) == id)
+        .collect())
+}
+
+/// `a` (addon_catalog_items) holds title `t` on one of these service lists.
+fn push_service_match<'a>(qb: &mut sqlx::QueryBuilder<'a, sqlx::Postgres>, names: &[String]) {
+    qb.push("a.imdb_id = t.imdb_id AND a.media = CASE WHEN t.kind = 'movie' THEN 'movie' ELSE 'series' END AND a.service = ANY(");
+    qb.push_bind(names.to_vec());
+    qb.push(")");
+}
+
+/// One tag per service (lists merged by id), the service with the most titles first.
+fn services_by_size(rows: Vec<(String, i64)>) -> Vec<crate::graphql::types::ServiceTag> {
+    let mut by_id: Vec<(crate::graphql::types::ServiceTag, i64)> = Vec::new();
+    for (name, n) in rows {
+        let id = crate::addon_catalogs::service_id(&name);
+        match by_id.iter_mut().find(|(t, _)| t.id == id) {
+            Some((_, count)) => *count += n,
+            None => by_id.push((crate::graphql::types::ServiceTag { id, name }, n)),
+        }
+    }
+    by_id.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.name.cmp(&b.0.name)));
+    by_id.into_iter().map(|(t, _)| t).collect()
+}
+
 /// Tag each title that's on a catalog add-on list with its services, best-ranked
 /// list first (see `crate::addon_catalogs::tags`).
 async fn attach_services(pool: &sqlx::PgPool, titles: &mut [Title]) -> sqlx::Result<()> {
@@ -1430,6 +1523,17 @@ fn retain_tryable_sources(sources: Vec<StreamSource>) -> Vec<StreamSource> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn services_merge_lists_and_sort_by_size() {
+        let tags = super::services_by_size(vec![
+            ("Netflix".into(), 12),
+            ("HBO Max".into(), 3),
+            ("Max".into(), 5),
+            ("Apple TV+".into(), 7),
+        ]);
+        let ids: Vec<&str> = tags.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, ["netflix", "hbo", "apple"]);
+    }
     use super::*;
 
     #[test]

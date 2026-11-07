@@ -98,6 +98,12 @@ class _CatalogScreenState extends ConsumerState<CatalogScreen> {
             focusNode: tv ? _genre : null,
             onChanged: _setFilter,
           ),
+          CatalogServiceMenu(
+            filter: filter,
+            kind: kind,
+            compact: true,
+            onChanged: _setFilter,
+          ),
         ],
       );
     }

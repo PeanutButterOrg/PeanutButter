@@ -137,6 +137,13 @@
     <string name="filter_any_year">Any year</string>
     <string name="filter_any_rating">Any rating</string>
     <string name="filter_all_genres">All genres</string>
+    <string name="filter_service">Provider</string>
+    <string name="notify_me">Notify me of new episodes</string>
+    <string name="notify_on">You\'ll be notified when a new episode is out</string>
+    <string name="notify_off">New episode notifications off</string>
+    <string name="new_episodes_channel">New episodes</string>
+    <string name="new_episode_title">New episode of %1$s</string>
+    <string name="filter_all_services">All providers</string>
     <string name="sort_value">Sort: %1$s</string>
     <string name="heading_movies">movies</string>
     <string name="heading_series">series</string>

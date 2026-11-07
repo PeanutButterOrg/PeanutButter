@@ -19,6 +19,7 @@ import '../widgets/local_overlay.dart';
 import '../widgets/poster_card.dart';
 import '../widgets/filter_bar.dart';
 import '../widgets/title_meta.dart';
+import '../widgets/episode_alerts.dart';
 import '../widgets/tv_chrome.dart';
 
 class HomeScreen extends ConsumerWidget {
@@ -40,7 +41,8 @@ class HomeScreen extends ConsumerWidget {
       });
     }
 
-    return Scaffold(
+    return EpisodeAlertsListener(
+      child: Scaffold(
       backgroundColor: AppTheme.canvas,
       body: TvNavHost(
         strategies: [
@@ -164,6 +166,7 @@ class HomeScreen extends ConsumerWidget {
         ),
       ),
       ),
+    ),
     );
   }
 }

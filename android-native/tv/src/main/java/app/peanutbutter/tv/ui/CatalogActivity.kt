@@ -41,6 +41,8 @@ class CatalogActivity : androidx.fragment.app.FragmentActivity() {
         findViewById<TextView>(R.id.filter_year).setOnClickListener { pickYear() }
         findViewById<TextView>(R.id.filter_rating).setOnClickListener { pickRating() }
         findViewById<TextView>(R.id.filter_genre).setOnClickListener { pickGenre() }
+        findViewById<TextView>(R.id.filter_service).setOnClickListener { pickService(kind) }
+        if (sort == "TRENDING") showServiceFilterIfAny(kind)
         val downToGrid = View.OnKeyListener { _, keyCode, event ->
             if (event.action == KeyEvent.ACTION_DOWN && keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
                 catalog()?.view?.findViewById<View>(androidx.leanback.R.id.browse_grid)?.requestFocus() == true
@@ -48,7 +50,7 @@ class CatalogActivity : androidx.fragment.app.FragmentActivity() {
                 false
             }
         }
-        listOf(R.id.filter_sort, R.id.filter_year, R.id.filter_rating, R.id.filter_genre).forEach {
+        listOf(R.id.filter_sort, R.id.filter_year, R.id.filter_rating, R.id.filter_genre, R.id.filter_service).forEach {
             findViewById<View>(it).setOnKeyListener(downToGrid)
         }
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
@@ -96,6 +98,12 @@ class CatalogActivity : androidx.fragment.app.FragmentActivity() {
     private fun pickSort(current: String, kind: String?) {
         showChoices(getString(R.string.sort), SORTS.map { it.first to getString(it.second) }) { key ->
             refreshHeading(key, kind)
+            // The Provider chip belongs to Trending only.
+            if (key == "TRENDING") {
+                showServiceFilterIfAny(kind)
+            } else {
+                findViewById<View>(R.id.filter_service).isVisible = false
+            }
             catalog()?.applySort(key)
             findViewById<TextView>(R.id.filter_sort).setOnClickListener { pickSort(key, kind) }
         }
@@ -139,6 +147,26 @@ class CatalogActivity : androidx.fragment.app.FragmentActivity() {
                 findViewById<TextView>(R.id.filter_genre).text =
                     value.ifBlank { getString(R.string.filter_genre) }
                 catalog()?.applyGenre(value.ifBlank { null })
+            }
+        }
+    }
+
+    /** Trending only: the Provider chip shows when catalog add-ons supply services. */
+    private fun showServiceFilterIfAny(kind: String?) {
+        lifecycleScope.launch {
+            val services = runCatching { application.asTv().api.streamingServices(kind) }.getOrDefault(emptyList())
+            findViewById<View>(R.id.filter_service).isVisible = services.isNotEmpty()
+        }
+    }
+
+    private fun pickService(kind: String?) {
+        lifecycleScope.launch {
+            val services = runCatching { application.asTv().api.streamingServices(kind) }.getOrDefault(emptyList())
+            val options = listOf("" to getString(R.string.filter_all_services)) + services.map { it.id to it.name }
+            showChoices(getString(R.string.filter_service), options) { value ->
+                findViewById<TextView>(R.id.filter_service).text =
+                    services.firstOrNull { it.id == value }?.name ?: getString(R.string.filter_service)
+                catalog()?.applyService(value.ifBlank { null })
             }
         }
     }
@@ -215,6 +243,7 @@ class CatalogFragment : VerticalGridSupportFragment() {
     private var year: Int? = null
     private var ratingMin: Double? = null
     private var genre: String? = null
+    private var service: String? = null
     private var page = 1
     private var loading = false
     private var hasNext = true
@@ -279,6 +308,12 @@ class CatalogFragment : VerticalGridSupportFragment() {
     fun applyRating(next: Double?) {
         if (next == ratingMin) return
         ratingMin = next
+        reload()
+    }
+
+    fun applyService(next: String?) {
+        if (next == service) return
+        service = next
         reload()
     }
 
@@ -378,6 +413,8 @@ class CatalogFragment : VerticalGridSupportFragment() {
                     yearMin = year,
                     yearMax = year,
                     ratingMin = ratingMin,
+                    // The Provider chip only shows on Trending.
+                    service = service.takeIf { sortNow == "TRENDING" },
                 )
                 if (gen != loadGen) return@launch
                 result.items.filter { new -> loaded.none { it.id == new.id } }.forEach {

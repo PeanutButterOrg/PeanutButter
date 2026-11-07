@@ -216,6 +216,16 @@ class ApiClient(
         }.orEmpty()
     }
 
+    /** Services the Trending provider filter offers; empty when there are none. */
+    suspend fun streamingServices(kind: String?): List<ServiceTag> = withContext(Dispatchers.IO) {
+        val data = gql(Gql.STREAMING_SERVICES, mapOf("kind" to kind))
+        data.getAsJsonArray("streamingServices")?.mapNotNull { el ->
+            val o = el.asJsonObject
+            val id = o.get("id")?.asString ?: return@mapNotNull null
+            ServiceTag(id, o.get("name")?.asString ?: id)
+        }.orEmpty()
+    }
+
     suspend fun catalog(
         kind: String? = null,
         sort: String = "TRENDING",
@@ -226,6 +236,7 @@ class ApiClient(
         yearMin: Int? = null,
         yearMax: Int? = null,
         ratingMin: Double? = null,
+        service: String? = null,
     ): CatalogPage = withContext(Dispatchers.IO) {
         val vars = mutableMapOf<String, Any?>(
             "sort" to sort,
@@ -238,7 +249,9 @@ class ApiClient(
             "ratingMin" to ratingMin,
         )
         if (kind != null) vars["kind"] = kind
-        val data = gql(Gql.CATALOG, vars)
+        // Only sent when set: servers before 0.3.10 don't know the field.
+        if (service != null) vars["service"] = service
+        val data = gql(if (service != null) Gql.CATALOG_BY_SERVICE else Gql.CATALOG, vars)
         val root = data.getAsJsonObject("catalog")
         CatalogPage(
             items = parseTitles(root.getAsJsonArray("items")),
@@ -498,6 +511,41 @@ class ApiClient(
 
     suspend fun stopStream(sessionId: String) = withContext(Dispatchers.IO) {
         gql(Gql.STOP_STREAM, mapOf("sessionId" to sessionId))
+        Unit
+    }
+
+    /** Null when the server is too old to know about following. */
+    suspend fun isFollowing(titleId: String): Boolean? = withContext(Dispatchers.IO) {
+        runCatching {
+            gql(Gql.FOLLOWING, mapOf("id" to titleId)).getAsJsonObject("title")?.get("following")?.asBoolean
+        }.getOrNull()
+    }
+
+    suspend fun setFollow(titleId: String, follow: Boolean) = withContext(Dispatchers.IO) {
+        gql(Gql.SET_FOLLOW, mapOf("titleId" to titleId, "follow" to follow))
+        Unit
+    }
+
+    /** New episodes of followed series not shown yet; empty on servers without the feature. */
+    suspend fun episodeAlerts(): List<EpisodeAlert> = withContext(Dispatchers.IO) {
+        runCatching {
+            gql(Gql.EPISODE_ALERTS, emptyMap()).getAsJsonArray("episodeAlerts")?.mapNotNull { el ->
+                val o = el.asJsonObject
+                EpisodeAlert(
+                    episodeId = o.get("episodeId")?.asString ?: return@mapNotNull null,
+                    titleId = o.get("titleId")?.asString ?: return@mapNotNull null,
+                    title = o.get("title")?.asString.orEmpty(),
+                    posterUrl = o.get("posterUrl")?.takeIf { !it.isJsonNull }?.asString,
+                    season = o.get("seasonNumber")?.asInt ?: 0,
+                    episode = o.get("episodeNumber")?.asInt ?: 0,
+                    episodeName = o.get("episodeName")?.takeIf { !it.isJsonNull }?.asString,
+                )
+            }.orEmpty()
+        }.getOrDefault(emptyList())
+    }
+
+    suspend fun markAlertsDelivered(episodeIds: List<String>) = withContext(Dispatchers.IO) {
+        if (episodeIds.isNotEmpty()) gql(Gql.MARK_ALERTS_DELIVERED, mapOf("ids" to episodeIds))
         Unit
     }
 

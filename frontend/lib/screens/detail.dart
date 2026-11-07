@@ -19,6 +19,7 @@ import '../widgets/streaming_picker.dart';
 import '../widgets/title_meta.dart';
 import '../tv.dart';
 import '../tv_nav.dart';
+import '../widgets/episode_alerts.dart';
 import '../widgets/tv_chrome.dart';
 import '../window_layout.dart';
 import '../youtube_stream.dart';
@@ -697,6 +698,7 @@ class _DetailHero extends StatelessWidget {
                 ),
               ),
             ),
+            if (item.kind != 'MOVIE') TvFocus(child: FollowButton(titleId: item.id)),
           ],
         ),
       ),

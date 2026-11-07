@@ -172,7 +172,7 @@ class CatalogNotifier extends StateNotifier<CatalogState> {
     try {
       final result = await client.query(
         QueryOptions(
-          document: gql(GET_CATALOG),
+          document: gql(filter.activeService == null ? GET_CATALOG : GET_CATALOG_BY_SERVICE),
           variables: filter.toVariables(page: page, perPage: _catalogPerPage),
           fetchPolicy: FetchPolicy.noCache,
         ),
@@ -300,7 +300,7 @@ class LibraryNotifier extends StateNotifier<CatalogState> {
     try {
       final result = await client.query(
         QueryOptions(
-          document: gql(GET_CATALOG),
+          document: gql(filter.activeService == null ? GET_CATALOG : GET_CATALOG_BY_SERVICE),
           variables: filter.toVariables(page: page, perPage: _catalogPerPage),
           fetchPolicy: FetchPolicy.noCache,
         ),
@@ -529,6 +529,25 @@ final catalogWarmupProvider = FutureProvider<void>((ref) async {
       await ref.read(homeFeedProvider(other).future);
     } catch (_) {}
   }
+});
+
+/// Services the Trending provider filter offers for a kind; empty when none.
+final streamingServicesProvider =
+    FutureProvider.family<List<ServiceTag>, String?>((ref, kind) async {
+  final client = ref.watch(graphQLClientProvider);
+  final result = await client.query(
+    QueryOptions(
+      document: gql(STREAMING_SERVICES),
+      variables: {'kind': kind},
+      fetchPolicy: FetchPolicy.noCache,
+    ),
+  );
+  if (result.hasException) return const [];
+  return [
+    for (final s in (result.data?['streamingServices'] as List? ?? const [])
+        .whereType<Map<String, dynamic>>())
+      ServiceTag(id: s['id'] as String, name: s['name'] as String? ?? s['id'] as String),
+  ];
 });
 
 final genresProvider = FutureProvider<List<String>>((ref) async {

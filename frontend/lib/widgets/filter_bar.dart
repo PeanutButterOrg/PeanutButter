@@ -358,6 +358,51 @@ class CatalogRatingMenu extends StatelessWidget {
   }
 }
 
+/// Trending only: show one streaming service's titles, in its list's order.
+/// Hidden when no catalog add-on supplies services.
+class CatalogServiceMenu extends ConsumerWidget {
+  const CatalogServiceMenu({
+    super.key,
+    required this.filter,
+    required this.kind,
+    required this.onChanged,
+    this.compact = false,
+  });
+
+  final CatalogFilter filter;
+  final String? kind;
+  final ValueChanged<CatalogFilter> onChanged;
+  final bool compact;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    if (filter.sort != 'TRENDING') return const SizedBox.shrink();
+    final services = ref.watch(streamingServicesProvider(kind)).maybeWhen(
+          data: (v) => v,
+          orElse: () => const <ServiceTag>[],
+        );
+    if (services.isEmpty && filter.service == null) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(left: 8),
+      child: AppMenuButton<String>(
+        hint: 'Provider',
+        icon: Icons.live_tv_outlined,
+        compact: compact,
+        value: filter.service ?? 'all',
+        entries: [
+          const AppMenuEntry(value: 'all', label: 'All providers'),
+          ...services.map((s) => AppMenuEntry(value: s.id, label: s.name)),
+        ],
+        onSelected: (value) {
+          onChanged(
+            value == 'all' ? filter.copyWith(clearService: true) : filter.copyWith(service: value),
+          );
+        },
+      ),
+    );
+  }
+}
+
 class CatalogGenreMenu extends ConsumerWidget {
   const CatalogGenreMenu({
     super.key,

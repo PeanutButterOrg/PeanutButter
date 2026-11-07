@@ -238,6 +238,17 @@ data class HomeFeed(
 /** A catalog add-on list a title is on ("Netflix"), tagged on Trending cards. */
 data class ServiceTag(val id: String, val name: String)
 
+/** A new episode of a followed series, shown as a notification. */
+data class EpisodeAlert(
+    val episodeId: String,
+    val titleId: String,
+    val title: String,
+    val posterUrl: String?,
+    val season: Int,
+    val episode: Int,
+    val episodeName: String?,
+)
+
 /**
  * Each service's brand colour (white where the brand is black, so it shows on
  * the dark chip), and a short text mark for services without a logo

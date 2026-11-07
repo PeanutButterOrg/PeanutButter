@@ -379,6 +379,34 @@ impl Mutation {
         })
     }
 
+    /// "Notify me": alerts for this series' episodes that air from now on.
+    async fn set_follow(
+        &self,
+        ctx: &Context<'_>,
+        title_id: Uuid,
+        follow: bool,
+    ) -> async_graphql::Result<MutationResult> {
+        let state = ctx.data::<AppState>()?;
+        let auth = ctx.data::<crate::auth::AuthSession>()?;
+        crate::follows::set_follow(&state.pool, auth.token_id, title_id, follow).await?;
+        Ok(MutationResult {
+            success: true,
+            message: if follow { "following".into() } else { "not following".into() },
+        })
+    }
+
+    /// The app showed these alerts; don't send them again.
+    async fn mark_alerts_delivered(
+        &self,
+        ctx: &Context<'_>,
+        episode_ids: Vec<Uuid>,
+    ) -> async_graphql::Result<MutationResult> {
+        let state = ctx.data::<AppState>()?;
+        let auth = ctx.data::<crate::auth::AuthSession>()?;
+        let n = crate::follows::mark_delivered(&state.pool, auth.token_id, &episode_ids).await?;
+        Ok(MutationResult { success: true, message: format!("{n} delivered") })
+    }
+
     async fn set_watched(
         &self,
         ctx: &Context<'_>,

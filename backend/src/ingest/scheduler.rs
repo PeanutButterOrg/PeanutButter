@@ -49,6 +49,23 @@ pub async fn start(ctx: IngestContext) -> Result<JobScheduler> {
         .await
         .map_err(|e| crate::error::AppError::Internal(format!("add stale job: {e}")))?;
 
+    // New episodes of followed series ("Notify me"), every three hours.
+    let follows = ctx.clone();
+    sched
+        .add(
+            Job::new_async("0 20 */3 * * *", move |_uuid, _lock| {
+                let follows = follows.clone();
+                Box::pin(async move {
+                    if let Err(e) = crate::follows::check(&follows).await {
+                        error!(error = %e, "followed series check failed");
+                    }
+                })
+            })
+            .map_err(|e| crate::error::AppError::Internal(format!("follows cron: {e}")))?,
+        )
+        .await
+        .map_err(|e| crate::error::AppError::Internal(format!("add follows job: {e}")))?;
+
     sched
         .start()
         .await

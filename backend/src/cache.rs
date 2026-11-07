@@ -12,6 +12,8 @@ const PERSONAL_MUTATIONS: &[&str] = &[
     "streamResume",
     "setFavorite",
     "setWatched",
+    "setFollow",
+    "markAlertsDelivered",
     "startStream",
     "stopStream",
 ];

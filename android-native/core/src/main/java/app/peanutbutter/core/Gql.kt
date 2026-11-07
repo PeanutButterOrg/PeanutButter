@@ -174,6 +174,29 @@ mutation StopStream(${'$'}sessionId: String!) {
 }
 """
 
+    /** Separate from [TITLE]: servers before 0.3.10 don't have the field. */
+    const val FOLLOWING = """
+query Following(${'$'}id: UUID!) { title(id: ${'$'}id) { following } }
+"""
+
+    const val SET_FOLLOW = """
+mutation SetFollow(${'$'}titleId: UUID!, ${'$'}follow: Boolean!) {
+  setFollow(titleId: ${'$'}titleId, follow: ${'$'}follow) { success }
+}
+"""
+
+    const val EPISODE_ALERTS = """
+query EpisodeAlerts {
+  episodeAlerts { episodeId titleId title posterUrl seasonNumber episodeNumber episodeName }
+}
+"""
+
+    const val MARK_ALERTS_DELIVERED = """
+mutation MarkAlertsDelivered(${'$'}ids: [UUID!]!) {
+  markAlertsDelivered(episodeIds: ${'$'}ids) { success }
+}
+"""
+
     const val SET_FAVORITE = """
 mutation SetFavorite(${'$'}titleId: UUID!, ${'$'}favorite: Boolean!) {
   setFavorite(titleId: ${'$'}titleId, favorite: ${'$'}favorite) { success }
@@ -205,6 +228,19 @@ query Search(${'$'}q: String!, ${'$'}kind: TitleKind) {
       userState { positionMs durationMs progressPercent watched favorite } }
   }
 }
+"""
+
+    /** [CATALOG] with the provider filter; sent only when one is picked, since
+     *  servers before 0.3.10 don't know the field. */
+    val CATALOG_BY_SERVICE: String by lazy {
+        CATALOG
+            .replace("${'$'}ratingMin: Float\n)", "${'$'}ratingMin: Float,\n  ${'$'}service: String\n)")
+            .replace("ratingMin: ${'$'}ratingMin }", "ratingMin: ${'$'}ratingMin, service: ${'$'}service }")
+            .also { check(it.contains("service: ${'$'}service")) }
+    }
+
+    const val STREAMING_SERVICES = """
+query StreamingServices(${'$'}kind: TitleKind) { streamingServices(kind: ${'$'}kind) { id name } }
 """
 
     const val CATALOG = """

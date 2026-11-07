@@ -5,6 +5,7 @@ mod cache;
 mod config;
 mod content_filter;
 mod db;
+mod follows;
 mod error;
 mod graphql;
 mod ingest;
@@ -328,6 +329,7 @@ async fn graphql_handler(
             || q.contains("testjackett")
             || q.contains("jackettcatalog")
             || q.contains("serverinfo")
+            || q.contains("episodealerts")
     };
     let cacheable = kind == RequestKind::Query && !skip_cache;
     if cacheable {

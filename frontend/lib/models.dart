@@ -939,10 +939,17 @@ class CatalogFilter {
     this.sort = 'POPULARITY',
     this.dir = 'DESC',
     this.railLocked = false,
+    this.service,
   });
 
   final String? kind;
   final String? genre;
+  /// Trending only: a streaming service id ("netflix", "hbo", …).
+  final String? service;
+
+  /// [service] when it applies: the provider menu only shows on Trending, so a
+  /// pick left over from before a sort change must not filter silently.
+  String? get activeService => sort == 'TRENDING' ? service : null;
   final int yearMin;
   final int? yearMax;
   final double ratingMin;
@@ -977,11 +984,14 @@ class CatalogFilter {
     String? sort,
     String? dir,
     bool? railLocked,
+    String? service,
     bool clearKind = false,
     bool clearGenre = false,
     bool clearYearMax = false,
+    bool clearService = false,
   }) {
     return CatalogFilter(
+      service: clearService ? null : (service ?? this.service),
       kind: clearKind ? null : (kind ?? this.kind),
       genre: clearGenre ? null : (genre ?? this.genre),
       yearMin: yearMin ?? this.yearMin,
@@ -1004,6 +1014,7 @@ class CatalogFilter {
       'dir': dir,
       'page': page,
       'perPage': perPage,
+      if (activeService != null) 'service': activeService,
     };
   }
 }

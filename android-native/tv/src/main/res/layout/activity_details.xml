@@ -192,6 +192,20 @@
                             android:padding="12dp"
                             android:src="@drawable/ic_favorite_border"
                             android:tint="@color/pb_white" />
+
+                        <!-- Series only: notify me of new episodes. -->
+                        <ImageButton
+                            android:id="@+id/btn_follow"
+                            android:layout_width="48dp"
+                            android:layout_height="48dp"
+                            android:layout_marginStart="8dp"
+                            android:background="@drawable/header_icon_bg"
+                            android:contentDescription="@string/notify_me"
+                            android:focusable="true"
+                            android:padding="12dp"
+                            android:src="@drawable/ic_notifications_none"
+                            android:tint="@color/pb_white"
+                            android:visibility="gone" />
                     </LinearLayout>
                 </LinearLayout>
             </FrameLayout>

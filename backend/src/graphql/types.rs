@@ -88,6 +88,9 @@ pub struct TitleFilter {
     pub year_min: Option<i32>,
     pub year_max: Option<i32>,
     pub rating_min: Option<f64>,
+    /// Only titles on this streaming service's catalog lists (a [ServiceTag] id:
+    /// "netflix", "hbo", …), in that list's order.
+    pub service: Option<String>,
 }
 
 #[derive(InputObject, Clone, Debug, Default)]
@@ -449,6 +452,13 @@ impl Title {
 
 #[ComplexObject]
 impl Title {
+    /// This device asked to be notified of new episodes ("Notify me").
+    async fn following(&self, ctx: &Context<'_>) -> async_graphql::Result<bool> {
+        let state = ctx.data::<AppState>()?;
+        let auth = ctx.data::<crate::auth::AuthSession>()?;
+        Ok(crate::follows::is_following(&state.pool, auth.token_id, self.id).await?)
+    }
+
     async fn ratings(&self, ctx: &Context<'_>) -> async_graphql::Result<Option<Ratings>> {
         let row = loader(ctx)?
             .load_one(super::loaders::RatingsKey(self.id))
@@ -805,6 +815,34 @@ pub struct SearchResult {
     pub total_count: i64,
     pub has_next_page: bool,
     pub page: i32,
+}
+
+/// A new episode of a followed series, for the app to show as a notification.
+#[derive(SimpleObject, Clone, Debug)]
+pub struct EpisodeAlert {
+    pub episode_id: Uuid,
+    pub title_id: Uuid,
+    pub title: String,
+    pub poster_url: Option<String>,
+    pub season_number: i32,
+    pub episode_number: i32,
+    pub episode_name: Option<String>,
+    pub air_date: Option<NaiveDate>,
+}
+
+impl EpisodeAlert {
+    pub fn from_row(r: crate::follows::AlertRow, public_url: &str) -> Self {
+        Self {
+            episode_id: r.episode_id,
+            title_id: r.title_id,
+            title: r.title,
+            poster_url: absolute_image_url(public_url, &r.poster_path),
+            season_number: r.season_number,
+            episode_number: r.episode_number,
+            episode_name: r.episode_name,
+            air_date: r.air_date,
+        }
+    }
 }
 
 #[derive(SimpleObject, Clone, Debug)]

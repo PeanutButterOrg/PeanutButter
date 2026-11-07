@@ -20,6 +20,19 @@ const String titleFields = r'''
   genres
 ''';
 
+/// [GET_CATALOG] with the provider filter. Sent only when one is picked:
+/// servers before 0.3.10 reject the unknown field.
+final String GET_CATALOG_BY_SERVICE = GET_CATALOG
+    .replaceFirst('  \$ratingMin: Float\n', '  \$ratingMin: Float\n  \$service: String\n')
+    .replaceFirst('      ratingMin: \$ratingMin\n', '      ratingMin: \$ratingMin\n      service: \$service\n');
+
+/// Streaming services the Trending provider filter offers.
+const String STREAMING_SERVICES = r'''
+query StreamingServices($kind: TitleKind) {
+  streamingServices(kind: $kind) { id name }
+}
+''';
+
 const String GET_CATALOG = r'''
 query GetCatalog(
   $kind: TitleKind
@@ -350,6 +363,29 @@ mutation DeleteTitle($id: UUID!) {
     success
     message
   }
+}
+''';
+
+/// Separate from the title query: servers before 0.3.10 don't have the field.
+const String FOLLOWING = r'''
+query Following($id: UUID!) { title(id: $id) { following } }
+''';
+
+const String SET_FOLLOW = r'''
+mutation SetFollow($titleId: UUID!, $follow: Boolean!) {
+  setFollow(titleId: $titleId, follow: $follow) { success }
+}
+''';
+
+const String EPISODE_ALERTS = r'''
+query EpisodeAlerts {
+  episodeAlerts { episodeId titleId title seasonNumber episodeNumber episodeName }
+}
+''';
+
+const String MARK_ALERTS_DELIVERED = r'''
+mutation MarkAlertsDelivered($ids: [UUID!]!) {
+  markAlertsDelivered(episodeIds: $ids) { success }
 }
 ''';
 

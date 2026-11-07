@@ -63,6 +63,8 @@ class MainActivity : FragmentActivity() {
 
     override fun onResume() {
         super.onResume()
+        // New episodes of followed series, as notifications.
+        lifecycleScope.launch { runCatching { app.peanutbutter.tv.EpisodeNotifier.deliver(this@MainActivity) } }
         if (refreshOnResume) {
             // Keep shelves + focus — only refresh Continue watching in the background.
             softRefreshContinueWatching()
