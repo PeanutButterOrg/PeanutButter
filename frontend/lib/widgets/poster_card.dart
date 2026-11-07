@@ -162,16 +162,13 @@ class _PosterCardState extends ConsumerState<PosterCard> {
                     const SizedBox(width: 4),
                     _stateChip(item.userState!, compact: compact),
                   ],
+                  // The streaming service's logo in a chip of its own, after liked / watched.
+                  if (item.services.isNotEmpty) ...[
+                    const SizedBox(width: 4),
+                    _serviceChip(item.services.first, compact: compact),
+                  ],
                 ],
               ),
-              // The streaming service's logo in a chip of its own, under liked / watched.
-              if (item.services.isNotEmpty) ...[
-                const SizedBox(height: 4),
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: _serviceChip(item.services.first, compact: compact),
-                ),
-              ],
               const Spacer(),
               Text(
                 item.title,

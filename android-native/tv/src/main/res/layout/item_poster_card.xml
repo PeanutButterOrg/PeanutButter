@@ -81,15 +81,15 @@
                 android:textStyle="bold" />
         </LinearLayout>
 
-        <!-- Top-right column: liked / watched chip, then the streaming service's
+        <!-- Top-right row: liked / watched chip, then the streaming service's
              logo in a chip of its own. Both styled like the score chip. -->
         <LinearLayout
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_gravity="top|end"
             android:layout_margin="6dp"
-            android:gravity="end"
-            android:orientation="vertical">
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
 
         <LinearLayout
             android:id="@+id/state_chip"
@@ -130,7 +130,7 @@
             android:id="@+id/service_badges"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginTop="4dp"
+            android:layout_marginStart="4dp"
             android:background="@drawable/badge_score"
             android:gravity="center_vertical"
             android:orientation="horizontal"
