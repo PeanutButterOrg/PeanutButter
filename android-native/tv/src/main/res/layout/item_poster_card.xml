@@ -94,14 +94,12 @@
         <LinearLayout
             android:id="@+id/state_chip"
             android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
+            android:layout_height="24dp"
             android:background="@drawable/badge_score"
-            android:gravity="center_vertical"
+            android:gravity="center"
             android:orientation="horizontal"
             android:paddingStart="5dp"
-            android:paddingTop="3dp"
             android:paddingEnd="5dp"
-            android:paddingBottom="3dp"
             android:visibility="gone">
 
             <ImageView
@@ -129,15 +127,13 @@
         <LinearLayout
             android:id="@+id/service_badges"
             android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
+            android:layout_height="24dp"
             android:layout_marginStart="4dp"
             android:background="@drawable/badge_score"
-            android:gravity="center_vertical"
+            android:gravity="center"
             android:orientation="horizontal"
             android:paddingStart="5dp"
-            android:paddingTop="3dp"
             android:paddingEnd="5dp"
-            android:paddingBottom="3dp"
             android:visibility="gone" />
         </LinearLayout>
 

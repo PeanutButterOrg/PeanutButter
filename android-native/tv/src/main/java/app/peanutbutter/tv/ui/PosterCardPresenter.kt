@@ -118,7 +118,11 @@ class PosterCardPresenter(
                 ImageView(root.context).apply {
                     setImageResource(logo)
                     imageTintList = android.content.res.ColorStateList.valueOf(badge.color)
-                    layoutParams = LinearLayout.LayoutParams(dp(root, 16), dp(root, 16))
+                    // Drawable is cropped to the logo and sized for one shared height.
+                    layoutParams = LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                    )
                 }
             } else {
                 TextView(root.context).apply {

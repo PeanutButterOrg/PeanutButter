@@ -229,10 +229,16 @@ class _PosterCardState extends ConsumerState<PosterCard> {
           ? '<path fill="#$hex" d="$logo"/>'
           : '<path fill="none" stroke="#$hex" stroke-width="2" stroke-linecap="round" '
               'stroke-linejoin="round" d="$outline"/>';
+      // Cropped to the logo's own bounds: every service at the same height,
+      // wide wordmarks wider (up to a cap) instead of tiny in a square.
+      final b = serviceLogoBounds[s.id] ?? const [0.0, 0.0, 24.0, 24.0];
+      final maxWidth = size * 2.25;
+      final height = (maxWidth * b[3] / b[2]).clamp(0.0, size).toDouble();
+      final width = height * b[2] / b[3];
       return SvgPicture.string(
-        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">$path</svg>',
-        width: size,
-        height: size,
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="${b[0]} ${b[1]} ${b[2]} ${b[3]}">$path</svg>',
+        width: width,
+        height: height,
       );
     }
     return Text(
@@ -285,9 +291,12 @@ class _PosterCardState extends ConsumerState<PosterCard> {
     );
   }
 
+  /// One height for every chip (liked / watched, each service), contents centred.
   Widget _glassChip({required Widget child, required bool compact}) {
     return Container(
-      padding: EdgeInsets.symmetric(horizontal: compact ? 5 : 6, vertical: compact ? 3 : 4),
+      height: compact ? 22 : 26,
+      alignment: Alignment.center,
+      padding: EdgeInsets.symmetric(horizontal: compact ? 5 : 6),
       decoration: BoxDecoration(
         color: Colors.black.withValues(alpha: 0.72),
         borderRadius: BorderRadius.circular(compact ? 6 : 8),

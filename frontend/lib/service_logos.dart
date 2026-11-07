@@ -18,3 +18,18 @@ const Map<String, String> serviceLogoPaths = {
 const Map<String, String> serviceLogoStrokePaths = {
   'disney': 'M19,3V7m2-2H17M6.69,9L8.69,21M3,6s12.29-2,13.91,6.77c1.09,5.93-6.58,6.7-9.48,5.89S3,16.06,3,14.06C3,11,8.54,9.45,12,12',
 };
+
+/// Each logo's own bounds in its 24-unit grid (x, y, width, height), measured
+/// so every service can be drawn at the same height and centred. Wide wordmarks
+/// take more width, up to a cap.
+const Map<String, List<double>> serviceLogoBounds = {
+  'netflix': [5.398, 0, 13.204, 24],
+  'hbo': [0, 7.058, 24, 9.884],
+  'apple': [0, 6.124, 24, 11.752],
+  'paramount': [0, 2.437, 24, 19.126],
+  'crunchyroll': [0, 0, 24, 24],
+  'mubi': [0, 0.033, 24, 23.935],
+  'starz': [0, 9.283, 24, 5.434],
+  'showtime': [0, 0, 24, 24],
+  'disney': [2, 2, 20, 20],
+};
