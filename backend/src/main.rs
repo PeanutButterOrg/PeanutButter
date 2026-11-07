@@ -1,3 +1,4 @@
+mod addon_catalogs;
 mod admin;
 mod auth;
 mod cache;
@@ -16,6 +17,7 @@ mod search;
 mod stream;
 mod subtitles;
 mod providers;
+mod sources;
 mod server_update;
 mod torrent_links;
 mod trackers;
@@ -147,6 +149,8 @@ async fn main() -> Result<()> {
 
     let ingest = IngestContext::from(&app_state);
     let _scheduler = ingest::scheduler::start(ingest.clone()).await?;
+    // Catalog add-on lists for the Trending row (refreshed with trending).
+    addon_catalogs::spawn_sync(ingest.clone());
     let _watcher = media::scanner::start_watcher(pool.clone(), config.clone(), search.clone())?;
 
     // Remove explicit titles stored before the keyword check existed

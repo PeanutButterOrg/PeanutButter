@@ -79,6 +79,8 @@ class PlayerScreen extends ConsumerStatefulWidget {
     this.sessionId,
     this.magnet,
     this.localTorrent = false,
+    this.directStream = false,
+    this.httpHeaders = const {},
     this.streamFileIndex,
     this.fileEpisode,
     this.listedSeeders = 0,
@@ -105,6 +107,10 @@ class PlayerScreen extends ConsumerStatefulWidget {
   final String? sessionId;
   final String? magnet;
   final bool localTorrent;
+  /// A direct link from a Stremio add-on ([playbackUrl]), played as is with
+  /// [httpHeaders]: no torrent, no server session, and never this device's key.
+  final bool directStream;
+  final Map<String, String> httpHeaders;
   /// Explicit file inside a multi-file torrent / season pack.
   final int? streamFileIndex;
   /// The episode number releases use when the catalog numbers it differently.
@@ -295,7 +301,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     // races go_router rebuilds on Android TV (red "UI error" screen).
     playbackSessionActive = true;
     _client = ref.read(graphQLClientProvider);
-    _url = _rewriteMediaUrl(widget.playbackUrl);
+    // An add-on's direct link is never pointed at this server (its path may
+    // well start with /stream/ too).
+    _url = widget.directStream ? widget.playbackUrl : _rewriteMediaUrl(widget.playbackUrl);
     _fileId = widget.fileId;
     _seekCtl = StreamSeekController(
       settle: const Duration(milliseconds: 800),
@@ -1060,7 +1068,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
 
     unawaited(_saveProgress(complete: true));
     // Streams with a next episode: show Play Next for 30s, then exit if unused.
-    if (widget.isStream && _nextEpisode != null && !_playNextDismissed) {
+    if ((widget.isStream || widget.directStream) && _nextEpisode != null && !_playNextDismissed) {
       _armPlayNextPrompt(force: true);
       return;
     }
@@ -2131,6 +2139,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
               'sessionId': s.session.id,
               'magnet': s.magnet,
               'localTorrent': s.localTorrent,
+              ...s.routeExtras,
               'listedSeeders': s.session.seeders,
               'listedPeers': s.session.peers,
               'streamFileIndex': s.fileIndex,
@@ -2173,6 +2182,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
           'sessionId': started.session.id,
           'magnet': started.magnet,
           'localTorrent': started.localTorrent,
+          ...started.routeExtras,
           'listedSeeders': started.session.seeders,
           'listedPeers': started.session.peers,
           'streamFileIndex': started.fileIndex,
@@ -2363,7 +2373,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         ),
       );
       final sessionId = widget.sessionId;
-      if (widget.isStream && sessionId != null) {
+      // Direct links are bookmarked too (the link in the magnet field), so
+      // Resume replays the same one.
+      if ((widget.isStream || widget.directStream) && sessionId != null) {
         await client.mutate(
           MutationOptions(
             document: gql(STREAM_RESUME),
@@ -2851,9 +2863,13 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         url.contains('youtube.com');
     final local = url.contains('127.0.0.1') || url.contains('localhost') || url.contains('[::1]');
     final token = ref.read(settingsProvider).apiToken;
+    final direct = widget.directStream && url == widget.playbackUrl;
     final headers = isYoutube
         ? youtubeStreamHeaders
-        : (local ? const <String, String>{} : mediaAuthHeaders(token));
+        // An add-on's link goes to its own host: its headers only, never our key.
+        : direct
+            ? widget.httpHeaders
+            : (local ? const <String, String>{} : mediaAuthHeaders(token));
     final native = _player?.platform;
     if (native is NativePlayer) {
       // Clear any leftover external-audio binding from older builds.

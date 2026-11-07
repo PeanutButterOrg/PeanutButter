@@ -28,6 +28,7 @@ class TitleItem {
     this.videoCodec,
     this.audioCodec,
     this.container,
+    this.services = const [],
   });
 
   final String id;
@@ -56,6 +57,8 @@ class TitleItem {
   final String? videoCodec;
   final String? audioCodec;
   final String? container;
+  /// Streaming-service lists it's on ('Netflix', …); only on the home Trending row.
+  final List<ServiceTag> services;
 
   int? get rtScore => ratings?.rtScore;
 
@@ -214,6 +217,11 @@ class TitleItem {
       videoCodec: json['videoCodec'] as String?,
       audioCodec: json['audioCodec'] as String?,
       container: json['container'] as String?,
+      services: [
+        for (final s in (json['services'] as List? ?? const []).whereType<Map<String, dynamic>>())
+          if ((s['id'] as String? ?? '').isNotEmpty)
+            ServiceTag(id: s['id'] as String, name: s['name'] as String? ?? s['id'] as String),
+      ],
     );
   }
 
@@ -245,7 +253,43 @@ class TitleItem {
       videoCodec: videoCodec,
       audioCodec: audioCodec,
       container: container,
+      services: services,
     );
+  }
+}
+
+/// A catalog add-on list a title is on ('Netflix'), tagged on Trending cards.
+class ServiceTag {
+  const ServiceTag({required this.id, required this.name});
+
+  final String id;
+  final String name;
+
+  /// Short text mark in the service's colour (ARGB), not its logo. Same
+  /// table as the TV app's `ServiceBadges`.
+  ({String label, int color}) get badge {
+    const known = <String, ({String label, int color})>{
+      'netflix': (label: 'N', color: 0xFFE50914),
+      'hbo': (label: 'HBO', color: 0xFFA66BFF),
+      'disney': (label: 'D+', color: 0xFF5B8CFF),
+      'prime': (label: 'prime', color: 0xFF1FB6F0),
+      'apple': (label: 'tv+', color: 0xFFFFFFFF),
+      'hulu': (label: 'hulu', color: 0xFF1CE783),
+      'paramount': (label: 'P+', color: 0xFF4D8DFF),
+      'peacock': (label: 'P', color: 0xFFFFD23F),
+      'crunchyroll': (label: 'CR', color: 0xFFF47521),
+      'hotstar': (label: 'HS', color: 0xFF3D9BFF),
+      'zee5': (label: 'Z5', color: 0xFFB46CFF),
+      'sonyliv': (label: 'SL', color: 0xFFFFFFFF),
+      'mubi': (label: 'MUBI', color: 0xFFFFFFFF),
+      'starz': (label: 'STARZ', color: 0xFFFFFFFF),
+      'showtime': (label: 'SHO', color: 0xFFFF3B3B),
+    };
+    final hit = known[id];
+    if (hit != null) return hit;
+    final letters = name.replaceAll(RegExp(r'[^A-Za-z0-9]'), '');
+    final short = letters.length > 3 ? letters.substring(0, 3) : letters;
+    return (label: short.isEmpty ? '?' : short.toUpperCase(), color: 0xFFFFFFFF);
   }
 }
 
@@ -389,10 +433,16 @@ class StreamSource {
     required this.tracker,
     required this.indexer,
     this.language = '',
+    this.kind = 'torrent',
+    this.url = '',
+    this.headers = const {},
+    this.score = 0,
+    this.providers = const [],
   });
 
   final String id;
   final String title;
+  /// Empty for [isHttp] results.
   final String magnet;
   final int seeders;
   final int peers;
@@ -402,6 +452,23 @@ class StreamSource {
   final String tracker;
   final String indexer;
   final String language;
+  /// 'torrent' (played on this device with libtorrent) or 'http' (a direct
+  /// link from a Stremio add-on, played as is).
+  final String kind;
+  /// Direct video URL when [isHttp].
+  final String url;
+  /// Headers the player must send with [url] (Stremio proxyHeaders).
+  final Map<String, String> headers;
+  /// Server rank, higher is better. The server is the only place that ranks,
+  /// so every app shows the same order.
+  final int score;
+  /// Every source that returned this result ('Jackett', 'Torrentio', …).
+  final List<String> providers;
+
+  bool get isHttp => kind == 'http' && url.trim().isNotEmpty;
+
+  /// Same result across searches: the magnet (info hash) or the URL.
+  String get key => isHttp ? url.trim() : (magnet.trim().isNotEmpty ? magnet.trim() : id);
 
   factory StreamSource.fromJson(Map<String, dynamic> json) {
     return StreamSource(
@@ -416,8 +483,27 @@ class StreamSource {
       tracker: json['tracker'] as String? ?? '',
       indexer: json['indexer'] as String? ?? '',
       language: json['language'] as String? ?? '',
+      kind: json['kind'] as String? ?? 'torrent',
+      url: json['url'] as String? ?? '',
+      headers: {
+        for (final h in (json['headers'] as List? ?? const []).whereType<Map<String, dynamic>>())
+          if ((h['name'] as String? ?? '').isNotEmpty) h['name'] as String: h['value'] as String? ?? '',
+      },
+      score: json['score'] as int? ?? 0,
+      providers: (json['providers'] as List? ?? const []).whereType<String>().toList(),
     );
   }
+}
+
+/// Best first by the server's score; stable, so equal scores keep their order.
+/// Used when the app merges several server lists (one per language).
+List<StreamSource> rankByServerScore(Iterable<StreamSource> sources) {
+  final indexed = sources.toList().asMap().entries.toList()
+    ..sort((a, b) {
+      final byScore = b.value.score.compareTo(a.value.score);
+      return byScore != 0 ? byScore : a.key.compareTo(b.key);
+    });
+  return [for (final e in indexed) e.value];
 }
 
 class StreamSession {

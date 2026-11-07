@@ -35,6 +35,13 @@ class TvPlayback(
 ) : PlaybackEngine {
 
     private val appContext = context.applicationContext
+    /** Shared by every player built here; [open] sets per-stream headers on it. */
+    private val httpFactory = DefaultHttpDataSource.Factory()
+        .setAllowCrossProtocolRedirects(true)
+        .setConnectTimeoutMs(8_000)
+        // Piece waits on large torrents can exceed 20s — don't kill the pipe early.
+        .setReadTimeoutMs(60_000)
+        .setUserAgent(DEFAULT_USER_AGENT)
     private var exo: ExoPlayer = buildPlayer(preferSoftware = false)
     private var software = false
     private var surfaceView: SurfaceView? = null
@@ -181,7 +188,11 @@ class TvPlayback(
         if (view != null) exo.setVideoSurfaceView(view) else exo.clearVideoSurface()
     }
 
-    override fun open(url: String, resumeMs: Long, preferSoftware: Boolean) {
+    override fun open(url: String, resumeMs: Long, preferSoftware: Boolean, headers: Map<String, String>) {
+        // Set before the media source is built: data sources read them when created.
+        val agent = headers.entries.firstOrNull { it.key.equals("User-Agent", true) }?.value
+        httpFactory.setUserAgent(agent ?: DEFAULT_USER_AGENT)
+        httpFactory.setDefaultRequestProperties(headers.filterKeys { !it.equals("User-Agent", true) })
         if (preferSoftware != software) {
             val keep = surfaceView
             releasePlayerOnly()
@@ -379,12 +390,7 @@ class TvPlayback(
             .setTargetBufferBytes(bufferBytes)
             .setPrioritizeTimeOverSizeThresholds(false)
             .build()
-        val http = DefaultHttpDataSource.Factory()
-            .setAllowCrossProtocolRedirects(true)
-            .setConnectTimeoutMs(8_000)
-            // Piece waits on large torrents can exceed 20s — don't kill the pipe early.
-            .setReadTimeoutMs(60_000)
-            .setUserAgent("PeanutButterTV/1.0")
+        val http = httpFactory
         val extractors = DefaultExtractorsFactory()
             // CBR seeking scans from byte 0 → resume and forces 10–20% re-download.
             // Rely on MP4/MKV indexes + HTTP Range at the playhead instead.
@@ -486,6 +492,7 @@ class TvPlayback(
 
     companion object {
         private const val TAG = "TvPlayback"
+        private const val DEFAULT_USER_AGENT = "PeanutButterTV/1.0"
         /** Fraction of view height reserved below captions (idle / chrome up). */
         private const val SUBTITLE_PAD_IDLE = 0.10f
         private const val SUBTITLE_PAD_CHROME = 0.22f

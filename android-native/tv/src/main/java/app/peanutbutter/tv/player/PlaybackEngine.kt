@@ -39,7 +39,11 @@ interface PlaybackEngine {
     fun bindSubtitles(view: SubtitleView?)
     fun attachTexture(view: TextureView?) {}
     fun attachSurface(view: SurfaceView?) {}
-    fun open(url: String, resumeMs: Long, preferSoftware: Boolean)
+    /**
+     * [headers] are sent with every request for [url] (direct links from
+     * Stremio add-ons that need a User-Agent / Referer); empty for everything else.
+     */
+    fun open(url: String, resumeMs: Long, preferSoftware: Boolean, headers: Map<String, String> = emptyMap())
     fun play()
     fun pause()
     fun stop()

@@ -18,7 +18,6 @@ pub struct AdminForm {
     pub password: Option<String>,
     pub name: Option<String>,
     pub id: Option<String>,
-    pub jackett_enabled: Option<String>,
     pub jackett_url: Option<String>,
     pub jackett_api_key: Option<String>,
     pub streaming_resolution: Option<String>,
@@ -27,9 +26,8 @@ pub struct AdminForm {
     pub omdb_api_key: Option<String>,
     pub opensubtitles_api_key: Option<String>,
     pub wyzie_api_key: Option<String>,
-    /// Fallback torrent sources (Stremio add-ons).
+    /// Stremio add-on manifest URL to install.
     pub provider_url: Option<String>,
-    pub fallback_min_seeders: Option<String>,
     /// Console "Update automatically" switch for the server itself.
     pub server_auto: Option<String>,
     /// Language checkboxes use unique names (`lang_en`, `lang_hi`, …) so
@@ -863,18 +861,9 @@ pub async fn action(
                 );
             }
         }
-        "save_fallback" => {
+        "toggle_jackett" => {
             tab = Some("streaming");
-            let min = form
-                .fallback_min_seeders
-                .as_deref()
-                .and_then(|v| v.trim().parse::<i32>().ok())
-                .unwrap_or(5);
-            crate::providers::set_min_seeders(&state.app.pool, min).await?;
-            notice = Some(format!(
-                "Saved. With Jackett on, add-ons are asked when it has no torrent with {} or more seeders.",
-                min.clamp(1, 500)
-            ));
+            notice = Some(toggle_jackett(&state).await?);
         }
         "add_provider" => {
             tab = Some("streaming");
@@ -883,7 +872,15 @@ pub async fn action(
                 "Paste the add-on's manifest URL first.".into()
             } else {
                 match crate::providers::add(&state.app.pool, &state.app.http, url).await {
-                    Ok(name) => format!("Installed {name}. Apps can now find torrents through it."),
+                    Ok(name) => {
+                        crate::addon_catalogs::spawn_sync(crate::ingest::IngestContext::from(&state.app));
+                        let installed = crate::providers::snapshot().addons.into_iter().find(|a| a.name == name);
+                        match installed {
+                            Some(a) if !a.streams => format!("Installed {name}. Its lists are mixed into the Trending row within a few minutes."),
+                            Some(a) if !a.catalogs.is_empty() => format!("Installed {name}: a stream source, and its lists are mixed into Trending."),
+                            _ => format!("Installed {name}. Apps can now find streams through it."),
+                        }
+                    }
                     Err(e) => e.to_string(),
                 }
             });
@@ -892,16 +889,18 @@ pub async fn action(
             tab = Some("streaming");
             let id = form.id.as_deref().unwrap_or("");
             notice = Some(match crate::providers::toggle(&state.app.pool, id).await {
-                Ok(true) => "Source enabled.".into(),
-                Ok(false) => "Source disabled.".into(),
+                Ok(true) => "Add-on enabled.".into(),
+                Ok(false) => "Add-on disabled.".into(),
                 Err(e) => e.to_string(),
             });
+            crate::addon_catalogs::spawn_sync(crate::ingest::IngestContext::from(&state.app));
         }
         "remove_provider" => {
             tab = Some("streaming");
             let id = form.id.as_deref().unwrap_or("");
             crate::providers::remove(&state.app.pool, id).await?;
-            notice = Some("Source removed.".into());
+            crate::addon_catalogs::spawn_sync(crate::ingest::IngestContext::from(&state.app));
+            notice = Some("Add-on removed.".into());
         }
         "server_update_now" => {
             tab = Some("settings");
@@ -1038,8 +1037,14 @@ async fn logout(state: &HttpState, headers: &HeaderMap) -> Result<Response, AppE
 }
 
 async fn save_jackett(state: &HttpState, form: &AdminForm) -> Result<String, AppError> {
-    let enabled = form.jackett_enabled.as_deref() == Some("on")
-        || form.jackett_enabled.as_deref() == Some("true");
+    // On / off is the Jackett row in the add-on list (toggle_jackett). Saving
+    // a URL and key for the first time switches it on.
+    let live = &state.app.config.live;
+    let has_key = form.jackett_api_key.as_deref().is_some_and(|k| !k.trim().is_empty())
+        || live.jackett_api_key().is_some_and(|k| !k.is_empty());
+    let has_url = form.jackett_url.as_deref().is_some_and(|u| !u.trim().is_empty())
+        || live.jackett_url().is_some_and(|u| !u.is_empty());
+    let enabled = live.jackett_enabled() || (!live.jackett_configured() && has_key && has_url);
     let typed_url = form
         .jackett_url
         .as_deref()
@@ -1085,11 +1090,40 @@ async fn save_jackett(state: &HttpState, form: &AdminForm) -> Result<String, App
     state.app.gql_cache.invalidate();
     if enabled && state.app.config.live.jackett_configured() {
         Ok("Jackett and content languages saved for all devices.".into())
-    } else if enabled {
-        Ok("Saved. Jackett still needs a URL and API key.".into())
+    } else if state.app.config.live.jackett_configured() {
+        Ok("Saved. Jackett is set up but switched off; enable it in the add-on list.".into())
     } else {
-        Ok("Saved content languages. Jackett is off for all devices.".into())
+        Ok("Saved content languages. Jackett still needs a URL and API key.".into())
     }
+}
+
+/// The Jackett row's Enable / Disable in the add-on list.
+async fn toggle_jackett(state: &HttpState) -> Result<String, AppError> {
+    let live = &state.app.config.live;
+    let enabled = !live.jackett_enabled();
+    crate::db::save_settings(
+        &state.app.pool,
+        None,
+        None,
+        None,
+        None,
+        Some(enabled),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await?;
+    live.apply_streaming(Some(enabled), None, None, None, None);
+    state.app.gql_cache.invalidate();
+    Ok(match (enabled, live.jackett_configured()) {
+        (true, true) => "Jackett enabled.".into(),
+        (true, false) => "Jackett enabled. Add its URL and API key above so it can be searched.".into(),
+        (false, _) => "Jackett disabled.".into(),
+    })
 }
 
 async fn test_jackett(state: &HttpState, form: &AdminForm) -> String {
@@ -1326,11 +1360,36 @@ async fn dashboard(
             .addons
             .iter()
             .any(|a| a.url.starts_with(crate::providers::TORRENTIO_URL));
-        let mut rows = String::new();
+        // Jackett first, then the Stremio add-ons: all of them are asked at
+        // once for every title and their results are merged.
+        let jackett_state = match (jackett_on, jackett_ok) {
+            (true, true) => ("On", " ok"),
+            (true, false) => ("Needs URL + key", " warn"),
+            (false, _) => ("Off", ""),
+        };
+        let mut rows = format!(
+            r#"<tr>
+                  <td><strong>Jackett</strong><div class="muted">{url}</div></td>
+                  <td><span class="pill{pill}">{state}</span></td>
+                  <td class="row-actions">
+                    <form method="post" action="/" class="inline-tight">
+                      <button type="submit" class="ghost" name="action" value="toggle_jackett">{toggle}</button>
+                    </form>
+                  </td>
+                </tr>"#,
+            url = if jackett_url.is_empty() {
+                "Indexer search. Set the URL and key above.".to_string()
+            } else {
+                html_escape(&jackett_url)
+            },
+            pill = jackett_state.1,
+            state = jackett_state.0,
+            toggle = if jackett_on { "Disable" } else { "Enable" },
+        );
         for a in &p.addons {
             rows.push_str(&format!(
                 r#"<tr>
-                  <td><strong>{name}</strong><div class="muted">{url}</div></td>
+                  <td><strong>{name}</strong><div class="muted">Stremio add-on · {what} · {url}</div></td>
                   <td><span class="pill{pill}">{state}</span></td>
                   <td class="row-actions">
                     <form method="post" action="/" class="inline-tight">
@@ -1341,6 +1400,20 @@ async fn dashboard(
                   </td>
                 </tr>"#,
                 name = html_escape(&a.name),
+                what = {
+                    let lists = a.catalogs.iter().map(|c| c.name.as_str()).collect::<Vec<_>>();
+                    let mut lists_dedup: Vec<&str> = Vec::new();
+                    for l in lists {
+                        if !lists_dedup.contains(&l) {
+                            lists_dedup.push(l);
+                        }
+                    }
+                    match (a.streams, lists_dedup.is_empty()) {
+                        (true, true) => "streams".to_string(),
+                        (true, false) => format!("streams + Trending lists ({})", html_escape(&lists_dedup.join(", "))),
+                        (false, _) => format!("Trending lists ({})", html_escape(&lists_dedup.join(", "))),
+                    }
+                },
                 name_js = html_escape(&a.name).replace('\'', ""),
                 url = html_escape(&a.url),
                 id = html_escape(&a.id),
@@ -1349,11 +1422,7 @@ async fn dashboard(
                 toggle = if a.enabled { "Disable" } else { "Enable" },
             ));
         }
-        let table = if rows.is_empty() {
-            r#"<p class="muted">No sources installed yet.</p>"#.to_string()
-        } else {
-            format!(r#"<table class="catalog"><thead><tr><th>Source</th><th>Status</th><th></th></tr></thead><tbody>{rows}</tbody></table>"#)
-        };
+        let table = format!(r#"<table class="catalog"><thead><tr><th>Source</th><th>Status</th><th></th></tr></thead><tbody>{rows}</tbody></table>"#);
         let torrentio_btn = if installed_torrentio {
             String::new()
         } else {
@@ -1368,8 +1437,8 @@ async fn dashboard(
             )
         };
         format!(
-            r#"<h2 style="margin-top:1.6rem">Stremio add-ons</h2>
-          <p class="lead">Enabled add-ons are asked for each title by its IMDb id. Without Jackett they are the torrent source; with Jackett they fill in when it finds nothing reliable. Playback still runs through this server; nothing is installed on devices.</p>
+            r#"<h2 style="margin-top:1.6rem">Add-ons</h2>
+          <p class="lead">Every enabled source is asked for each title at the same time: Jackett by name, Stremio add-ons by IMDb id. Their results are merged (the same torrent from two sources is listed once) and ranked by resolution, seeders, size and language, so every device gets the same order. A slow or broken source is skipped after a few seconds instead of holding up the rest.</p>
           {table}
           {torrentio_btn}
           <form method="post" action="/" class="inline" autocomplete="off">
@@ -1379,15 +1448,7 @@ async fn dashboard(
             </label>
             <button type="submit" class="ghost">Install add-on</button>
           </form>
-          <p class="muted">Any Stremio add-on that returns torrents for IMDb ids works (Torrentio, or one you host). Configured Torrentio links (e.g. from its configure page, with chosen providers) can be pasted here too.</p>
-          <form method="post" action="/" class="threshold">
-            <input type="hidden" name="action" value="save_fallback" />
-            <span>With Jackett on, ask add-ons when its best torrent has fewer than</span>
-            <input name="fallback_min_seeders" type="number" min="1" max="500" value="{min}" aria-label="Seeders" />
-            <span>seeders</span>
-            <button type="submit" class="ghost small">Save</button>
-          </form>"#,
-            min = p.min_seeders,
+          <p class="muted">Any Stremio add-on that serves streams for IMDb ids works: torrent add-ons like Torrentio, and add-ons with direct links like HDHub (those play straight from the link, without a torrent). Catalog add-ons like Streaming Catalogs work too: a few titles from each of their lists (Netflix, Disney+, …) are mixed into the Trending row with the service's tag. Configured add-on links (from an add-on's configure page) can be pasted too.</p>"#,
         )
     };
     let server_html = {
@@ -1684,12 +1745,8 @@ The database is backed up first. Apps reconnect on their own after about a minut
             <h2>Streaming</h2>
             {status}
           </div>
-          <p class="lead">Torrents come from <strong>Jackett</strong>, from <strong>Stremio add-ons</strong> (below), or both. Either one is enough. Every paired device uses the same sources, so there's nothing to configure on the TV.</p>
+          <p class="lead">Streams come from <strong>Jackett</strong> and <strong>Stremio add-ons</strong>, listed together under Add-ons below. Any one is enough. Every paired device uses the same sources, so there's nothing to configure on the TV.</p>
           <form method="post" action="/" class="grid-form">
-            <label class="check">
-              <input type="checkbox" name="jackett_enabled" value="on" {checked} />
-              Enable Jackett for all devices
-            </label>
             <label>Jackett URL
               <input name="jackett_url" type="url" placeholder="http://127.0.0.1:9117" value="{url}" />
             </label>
@@ -1979,7 +2036,6 @@ The database is backed up first. Apps reconnect on their own after about a minut
         server_html = server_html,
         fallback_html = fallback_html,
         status = status,
-        checked = if jackett_on { "checked" } else { "" },
         catalog_q = html_escape(catalog_q),
         catalog_total = catalog_total,
         catalog_table = catalog_table,

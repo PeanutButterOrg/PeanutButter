@@ -350,6 +350,7 @@ class _DetailBodyState extends ConsumerState<_DetailBody> {
           'sessionId': started.session.id,
           'magnet': started.magnet,
           'localTorrent': started.localTorrent,
+          ...started.routeExtras,
           'listedSeeders': started.session.seeders,
           'listedPeers': started.session.peers,
           'streamFileIndex': started.fileIndex,

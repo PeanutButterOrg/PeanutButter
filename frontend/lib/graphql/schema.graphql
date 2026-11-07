@@ -53,7 +53,7 @@ type Query {
   serverInfo: ServerInfo!
   homeFeed(kind: TitleKind!): HomeFeed!
   nextPlayback(fileId: UUID!): FileReference
-  streamingSearch(query: String!, kind: TitleKind!, season: Int, episode: Int, language: String, titleId: UUID, year: Int, live: Boolean): [StreamSource!]!
+  streamingSearch(query: String!, kind: TitleKind!, season: Int, episode: Int, language: String, titleId: UUID, year: Int, live: Boolean, resolution: String): [StreamSource!]!
   torrentFiles(magnet: String!, season: Int, episode: Int): [TorrentFile!]!
   torrentProbe(magnet: String!): TorrentProbe!
   streamStatus(sessionId: String!): StreamSession
@@ -152,6 +152,7 @@ type Title {
   thumbUrl: String
   tmdbId: Int
   imdbId: String
+  services: [ServiceTag!]!
   ratings: Ratings
   genres: [String!]!
   trailers: [Trailer!]!
@@ -313,6 +314,21 @@ type StreamSource {
   tracker: String!
   indexer: String!
   language: String!
+  kind: String!
+  url: String!
+  headers: [StreamHeader!]!
+  score: Int!
+  providers: [String!]!
+}
+
+type ServiceTag {
+  id: String!
+  name: String!
+}
+
+type StreamHeader {
+  name: String!
+  value: String!
 }
 
 type TorrentFile {

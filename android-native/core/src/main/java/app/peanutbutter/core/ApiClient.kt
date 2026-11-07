@@ -266,6 +266,8 @@ class ApiClient(
             "live" to live,
         )
         if (!language.isNullOrBlank()) vars["language"] = language
+        // The server ranks against this device's quality setting.
+        vars["resolution"] = session.preferredQuality
         val data = gql(Gql.STREAMING_SEARCH, vars)
         val arr = data.getAsJsonArray("streamingSearch") ?: JsonArray()
         arr.mapNotNull { el ->
@@ -281,8 +283,23 @@ class ApiClient(
                 health = o.getStringOr("health", ""),
                 indexer = o.getStringOr("indexer", ""),
                 language = o.getStringOr("language", ""),
+                kind = o.getStringOr("kind", "torrent"),
+                url = o.getStringOr("url", ""),
+                headers = (o.get("headers") as? JsonArray)
+                    ?.mapNotNull { h ->
+                        val ho = h as? JsonObject ?: return@mapNotNull null
+                        val name = ho.getStringOr("name", "")
+                        if (name.isBlank()) null else name to ho.getStringOr("value", "")
+                    }
+                    ?.toMap()
+                    .orEmpty(),
+                score = o.getIntOr("score", 0),
+                providers = (o.get("providers") as? JsonArray)
+                    ?.mapNotNull { runCatching { it.asString }.getOrNull() }
+                    .orEmpty(),
             )
-        }
+        }.filter { !it.isHttp || it.url.startsWith("http", ignoreCase = true) }
+            .filter { it.isHttp || it.magnet.isNotBlank() }
     }
 
     /**
@@ -310,7 +327,7 @@ class ApiClient(
             episode = episode,
             live = false,
         )
-        val looksDead = cached.isNotEmpty() && cached.all { it.seeders <= 0 }
+        val looksDead = cached.isNotEmpty() && cached.all { !it.isHttp && it.seeders <= 0 }
         if (!looksDead) return cached
         return searchLanguages(
             langs = langs,
@@ -379,13 +396,15 @@ class ApiClient(
                 emptyList()
             }
             for (src in batch) {
-                val key = src.magnet.trim().ifBlank { src.id }
+                val key = src.key
                 if (key.isBlank() || !seen.add(key)) continue
                 out.add(src)
             }
         }
         if (out.isEmpty() && lastError != null) throw lastError
-        return out
+        // One list per language, each ranked by the server: put them in one
+        // order by the server's score (stable, so ties keep language order).
+        return StreamQuality.rankSources(out)
     }
 
     /** Last magnet used for this title/episode. Resume replays it without the picker. */
@@ -800,6 +819,11 @@ class ApiClient(
             } ?: 0.0,
             watched = state?.getBooleanOr("watched", false) ?: false,
             favorite = state?.getBooleanOr("favorite", false) ?: false,
+            services = (o.get("services") as? JsonArray)?.mapNotNull { el ->
+                val s = el as? JsonObject ?: return@mapNotNull null
+                val id = s.getStringOr("id", "")
+                if (id.isBlank()) null else ServiceTag(id, s.getStringOr("name", id))
+            }.orEmpty(),
             trailerYoutubeKey = o.get("trailerYoutubeKey")?.takeUnless { it.isJsonNull }?.asString,
             trailers = o.getAsJsonArray("trailers")?.mapNotNull { el ->
                 runCatching {

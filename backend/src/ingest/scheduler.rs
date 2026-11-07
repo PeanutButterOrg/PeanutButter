@@ -17,6 +17,7 @@ pub async fn start(ctx: IngestContext) -> Result<JobScheduler> {
                 let popular = popular.clone();
                 Box::pin(async move {
                     info!("scheduled popular/trending sync");
+                    crate::addon_catalogs::spawn_sync(popular.clone());
                     spawn_full_sync(popular);
                 })
             })

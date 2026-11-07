@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:graphql_flutter/graphql_flutter.dart';
 
 import '../content_languages.dart';
@@ -9,6 +10,7 @@ import '../graphql/queries.dart';
 import '../friendly_error.dart';
 import '../local_torrent.dart';
 import '../models.dart';
+import '../providers/settings.dart';
 import '../stream_resume_policy.dart';
 import '../theme.dart';
 import '../tv.dart';
@@ -50,6 +52,9 @@ List<StreamSource> sourcesMatchingEpisode(
   }
 
   final hits = sources.where((s) {
+    // Direct links come from add-ons that looked the episode up by its id;
+    // their names often don't carry an SxxExx tag.
+    if (s.isHttp) return true;
     final n = s.title.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '');
     if (n.contains(tag) || n.contains(alt)) return true;
     if (hasOtherEpisode(n)) return false;
@@ -65,12 +70,66 @@ class StreamStart {
     required this.magnet,
     this.localTorrent = false,
     this.fileIndex,
+    this.directStream = false,
+    this.httpHeaders = const {},
   });
 
   final StreamSession session;
+  /// The magnet, or for [directStream] the link (saved as the Resume bookmark).
   final String magnet;
   final bool localTorrent;
   final int? fileIndex;
+  /// A direct link from a Stremio add-on: played as is from
+  /// `session.streamUrl` with [httpHeaders], no torrent and no server session.
+  final bool directStream;
+  final Map<String, String> httpHeaders;
+
+  /// Player route extras that say how to play this (torrent or direct link).
+  /// Spread after the caller's own keys.
+  Map<String, dynamic> get routeExtras => {
+        'isStream': !directStream,
+        'directStream': directStream,
+        'httpHeaders': httpHeaders,
+      };
+}
+
+/// This device's quality setting; the server ranks results against it.
+String? _deviceQuality(BuildContext context) {
+  try {
+    return ProviderScope.containerOf(context, listen: false).read(settingsProvider).defaultQuality;
+  } catch (_) {
+    return null;
+  }
+}
+
+bool _isHttpLink(String s) {
+  final l = s.trim().toLowerCase();
+  return l.startsWith('http://') || l.startsWith('https://');
+}
+
+/// Start a direct link (an add-on's HTTP stream, or a saved one on Resume).
+StreamStart directStreamStart({
+  required String url,
+  required String title,
+  Map<String, String> headers = const {},
+}) {
+  return StreamStart(
+    session: StreamSession(
+      id: 'direct-${DateTime.now().millisecondsSinceEpoch}',
+      title: title,
+      progress: 0,
+      bufferProgress: 0,
+      downloadMbps: 0,
+      seeders: 0,
+      peers: 0,
+      resumePosition: 0,
+      status: 'ready',
+      streamUrl: url,
+    ),
+    magnet: url,
+    directStream: true,
+    httpHeaders: headers,
+  );
 }
 
 Future<List<StreamSource>> searchStreamingSources({
@@ -82,6 +141,7 @@ Future<List<StreamSource>> searchStreamingSources({
   int? episode,
   String? language,
   bool live = false,
+  String? resolution,
 }) async {
   final result = await client.query(
     QueryOptions(
@@ -95,6 +155,7 @@ Future<List<StreamSource>> searchStreamingSources({
         'titleId': titleId,
         'language': language,
         'live': live,
+        if (resolution != null && resolution.isNotEmpty) 'resolution': resolution,
       },
     ),
   );
@@ -118,8 +179,10 @@ class StreamSourceGroup {
   final List<StreamSource> sources;
 }
 
-/// Search each preferred language separately (preferred order), dedupe magnets,
-/// and drop empty language headings.
+/// Search each preferred language (in parallel), merge, dedupe and order the
+/// lot by the server's score: one ranked list, the same order the TV app
+/// shows. The server merges and ranks every source (Jackett and the add-ons);
+/// this only joins its per-language answers.
 Future<List<StreamSourceGroup>> searchStreamingSourcesGrouped({
   required GraphQLClient client,
   required String title,
@@ -129,32 +192,11 @@ Future<List<StreamSourceGroup>> searchStreamingSourcesGrouped({
   int? episode,
   List<String>? preferredLanguages,
   bool live = false,
+  String? resolution,
 }) async {
   final langs = preferredLanguageCodes(preferredLanguages ?? const []);
-  if (langs.isEmpty) {
-    final all = sourcesMatchingEpisode(
-      await searchStreamingSources(
-        client: client,
-        title: title,
-        kind: kind,
-        titleId: titleId,
-        season: season,
-        episode: episode,
-        live: live,
-      ),
-      season: season,
-      episode: episode,
-    );
-    final capped = all.length > 24 ? all.sublist(0, 24) : all;
-    if (capped.isEmpty) return const [];
-    return [StreamSourceGroup(code: 'all', label: 'Streams', sources: capped)];
-  }
-
-  final seen = <String>{};
-  final groups = <StreamSourceGroup>[];
-  // Parallel per-language Jackett searches — same ranking as a single query.
   final results = await Future.wait([
-    for (final lang in langs)
+    for (final lang in (langs.isEmpty ? <String?>[null] : langs))
       searchStreamingSources(
         client: client,
         title: title,
@@ -164,33 +206,32 @@ Future<List<StreamSourceGroup>> searchStreamingSourcesGrouped({
         episode: episode,
         language: lang,
         live: live,
-      ),
+        resolution: resolution,
+      ).then<List<StreamSource>?>((v) => v, onError: (Object e) => langs.length > 1 ? null : throw e),
   ]);
-
-  for (var i = 0; i < langs.length; i++) {
-    final lang = langs[i];
-    final matched = sourcesMatchingEpisode(
-      results[i],
-      season: season,
-      episode: episode,
-    );
-    final unique = <StreamSource>[];
-    for (final src in matched) {
-      final key = src.magnet.trim().isNotEmpty ? src.magnet.trim() : src.id;
-      if (key.isEmpty || !seen.add(key)) continue;
-      unique.add(src);
-    }
-    if (unique.isEmpty) continue;
-    final capped = unique.length > 24 ? unique.sublist(0, 24) : unique;
-    groups.add(
-      StreamSourceGroup(
-        code: lang,
-        label: languageDisplayName(lang),
-        sources: capped,
-      ),
-    );
+  if (results.every((r) => r == null)) {
+    // Every language failed: surface the error of a plain search.
+    throw 'Couldn’t reach the stream sources. Try again in a moment.';
   }
-  return groups;
+
+  final seen = <String>{};
+  final merged = <StreamSource>[];
+  for (final batch in results) {
+    for (final src in sourcesMatchingEpisode(batch ?? const [], season: season, episode: episode)) {
+      final key = src.key;
+      if (key.isEmpty || !seen.add(key)) continue;
+      merged.add(src);
+    }
+  }
+  final ranked = rankByServerScore(merged);
+  if (ranked.isEmpty) return const [];
+  return [
+    StreamSourceGroup(
+      code: 'all',
+      label: 'Streams',
+      sources: ranked.length > 24 ? ranked.sublist(0, 24) : ranked,
+    ),
+  ];
 }
 
 List<StreamSource> flattenSourceGroups(List<StreamSourceGroup> groups) {
@@ -288,6 +329,9 @@ Future<StreamStart?> startStreamDirect({
         ),
       );
     } catch (_) {}
+  }
+  if (_isHttpLink(magnet)) {
+    return directStreamStart(url: magnet.trim(), title: title);
   }
   return prepareLocalStreamStart(
     magnet: magnet,
@@ -515,6 +559,7 @@ Future<StreamStart?> _showStreamingPickerDialogs({
   late List<StreamSourceGroup> groups;
   try {
     final searchFuture = searchStreamingSourcesGrouped(
+      resolution: _deviceQuality(context),
       client: client,
       title: title,
       kind: kind,
@@ -536,10 +581,11 @@ Future<StreamStart?> _showStreamingPickerDialogs({
     // Cache miss, or cache full of 0-seeder / dead rows while Jackett was
     // unreachable: force one live Jackett pass before giving up.
     final cacheLooksDead = groups.isNotEmpty &&
-        !groups.any((g) => g.sources.any((s) => s.seeders >= 2));
+        !groups.any((g) => g.sources.any((s) => s.isHttp || s.seeders >= 2));
     if ((groups.isEmpty || cacheLooksDead) && !searchCancel.isCompleted) {
       try {
         final liveGroups = await searchStreamingSourcesGrouped(
+          resolution: _deviceQuality(context),
           client: client,
           title: title,
           kind: kind,
@@ -588,6 +634,7 @@ Future<StreamStart?> _showStreamingPickerDialogs({
     builder: (ctx) => _ResultsDialog(
       groups: groups,
       onRefresh: () => searchStreamingSourcesGrouped(
+        resolution: _deviceQuality(context),
         client: client,
         title: title,
         kind: kind,
@@ -600,6 +647,9 @@ Future<StreamStart?> _showStreamingPickerDialogs({
     ),
   );
   if (picked == null || !context.mounted) return null;
+  if (picked.isHttp) {
+    return directStreamStart(url: picked.url, title: title, headers: picked.headers);
+  }
   if (picked.magnet.trim().isEmpty) {
     await _alert(context, 'That result has no torrent link. Try another result.');
     return null;
@@ -826,6 +876,7 @@ class _TvStreamingPickerPageState extends State<_TvStreamingPickerPage> {
     });
     try {
       final groups = await searchStreamingSourcesGrouped(
+        resolution: _deviceQuality(context),
         client: widget.client,
         title: widget.title,
         kind: widget.kind,
@@ -846,7 +897,7 @@ class _TvStreamingPickerPageState extends State<_TvStreamingPickerPage> {
       }
       // Cached 0-seeder rows while Jackett is flaky — one live pass.
       final cacheLooksDead =
-          !groups.any((g) => g.sources.any((s) => s.seeders >= 2));
+          !groups.any((g) => g.sources.any((s) => s.isHttp || s.seeders >= 2));
       if (cacheLooksDead && !live) {
         await _runSearch(live: true);
       }
@@ -864,6 +915,12 @@ class _TvStreamingPickerPageState extends State<_TvStreamingPickerPage> {
   }
 
   Future<void> _onPick(StreamSource source) async {
+    if (source.isHttp) {
+      final result = directStreamStart(url: source.url, title: widget.title, headers: source.headers);
+      widget.onReadyToPlay?.call(result);
+      if (mounted) Navigator.of(context).pop(result);
+      return;
+    }
     if (source.magnet.trim().isEmpty) {
       setState(() {
         _phase = _phaseError;
@@ -992,6 +1049,7 @@ class _TvStreamingPickerPageState extends State<_TvStreamingPickerPage> {
               _phaseResults => _ResultsDialog(
                   groups: _groups,
                   onRefresh: () => searchStreamingSourcesGrouped(
+                    resolution: _deviceQuality(context),
                     client: widget.client,
                     title: widget.title,
                     kind: widget.kind,
@@ -1307,7 +1365,10 @@ class _TorrentTile extends StatelessWidget {
                         padding: EdgeInsets.only(right: 8),
                         child: _Tag(label: 'Best match', emphasized: true),
                       ),
-                    _Tag(label: _healthLabel(source.health), emphasized: source.seeders >= 20),
+                    _Tag(
+                      label: source.isHttp ? 'Direct link' : _healthLabel(source.health),
+                      emphasized: source.isHttp || source.seeders >= 20,
+                    ),
                     const SizedBox(width: 8),
                     Flexible(
                       child: Align(
@@ -1327,9 +1388,18 @@ class _TorrentTile extends StatelessWidget {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  '${source.size}  ·  ${source.seeders} seeders'
-                  '${source.peers > 0 ? "  ·  ${source.peers} peers" : ""}'
-                  '  ·  ${languageDisplayName(source.language)}',
+                  [
+                    if (source.size.isNotEmpty && source.size != '?') source.size,
+                    if (source.isHttp)
+                      'Plays from the link, no torrent'
+                    else ...[
+                      '${source.seeders} seeders',
+                      if (source.peers > 0) '${source.peers} peers',
+                    ],
+                    languageDisplayName(source.language),
+                    // Found by more than one source (merged on the server).
+                    if (source.providers.length > 1) source.providers.join(' + '),
+                  ].join('  ·  '),
                   style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 13, height: 1.3),
                 ),
               ],

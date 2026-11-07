@@ -116,8 +116,8 @@ class SourcesDialog : DialogFragment() {
             val root = holder.root
             root.findViewById<TextView>(R.id.tag_best).isVisible = best
             val health = root.findViewById<TextView>(R.id.tag_health)
-            health.text = StreamHealth.label(s.health)
-            val healthy = s.seeders >= 20
+            health.text = StreamHealth.label(if (s.isHttp) "direct" else s.health)
+            val healthy = s.isHttp || s.seeders >= 20
             health.background = ContextCompat.getDrawable(
                 root.context,
                 if (healthy || best) R.drawable.source_tag_emphasized else R.drawable.source_tag_muted,
@@ -131,10 +131,17 @@ class SourcesDialog : DialogFragment() {
             root.findViewById<TextView>(R.id.tag_tracker).text = StreamHealth.sourceLabel(s)
             root.findViewById<TextView>(R.id.source_title).text = s.title
             root.findViewById<TextView>(R.id.source_meta).text = buildString {
-                if (s.size.isNotBlank()) append(s.size)
-                if (isNotEmpty()) append("  ·  ")
-                append("${s.seeders} seeders")
-                if (s.peers > 0) append("  ·  ${s.peers} peers")
+                if (s.size.isNotBlank() && s.size != "?") append(s.size)
+                if (s.isHttp) {
+                    if (isNotEmpty()) append("  ·  ")
+                    append("Plays from the link, no torrent")
+                } else {
+                    if (isNotEmpty()) append("  ·  ")
+                    append("${s.seeders} seeders")
+                    if (s.peers > 0) append("  ·  ${s.peers} peers")
+                }
+                // Found by more than one source (merged on the server).
+                if (s.providers.size > 1) append("  ·  ${s.providers.joinToString(" + ")}")
             }
             root.findViewById<ImageView>(R.id.play_icon).imageTintList =
                 ContextCompat.getColorStateList(root.context, if (best) R.color.pb_seed else R.color.pb_muted)
@@ -190,12 +197,21 @@ class SourceParcel(
     val health: String,
     val indexer: String,
     val language: String,
+    val kind: String,
+    val url: String,
+    val headers: HashMap<String, String>,
+    val score: Int,
+    val providers: ArrayList<String>,
 ) : java.io.Serializable {
-    fun toSource() = StreamSource(id, title, magnet, seeders, peers, size, tracker, health, indexer, language)
+    fun toSource() = StreamSource(
+        id, title, magnet, seeders, peers, size, tracker, health, indexer, language,
+        kind = kind, url = url, headers = headers, score = score, providers = providers,
+    )
 
     companion object {
         fun from(s: StreamSource) = SourceParcel(
             s.id, s.title, s.magnet, s.seeders, s.peers, s.size, s.tracker, s.health, s.indexer, s.language,
+            s.kind, s.url, HashMap(s.headers), s.score, ArrayList(s.providers),
         )
     }
 }

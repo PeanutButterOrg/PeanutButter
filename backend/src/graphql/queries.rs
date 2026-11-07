@@ -490,18 +490,22 @@ impl Query {
         title_id: Option<Uuid>,
         year: Option<i32>,
         live: Option<bool>,
+        // The device's quality setting ("1080p", "2160p", …). Results are
+        // ranked against it; without it, the console's preferred resolution.
+        resolution: Option<String>,
     ) -> async_graphql::Result<Vec<StreamSource>> {
         let state = ctx.data::<AppState>()?;
-        let fallback_on = crate::providers::active();
-        if !state.config.live.jackett_enabled() && !fallback_on {
-            return Err(AppError::BadRequest(
-                "No torrent source on the server. Set up Jackett or add a Stremio add-on in the console's Streaming tab.".into(),
-            )
-            .into());
-        }
-        let jackett_on =
-            state.config.live.jackett_enabled() && state.config.live.jackett_configured();
-        if !jackett_on && !fallback_on {
+        // Every enabled source is asked at once: Jackett (when on and set up)
+        // and each enabled Stremio add-on. See `crate::sources`.
+        let jackett = crate::jackett::JackettSource::from_live(&state.http, &state.config.live);
+        let addons_on = crate::providers::active();
+        if jackett.is_none() && !addons_on {
+            if !state.config.live.jackett_enabled() {
+                return Err(AppError::BadRequest(
+                    "No torrent source on the server. Set up Jackett or add a Stremio add-on in the console's Streaming tab.".into(),
+                )
+                .into());
+            }
             return Ok(vec![]);
         }
 
@@ -519,13 +523,29 @@ impl Query {
                 String::new()
             }
         };
-        // "v2|": results from before strict title/IMDb matching are not reused.
+        // v5: merged + ranked across all sources, with `score` / `kind` / `url`.
+        // The enabled sources are part of the key, so switching one on or off
+        // doesn't serve a list made without it.
+        let sources_sig = {
+            let mut ids: Vec<String> = crate::providers::snapshot()
+                .addons
+                .into_iter()
+                .filter(|a| a.enabled)
+                .map(|a| a.id)
+                .collect();
+            ids.sort();
+            format!("{}{}", if jackett.is_some() { "j" } else { "" }, ids.join("."))
+        };
+        let preferred_res = resolution
+            .as_deref()
+            .map(str::trim)
+            .map(str::to_ascii_lowercase)
+            .map(|r| if r == "4k" { "2160p".to_string() } else { r })
+            .filter(|r| matches!(r.as_str(), "2160p" | "1080p" | "720p" | "480p"))
+            .unwrap_or_else(|| state.config.live.streaming_resolution());
         let cache_key = crate::db::stream_search_cache_key(
             title_id,
-            // Separate entries while fallback sources are on, so lists cached
-            // without them (often the weak ones) aren't served instead.
-            // v4: magnets only (links resolved server-side); older rows may hold links.
-            &format!("{}|{query}", if fallback_on { "v4p" } else { "v4" }),
+            &format!("v5:{sources_sig}:{preferred_res}|{query}"),
             kind.as_db(),
             season,
             episode,
@@ -535,14 +555,13 @@ impl Query {
         // dead magnets are not served as "healthy" for days.
         const STRONG_TTL: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
         const WEAK_TTL: std::time::Duration = std::time::Duration::from_secs(2 * 60 * 60);
-        let preferred_res = state.config.live.streaming_resolution();
+        const HTTP_TTL: std::time::Duration = std::time::Duration::from_secs(20 * 60);
 
         let mut stale_fallback: Option<Vec<StreamSource>> = None;
 
         // Fresh cache is returned immediately. A live refresh keeps the previous
-        // rows as fallback and only replaces them after Jackett actually returns
-        // hits — deleting first left Android (which always asked for live) with
-        // an empty picker whenever an indexer timed out.
+        // rows as fallback and only replaces them once the sources actually
+        // return something.
         if let Ok(Some((cached, age))) =
             crate::db::stream_search_cache_get_row(&state.pool, &cache_key).await
         {
@@ -550,18 +569,19 @@ impl Query {
                 sources = retain_tryable_sources(sources);
                 if !sources.is_empty() {
                     let strong = crate::jackett::cache_is_strong(&sources, &preferred_res);
-                    let ttl = if strong { STRONG_TTL } else { WEAK_TTL };
+                    let mut ttl = if strong { STRONG_TTL } else { WEAK_TTL };
+                    // Add-ons' direct links often carry short-lived tokens.
+                    if sources.iter().any(|s| s.is_http()) {
+                        ttl = ttl.min(HTTP_TTL);
+                    }
                     if !force_live && age <= ttl {
-                        if sources.len() > 24 {
-                            sources.truncate(24);
-                        }
+                        sources.truncate(crate::sources::rank::MAX_RESULTS);
                         return Ok(sources);
                     }
                     stale_fallback = Some(sources);
                 }
             }
         }
-
 
         // Prefer catalog metadata over the client string so searches stay exact
         // (clean title + imdb + S/E), even if the app sends a messy query.
@@ -592,100 +612,75 @@ impl Query {
             }
         }
 
-        // The year only filters results; it is never baked into the Jackett query.
-        let found = if jackett_on {
-            let searched = match crate::jackett::JackettClient::from_live(&state.http, &state.config.live) {
-                // Jackett gets its whole minute before any add-on is asked; the
-                // add-ons below only run after this returns or times out.
-                Ok(client) => match tokio::time::timeout(
-                    crate::jackett::STREAM_SEARCH_BUDGET,
-                    client.search(&target, kind.as_db(), season, episode, &preferred_res, &preferred),
-                )
-                .await
-                {
-                    Ok(r) => r,
-                    Err(_) => Err(AppError::BadRequest(
-                        "Jackett took over a minute to answer.".into(),
-                    )),
-                },
-                Err(e) => Err(e),
-            };
-            match searched {
-                Ok(found) => found,
-                // Jackett down: the fallback sources can still answer.
-                Err(e) if fallback_on => {
-                    tracing::warn!(error = %e, "Jackett search failed — using fallback sources");
-                    Vec::new()
-                }
-                Err(e) => return Err(e.into()),
-            }
-        } else {
-            Vec::new()
+        let q = crate::sources::SourceQuery {
+            target,
+            kind: kind.as_db().to_string(),
+            season,
+            episode,
+            languages: preferred.clone(),
+            resolution: preferred_res.clone(),
         };
-        let found: Vec<StreamSource> = if let (Some(s), Some(e)) = (season, episode) {
-            found
-                .into_iter()
-                .filter(|src| crate::jackett::torrent_usable_for_episode(&src.title, s, e))
-                .collect()
+        let mut providers: Vec<Box<dyn crate::sources::SourceProvider>> = Vec::new();
+        if let Some(j) = jackett {
+            providers.push(Box::new(j));
+        }
+        // Add-ons look titles up by IMDb id; without one they have nothing to go on.
+        if q.stremio_id().is_some() {
+            providers.extend(crate::providers::enabled_sources(&state.http));
+        }
+        let (lists, reports) =
+            crate::sources::gather(&providers, &q, crate::sources::GRACE).await;
+        tracing::info!(
+            title = %q.target.title,
+            sources = ?reports.iter().map(|r| format!("{}: {:?} in {:.1}s", r.label, r.outcome, r.elapsed.as_secs_f32())).collect::<Vec<_>>(),
+            "stream search"
+        );
+        let merged = crate::sources::merge(lists);
+        // Direct links: drop the ones their host refuses (expired, no seeking),
+        // then keep one copy of files listed once per host.
+        let merged = crate::sources::collapse_mirrors(
+            crate::sources::check_links(&state.http, merged).await,
+        );
+
+        // Index seeder counts are often 0/missing on public trackers — lightly
+        // sample DHT/tracker peers only when ranking looks weak (don't block the picker).
+        let known_good = merged.iter().filter(|s| s.is_http() || s.seeders >= 2).count();
+        let merged = if known_good >= 3 {
+            merged
         } else {
-            found
-        };
-        // Indexers without magnets give Jackett .torrent links, which the
-        // apps can't open (and which carry the Jackett API key): convert.
-        let found = crate::torrent_links::resolve_all(found).await;
-        // Jackett Seeders are often 0/missing on public trackers — lightly sample
-        // DHT/tracker peers only when ranking looks weak (don't block the picker).
-        let known_good = found.iter().filter(|s| s.seeders >= 2).count();
-        let found = if known_good >= 3 {
-            found
-        } else {
-            let fallback = found.clone();
+            let fallback = merged.clone();
             match tokio::time::timeout(
                 std::time::Duration::from_secs(4),
-                state.streams.enrich_sources_with_swarm(found),
+                state.streams.enrich_sources_with_swarm(merged),
             )
             .await
             {
                 Ok(enriched) => enriched,
                 Err(_) => {
-                    tracing::warn!("swarm probe timed out — returning Jackett counts");
+                    tracing::warn!("swarm probe timed out — keeping listed counts");
                     fallback
                 }
             }
         };
-
-        let found = retain_tryable_sources(found);
-
-        // No Jackett, or nothing reliable from it: ask the Stremio add-ons (by
-        // IMDb id) and merge their torrents into the same ranked list.
-        let found = match target.imdb_id.as_deref() {
-            Some(imdb) if crate::providers::needs_fallback(&found) => {
-                let extra = crate::providers::search(
-                    &state.http,
-                    imdb,
-                    kind.as_db(),
-                    season,
-                    episode,
-                    &preferred,
-                )
-                .await;
-                if extra.is_empty() {
-                    found
-                } else {
-                    tracing::info!(count = extra.len(), "fallback sources added torrents");
-                    retain_tryable_sources(crate::providers::merge(found, extra, &preferred_res))
-                }
-            }
-            _ => found,
-        };
+        let found = crate::sources::rank::rank(merged, &crate::sources::prefs(&q));
 
         if found.is_empty() {
-            // Live Jackett flaked — last resort: filtered expired cache.
+            // Sources flaked — last resort: filtered expired cache.
             if let Some(mut cached) = stale_fallback {
-                if cached.len() > 24 {
-                    cached.truncate(24);
-                }
+                cached.truncate(crate::sources::rank::MAX_RESULTS);
                 return Ok(cached);
+            }
+            // Every source failed (rather than finding nothing): say why.
+            let failures: Vec<String> = reports
+                .iter()
+                .filter_map(|r| match &r.outcome {
+                    crate::sources::Outcome::Failed(e) => Some(format!("{}: {e}", r.label)),
+                    crate::sources::Outcome::TimedOut => Some(format!("{} took too long", r.label)),
+                    _ => None,
+                })
+                .collect();
+            if !reports.is_empty() && failures.len() == reports.len() {
+                return Err(AppError::BadRequest(failures.join(" · ")).into());
             }
             return Ok(vec![]);
         }
@@ -819,7 +814,7 @@ impl Query {
         let state = ctx.data::<AppState>()?;
         let auth = ctx.data::<crate::auth::AuthSession>()?;
         let langs = state.config.live.preferred_language_codes();
-        let trending = fetch_home_row(
+        let tmdb_trending = fetch_home_row(
             &state.pool,
             &state.config.public_url,
             kind,
@@ -827,6 +822,16 @@ impl Query {
             &[],
             18,
             &langs,
+        )
+        .await?;
+        // Catalog add-ons (Netflix, Disney+, … lists) join Trending only.
+        let trending = trending_with_addon_catalogs(
+            &state.pool,
+            &state.config.public_url,
+            kind,
+            &langs,
+            tmdb_trending,
+            18,
         )
         .await?;
         let exclude: Vec<Uuid> = trending.iter().map(|t| t.id).collect();
@@ -950,6 +955,61 @@ async fn fetch_home_row(
         .into_iter()
         .map(|r| Title::from_row(r, public_url))
         .collect())
+}
+
+/// The Trending row with a few titles from catalog add-on lists mixed in
+/// (see `crate::addon_catalogs`), each title once, every card that's on one
+/// of those lists tagged with its services.
+async fn trending_with_addon_catalogs(
+    pool: &sqlx::PgPool,
+    public_url: &str,
+    kind: TitleKind,
+    langs: &[String],
+    tmdb: Vec<Title>,
+    limit: usize,
+) -> sqlx::Result<Vec<Title>> {
+    let media = if kind == TitleKind::Movie { "movie" } else { "series" };
+    let rows: Vec<(Uuid, String, i32)> = sqlx::query_as(
+        "SELECT t.id, a.service, a.rank FROM addon_catalog_items a \
+         JOIN titles t ON t.imdb_id = a.imdb_id \
+         WHERE a.media = $1 AND t.kind = $2 ORDER BY a.rank, a.service",
+    )
+    .bind(media)
+    .bind(kind.as_db())
+    .fetch_all(pool)
+    .await?;
+    if rows.is_empty() {
+        let mut tmdb = tmdb;
+        tmdb.truncate(limit);
+        return Ok(tmdb);
+    }
+    let order = crate::addon_catalogs::round_robin(&rows);
+    // Same browse rules as the row itself (adult block, released, languages).
+    let mut qb = sqlx::QueryBuilder::new("SELECT ");
+    qb.push(TITLE_COLUMNS);
+    qb.push(" FROM titles t LEFT JOIN ratings r ON r.title_id = t.id WHERE t.id = ANY(");
+    qb.push_bind(order.clone());
+    qb.push(")");
+    apply_adult_block(&mut qb);
+    apply_released_only(&mut qb);
+    apply_language_filter(&mut qb, langs);
+    let found: Vec<TitleRow> = qb.build_query_as().fetch_all(pool).await?;
+    let mut by_id: std::collections::HashMap<Uuid, Title> = found
+        .into_iter()
+        .map(|r| {
+            let t = Title::from_row(r, public_url);
+            (t.id, t)
+        })
+        .collect();
+    let addon: Vec<Title> = order.iter().filter_map(|id| by_id.remove(id)).collect();
+    let mut row = crate::addon_catalogs::mix(tmdb, addon, |t| t.id, limit);
+    let tags = crate::addon_catalogs::tags(&rows);
+    for t in &mut row {
+        if let Some(list) = tags.get(&t.id) {
+            t.services = list.clone();
+        }
+    }
+    Ok(row)
 }
 
 /// In progress: a resume position, or a series whose last episode was finished

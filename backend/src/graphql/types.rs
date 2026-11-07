@@ -409,6 +409,19 @@ pub struct Title {
     pub content_rating: Option<String>,
     pub tmdb_id: Option<i32>,
     pub imdb_id: Option<String>,
+    /// Streaming services whose add-on lists have this title ("Netflix", …).
+    /// Filled only on the home Trending row; empty everywhere else.
+    pub services: Vec<ServiceTag>,
+}
+
+/// A catalog add-on list a title is on, shown as a tag on Trending cards.
+#[derive(SimpleObject, Clone, Debug, PartialEq)]
+pub struct ServiceTag {
+    /// Stable slug apps pick a badge by: "netflix", "hbo", "disney", "prime",
+    /// "apple", "hulu", "paramount", "peacock", … or a slug of the name.
+    pub id: String,
+    /// The list's name as the add-on calls it ("Netflix", "HBO Max").
+    pub name: String,
 }
 
 impl Title {
@@ -429,6 +442,7 @@ impl Title {
             content_rating: row.content_rating,
             tmdb_id: row.tmdb_id,
             imdb_id: row.imdb_id,
+            services: Vec::new(),
         }
     }
 }
@@ -687,10 +701,12 @@ pub struct JackettCatalogStatus {
     pub last_error: Option<String>,
 }
 
-#[derive(SimpleObject, Clone, Debug, serde::Serialize, serde::Deserialize)]
+/// One playable result from any source (Jackett, a Stremio add-on, …).
+#[derive(SimpleObject, Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct StreamSource {
     pub id: String,
     pub title: String,
+    /// Magnet for torrents; empty for `kind == "http"`.
     pub magnet: String,
     pub seeders: i32,
     pub peers: i32,
@@ -698,8 +714,46 @@ pub struct StreamSource {
     pub health: String,
     pub size: String,
     pub tracker: String,
+    /// Display label of where it came from ("Jackett · 1337x", "Torrentio · YTS", …).
     pub indexer: String,
     pub language: String,
+    /// "torrent" (magnet, played on the device with libtorrent) or "http"
+    /// (a direct video URL from an add-on, played as is).
+    #[serde(default = "torrent_kind")]
+    pub kind: String,
+    /// Direct video URL when `kind == "http"`, empty for torrents.
+    #[serde(default)]
+    pub url: String,
+    /// Headers the player must send with `url` (Stremio `proxyHeaders.request`).
+    #[serde(default)]
+    pub headers: Vec<StreamHeader>,
+    /// Server rank, higher is better. Lists come back sorted by it; clients that
+    /// merge several lists (one per language) sort by it again.
+    #[serde(default)]
+    pub score: i32,
+    /// Every source that returned this result, e.g. ["Jackett", "Torrentio"].
+    #[serde(default)]
+    pub providers: Vec<String>,
+    /// Size in bytes (0 = unknown), for the bitrate sanity check.
+    #[serde(default)]
+    #[graphql(skip)]
+    pub size_bytes: u64,
+}
+
+fn torrent_kind() -> String {
+    "torrent".into()
+}
+
+impl StreamSource {
+    pub fn is_http(&self) -> bool {
+        self.kind == "http"
+    }
+}
+
+#[derive(SimpleObject, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct StreamHeader {
+    pub name: String,
+    pub value: String,
 }
 
 #[derive(SimpleObject, Clone, Debug)]

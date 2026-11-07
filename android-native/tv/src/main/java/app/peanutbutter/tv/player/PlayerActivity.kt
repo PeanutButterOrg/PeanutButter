@@ -26,7 +26,6 @@ import app.peanutbutter.core.LocalStreamStats
 import app.peanutbutter.core.MediaSegment
 import app.peanutbutter.core.SessionStore
 import app.peanutbutter.core.StreamDownloads
-import app.peanutbutter.core.StreamQuality
 import app.peanutbutter.core.TitleItem
 import app.peanutbutter.core.StreamSession
 import app.peanutbutter.core.TorrentClient
@@ -78,6 +77,9 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
     private var isStream = false
     private var localTorrent = false
     private var magnet: String? = null
+    /** Direct link from a Stremio add-on (no torrent, no server session). */
+    private var directUrl: String? = null
+    private var directHeaders: Map<String, String> = emptyMap()
     private var fileIndex: Int? = null
     /** The episode number the release uses, when the catalog numbers it differently. */
     private var fileEpisode: Int? = null
@@ -228,6 +230,12 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         resumeMs = intent.getLongExtra(EXTRA_RESUME_MS, 0L).coerceAtLeast(0)
         lastKnownDurationMs = intent.getLongExtra(EXTRA_DURATION_MS, 0L).coerceAtLeast(0)
         magnet = intent.getStringExtra(EXTRA_MAGNET)
+        if (intent.getBooleanExtra(EXTRA_DIRECT, false)) {
+            directUrl = rawUrl
+            val names = intent.getStringArrayExtra(EXTRA_HEADER_NAMES).orEmpty()
+            val values = intent.getStringArrayExtra(EXTRA_HEADER_VALUES).orEmpty()
+            directHeaders = names.zip(values).toMap()
+        }
         fileIndex = intent.getIntExtra(EXTRA_FILE_INDEX, -1).takeIf { it >= 0 }
         fileEpisode = intent.getIntExtra(EXTRA_FILE_EPISODE, -1).takeIf { it > 0 }
         localTorrent = intent.getBooleanExtra(EXTRA_LOCAL, false) ||
@@ -252,7 +260,8 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         topProgress?.progress = 0
         topProgress?.secondaryProgress = 0
 
-        pendingUrl = if (localTorrent) {
+        pendingUrl = if (localTorrent || directUrl != null) {
+            // Direct links go to their own host: never append this device's key.
             rawUrl
         } else {
             rawUrl?.let { application.asTv().api.playableStreamUrl(it) }
@@ -1121,7 +1130,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             }
             mediaAttached = true
             mediaAttachAtMs = System.currentTimeMillis()
-            mp.open(url, start, preferSoftware = !hwDecode)
+            mp.open(url, start, preferSoftware = !hwDecode, headers = if (url == directUrl) directHeaders else emptyMap())
             runCatching { mp.play() }
             statusView?.text = getString(R.string.starting_stream)
             // Watchdog: if onPlaying never fires, reopen from the next stats tick.
@@ -1462,23 +1471,19 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                 val label = String.format("%s S%02dE%02d", next.catalogTitle, next.season, next.episode)
                 val searchEp = next.fileEpisode ?: next.episode
                 val query = String.format("%s S%02dE%02d", next.catalogTitle, next.season, searchEp)
-                val raw = api.lookupSources(query, next.kind, tid, next.season, searchEp)
-                val source = StreamQuality.rankSources(raw, application.asTv().session.preferredQuality).firstOrNull()
+                // Already ranked by the server (same order the picker shows).
+                val source = api.lookupSources(query, next.kind, tid, next.season, searchEp).firstOrNull()
                 if (source == null) {
                     Toast.makeText(this@PlayerActivity, R.string.no_sources, Toast.LENGTH_LONG).show()
                     return@launch
                 }
-                val startedSession = "local-${System.currentTimeMillis()}"
                 // The new player starts its torrent before this one is destroyed;
                 // onDestroy must not stop/wipe it (TorrentClient is process-wide).
                 handedOffToNext = true
                 startActivity(
                     Intent(this@PlayerActivity, PlayerActivity::class.java)
                         .putExtra(EXTRA_TITLE, label)
-                        .putExtra(EXTRA_SESSION, startedSession)
-                        .putExtra(EXTRA_URL, "")
-                        .putExtra(EXTRA_MAGNET, source.magnet)
-                        .putExtra(EXTRA_LOCAL, true)
+                        .putStreamSource(source.magnet, source.url.takeIf { source.isHttp }, source.headers)
                         .putExtra(EXTRA_POSTER, next.posterUrl)
                         .putExtra(EXTRA_BACKDROP, next.backdropUrl)
                         .putExtra(EXTRA_TITLE_ID, tid)
@@ -1629,7 +1634,9 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         if (complete) markedComplete = true
         val ep = episodeId
         val api = application.asTv().api
-        val mag = magnet
+        // Direct links are saved in the bookmark's magnet field; Resume tells
+        // them apart by the http(s) scheme.
+        val mag = magnet ?: directUrl
         val sid = sessionId.orEmpty().ifBlank { "local" }
         val titleText = titleView?.text?.toString()
         val write = suspend {
@@ -2202,5 +2209,30 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         const val EXTRA_MAGNET = "magnet"
         const val EXTRA_FILE_INDEX = "file_index"
         const val EXTRA_FILE_EPISODE = "file_episode"
+        const val EXTRA_DIRECT = "direct_stream"
+        const val EXTRA_HEADER_NAMES = "header_names"
+        const val EXTRA_HEADER_VALUES = "header_values"
+
+        /**
+         * What to play: a torrent (magnet, started on this device) or, when
+         * [directUrl] is set, a direct link from an add-on, played as is with
+         * its [headers] and no torrent or server session.
+         */
+        fun Intent.putStreamSource(
+            magnet: String,
+            directUrl: String?,
+            headers: Map<String, String> = emptyMap(),
+        ): Intent = if (!directUrl.isNullOrBlank()) {
+            putExtra(EXTRA_URL, directUrl)
+                .putExtra(EXTRA_DIRECT, true)
+                .putExtra(EXTRA_LOCAL, false)
+                .putExtra(EXTRA_HEADER_NAMES, headers.keys.toTypedArray())
+                .putExtra(EXTRA_HEADER_VALUES, headers.values.toTypedArray())
+        } else {
+            putExtra(EXTRA_SESSION, "local-${System.currentTimeMillis()}")
+                .putExtra(EXTRA_URL, "")
+                .putExtra(EXTRA_MAGNET, magnet)
+                .putExtra(EXTRA_LOCAL, true)
+        }
     }
 }

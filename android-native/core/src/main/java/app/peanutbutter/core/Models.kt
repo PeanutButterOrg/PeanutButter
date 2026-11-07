@@ -32,6 +32,8 @@ data class TitleItem(
     val people: List<Person> = emptyList(),
     val seasons: List<Season> = emptyList(),
     val episodeId: String? = null,
+    /** Streaming-service lists it's on (Trending row only). */
+    val services: List<ServiceTag> = emptyList(),
 ) {
     /**
      * Prefer original (usually English) title so UI never switches into
@@ -233,9 +235,45 @@ data class HomeFeed(
     val continueWatching: List<TitleItem>,
 )
 
+/** A catalog add-on list a title is on ("Netflix"), tagged on Trending cards. */
+data class ServiceTag(val id: String, val name: String)
+
+/**
+ * How each service's tag looks: a short text mark in the service's colour
+ * (not its logo). Same table as the desktop and phone apps.
+ */
+object ServiceBadges {
+    data class Badge(val label: String, val color: Int)
+
+    private val KNOWN: Map<String, Badge> = mapOf(
+        "netflix" to Badge("N", 0xFFE50914.toInt()),
+        "hbo" to Badge("HBO", 0xFFA66BFF.toInt()),
+        "disney" to Badge("D+", 0xFF5B8CFF.toInt()),
+        "prime" to Badge("prime", 0xFF1FB6F0.toInt()),
+        "apple" to Badge("tv+", 0xFFFFFFFF.toInt()),
+        "hulu" to Badge("hulu", 0xFF1CE783.toInt()),
+        "paramount" to Badge("P+", 0xFF4D8DFF.toInt()),
+        "peacock" to Badge("P", 0xFFFFD23F.toInt()),
+        "crunchyroll" to Badge("CR", 0xFFF47521.toInt()),
+        "hotstar" to Badge("HS", 0xFF3D9BFF.toInt()),
+        "zee5" to Badge("Z5", 0xFFB46CFF.toInt()),
+        "sonyliv" to Badge("SL", 0xFFFFFFFF.toInt()),
+        "mubi" to Badge("MUBI", 0xFFFFFFFF.toInt()),
+        "starz" to Badge("STARZ", 0xFFFFFFFF.toInt()),
+        "showtime" to Badge("SHO", 0xFFFF3B3B.toInt()),
+    )
+
+    fun of(tag: ServiceTag): Badge = KNOWN[tag.id]
+        ?: Badge(
+            tag.name.filter { it.isLetterOrDigit() }.take(3).uppercase().ifBlank { "?" },
+            0xFFFFFFFF.toInt(),
+        )
+}
+
 data class StreamSource(
     val id: String,
     val title: String,
+    /** Empty for [isHttp] sources. */
     val magnet: String,
     val seeders: Int,
     val peers: Int,
@@ -244,7 +282,22 @@ data class StreamSource(
     val health: String,
     val indexer: String = "",
     val language: String = "",
-)
+    /** "torrent" (played on-device with libtorrent) or "http" (direct link from an add-on). */
+    val kind: String = "torrent",
+    /** Direct video URL when [isHttp]. */
+    val url: String = "",
+    /** Headers the player must send with [url] (Stremio proxyHeaders). */
+    val headers: Map<String, String> = emptyMap(),
+    /** Server rank, higher is better: the only ranking (same on every app). */
+    val score: Int = 0,
+    /** Every source that returned this result ("Jackett", "Torrentio", …). */
+    val providers: List<String> = emptyList(),
+) {
+    val isHttp: Boolean get() = kind == "http" && url.isNotBlank()
+
+    /** Same result across searches: info hash magnet, or the URL. */
+    val key: String get() = if (isHttp) url.trim() else magnet.trim().ifBlank { id }
+}
 
 data class StreamBookmark(
     val magnet: String,
@@ -332,6 +385,7 @@ object StreamHealth {
         "decent" -> "OK"
         "poor" -> "Weak"
         "unknown" -> "Unlisted seeds"
+        "direct" -> "Direct link"
         else -> "Low seeds"
     }
 

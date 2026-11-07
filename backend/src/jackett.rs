@@ -785,6 +785,9 @@ impl JackettClient {
                         .unwrap_or_else(|| "unknown".into()),
                     indexer: hit.indexer.unwrap_or_else(|| "Jackett".into()),
                     language: stored_language(&langs, kind),
+                    kind: "torrent".into(),
+                    size_bytes: bytes,
+                    ..Default::default()
                 })
             })
             .collect();
@@ -1139,7 +1142,7 @@ fn torrent_is_season_pack(title: &str, season: i32) -> bool {
     (has_token(&h, "complete") || has_token(&h, "pack")) && seasons.is_empty() && season == 1
 }
 
-fn looks_like_junk_release(title: &str, kind: &str) -> bool {
+pub(crate) fn looks_like_junk_release(title: &str, kind: &str) -> bool {
     let h = padded(title);
     const JUNK: &[&str] = &[
         "xxx", "porn", "erotic", "adult", "hentai", "jav ", " jave ", "nsfw", "onlyfans",
@@ -1219,7 +1222,7 @@ fn category_matches_allowed(c: i32, allowed: &[i32]) -> bool {
     false
 }
 
-fn size_plausible(bytes: u64, kind: &str, title: &str) -> bool {
+pub(crate) fn size_plausible(bytes: u64, kind: &str, title: &str) -> bool {
     if bytes == 0 {
         // Jackett sometimes omits size; keep the hit and let ranking decide.
         return true;
@@ -1336,7 +1339,7 @@ fn torrent_locator(hit: &JackettHit) -> Option<String> {
     None
 }
 
-fn looks_like_sample(title: &str) -> bool {
+pub(crate) fn looks_like_sample(title: &str) -> bool {
     let h = padded(title);
     [
         "sample", "trailer", "extra", "extras", "featurette", "featurettes", "bonus", "promo",
@@ -1345,7 +1348,7 @@ fn looks_like_sample(title: &str) -> bool {
     .any(|t| has_token(&h, t))
 }
 
-fn padded(title: &str) -> String {
+pub(crate) fn padded(title: &str) -> String {
     let mut out = String::from(" ");
     for c in title.chars() {
         if c.is_ascii_alphanumeric() {
@@ -1358,13 +1361,13 @@ fn padded(title: &str) -> String {
     out
 }
 
-fn has_token(haystack: &str, token: &str) -> bool {
+pub(crate) fn has_token(haystack: &str, token: &str) -> bool {
     haystack.contains(&format!(" {token} "))
 }
 
 /// Drop ASL / BSL / "sign language" releases — they look untagged English to
 /// language filters and are useless for spoken-language playback.
-fn looks_like_sign_language(title: &str) -> bool {
+pub(crate) fn looks_like_sign_language(title: &str) -> bool {
     let t = title.to_ascii_lowercase();
     if t.contains("sign language")
         || t.contains("signlanguage")
@@ -1380,7 +1383,7 @@ fn looks_like_sign_language(title: &str) -> bool {
         || (has_token(&h, "sign") && (has_token(&h, "lang") || has_token(&h, "language")))
 }
 
-fn language_codes(title: &str) -> Vec<&'static str> {
+pub(crate) fn language_codes(title: &str) -> Vec<&'static str> {
     let h = padded(title);
     let mut out = Vec::new();
     let mut push = |code: &'static str, tokens: &[&str]| {
@@ -1453,7 +1456,7 @@ pub fn languages_for_title(title: &str) -> String {
 /// nearly all Western WEB-DL/BluRay names omit "English", and requiring the tag
 /// left the app with ~2 hits while Jackett returned hundreds.
 /// Explicit foreign tags (Hindi, Spanish, …) still must match the preference.
-fn language_matches(found: &[&str], preferred: &str, _kind: &str) -> bool {
+pub(crate) fn language_matches(found: &[&str], preferred: &str, _kind: &str) -> bool {
     let wanted: Vec<String> = preferred
         .split([',', '/', '|', '+'])
         .map(|part| part.trim().to_ascii_lowercase())
@@ -1478,7 +1481,7 @@ fn language_matches(found: &[&str], preferred: &str, _kind: &str) -> bool {
     found.is_empty() && wants_english
 }
 
-fn stored_language(found: &[&str], _kind: &str) -> String {
+pub(crate) fn stored_language(found: &[&str], _kind: &str) -> String {
     if found.is_empty() {
         return "unknown".into();
     }
@@ -1526,71 +1529,21 @@ pub fn health_for(seeders: i32) -> &'static str {
     }
 }
 
-/// Rank playable torrents: most seeders first (peers are only a weak tiebreak).
-pub fn rank_sources(mut out: Vec<StreamSource>, preferred_resolution: &str) -> Vec<StreamSource> {
-    let preferred_res = preferred_resolution.trim().to_ascii_lowercase();
-    // Prefer real magnets when any exist — but don't throw away the whole list
-    // if every magnet has unknown seeders while .torrent links would remain.
-    let magnets: Vec<StreamSource> = out
-        .iter()
-        .filter(|s| s.magnet.to_ascii_lowercase().starts_with("magnet:"))
-        .cloned()
-        .collect();
-    if !magnets.is_empty() {
-        out = magnets;
-    }
-
-    out.retain(|s| source_quality_score(&s.title) >= 2);
-
-    // Prefer known healthy swarms when available. Public indexers often report
-    // Seeders=0 for live torrents — fall back to those rather than showing nothing.
-    let with_seeders: Vec<StreamSource> = out
-        .iter()
-        .filter(|s| s.seeders >= 2 && s.health != "unknown" && s.health != "dead")
-        .cloned()
-        .collect();
-    if !with_seeders.is_empty() {
-        out = with_seeders;
-    } else {
-        let tryable: Vec<StreamSource> = out
-            .iter()
-            .filter(|s| s.health == "unknown" || s.seeders >= 1)
-            .cloned()
-            .collect();
-        if !tryable.is_empty() {
-            out = tryable;
-        }
-        // else keep all quality-ok rows (including explicit 0) so the picker isn't empty
-    }
-
-    out.sort_by(|a, b| {
-        let a_magnet = a.magnet.to_ascii_lowercase().starts_with("magnet:") as i32;
-        let b_magnet = b.magnet.to_ascii_lowercase().starts_with("magnet:") as i32;
-        let a_exact = episode_specificity(&a.title);
-        let b_exact = episode_specificity(&b.title);
-        let a_known = (a.health != "unknown") as i32;
-        let b_known = (b.health != "unknown") as i32;
-        b_magnet
-            .cmp(&a_magnet)
-            .then(b_known.cmp(&a_known))
-            // Seeders first — that is what actually starts streams.
-            .then(b.seeders.cmp(&a.seeders))
-            .then(b_exact.cmp(&a_exact))
-            .then(
-                resolution_rank(&b.title, &preferred_res)
-                    .cmp(&resolution_rank(&a.title, &preferred_res)),
-            )
-            .then(source_quality_score(&b.title).cmp(&source_quality_score(&a.title)))
-            // Peers only break ties between equal-seeder magnets.
-            .then(b.peers.cmp(&a.peers))
-    });
-
-    // Wider picker: best first, but don't hide solid mid-seed magnets.
-    out.into_iter().take(24).collect()
+/// Rank playable results with the shared rules in [crate::sources::rank]
+/// (resolution only; the stream query re-ranks with languages and kind).
+pub fn rank_sources(out: Vec<StreamSource>, preferred_resolution: &str) -> Vec<StreamSource> {
+    crate::sources::rank::rank(
+        out,
+        &crate::sources::rank::RankPrefs {
+            resolution: preferred_resolution,
+            languages: "",
+            kind: "",
+        },
+    )
 }
 
 /// Prefer single-episode releases over season packs when both are listed.
-fn episode_specificity(title: &str) -> i32 {
+pub(crate) fn episode_specificity(title: &str) -> i32 {
     if regex::Regex::new(r"(?i)(?:^|[^a-z0-9])s\d{1,2}e\d{1,3}(?:[^0-9]|$)")
         .map(|re| re.is_match(title))
         .unwrap_or(false)
@@ -1626,7 +1579,7 @@ pub fn cache_is_strong(sources: &[StreamSource], preferred_resolution: &str) -> 
         >= 2
 }
 
-fn source_quality_score(title: &str) -> i32 {
+pub(crate) fn source_quality_score(title: &str) -> i32 {
     let h = padded(title);
     if looks_like_cam(&h) {
         return 0;
@@ -1654,7 +1607,7 @@ fn source_quality_score(title: &str) -> i32 {
     2
 }
 
-fn looks_like_cam(padded_title: &str) -> bool {
+pub(crate) fn looks_like_cam(padded_title: &str) -> bool {
     [
         "cam", "camrip", "hdcam", "hdts", "telesync", "telecine", "hd-ts", "hd-tc", "screener",
         "dvdscr", "r5",
@@ -1665,39 +1618,18 @@ fn looks_like_cam(padded_title: &str) -> bool {
         || has_token(padded_title, "tc")
 }
 
-fn resolution_rank(title: &str, preferred: &str) -> i32 {
-    let t = title.to_ascii_lowercase();
-    if !preferred.is_empty() && t.contains(preferred) {
-        return 2;
-    }
-    if t.contains("2160p") || t.contains("1080p") || t.contains("720p") {
-        return 1;
-    }
-    0
-}
-
-/// A torrent found outside Jackett (fallback add-ons such as Torrentio),
-/// put through the same CAM / sample / junk / size / language rules as a
-/// Jackett hit so the picker can't tell the difference.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn external_source(
+/// The CAM / sample / sign-language / junk / size / language rules every
+/// result found outside Jackett goes through (Jackett hits get the same ones in
+/// `transform_results`). Returns the stored language when the release passes.
+pub(crate) fn screen_release(
     title: &str,
-    info_hash: &str,
-    trackers: &[String],
-    seeders: Option<i32>,
     bytes: u64,
-    source_label: &str,
     kind: &str,
     preferred_language: &str,
-) -> Option<StreamSource> {
-    let hash = info_hash.trim().to_ascii_lowercase();
-    let hash_ok = (hash.len() == 40 && hash.bytes().all(|b| b.is_ascii_hexdigit()))
-        || (hash.len() == 32 && hash.bytes().all(|b| b.is_ascii_alphanumeric()));
+) -> Option<String> {
     let title = title.trim();
-    if !hash_ok || title.is_empty() {
-        return None;
-    }
-    if looks_like_sample(title)
+    if title.is_empty()
+        || looks_like_sample(title)
         || looks_like_cam(&padded(title))
         || looks_like_sign_language(title)
         || looks_like_junk_release(title, kind)
@@ -1720,6 +1652,31 @@ pub(crate) fn external_source(
             return None;
         }
     }
+    Some(language)
+}
+
+/// A torrent found outside Jackett (fallback add-ons such as Torrentio),
+/// put through the same CAM / sample / junk / size / language rules as a
+/// Jackett hit so the picker can't tell the difference.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn external_source(
+    title: &str,
+    info_hash: &str,
+    trackers: &[String],
+    seeders: Option<i32>,
+    bytes: u64,
+    source_label: &str,
+    kind: &str,
+    preferred_language: &str,
+) -> Option<StreamSource> {
+    let hash = info_hash.trim().to_ascii_lowercase();
+    let hash_ok = (hash.len() == 40 && hash.bytes().all(|b| b.is_ascii_hexdigit()))
+        || (hash.len() == 32 && hash.bytes().all(|b| b.is_ascii_alphanumeric()));
+    let title = title.trim();
+    if !hash_ok {
+        return None;
+    }
+    let language = screen_release(title, bytes, kind, preferred_language)?;
     let mut magnet = format!("magnet:?xt=urn:btih:{hash}&dn={}", percent_encode(title));
     for tr in trackers.iter().take(12) {
         magnet.push_str("&tr=");
@@ -1744,10 +1701,13 @@ pub(crate) fn external_source(
         tracker: source_label.to_string(),
         indexer: source_label.to_string(),
         language,
+        kind: "torrent".into(),
+        size_bytes: bytes,
+        ..Default::default()
     })
 }
 
-fn percent_encode(s: &str) -> String {
+pub(crate) fn percent_encode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
@@ -1759,7 +1719,7 @@ fn percent_encode(s: &str) -> String {
     out
 }
 
-fn format_size(bytes: u64) -> String {
+pub(crate) fn format_size(bytes: u64) -> String {
     const KB: f64 = 1024.0;
     const MB: f64 = KB * 1024.0;
     const GB: f64 = MB * 1024.0;
@@ -2000,6 +1960,59 @@ mod tests {
 }
 
 // ── Accurate matching: IMDb / season-episode Torznab search + strict titles ──
+
+/// Jackett as one stream source among the add-ons (see `crate::sources`).
+pub struct JackettSource {
+    pub client: JackettClient,
+}
+
+impl JackettSource {
+    /// Jackett when it's switched on and has a URL and key.
+    pub fn from_live(http: &reqwest::Client, live: &crate::config::LiveSettings) -> Option<Self> {
+        if !(live.jackett_enabled() && live.jackett_configured()) {
+            return None;
+        }
+        match JackettClient::from_live(http, live) {
+            Ok(client) => Some(Self { client }),
+            Err(e) => {
+                tracing::warn!(error = %e, "Jackett is on but can't be used");
+                None
+            }
+        }
+    }
+
+    async fn find_inner(&self, q: &crate::sources::SourceQuery) -> Result<Vec<StreamSource>> {
+        let found = self
+            .client
+            .search(&q.target, &q.kind, q.season, q.episode, &q.resolution, &q.languages)
+            .await?;
+        let found: Vec<StreamSource> = match (q.season, q.episode) {
+            (Some(s), Some(e)) => found
+                .into_iter()
+                .filter(|src| torrent_usable_for_episode(&src.title, s, e))
+                .collect(),
+            _ => found,
+        };
+        // Indexers without magnets give .torrent links, which the apps can't
+        // open (and which carry the Jackett API key): convert them.
+        Ok(crate::torrent_links::resolve_all(found).await)
+    }
+}
+
+impl crate::sources::SourceProvider for JackettSource {
+    fn label(&self) -> &str {
+        "Jackett"
+    }
+    fn timeout(&self) -> Duration {
+        STREAM_SEARCH_BUDGET
+    }
+    fn find<'a>(
+        &'a self,
+        q: &'a crate::sources::SourceQuery,
+    ) -> futures::future::BoxFuture<'a, std::result::Result<Vec<StreamSource>, String>> {
+        Box::pin(async move { self.find_inner(q).await.map_err(|e| e.to_string()) })
+    }
+}
 
 /// What the user actually asked for. Built from catalog metadata so text
 /// results can be checked against the real title and year.

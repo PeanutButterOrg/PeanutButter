@@ -228,6 +228,8 @@ GoRouter _buildRouter(SettingsState Function() readSettings) {
               sessionId: extra['sessionId'] as String?,
               magnet: extra['magnet'] as String?,
               localTorrent: extra['localTorrent'] as bool? ?? false,
+              directStream: extra['directStream'] as bool? ?? false,
+              httpHeaders: (extra['httpHeaders'] as Map?)?.cast<String, String>() ?? const {},
               streamFileIndex: extra['streamFileIndex'] as int?,
               fileEpisode: extra['fileEpisode'] as int?,
               listedSeeders: extra['listedSeeders'] as int? ?? 0,

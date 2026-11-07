@@ -34,6 +34,7 @@ import app.peanutbutter.tv.PbGlide
 import app.peanutbutter.tv.R
 import app.peanutbutter.tv.asTv
 import app.peanutbutter.tv.player.PlayerActivity
+import app.peanutbutter.tv.player.PlayerActivity.Companion.putStreamSource
 import kotlinx.coroutines.launch
 
 /** Flutter detail — hero + cast + seasons/episodes; series Play → S01E01. */
@@ -616,9 +617,14 @@ class DetailsActivity : FragmentActivity() {
                     }.getOrNull()
                     if (bookmark != null && bookmark.magnet.isNotBlank()) {
                         Toast.makeText(this@DetailsActivity, R.string.resuming_stream, Toast.LENGTH_SHORT).show()
+                        // A saved direct link (add-on HTTP stream) is replayed as a link.
+                        val savedDirect = bookmark.magnet.takeIf {
+                            it.startsWith("http://", true) || it.startsWith("https://", true)
+                        }
                         startSavedStream(
                             t = t,
                             magnet = bookmark.magnet,
+                            directUrl = savedDirect,
                             seeders = 0,
                             peers = 0,
                             resume = true,
@@ -630,16 +636,13 @@ class DetailsActivity : FragmentActivity() {
                         return@launch
                     }
                 }
-                val raw = api.lookupSources(
+                // Merged from every server source and ranked by the server.
+                val sources = api.lookupSources(
                     query = query,
                     kind = t.kind.ifBlank { "MOVIE" },
                     titleId = t.id,
                     season = season,
                     episode = searchEpisode,
-                )
-                val sources = StreamQuality.rankSources(
-                    raw,
-                    application.asTv().session.preferredQuality,
                 )
                 if (sources.isEmpty()) {
                     Toast.makeText(this@DetailsActivity, R.string.no_sources, Toast.LENGTH_LONG).show()
@@ -655,17 +658,15 @@ class DetailsActivity : FragmentActivity() {
                     },
                     sources,
                     onRefresh = {
-                        val live = api.streamingSearch(
-                            query = query,
-                            kind = t.kind.ifBlank { "MOVIE" },
-                            titleId = t.id,
-                            season = season,
-                            episode = searchEpisode,
-                            live = true,
-                        )
                         StreamQuality.rankSources(
-                            live,
-                            application.asTv().session.preferredQuality,
+                            api.streamingSearch(
+                                query = query,
+                                kind = t.kind.ifBlank { "MOVIE" },
+                                titleId = t.id,
+                                season = season,
+                                episode = searchEpisode,
+                                live = true,
+                            ),
                         )
                     },
                 ) { source ->
@@ -675,6 +676,8 @@ class DetailsActivity : FragmentActivity() {
                             startSavedStream(
                                 t = t,
                                 magnet = source.magnet,
+                                directUrl = source.url.takeIf { source.isHttp },
+                                headers = source.headers,
                                 seeders = source.seeders,
                                 peers = source.peers,
                                 resume = wantResume,
@@ -705,6 +708,8 @@ class DetailsActivity : FragmentActivity() {
     private suspend fun startSavedStream(
         t: TitleItem,
         magnet: String,
+        directUrl: String? = null,
+        headers: Map<String, String> = emptyMap(),
         seeders: Int,
         peers: Int,
         resume: Boolean,
@@ -724,8 +729,7 @@ class DetailsActivity : FragmentActivity() {
             val now = android.os.SystemClock.elapsedRealtime()
             if (now - lastPlayerLaunchMs < 2_000L) return
             lastPlayerLaunchMs = now
-            val session = "local-${System.currentTimeMillis()}"
-            AppLog.i(TAG, "launch player magnet=${magnet.take(48)}… session=$session")
+            AppLog.i(TAG, "launch player ${if (directUrl != null) "direct link" else "magnet=${magnet.take(48)}…"}")
             val seek = when {
                 !resume -> 0L
                 resumeMs != null && resumeMs > 0 -> resumeMs
@@ -735,10 +739,7 @@ class DetailsActivity : FragmentActivity() {
             startActivity(
                 Intent(this, PlayerActivity::class.java)
                     .putExtra(PlayerActivity.EXTRA_TITLE, label)
-                    .putExtra(PlayerActivity.EXTRA_SESSION, session)
-                    .putExtra(PlayerActivity.EXTRA_URL, "")
-                    .putExtra(PlayerActivity.EXTRA_MAGNET, magnet)
-                    .putExtra(PlayerActivity.EXTRA_LOCAL, true)
+                    .putStreamSource(magnet, directUrl, headers)
                     .putExtra(PlayerActivity.EXTRA_FILE_INDEX, fileIndex ?: -1)
                     .putExtra(PlayerActivity.EXTRA_POSTER, t.posterUrl)
                     .putExtra(PlayerActivity.EXTRA_BACKDROP, t.backdropUrl)

@@ -242,7 +242,7 @@ query GetServerInfo {
 const String GET_HOME_FEED = r'''
 query GetHomeFeed($kind: TitleKind!) {
   homeFeed(kind: $kind) {
-    trending { ...HomeTitle }
+    trending { ...HomeTitle services { id name } }
     popular { ...HomeTitle }
     recent { ...HomeTitle }
     continueWatching { ...HomeTitle }
@@ -389,8 +389,16 @@ query NextPlayback($fileId: UUID!) {
 ''';
 
 const String STREAMING_SEARCH = r'''
-query StreamingSearch($query: String!, $kind: TitleKind!, $season: Int, $episode: Int, $language: String, $titleId: UUID, $year: Int, $live: Boolean) {
-  streamingSearch(query: $query, kind: $kind, season: $season, episode: $episode, language: $language, titleId: $titleId, year: $year, live: $live) {
+query StreamingSearch($query: String!, $kind: TitleKind!, $season: Int, $episode: Int, $language: String, $titleId: UUID, $year: Int, $live: Boolean, $resolution: String) {
+  streamingSearch(query: $query, kind: $kind, season: $season, episode: $episode, language: $language, titleId: $titleId, year: $year, live: $live, resolution: $resolution) {
+    kind
+    url
+    score
+    providers
+    headers {
+      name
+      value
+    }
     id
     title
     magnet

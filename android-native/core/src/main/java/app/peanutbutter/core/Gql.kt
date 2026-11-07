@@ -4,7 +4,7 @@ object Gql {
     const val HOME_FEED = """
 query GetHomeFeed(${'$'}kind: TitleKind!) {
   homeFeed(kind: ${'$'}kind) {
-    trending { ...T }
+    trending { ...T services { id name } }
     popular { ...T }
     recent { ...T }
     continueWatching { ...T }
@@ -102,13 +102,16 @@ mutation UpdateSettings(${'$'}input: SettingsInput!) {
     const val STREAMING_SEARCH = """
 query StreamingSearch(
   ${'$'}query: String!, ${'$'}kind: TitleKind!, ${'$'}titleId: UUID,
-  ${'$'}season: Int, ${'$'}episode: Int, ${'$'}language: String, ${'$'}live: Boolean
+  ${'$'}season: Int, ${'$'}episode: Int, ${'$'}language: String, ${'$'}live: Boolean,
+  ${'$'}resolution: String
 ) {
   streamingSearch(
     query: ${'$'}query, kind: ${'$'}kind, titleId: ${'$'}titleId,
-    season: ${'$'}season, episode: ${'$'}episode, language: ${'$'}language, live: ${'$'}live
+    season: ${'$'}season, episode: ${'$'}episode, language: ${'$'}language, live: ${'$'}live,
+    resolution: ${'$'}resolution
   ) {
     id title magnet seeders peers size tracker health indexer language
+    kind url score providers headers { name value }
   }
 }
 """

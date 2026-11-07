@@ -77,7 +77,7 @@ class VlcPlayback(
         // TextureView path retired — SurfaceView avoids green 10-bit frames.
     }
 
-    override fun open(url: String, resumeMs: Long, preferSoftware: Boolean) {
+    override fun open(url: String, resumeMs: Long, preferSoftware: Boolean, headers: Map<String, String>) {
         if (mp == null || preferSoftware != software) {
             val keep = surfaceView
             releasePlayerOnly()
@@ -93,6 +93,13 @@ class VlcPlayback(
         media.addOption(":network-caching=8000")
         media.addOption(":file-caching=3000")
         media.addOption(":http-reconnect")
+        // VLC's HTTP access only takes these two request headers.
+        for ((name, value) in headers) {
+            when (name.lowercase()) {
+                "user-agent" -> media.addOption(":http-user-agent=$value")
+                "referer", "referrer" -> media.addOption(":http-referrer=$value")
+            }
+        }
         if (resumeMs > 2_000) media.addOption(":start-time=${resumeMs / 1000.0}")
         player.media = media
         media.release()

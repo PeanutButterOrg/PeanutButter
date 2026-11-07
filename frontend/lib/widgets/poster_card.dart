@@ -156,9 +156,10 @@ class _PosterCardState extends ConsumerState<PosterCard> {
                   if (item.bestQuality != null && item.bestQuality!.isNotEmpty)
                     _badge(item.bestQuality!, Colors.black87),
                   if (item.userState?.favorite == true ||
-                      item.userState?.watched == true) ...[
+                      item.userState?.watched == true ||
+                      item.services.isNotEmpty) ...[
                     const SizedBox(width: 4),
-                    _stateChip(item.userState!, compact: compact),
+                    _stateChip(item.userState, item.services, compact: compact),
                   ],
                 ],
               ),
@@ -214,17 +215,30 @@ class _PosterCardState extends ConsumerState<PosterCard> {
 
   /// Liked / watched in one chip styled like the rating chip (same dark
   /// glass, radius and height), so it sits quietly on any poster art.
-  Widget _stateChip(UserState state, {required bool compact}) {
+  /// On the Trending row it also carries the streaming services' tags.
+  Widget _stateChip(UserState? state, List<ServiceTag> services, {required bool compact}) {
     final accent = Theme.of(context).colorScheme.primary;
     final size = compact ? 12.0 : 14.0;
+    final liked = state?.favorite == true;
+    final watched = state?.watched == true;
     final icons = <Widget>[
-      if (state.favorite)
+      if (liked)
         Icon(Icons.favorite_rounded, size: size, color: Colors.white.withValues(alpha: 0.92)),
-      if (state.watched)
+      if (watched)
         Icon(Icons.check_circle_rounded, size: size, color: accent),
+      for (final s in services)
+        Text(
+          s.badge.label,
+          style: TextStyle(
+            color: Color(s.badge.color),
+            fontSize: compact ? 10 : 11,
+            fontWeight: FontWeight.w800,
+            height: 1.1,
+          ),
+        ),
     ];
     return Semantics(
-      label: [if (state.favorite) 'Liked', if (state.watched) 'Watched'].join(', '),
+      label: [if (liked) 'Liked', if (watched) 'Watched', ...services.map((s) => s.name)].join(', '),
       child: Container(
         padding: EdgeInsets.symmetric(horizontal: compact ? 5 : 6, vertical: compact ? 3 : 4),
         decoration: BoxDecoration(

@@ -116,6 +116,16 @@
                 android:src="@drawable/ic_check"
                 android:tint="@color/pb_accent"
                 android:visibility="gone" />
+
+            <!-- Trending only: the streaming services' lists it's on
+                 (filled in PosterCardPresenter.bindUserState). -->
+            <LinearLayout
+                android:id="@+id/service_badges"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:visibility="gone" />
         </LinearLayout>
 
         <LinearLayout

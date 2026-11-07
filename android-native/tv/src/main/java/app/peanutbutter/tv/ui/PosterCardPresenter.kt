@@ -10,6 +10,7 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.core.view.isVisible
 import androidx.leanback.widget.Presenter
+import app.peanutbutter.core.ServiceBadges
 import app.peanutbutter.core.TitleItem
 import app.peanutbutter.tv.PbGlide
 import app.peanutbutter.tv.R
@@ -106,7 +107,29 @@ class PosterCardPresenter(
         favoriteBadge.isVisible = title.favorite
         (watchedBadge.layoutParams as ViewGroup.MarginLayoutParams).marginStart =
             if (title.favorite) dp(root, 3) else 0
-        stateChip.isVisible = title.favorite || title.watched
+        val services = root.findViewById<LinearLayout>(R.id.service_badges)
+        services.removeAllViews()
+        title.services.forEachIndexed { i, tag ->
+            val badge = ServiceBadges.of(tag)
+            services.addView(
+                TextView(root.context).apply {
+                    text = badge.label
+                    setTextColor(badge.color)
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
+                    typeface = android.graphics.Typeface.DEFAULT_BOLD
+                    includeFontPadding = false
+                    contentDescription = tag.name
+                    layoutParams = LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ).apply {
+                        marginStart = if (i > 0 || title.favorite || title.watched) dp(root, 5) else 0
+                    }
+                },
+            )
+        }
+        services.isVisible = title.services.isNotEmpty()
+        stateChip.isVisible = title.favorite || title.watched || title.services.isNotEmpty()
 
         val p = title.watchProgress
         // Continue-watching / resume items often sit at ~1% — still show a clear bar.
