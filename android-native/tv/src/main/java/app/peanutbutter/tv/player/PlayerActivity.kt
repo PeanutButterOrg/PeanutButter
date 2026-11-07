@@ -109,6 +109,9 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
 
     private var segments: List<MediaSegment> = emptyList()
     private var activeSegment: MediaSegment? = null
+    /** Just skipped: until the seek lands the position is still inside it, which
+     *  brought Skip back for a few seconds. Cleared once playback leaves it. */
+    private var skippedSegment: MediaSegment? = null
     private var playNextVisible = false
     private var segmentsLoaded = false
     private var segmentDurationMs = -1
@@ -1291,8 +1294,10 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         // During a seek use its target: the old position would bring Skip straight back.
         val pos = (if (seekTargetMs >= 0) seekTargetMs else mp.time).toInt()
         val dur = mp.length.toInt()
+        skippedSegment?.let { if (!it.contains(pos, dur)) skippedSegment = null }
         val opening = segments.firstOrNull {
-            (it.kind.equals("INTRO", true) || it.kind.equals("RECAP", true)) && it.contains(pos, dur)
+            (it.kind.equals("INTRO", true) || it.kind.equals("RECAP", true)) &&
+                it.contains(pos, dur) && it != skippedSegment
         }
         activeSegment = opening
         val showSkip = opening != null
@@ -1521,6 +1526,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         val mp = player ?: return
         val dur = mp.length.toInt()
         val target = seg.skipTargetMs(dur).toLong()
+        skippedSegment = seg
         activeSegment = null
         // Hide chip after the pulse; keep focus on root so transport doesn't steal it.
         btnSkip?.isVisible = false

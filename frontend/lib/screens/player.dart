@@ -272,6 +272,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   /// TheIntroDB skip segments (intro / recap / credits / preview).
   List<MediaSegment> _segments = const [];
   MediaSegment? _activeSegment;
+  /// The segment the user just skipped. Until the seek lands the reported
+  /// position is still inside it, which brought Skip back for a few seconds.
+  MediaSegment? _skippedSegment;
   int _durationMs = 0;
   int _lastSegmentFetchDuration = -1;
   bool _segmentsLoading = false;
@@ -1744,6 +1747,19 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
       }
       if (hit != null) break;
     }
+    final skipped = _skippedSegment;
+    if (skipped != null) {
+      final d = duration > 0 ? duration : _durationMs;
+      if (!skipped.contains(positionMs, durationMs: d)) {
+        // Playback has left it; rewinding into it later offers Skip again.
+        _skippedSegment = null;
+      } else if (hit != null &&
+          hit.kind == skipped.kind &&
+          hit.startMs == skipped.startMs &&
+          hit.endMs == skipped.endMs) {
+        hit = null;
+      }
+    }
     if (hit?.kind != _activeSegment?.kind ||
         hit?.startMs != _activeSegment?.startMs ||
         hit?.endMs != _activeSegment?.endMs) {
@@ -2320,6 +2336,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     final duration = _playbackDurationMs();
     final targetMs = seg.skipTargetMs(durationMs: duration);
     final target = Duration(milliseconds: targetMs < 0 ? 0 : targetMs);
+    _skippedSegment = seg;
     if (mounted) {
       setState(() => _activeSegment = null);
       _notifyOverlays();
