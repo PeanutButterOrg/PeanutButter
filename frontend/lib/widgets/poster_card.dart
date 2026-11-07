@@ -217,12 +217,16 @@ class _PosterCardState extends ConsumerState<PosterCard> {
 
   /// The service's logo in its colour; a short text mark when there's no logo.
   Widget _serviceMark(ServiceTag s, {required double size, required bool compact}) {
+    final hex = (s.badge.color & 0xFFFFFF).toRadixString(16).padLeft(6, '0');
     final logo = serviceLogoPaths[s.id];
-    if (logo != null) {
-      final hex = (s.badge.color & 0xFFFFFF).toRadixString(16).padLeft(6, '0');
+    final outline = serviceLogoStrokePaths[s.id];
+    if (logo != null || outline != null) {
+      final path = logo != null
+          ? '<path fill="#$hex" d="$logo"/>'
+          : '<path fill="none" stroke="#$hex" stroke-width="2" stroke-linecap="round" '
+              'stroke-linejoin="round" d="$outline"/>';
       return SvgPicture.string(
-        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
-        '<path fill="#$hex" d="$logo"/></svg>',
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">$path</svg>',
         width: size,
         height: size,
       );

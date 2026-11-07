@@ -183,6 +183,7 @@ class PosterCardPresenter(
         /** Services with a logo (Simple Icons); the rest keep their text mark. Same set as Flutter. */
         private val SERVICE_LOGOS = mapOf(
             "netflix" to R.drawable.ic_service_netflix,
+            "disney" to R.drawable.ic_service_disney,
             "hbo" to R.drawable.ic_service_hbo,
             "apple" to R.drawable.ic_service_apple,
             "paramount" to R.drawable.ic_service_paramount,
