@@ -118,13 +118,13 @@ class PosterCardPresenter(
                 ImageView(root.context).apply {
                     setImageResource(logo)
                     imageTintList = android.content.res.ColorStateList.valueOf(badge.color)
-                    layoutParams = LinearLayout.LayoutParams(dp(root, 13), dp(root, 13))
+                    layoutParams = LinearLayout.LayoutParams(dp(root, 16), dp(root, 16))
                 }
             } else {
                 TextView(root.context).apply {
                     text = badge.label
                     setTextColor(badge.color)
-                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
                     typeface = android.graphics.Typeface.DEFAULT_BOLD
                     includeFontPadding = false
                     layoutParams = LinearLayout.LayoutParams(

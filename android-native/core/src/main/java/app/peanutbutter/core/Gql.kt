@@ -223,7 +223,7 @@ query GetCatalog(
     totalCount
     hasNextPage
     page
-    items { ...T }
+    items { ...T services { id name } }
   }
 }
 fragment T on Title {

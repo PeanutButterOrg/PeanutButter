@@ -67,6 +67,8 @@ query GetCatalog(
         episodeId
         progressPercent
       }
+      # Trending only: the service logos, as on the home row.
+      services { id name }
     }
   }
 }

@@ -239,7 +239,7 @@ class _PosterCardState extends ConsumerState<PosterCard> {
       s.badge.label,
       style: TextStyle(
         color: Color(s.badge.color),
-        fontSize: compact ? 10 : 11,
+        fontSize: compact ? 11 : 13,
         fontWeight: FontWeight.w800,
         height: 1.1,
       ),
@@ -250,7 +250,7 @@ class _PosterCardState extends ConsumerState<PosterCard> {
   /// glass, radius and height), so it sits quietly on any poster art.
   Widget _stateChip(UserState state, {required bool compact}) {
     final accent = Theme.of(context).colorScheme.primary;
-    final size = compact ? 12.0 : 14.0;
+    final size = compact ? 14.0 : 17.0;
     final icons = <Widget>[
       if (state.favorite)
         Icon(Icons.favorite_rounded, size: size, color: Colors.white.withValues(alpha: 0.92)),
@@ -280,7 +280,7 @@ class _PosterCardState extends ConsumerState<PosterCard> {
       label: service.name,
       child: _glassChip(
         compact: compact,
-        child: _serviceMark(service, size: compact ? 12.0 : 14.0, compact: compact),
+        child: _serviceMark(service, size: compact ? 14.0 : 17.0, compact: compact),
       ),
     );
   }

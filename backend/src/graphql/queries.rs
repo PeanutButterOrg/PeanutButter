@@ -132,8 +132,14 @@ impl Query {
         let db_has_next = (offset as i64) + (rows.len() as i64) < total_count;
         // Keep scrolling enabled while TMDB still has deeper shelf pages to cache.
         let has_next_page = db_has_next || remote_has_more;
+        let mut items: Vec<Title> =
+            rows.into_iter().map(|r| Title::from_row(r, &state.config.public_url)).collect();
+        // "See all" on Trending: the same service logos as the home row.
+        if sort == SortField::Trending {
+            attach_services(&state.pool, &mut items).await?;
+        }
         Ok(TitleConnection {
-            items: rows.into_iter().map(|r| Title::from_row(r, &state.config.public_url)).collect(),
+            items,
             total_count,
             has_next_page,
             page,
@@ -955,6 +961,31 @@ async fn fetch_home_row(
         .into_iter()
         .map(|r| Title::from_row(r, public_url))
         .collect())
+}
+
+/// Tag each title that's on a catalog add-on list with its services, best-ranked
+/// list first (see `crate::addon_catalogs::tags`).
+async fn attach_services(pool: &sqlx::PgPool, titles: &mut [Title]) -> sqlx::Result<()> {
+    if titles.is_empty() {
+        return Ok(());
+    }
+    let ids: Vec<Uuid> = titles.iter().map(|t| t.id).collect();
+    let rows: Vec<(Uuid, String, i32)> = sqlx::query_as(
+        "SELECT t.id, a.service, a.rank FROM addon_catalog_items a \
+         JOIN titles t ON t.imdb_id = a.imdb_id \
+         WHERE t.id = ANY($1) \
+           AND a.media = CASE WHEN t.kind = 'movie' THEN 'movie' ELSE 'series' END",
+    )
+    .bind(&ids)
+    .fetch_all(pool)
+    .await?;
+    let tags = crate::addon_catalogs::tags(&rows);
+    for t in titles.iter_mut() {
+        if let Some(list) = tags.get(&t.id) {
+            t.services = list.clone();
+        }
+    }
+    Ok(())
 }
 
 /// The Trending row with a few titles from catalog add-on lists mixed in
