@@ -112,22 +112,31 @@ class PosterCardPresenter(
         // One mark is enough, even when the title is on several services.
         title.services.take(1).forEachIndexed { i, tag ->
             val badge = ServiceBadges.of(tag)
-            services.addView(
+            val logo = SERVICE_LOGOS[tag.id]
+            // The service's logo in its colour; a short text mark when there's no logo.
+            val mark: View = if (logo != null) {
+                ImageView(root.context).apply {
+                    setImageResource(logo)
+                    imageTintList = android.content.res.ColorStateList.valueOf(badge.color)
+                    layoutParams = LinearLayout.LayoutParams(dp(root, 13), dp(root, 13))
+                }
+            } else {
                 TextView(root.context).apply {
                     text = badge.label
                     setTextColor(badge.color)
                     setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
                     typeface = android.graphics.Typeface.DEFAULT_BOLD
                     includeFontPadding = false
-                    contentDescription = tag.name
                     layoutParams = LinearLayout.LayoutParams(
                         ViewGroup.LayoutParams.WRAP_CONTENT,
                         ViewGroup.LayoutParams.WRAP_CONTENT,
-                    ).apply {
-                        marginStart = if (i > 0 || title.favorite || title.watched) dp(root, 5) else 0
-                    }
-                },
-            )
+                    )
+                }
+            }
+            mark.contentDescription = tag.name
+            (mark.layoutParams as LinearLayout.LayoutParams).marginStart =
+                if (i > 0 || title.favorite || title.watched) dp(root, 5) else 0
+            services.addView(mark)
         }
         services.isVisible = title.services.isNotEmpty()
         stateChip.isVisible = title.favorite || title.watched || title.services.isNotEmpty()
@@ -171,6 +180,18 @@ class PosterCardPresenter(
         if (heightPx > 0) heightPx else dp(host, CARD_H)
 
     companion object {
+        /** Services with a logo (Simple Icons); the rest keep their text mark. Same set as Flutter. */
+        private val SERVICE_LOGOS = mapOf(
+            "netflix" to R.drawable.ic_service_netflix,
+            "hbo" to R.drawable.ic_service_hbo,
+            "apple" to R.drawable.ic_service_apple,
+            "paramount" to R.drawable.ic_service_paramount,
+            "crunchyroll" to R.drawable.ic_service_crunchyroll,
+            "mubi" to R.drawable.ic_service_mubi,
+            "starz" to R.drawable.ic_service_starz,
+            "showtime" to R.drawable.ic_service_showtime,
+        )
+
         const val CARD_W = 168
         const val CARD_H = 252
         /** Focused cards grow by this much; grids/rows reserve room for it. */

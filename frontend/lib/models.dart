@@ -265,8 +265,8 @@ class ServiceTag {
   final String id;
   final String name;
 
-  /// Short text mark in the service's colour (ARGB), not its logo. Same
-  /// table as the TV app's `ServiceBadges`.
+  /// The service's colour (ARGB) and a short text mark, used where there's no
+  /// logo in service_logos.dart. Same table as the TV app's `ServiceBadges`.
   ({String label, int color}) get badge {
     const known = <String, ({String label, int color})>{
       'netflix': (label: 'N', color: 0xFFE50914),

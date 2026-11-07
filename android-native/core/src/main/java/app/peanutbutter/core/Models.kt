@@ -239,8 +239,8 @@ data class HomeFeed(
 data class ServiceTag(val id: String, val name: String)
 
 /**
- * How each service's tag looks: a short text mark in the service's colour
- * (not its logo). Same table as the desktop and phone apps.
+ * Each service's colour, and a short text mark for services without a logo
+ * (see PosterCardPresenter.SERVICE_LOGOS). Same table as the desktop and phone apps.
  */
 object ServiceBadges {
     data class Badge(val label: String, val color: Int)

@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:go_router/go_router.dart';
 
 import '../models.dart';
+import '../service_logos.dart';
 import '../theme.dart';
 import '../tv.dart';
 import 'cached_art.dart';
@@ -213,6 +215,29 @@ class _PosterCardState extends ConsumerState<PosterCard> {
     return (state.positionMs / duration).clamp(0.0, 1.0);
   }
 
+  /// The service's logo in its colour; a short text mark when there's no logo.
+  Widget _serviceMark(ServiceTag s, {required double size, required bool compact}) {
+    final logo = serviceLogoPaths[s.id];
+    if (logo != null) {
+      final hex = (s.badge.color & 0xFFFFFF).toRadixString(16).padLeft(6, '0');
+      return SvgPicture.string(
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
+        '<path fill="#$hex" d="$logo"/></svg>',
+        width: size,
+        height: size,
+      );
+    }
+    return Text(
+      s.badge.label,
+      style: TextStyle(
+        color: Color(s.badge.color),
+        fontSize: compact ? 10 : 11,
+        fontWeight: FontWeight.w800,
+        height: 1.1,
+      ),
+    );
+  }
+
   /// Liked / watched in one chip styled like the rating chip (same dark
   /// glass, radius and height), so it sits quietly on any poster art.
   /// On the Trending row it also carries one streaming service's mark.
@@ -227,16 +252,7 @@ class _PosterCardState extends ConsumerState<PosterCard> {
       if (watched)
         Icon(Icons.check_circle_rounded, size: size, color: accent),
       // One mark is enough, even when the title is on several services.
-      for (final s in services.take(1))
-        Text(
-          s.badge.label,
-          style: TextStyle(
-            color: Color(s.badge.color),
-            fontSize: compact ? 10 : 11,
-            fontWeight: FontWeight.w800,
-            height: 1.1,
-          ),
-        ),
+      for (final s in services.take(1)) _serviceMark(s, size: size, compact: compact),
     ];
     return Semantics(
       label: [if (liked) 'Liked', if (watched) 'Watched', ...services.take(1).map((s) => s.name)].join(', '),
