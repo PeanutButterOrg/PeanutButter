@@ -107,6 +107,22 @@ fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
     })
 }
 
+
+/// An add-on's address for the console: scheme and host only. Configured links
+/// carry the add-on's settings (sometimes API keys) in the path, and their
+/// length pushed the add-on table out of its card.
+fn addon_display_url(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return url.to_string();
+    };
+    let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
+    let path = path.trim_end_matches('/');
+    if path.is_empty() || path == "manifest.json" {
+        format!("{scheme}://{host}")
+    } else {
+        format!("{scheme}://{host} · configured")
+    }
+}
 pub async fn has_session(state: &HttpState, headers: &HeaderMap) -> bool {
     session_ok(state, headers).await
 }
@@ -1369,7 +1385,7 @@ async fn dashboard(
         };
         let mut rows = format!(
             r#"<tr>
-                  <td><strong>Jackett</strong><div class="muted">{url}</div></td>
+                  <td class="source-cell"><strong>Jackett</strong><div class="muted">{url}</div></td>
                   <td><span class="pill{pill}">{state}</span></td>
                   <td class="row-actions">
                     <form method="post" action="/" class="inline-tight">
@@ -1389,7 +1405,7 @@ async fn dashboard(
         for a in &p.addons {
             rows.push_str(&format!(
                 r#"<tr>
-                  <td><strong>{name}</strong><div class="muted">Stremio add-on · {what} · {url}</div></td>
+                  <td class="source-cell"><strong>{name}</strong><div class="muted">Stremio add-on · {what} · {url}</div></td>
                   <td><span class="pill{pill}">{state}</span></td>
                   <td class="row-actions">
                     <form method="post" action="/" class="inline-tight">
@@ -1415,7 +1431,7 @@ async fn dashboard(
                     }
                 },
                 name_js = html_escape(&a.name).replace('\'', ""),
-                url = html_escape(&a.url),
+                url = html_escape(&addon_display_url(&a.url)),
                 id = html_escape(&a.id),
                 pill = if a.enabled { " ok" } else { "" },
                 state = if a.enabled { "On" } else { "Off" },
@@ -2309,6 +2325,8 @@ fn shell(title: &str, body: &str, authed: bool) -> String {
   table.catalog tbody tr {{ transition: background 0.12s; }}
   table.catalog tbody tr:hover {{ background: #ffffff06; }}
   table.catalog .actions-cell, td.row-actions {{ width: 1%; white-space: nowrap; text-align: right; }}
+  /* Long add-on links wrap instead of pushing the buttons out of the card. */
+  table.catalog td.source-cell {{ overflow-wrap: anywhere; }}
   table.catalog .actions-cell form {{ margin: 0; }}
   table.catalog .check-cell {{ width: 2.4rem; text-align: center; }}
   table.catalog .check-cell input {{ width: 1rem; height: 1rem; }}
@@ -2342,6 +2360,19 @@ fn shell(title: &str, body: &str, authed: bool) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn addon_urls_show_only_the_host() {
+        assert_eq!(addon_display_url("https://torrentio.strem.fun"), "https://torrentio.strem.fun");
+        assert_eq!(
+            addon_display_url("https://torrentio.strem.fun/manifest.json"),
+            "https://torrentio.strem.fun"
+        );
+        assert_eq!(
+            addon_display_url("https://hdhub.example.io/eyJ0b3Jib3gi0iJ1bnNldCIsInF1YWxp/manifest.json"),
+            "https://hdhub.example.io · configured"
+        );
+        assert_eq!(addon_display_url("not a url"), "not a url");
+    }
     use super::*;
 
     #[test]
