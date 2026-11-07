@@ -265,25 +265,26 @@ class ServiceTag {
   final String id;
   final String name;
 
-  /// The service's colour (ARGB) and a short text mark, used where there's no
+  /// The service's brand colour (ARGB; white where the brand is black, so it
+  /// shows on the dark chip) and a short text mark, used where there's no
   /// logo in service_logos.dart. Same table as the TV app's `ServiceBadges`.
   ({String label, int color}) get badge {
     const known = <String, ({String label, int color})>{
       'netflix': (label: 'N', color: 0xFFE50914),
-      'hbo': (label: 'HBO', color: 0xFFA66BFF),
-      'disney': (label: 'D+', color: 0xFF5B8CFF),
-      'prime': (label: 'prime', color: 0xFF1FB6F0),
+      'hbo': (label: 'HBO', color: 0xFFFFFFFF),
+      'disney': (label: 'D+', color: 0xFF0063E5),
+      'prime': (label: 'prime', color: 0xFF00A8E1),
       'apple': (label: 'tv+', color: 0xFFFFFFFF),
       'hulu': (label: 'hulu', color: 0xFF1CE783),
-      'paramount': (label: 'P+', color: 0xFF4D8DFF),
-      'peacock': (label: 'P', color: 0xFFFFD23F),
-      'crunchyroll': (label: 'CR', color: 0xFFF47521),
+      'paramount': (label: 'P+', color: 0xFF0064FF),
+      'peacock': (label: 'P', color: 0xFFFFFFFF),
+      'crunchyroll': (label: 'CR', color: 0xFFFF5E00),
       'hotstar': (label: 'HS', color: 0xFF3D9BFF),
-      'zee5': (label: 'Z5', color: 0xFFB46CFF),
+      'zee5': (label: 'Z5', color: 0xFF8230C6),
       'sonyliv': (label: 'SL', color: 0xFFFFFFFF),
       'mubi': (label: 'MUBI', color: 0xFFFFFFFF),
       'starz': (label: 'STARZ', color: 0xFFFFFFFF),
-      'showtime': (label: 'SHO', color: 0xFFFF3B3B),
+      'showtime': (label: 'SHO', color: 0xFFB10000),
     };
     final hit = known[id];
     if (hit != null) return hit;

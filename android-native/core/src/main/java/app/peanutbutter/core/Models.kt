@@ -239,7 +239,8 @@ data class HomeFeed(
 data class ServiceTag(val id: String, val name: String)
 
 /**
- * Each service's colour, and a short text mark for services without a logo
+ * Each service's brand colour (white where the brand is black, so it shows on
+ * the dark chip), and a short text mark for services without a logo
  * (see PosterCardPresenter.SERVICE_LOGOS). Same table as the desktop and phone apps.
  */
 object ServiceBadges {
@@ -247,20 +248,20 @@ object ServiceBadges {
 
     private val KNOWN: Map<String, Badge> = mapOf(
         "netflix" to Badge("N", 0xFFE50914.toInt()),
-        "hbo" to Badge("HBO", 0xFFA66BFF.toInt()),
-        "disney" to Badge("D+", 0xFF5B8CFF.toInt()),
-        "prime" to Badge("prime", 0xFF1FB6F0.toInt()),
+        "hbo" to Badge("HBO", 0xFFFFFFFF.toInt()),
+        "disney" to Badge("D+", 0xFF0063E5.toInt()),
+        "prime" to Badge("prime", 0xFF00A8E1.toInt()),
         "apple" to Badge("tv+", 0xFFFFFFFF.toInt()),
         "hulu" to Badge("hulu", 0xFF1CE783.toInt()),
-        "paramount" to Badge("P+", 0xFF4D8DFF.toInt()),
-        "peacock" to Badge("P", 0xFFFFD23F.toInt()),
-        "crunchyroll" to Badge("CR", 0xFFF47521.toInt()),
+        "paramount" to Badge("P+", 0xFF0064FF.toInt()),
+        "peacock" to Badge("P", 0xFFFFFFFF.toInt()),
+        "crunchyroll" to Badge("CR", 0xFFFF5E00.toInt()),
         "hotstar" to Badge("HS", 0xFF3D9BFF.toInt()),
-        "zee5" to Badge("Z5", 0xFFB46CFF.toInt()),
+        "zee5" to Badge("Z5", 0xFF8230C6.toInt()),
         "sonyliv" to Badge("SL", 0xFFFFFFFF.toInt()),
         "mubi" to Badge("MUBI", 0xFFFFFFFF.toInt()),
         "starz" to Badge("STARZ", 0xFFFFFFFF.toInt()),
-        "showtime" to Badge("SHO", 0xFFFF3B3B.toInt()),
+        "showtime" to Badge("SHO", 0xFFB10000.toInt()),
     )
 
     fun of(tag: ServiceTag): Badge = KNOWN[tag.id]
