@@ -5,7 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:graphql_flutter/graphql_flutter.dart';
 
-import '../graphql/client.dart';
+import '../providers/settings.dart';
 import '../graphql/queries.dart';
 
 /// A new episode of a series this device follows ("Notify me").
