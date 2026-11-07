@@ -16,7 +16,7 @@
 //! mount (`PB_CONTROL_DIR`), so nothing has to be configured by hand.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -39,12 +39,19 @@ pub struct ServerUpdateStatus {
     pub managed: bool,
     pub auto: bool,
     pub busy: bool,
+    /// Where a running update is: [STAGE_BACKUP] or [STAGE_DOWNLOAD]; 0 when idle.
+    /// The restart that follows can't be reported: this process is the one restarting.
+    pub stage: u8,
     pub message: Option<String>,
     pub last_backup: Option<String>,
 }
 
+pub const STAGE_BACKUP: u8 = 1;
+pub const STAGE_DOWNLOAD: u8 = 2;
+
 struct State {
     busy: AtomicBool,
+    stage: AtomicU8,
     auto: AtomicBool,
     message: Mutex<Option<String>>,
     last_backup: Mutex<Option<String>>,
@@ -55,6 +62,7 @@ fn state() -> &'static State {
     static S: OnceLock<State> = OnceLock::new();
     S.get_or_init(|| State {
         busy: AtomicBool::new(false),
+        stage: AtomicU8::new(0),
         auto: AtomicBool::new(false),
         message: Mutex::new(None),
         last_backup: Mutex::new(None),
@@ -191,6 +199,7 @@ pub async fn status() -> ServerUpdateStatus {
         managed: watchtower_url().is_some() && token_path().exists(),
         auto: s.auto.load(Ordering::Relaxed),
         busy: s.busy.load(Ordering::Relaxed),
+        stage: if s.busy.load(Ordering::Relaxed) { s.stage.load(Ordering::Relaxed) } else { 0 },
         message: s.message.lock().unwrap_or_else(|e| e.into_inner()).clone(),
         last_backup: s.last_backup.lock().unwrap_or_else(|e| e.into_inner()).clone(),
     }
@@ -218,6 +227,7 @@ pub async fn update_now(http: &reqwest::Client) -> Result<String> {
     let http = http.clone();
     // On its own task: the console page used to wait for the whole backup.
     tokio::spawn(async move {
+        state().stage.store(STAGE_BACKUP, Ordering::SeqCst);
         set_message("Backing up the database…".to_string());
         match backup().await {
             Ok(path) => {
@@ -231,6 +241,7 @@ pub async fn update_now(http: &reqwest::Client) -> Result<String> {
                 return;
             }
         }
+        state().stage.store(STAGE_DOWNLOAD, Ordering::SeqCst);
         set_message(format!(
             "Downloading {latest}… the server restarts by itself when it's ready."
         ));

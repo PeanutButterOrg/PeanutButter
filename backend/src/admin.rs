@@ -289,27 +289,54 @@ document.addEventListener('DOMContentLoaded', function () {
   if (!appsBox || window.__pbUpdatePoll) return;
   window.__pbUpdatePoll = true;
   var fill = document.getElementById('apps-update-fill');
+  var pct = document.getElementById('apps-update-pct');
   var text = document.getElementById('apps-update-text');
   var serverBox = document.getElementById('server-update-progress');
   var wasBusy = false;
+  var serverBusy = serverBox && !serverBox.hidden;
   function mb(n) { return Math.round(n / 1048576) + ' MB'; }
+  // Server update steps: 1 back up, 2 download, 3 restart. The restart can't be
+  // reported by the server (it's the one restarting): it shows when it stops answering.
+  var STAGE_PERCENT = { 1: 15, 2: 50, 3: 85 };
+  function serverStage(stage, message) {
+    if (!serverBox) return;
+    serverBox.hidden = false;
+    var p = STAGE_PERCENT[stage] || 10;
+    document.getElementById('server-update-fill').style.width = p + '%';
+    document.getElementById('server-update-pct').textContent = p + '%';
+    var steps = serverBox.querySelectorAll('[data-step]');
+    for (var i = 0; i < steps.length; i++) {
+      var n = Number(steps[i].getAttribute('data-step'));
+      steps[i].className = n < stage ? 'done' : n === stage ? 'current' : '';
+    }
+    if (message) document.getElementById('server-update-text').textContent = message;
+  }
+  function restarting() {
+    if (serverBusy) serverStage(3, 'Restarting with the new version… this page reloads when it\'s back.');
+  }
   function tick() {
     if (document.hidden) return;
     fetch('/updates/progress', { credentials: 'same-origin', cache: 'no-store' })
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (p) {
-        if (!p) return;
+        if (!p) { restarting(); return; }
         appsBox.hidden = !p.apps.busy;
-        serverBox.hidden = !p.server.busy;
+        if (p.server.busy) {
+          serverBusy = true;
+          serverStage(p.server.stage || 1, p.server.message);
+        } else if (serverBox) {
+          serverBox.hidden = true;
+        }
         if (p.apps.busy) {
           fill.style.width = p.apps.percent + '%';
-          text.textContent = p.apps.percent + '%  ·  ' + mb(p.apps.done) + ' of ' + mb(p.apps.total) +
+          pct.textContent = p.apps.percent + '%';
+          text.textContent = mb(p.apps.done) + ' of ' + mb(p.apps.total) +
             (p.apps.file ? '  ·  ' + p.apps.file : '');
         }
         if (wasBusy && !p.apps.busy && !p.server.busy) location.reload();
         wasBusy = p.apps.busy || p.server.busy;
       })
-      .catch(function () {});
+      .catch(restarting);
   }
   tick();
   setInterval(tick, 1500);
@@ -419,6 +446,7 @@ pub async fn update_progress(
         },
         "server": {
             "busy": server.busy,
+            "stage": server.stage,
             "message": server.message,
             "running": server.running,
         },
@@ -1542,14 +1570,32 @@ The database is backed up first. Apps reconnect on their own after about a minut
             r#"<div class="row-head"><h2>Server</h2>{pill}</div>
           <p class="lead">Running <strong>{running}</strong>. {latest_line} The console updates together with the server.</p>
           {message}
-          <div id="server-update-progress" {server_hidden}>
-            <div class="sync-bar indeterminate"><span></span></div>
+          <div id="server-update-progress" class="update-progress" {server_hidden}>
+            <div class="update-progress-head">
+              <strong>Updating to {target}</strong>
+              <span class="muted" id="server-update-pct">{stage_pct}%</span>
+            </div>
+            <div class="sync-bar"><span id="server-update-fill" style="width:{stage_pct}%"></span></div>
+            <ol class="update-steps">
+              <li data-step="1" class="{step1}">Back up</li>
+              <li data-step="2" class="{step2}">Download</li>
+              <li data-step="3">Restart</li>
+            </ol>
+            <p class="muted update-progress-text" id="server-update-text">{stage_text}</p>
           </div>
           {controls}
           {backup}
           {watcher}
           <script>{progress_js}</script>"#,
             server_hidden = if su.busy { "" } else { "hidden" },
+            target = html_escape(su.latest.as_deref().unwrap_or("the new version")),
+            stage_pct = match su.stage {
+                crate::server_update::STAGE_DOWNLOAD => 50,
+                _ => 15,
+            },
+            step1 = if su.stage >= crate::server_update::STAGE_DOWNLOAD { "done" } else { "current" },
+            step2 = if su.stage == crate::server_update::STAGE_DOWNLOAD { "current" } else { "" },
+            stage_text = html_escape(su.message.as_deref().unwrap_or("Starting…")),
             progress_js = UPDATE_PROGRESS_JS,
             pill = if su.update_available {
                 r#"<span class="pill warn">Update available</span>"#
@@ -1586,9 +1632,13 @@ The database is backed up first. Apps reconnect on their own after about a minut
             r#"<h2 style="margin-top:1.6rem">App updates</h2>
           <p class="lead">Signed releases from <code>{repo}</code> are mirrored here every few hours; apps on this network update from this server. {state}</p>
           {error}
-          <div id="apps-update-progress" {hidden}>
+          <div id="apps-update-progress" class="update-progress" {hidden}>
+            <div class="update-progress-head">
+              <strong>Downloading the new apps</strong>
+              <span class="muted" id="apps-update-pct">{pct}%</span>
+            </div>
             <div class="sync-bar"><span id="apps-update-fill" style="width:{pct}%"></span></div>
-            <p class="muted" id="apps-update-text"></p>
+            <p class="muted update-progress-text" id="apps-update-text"></p>
           </div>
           <form method="post" action="/" class="grid-form">
             <input type="hidden" name="action" value="check_updates" />
@@ -2302,6 +2352,18 @@ fn shell(title: &str, body: &str, authed: bool) -> String {
   .sync-bar {{ height: 10px; border-radius: 999px; background: #ffffff10; overflow: hidden; }}
   .sync-bar > span {{ display: block; height: 100%; width: 0; border-radius: 999px; background: linear-gradient(90deg, #3d6fb8, var(--accent)); transition: width 0.35s ease; }}
   .sync-bar.indeterminate > span {{ width: 35%; animation: pb-slide 1.3s ease-in-out infinite; }}
+  /* Server / app update progress: its own framed panel, spaced from the text around it. */
+  .update-progress {{ margin: 1rem 0 1.25rem; padding: 0.95rem 1.05rem 0.85rem; border: 1px solid var(--line); border-radius: 12px; background: #ffffff05; }}
+  .update-progress-head {{ display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; margin-bottom: 0.65rem; }}
+  .update-progress-head .muted {{ font-variant-numeric: tabular-nums; }}
+  .update-progress-text {{ margin: 0.6rem 0 0; overflow-wrap: anywhere; }}
+  .update-steps {{ display: flex; flex-wrap: wrap; gap: 0.4rem 1.4rem; list-style: none; margin: 0.75rem 0 0; padding: 0; font-size: 0.86rem; color: var(--muted); }}
+  .update-steps li {{ display: flex; align-items: center; gap: 0.45rem; }}
+  .update-steps li::before {{ content: ""; width: 8px; height: 8px; border-radius: 50%; background: #ffffff26; }}
+  .update-steps li.done {{ color: var(--ink); }}
+  .update-steps li.done::before {{ background: var(--accent); }}
+  .update-steps li.current {{ color: var(--ink); font-weight: 650; }}
+  .update-steps li.current::before {{ background: var(--accent); box-shadow: 0 0 0 4px #ffffff14; }}
   @keyframes pb-slide {{ from {{ margin-left: -35%; }} to {{ margin-left: 100%; }} }}
   .sync-meta {{ display: flex; justify-content: space-between; gap: 1rem; margin-top: 0.55rem; color: var(--muted); }}
   .sync-meta strong {{ color: var(--ink); font-size: 1.15rem; }}
