@@ -81,14 +81,20 @@
                 android:textStyle="bold" />
         </LinearLayout>
 
-        <!-- Liked / watched: one chip styled like the score chip (same glass,
-             radius, height), matching the desktop apps. -->
+        <!-- Top-right column: liked / watched chip, then the streaming service's
+             logo in a chip of its own. Both styled like the score chip. -->
         <LinearLayout
-            android:id="@+id/state_chip"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_gravity="top|end"
             android:layout_margin="6dp"
+            android:gravity="end"
+            android:orientation="vertical">
+
+        <LinearLayout
+            android:id="@+id/state_chip"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
             android:background="@drawable/badge_score"
             android:gravity="center_vertical"
             android:orientation="horizontal"
@@ -116,16 +122,23 @@
                 android:src="@drawable/ic_check"
                 android:tint="@color/pb_accent"
                 android:visibility="gone" />
+        </LinearLayout>
 
-            <!-- Trending only: the streaming services' lists it's on
-                 (filled in PosterCardPresenter.bindUserState). -->
-            <LinearLayout
-                android:id="@+id/service_badges"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:gravity="center_vertical"
-                android:orientation="horizontal"
-                android:visibility="gone" />
+        <!-- Trending only: the streaming service's logo
+             (filled in PosterCardPresenter.bindUserState). -->
+        <LinearLayout
+            android:id="@+id/service_badges"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:background="@drawable/badge_score"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="5dp"
+            android:paddingTop="3dp"
+            android:paddingEnd="5dp"
+            android:paddingBottom="3dp"
+            android:visibility="gone" />
         </LinearLayout>
 
         <LinearLayout

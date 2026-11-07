@@ -158,13 +158,20 @@ class _PosterCardState extends ConsumerState<PosterCard> {
                   if (item.bestQuality != null && item.bestQuality!.isNotEmpty)
                     _badge(item.bestQuality!, Colors.black87),
                   if (item.userState?.favorite == true ||
-                      item.userState?.watched == true ||
-                      item.services.isNotEmpty) ...[
+                      item.userState?.watched == true) ...[
                     const SizedBox(width: 4),
-                    _stateChip(item.userState, item.services, compact: compact),
+                    _stateChip(item.userState!, compact: compact),
                   ],
                 ],
               ),
+              // The streaming service's logo in a chip of its own, under liked / watched.
+              if (item.services.isNotEmpty) ...[
+                const SizedBox(height: 4),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: _serviceChip(item.services.first, compact: compact),
+                ),
+              ],
               const Spacer(),
               Text(
                 item.title,
@@ -244,28 +251,19 @@ class _PosterCardState extends ConsumerState<PosterCard> {
 
   /// Liked / watched in one chip styled like the rating chip (same dark
   /// glass, radius and height), so it sits quietly on any poster art.
-  /// On the Trending row it also carries one streaming service's mark.
-  Widget _stateChip(UserState? state, List<ServiceTag> services, {required bool compact}) {
+  Widget _stateChip(UserState state, {required bool compact}) {
     final accent = Theme.of(context).colorScheme.primary;
     final size = compact ? 12.0 : 14.0;
-    final liked = state?.favorite == true;
-    final watched = state?.watched == true;
     final icons = <Widget>[
-      if (liked)
+      if (state.favorite)
         Icon(Icons.favorite_rounded, size: size, color: Colors.white.withValues(alpha: 0.92)),
-      if (watched)
+      if (state.watched)
         Icon(Icons.check_circle_rounded, size: size, color: accent),
-      // One mark is enough, even when the title is on several services.
-      for (final s in services.take(1)) _serviceMark(s, size: size, compact: compact),
     ];
     return Semantics(
-      label: [if (liked) 'Liked', if (watched) 'Watched', ...services.take(1).map((s) => s.name)].join(', '),
-      child: Container(
-        padding: EdgeInsets.symmetric(horizontal: compact ? 5 : 6, vertical: compact ? 3 : 4),
-        decoration: BoxDecoration(
-          color: Colors.black.withValues(alpha: 0.72),
-          borderRadius: BorderRadius.circular(compact ? 6 : 8),
-        ),
+      label: [if (state.favorite) 'Liked', if (state.watched) 'Watched'].join(', '),
+      child: _glassChip(
+        compact: compact,
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -276,6 +274,28 @@ class _PosterCardState extends ConsumerState<PosterCard> {
           ],
         ),
       ),
+    );
+  }
+
+  /// Trending only: one streaming service (the list it ranks highest on).
+  Widget _serviceChip(ServiceTag service, {required bool compact}) {
+    return Semantics(
+      label: service.name,
+      child: _glassChip(
+        compact: compact,
+        child: _serviceMark(service, size: compact ? 12.0 : 14.0, compact: compact),
+      ),
+    );
+  }
+
+  Widget _glassChip({required Widget child, required bool compact}) {
+    return Container(
+      padding: EdgeInsets.symmetric(horizontal: compact ? 5 : 6, vertical: compact ? 3 : 4),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.72),
+        borderRadius: BorderRadius.circular(compact ? 6 : 8),
+      ),
+      child: child,
     );
   }
 

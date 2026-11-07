@@ -110,7 +110,7 @@ class PosterCardPresenter(
         val services = root.findViewById<LinearLayout>(R.id.service_badges)
         services.removeAllViews()
         // One mark is enough, even when the title is on several services.
-        title.services.take(1).forEachIndexed { i, tag ->
+        title.services.take(1).forEach { tag ->
             val badge = ServiceBadges.of(tag)
             val logo = SERVICE_LOGOS[tag.id]
             // The service's logo in its colour; a short text mark when there's no logo.
@@ -134,12 +134,10 @@ class PosterCardPresenter(
                 }
             }
             mark.contentDescription = tag.name
-            (mark.layoutParams as LinearLayout.LayoutParams).marginStart =
-                if (i > 0 || title.favorite || title.watched) dp(root, 5) else 0
             services.addView(mark)
         }
         services.isVisible = title.services.isNotEmpty()
-        stateChip.isVisible = title.favorite || title.watched || title.services.isNotEmpty()
+        stateChip.isVisible = title.favorite || title.watched
 
         val p = title.watchProgress
         // Continue-watching / resume items often sit at ~1% — still show a clear bar.
