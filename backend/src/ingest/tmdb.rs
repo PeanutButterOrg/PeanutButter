@@ -36,18 +36,24 @@ fn preferred_codes(ctx: &IngestContext) -> Vec<String> {
     ctx.config.live.preferred_language_codes()
 }
 
-fn tmdb_locale(ctx: &IngestContext) -> String {
-    crate::config::tmdb_ui_locale(&preferred_codes(ctx))
+/// Titles, overviews, episode names and genres are always English. The
+/// Languages setting picks which titles get added (original language), not
+/// the language the apps show them in: with Hindi first, every carousel and
+/// description used to come back in Hindi.
+const TEXT_LOCALE: &str = "en-US";
+
+fn tmdb_locale(_ctx: &IngestContext) -> String {
+    TEXT_LOCALE.to_string()
 }
 
+/// Logos and banners with words on them: English first, then textless.
+const ART_LANGUAGES: &[&str] = &["en"];
+
 fn image_language_param(ctx: &IngestContext) -> String {
-    let mut parts = preferred_codes(ctx);
-    if parts.is_empty() {
-        return "en,null".into();
-    }
-    if !parts.iter().any(|c| c == "en") {
-        parts.push("en".into());
-    }
+    // English first; the preferred languages stay as a fallback for titles
+    // that only have local-language art.
+    let mut parts = vec!["en".to_string()];
+    parts.extend(preferred_codes(ctx).into_iter().filter(|c| c != "en"));
     parts.push("null".into());
     parts.join(",")
 }
@@ -323,6 +329,10 @@ struct MovieDetails {
     release_dates: Option<ReleaseDateResults>,
     #[serde(default)]
     keywords: Option<TmdbKeywords>,
+    #[serde(default)]
+    translations: Option<TmdbTranslations>,
+    #[serde(default)]
+    alternative_titles: Option<TmdbAltTitles>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -358,6 +368,112 @@ struct TvDetails {
     external_ids: Option<ExternalIds>,
     #[serde(default)]
     keywords: Option<TmdbKeywords>,
+    #[serde(default)]
+    translations: Option<TmdbTranslations>,
+    #[serde(default)]
+    alternative_titles: Option<TmdbAltTitles>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct TmdbTranslations {
+    #[serde(default)]
+    translations: Vec<TmdbTranslation>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TmdbTranslation {
+    #[serde(default)]
+    iso_639_1: String,
+    #[serde(default)]
+    iso_3166_1: String,
+    #[serde(default)]
+    data: TmdbTranslationData,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct TmdbTranslationData {
+    /// Movies.
+    #[serde(default)]
+    title: Option<String>,
+    /// Series.
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    overview: Option<String>,
+}
+
+/// Movies list them under `titles`, series under `results`.
+#[derive(Debug, Default, Deserialize)]
+struct TmdbAltTitles {
+    #[serde(default)]
+    titles: Vec<TmdbAltTitle>,
+    #[serde(default)]
+    results: Vec<TmdbAltTitle>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TmdbAltTitle {
+    #[serde(default)]
+    iso_3166_1: String,
+    #[serde(default)]
+    title: String,
+}
+
+/// Letters are all Latin script (English, or a romanised name like "Pathaan").
+fn is_latin(text: &str) -> bool {
+    text.chars()
+        .filter(|c| c.is_alphabetic())
+        .all(|c| (c as u32) < 0x0250 || (0x1E00..=0x1EFF).contains(&(c as u32)))
+}
+
+fn non_blank(s: Option<&str>) -> Option<&str> {
+    s.map(str::trim).filter(|s| !s.is_empty())
+}
+
+/// English title and description for a title whose English text TMDB lacks.
+/// Asked for in English, TMDB answers with the original-script title (Hindi
+/// for a Hindi film) and no description when nobody has translated it into
+/// US English. Then: another English translation (GB, IN, ...), and for the
+/// title a romanised alternative title.
+fn english_text(
+    title: &str,
+    overview: Option<&str>,
+    translations: Option<&TmdbTranslations>,
+    alt_titles: Option<&TmdbAltTitles>,
+) -> (String, Option<String>) {
+    const COUNTRIES: [&str; 3] = ["US", "GB", "IN"];
+    let rank = |country: &str| COUNTRIES.iter().position(|c| *c == country).unwrap_or(COUNTRIES.len());
+    let mut english: Vec<&TmdbTranslation> = translations
+        .map(|t| t.translations.iter().filter(|t| t.iso_639_1 == "en").collect())
+        .unwrap_or_default();
+    english.sort_by_key(|t| rank(&t.iso_3166_1));
+
+    let mut out_title = title.to_string();
+    if !is_latin(title) || title.trim().is_empty() {
+        let from_translation = english.iter().find_map(|t| {
+            non_blank(t.data.title.as_deref().or(t.data.name.as_deref())).filter(|s| is_latin(s))
+        });
+        let from_alt = || {
+            let mut alts: Vec<&TmdbAltTitle> = alt_titles
+                .map(|a| a.titles.iter().chain(a.results.iter()).collect())
+                .unwrap_or_default();
+            alts.sort_by_key(|a| rank(&a.iso_3166_1));
+            alts.into_iter()
+                .map(|a| a.title.trim())
+                .find(|t| !t.is_empty() && is_latin(t))
+        };
+        if let Some(t) = from_translation.or_else(from_alt) {
+            out_title = t.to_string();
+        }
+    }
+
+    let mut out_overview = overview.map(str::to_string);
+    if non_blank(overview).map_or(true, |o| !is_latin(o)) {
+        if let Some(o) = english.iter().find_map(|t| non_blank(t.data.overview.as_deref())) {
+            out_overview = Some(o.to_string());
+        }
+    }
+    (out_title, out_overview)
 }
 
 #[derive(Debug, Deserialize)]
@@ -1879,20 +1995,24 @@ async fn fetch_details_movie(ctx: &IngestContext, id: i32) -> Result<MovieDetail
     let locale = tmdb_locale(ctx);
     let img_lang = image_language_param(ctx);
     let url = format!(
-        "{TMDB}/movie/{id}?api_key={}&language={locale}&append_to_response=videos,images,credits,release_dates,keywords&include_image_language={img_lang}",
+        "{TMDB}/movie/{id}?api_key={}&language={locale}&append_to_response=videos,images,credits,release_dates,keywords,translations,alternative_titles&include_image_language={img_lang}",
         ctx.config.tmdb_key()
     );
-    get_json(ctx, &url).await
+    let mut d: MovieDetails = get_json(ctx, &url).await?;
+    (d.title, d.overview) = english_text(&d.title, d.overview.as_deref(), d.translations.as_ref(), d.alternative_titles.as_ref());
+    Ok(d)
 }
 
 async fn fetch_details_tv(ctx: &IngestContext, id: i32) -> Result<TvDetails> {
     let locale = tmdb_locale(ctx);
     let img_lang = image_language_param(ctx);
     let url = format!(
-        "{TMDB}/tv/{id}?api_key={}&language={locale}&append_to_response=videos,external_ids,images,credits,aggregate_credits,content_ratings,keywords&include_image_language={img_lang}",
+        "{TMDB}/tv/{id}?api_key={}&language={locale}&append_to_response=videos,external_ids,images,credits,aggregate_credits,content_ratings,keywords,translations,alternative_titles&include_image_language={img_lang}",
         ctx.config.tmdb_key()
     );
-    get_json(ctx, &url).await
+    let mut d: TvDetails = get_json(ctx, &url).await?;
+    (d.name, d.overview) = english_text(&d.name, d.overview.as_deref(), d.translations.as_ref(), d.alternative_titles.as_ref());
+    Ok(d)
 }
 
 async fn upsert_movie(ctx: &IngestContext, details: MovieDetails) -> Result<Option<Uuid>> {
@@ -2448,9 +2568,9 @@ async fn mark_shelf_tags(ctx: &IngestContext, title_id: Uuid, tags: ShelfTags) -
 
 async fn apply_extra_art(ctx: &IngestContext, title_id: Uuid, images: Option<&TmdbImages>) -> Result<()> {
     let Some(images) = images else { return Ok(()) };
-    let wanted = preferred_codes(ctx);
+    let wanted: Vec<String> = ART_LANGUAGES.iter().map(|c| c.to_string()).collect();
     let logo = images.logos.as_ref().and_then(|v| pick_image(v, true, &wanted));
-    // Hero banners: prefer preferred-language backdrops, then textless, by vote average.
+    // Hero banners: English backdrops, then textless, by vote average.
     let backdrop = images
         .backdrops
         .as_ref()
@@ -2869,6 +2989,61 @@ async fn mark_content_checked(ctx: &IngestContext, title_id: Uuid) -> Result<()>
     Ok(())
 }
 
+/// One-time (resumable) re-fetch of every stored title in English. Titles
+/// fetched while the text followed the Languages setting kept that language
+/// (Hindi titles and descriptions in the carousel). `text_locale` is NULL for
+/// those rows and set once a title has been fetched again.
+pub async fn relocalize_titles(ctx: &IngestContext) -> Result<()> {
+    if ctx.config.tmdb_key().is_empty() {
+        return Ok(());
+    }
+    let mut refreshed = 0u64;
+    let mut failed = 0u64;
+    let mut after = Uuid::nil();
+    loop {
+        let batch: Vec<(Uuid, i32, String)> = sqlx::query_as(
+            r#"
+            SELECT id, tmdb_id, kind FROM titles
+            WHERE text_locale IS NULL AND tmdb_id IS NOT NULL
+              AND kind IN ('movie', 'series') AND id > $1
+            ORDER BY id LIMIT 200
+            "#,
+        )
+        .bind(after)
+        .fetch_all(&ctx.pool)
+        .await?;
+        let Some(last) = batch.last() else { break };
+        after = last.0;
+        for (id, tmdb_id, kind) in batch {
+            match fetch_details_explicit(ctx, tmdb_id, refresh_media(&kind)).await {
+                Ok(_) => refreshed += 1,
+                // Gone from TMDB: nothing to fetch, don't retry it.
+                Err(AppError::Provider(msg)) if msg.contains("404") => {}
+                // Left for the next start.
+                Err(e) => {
+                    failed += 1;
+                    debug!(%id, tmdb_id, "re-fetch in English failed: {e}");
+                    continue;
+                }
+            }
+            sqlx::query("UPDATE titles SET text_locale = $2 WHERE id = $1")
+                .bind(id)
+                .bind(TEXT_LOCALE)
+                .execute(&ctx.pool)
+                .await?;
+            if refreshed % 500 == 0 && refreshed > 0 {
+                info!(refreshed, failed, "English re-fetch progress");
+            }
+        }
+    }
+    // Genres only ever named in the old language are now unused.
+    sqlx::query("DELETE FROM genres g WHERE NOT EXISTS (SELECT 1 FROM title_genres tg WHERE tg.genre_id = g.id)")
+        .execute(&ctx.pool)
+        .await?;
+    info!(refreshed, failed, "English re-fetch done");
+    Ok(())
+}
+
 /// One-time (resumable) cleanup of explicit titles stored before the
 /// keyword check existed. Runs at boot: drops titles already flagged by
 /// rating / genre, then asks TMDB for the keywords of every stored title
@@ -3095,5 +3270,52 @@ mod discover_tests {
         assert!(newest.contains("sort_by=first_air_date.desc"), "{newest}");
         assert!(newest.contains("first_air_date.lte="), "unreleased titles stay out: {newest}");
         assert!(!DiscoverFilter::default().is_active());
+    }
+}
+
+#[cfg(test)]
+mod english_text_tests {
+    use super::*;
+
+    fn tr(lang: &str, country: &str, title: Option<&str>, overview: Option<&str>) -> TmdbTranslation {
+        TmdbTranslation {
+            iso_639_1: lang.into(),
+            iso_3166_1: country.into(),
+            data: TmdbTranslationData { title: title.map(Into::into), name: None, overview: overview.map(Into::into) },
+        }
+    }
+
+    #[test]
+    fn hindi_title_and_empty_overview_take_another_english_translation() {
+        let t = TmdbTranslations {
+            translations: vec![
+                tr("hi", "IN", Some("पठान"), Some("हिंदी विवरण")),
+                tr("en", "IN", Some("Pathaan"), Some("A spy returns.")),
+            ],
+        };
+        let (title, overview) = english_text("पठान", Some(""), Some(&t), None);
+        assert_eq!(title, "Pathaan");
+        assert_eq!(overview.as_deref(), Some("A spy returns."));
+    }
+
+    #[test]
+    fn falls_back_to_a_romanised_alternative_title() {
+        let alts = TmdbAltTitles {
+            titles: vec![
+                TmdbAltTitle { iso_3166_1: "IN".into(), title: "पठान".into() },
+                TmdbAltTitle { iso_3166_1: "IN".into(), title: "Pathaan".into() },
+            ],
+            results: vec![],
+        };
+        let (title, _) = english_text("पठान", None, None, Some(&alts));
+        assert_eq!(title, "Pathaan");
+    }
+
+    #[test]
+    fn english_text_is_left_alone() {
+        let t = TmdbTranslations { translations: vec![tr("en", "GB", Some("Other"), Some("Other text"))] };
+        let (title, overview) = english_text("Amélie", Some("A shy waitress."), Some(&t), None);
+        assert_eq!(title, "Amélie");
+        assert_eq!(overview.as_deref(), Some("A shy waitress."));
     }
 }

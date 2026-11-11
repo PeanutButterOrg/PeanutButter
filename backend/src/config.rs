@@ -375,28 +375,6 @@ pub fn normalize_language_list(raw: &str) -> String {
     parse_language_codes(raw).join(",")
 }
 
-/// TMDB `language=` locale for metadata text (titles, overviews).
-pub fn tmdb_ui_locale(codes: &[String]) -> String {
-    match codes.first().map(String::as_str) {
-        None | Some("en") => "en-US".into(),
-        Some("ja") => "ja-JP".into(),
-        Some("ko") => "ko-KR".into(),
-        Some("zh") => "zh-CN".into(),
-        Some("hi") => "hi-IN".into(),
-        Some("es") => "es-ES".into(),
-        Some("fr") => "fr-FR".into(),
-        Some("de") => "de-DE".into(),
-        Some("it") => "it-IT".into(),
-        Some("pt") => "pt-BR".into(),
-        Some("ar") => "ar-SA".into(),
-        Some("tr") => "tr-TR".into(),
-        Some("ru") => "ru-RU".into(),
-        Some("th") => "th-TH".into(),
-        Some("id") => "id-ID".into(),
-        Some(code) => code.to_string(),
-    }
-}
-
 /// Release version baked in by CI (`PB_VERSION` build arg), else Cargo.toml's.
 pub fn build_version() -> &'static str {
     match option_env!("PB_SERVER_VERSION") {

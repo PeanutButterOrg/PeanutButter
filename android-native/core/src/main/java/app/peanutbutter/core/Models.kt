@@ -36,11 +36,11 @@ data class TitleItem(
     val services: List<ServiceTag> = emptyList(),
 ) {
     /**
-     * Prefer original (usually English) title so UI never switches into
-     * localized / logo-branded artwork styles.
+     * The server's title, which is always English. The original title is in the
+     * film's own language (Hindi script for a Hindi film), so it is only a fallback.
      */
     val displayTitle: String
-        get() = originalTitle?.takeIf { it.isNotBlank() } ?: title
+        get() = title.takeIf { it.isNotBlank() } ?: originalTitle.orEmpty()
     /** 0..1 watch progress for poster bars (Flutter _progressOf). */
     val watchProgress: Double
         get() {

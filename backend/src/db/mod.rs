@@ -44,6 +44,8 @@ const EMBEDDED_MIGRATION_031: &str = include_str!("migrations/031_console_sessio
 const EMBEDDED_MIGRATION_032: &str = include_str!("migrations/032_content_checked.sql");
 const EMBEDDED_MIGRATION_033: &str = include_str!("migrations/033_shelf_items.sql");
 const EMBEDDED_MIGRATION_034: &str = include_str!("migrations/034_addon_catalog_items.sql");
+const EMBEDDED_MIGRATION_035: &str = include_str!("migrations/035_episode_follows.sql");
+const EMBEDDED_MIGRATION_036: &str = include_str!("migrations/036_text_locale.sql");
 
 pub async fn connect(database_url: &str) -> Result<PgPool> {
     connect_with(database_url, 40, 4, Duration::from_secs(15)).await
@@ -123,6 +125,8 @@ pub async fn run_migrations(pool: &PgPool, extra_dir: Option<&Path>) -> Result<(
     apply_one(pool, "032_content_checked", EMBEDDED_MIGRATION_032).await?;
     apply_one(pool, "033_shelf_items", EMBEDDED_MIGRATION_033).await?;
     apply_one(pool, "034_addon_catalog_items", EMBEDDED_MIGRATION_034).await?;
+    apply_one(pool, "035_episode_follows", EMBEDDED_MIGRATION_035).await?;
+    apply_one(pool, "036_text_locale", EMBEDDED_MIGRATION_036).await?;
 
     if let Some(dir) = extra_dir {
         if dir.is_dir() {
@@ -174,6 +178,8 @@ pub async fn run_migrations(pool: &PgPool, extra_dir: Option<&Path>) -> Result<(
                     || version == "032_content_checked"
                     || version == "033_shelf_items"
                     || version == "034_addon_catalog_items"
+                    || version == "035_episode_follows"
+                    || version == "036_text_locale"
                 {
                     continue;
                 }

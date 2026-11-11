@@ -162,6 +162,10 @@ async fn main() -> Result<()> {
         if let Err(e) = ingest::tmdb::purge_explicit_titles(&ingest_purge).await {
             tracing::warn!("explicit-content cleanup failed: {e}");
         }
+        // After the cleanup: titles stored in another language, fetched again in English.
+        if let Err(e) = ingest::tmdb::relocalize_titles(&ingest_purge).await {
+            tracing::warn!("English re-fetch failed: {e}");
+        }
     });
 
     let ingest_boot = ingest.clone();
