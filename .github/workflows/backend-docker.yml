@@ -25,19 +25,10 @@ on:
         description: Build Linux API binary artifact
         type: boolean
         default: true
+  # Only release tags build automatically: no runs for branch pushes or PRs.
   push:
-    branches:
-      - main
     tags:
       - "v*"
-    paths:
-      - "backend/**"
-      - "docker-compose*.yml"
-      - ".github/workflows/backend-docker.yml"
-  pull_request:
-    paths:
-      - "backend/**"
-      - ".github/workflows/backend-docker.yml"
 
 concurrency:
   group: backend-docker-${{ github.ref }}
@@ -152,7 +143,7 @@ jobs:
         with:
           images: ${{ needs.version.outputs.image }}
           tags: |
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-') }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             # Newest non-prerelease tag: what docker-compose.autoupdate.yml follows.
