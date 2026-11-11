@@ -30,6 +30,18 @@ String? preferredLanguageCode(List<String> codes) {
   return selected.join(',');
 }
 
+/// Languages offered for subtitle downloads: the chosen content languages in
+/// order, then English if it isn't one of them (Languages = Hindi left
+/// English subtitles unreachable).
+List<String> subtitleLanguageCodes(List<String> preferred) {
+  final out = <String>[];
+  for (final code in preferredLanguageCodes(preferred)) {
+    if (!out.contains(code)) out.add(code);
+  }
+  if (!out.contains('en')) out.add('en');
+  return out;
+}
+
 List<String> preferredLanguageCodes(List<String> codes) {
   return [
     for (final code in codes)
