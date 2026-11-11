@@ -26,6 +26,10 @@ ASSETS = {
     # Per-CPU APKs: a fraction of the universal one's size for most TVs.
     "android-tv-arm64-v8a": "PeanutButter-android-tv-arm64-v8a.apk",
     "android-tv-armeabi-v7a": "PeanutButter-android-tv-armeabi-v7a.apk",
+    # Launcher flavor (own app id, can be the TV's Home screen).
+    "android-tv-launcher": "PeanutButter-android-tv-launcher.apk",
+    "android-tv-launcher-arm64-v8a": "PeanutButter-android-tv-launcher-arm64-v8a.apk",
+    "android-tv-launcher-armeabi-v7a": "PeanutButter-android-tv-launcher-armeabi-v7a.apk",
 }
 
 # A release may go out without these: GitHub's macOS runners can be unavailable for

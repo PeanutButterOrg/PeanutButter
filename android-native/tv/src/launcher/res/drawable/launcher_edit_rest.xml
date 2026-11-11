@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- "+ Edit" tile at rest: faint fill, dashed outline. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android">
+    <solid android:color="#0DFFFFFF" />
+    <stroke android:width="2dp" android:color="#4DFFFFFF" android:dashWidth="8dp" android:dashGap="6dp" />
+    <corners android:radius="16dp" />
+</shape>

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Hero card surface (the art fades into it). -->
+    <color name="launcher_hero">#FF1A1A24</color>
+</resources>

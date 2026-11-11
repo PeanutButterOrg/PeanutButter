@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">PeanutButter Launcher</string>
+
+    <!-- Home screen -->
+    <string name="your_apps">Your apps</string>
+    <string name="loading">Loading…</string>
+    <string name="tab_home">Home</string>
+    <string name="kind_movie">Movie</string>
+    <string name="kind_series">Series</string>
+    <string name="tab_movies">Movies</string>
+    <string name="tab_series">Series</string>
+    <string name="row_continue">Continue watching</string>
+    <string name="row_trending_movies">Trending movies</string>
+    <string name="row_trending_series">Trending series</string>
+    <string name="row_trending">Trending</string>
+    <string name="row_popular">Popular</string>
+    <string name="row_recent">Recently added</string>
+    <string name="hero_continue">Continue watching</string>
+    <string name="hero_trending">Trending now</string>
+    <string name="hero_minutes_left">%1$d min left</string>
+    <string name="hero_connect_kicker">PeanutButter</string>
+    <string name="hero_connect_title">Connect your server</string>
+    <string name="hero_connect_subtitle">Pair once to bring your movies and series to this screen.</string>
+    <string name="hero_offline_kicker">Server unreachable</string>
+    <string name="hero_offline_subtitle">Check that your PeanutButter server is on, then select to try again.</string>
+
+    <!-- Top-bar TV controls -->
+    <string name="inputs">Inputs</string>
+    <string name="live_tv">Live TV</string>
+    <string name="nothing_connected">Nothing connected</string>
+    <string name="picture_sound">Picture and sound</string>
+    <string name="sound">Sound</string>
+    <string name="wifi">Wi‑Fi</string>
+    <string name="connectivity">Connectivity</string>
+    <string name="network">Network</string>
+    <string name="bluetooth">Bluetooth</string>
+    <string name="all_settings">Settings</string>
+    <string name="all_settings_full">All settings</string>
+    <string name="search">Search</string>
+
+    <!-- Panels -->
+    <string name="connected_ethernet">Connected by Ethernet</string>
+    <string name="connected_wifi">Connected to Wi‑Fi</string>
+    <string name="not_connected">Not connected</string>
+    <string name="signal_level">Signal %1$d of %2$d</string>
+    <string name="network_settings">Network and internet</string>
+    <string name="bluetooth_missing">This TV has no Bluetooth</string>
+    <string name="bt_connected">Connected</string>
+    <string name="issue_network">No internet connection</string>
+    <string name="issue_server">PeanutButter server unreachable</string>
+    <string name="issue_bluetooth">Bluetooth is off</string>
+    <string name="tap_to_retry">Select to try again</string>
+    <string name="server_connected">Connected</string>
+    <string name="pair_new_device">Pair new device</string>
+    <string name="volume">Volume</string>
+    <string name="mute">Mute</string>
+    <string name="remotes_accessories">Remotes and accessories</string>
+    <string name="manage_apps">Apps</string>
+    <string name="date_time">Date and time</string>
+    <string name="pb_settings">PeanutButter settings</string>
+    <string name="tv_section">TV</string>
+
+    <!-- Your apps -->
+    <string name="customise">Edit</string>
+    <string name="customise_hint">Choose and arrange your apps</string>
+    <string name="choose_apps">Your apps</string>
+    <string name="choose_apps_hint">Select the apps to show on your home screen. The numbers set their order.</string>
+    <string name="app_info">App info</string>
+    <string name="launcher_done">Done</string>
+    <string name="launcher_cancel">Cancel</string>
+    <string name="move">Move (◀ ▶, then OK)</string>
+    <string name="remove_from_row">Remove from Your apps</string>
+    <string name="open_failed">Couldn\'t open that.</string>
+</resources>

@@ -42,6 +42,9 @@ pub const PLATFORMS: &[&str] = &[
     "android-tv",
     "android-tv-arm64-v8a",
     "android-tv-armeabi-v7a",
+    "android-tv-launcher",
+    "android-tv-launcher-arm64-v8a",
+    "android-tv-launcher-armeabi-v7a",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

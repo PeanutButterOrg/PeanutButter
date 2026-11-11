@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- "+ Edit" tile when focused: a lighter surface (it also lifts), no outline. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android">
+    <solid android:color="#FF2E2E3B" />
+    <corners android:radius="16dp" />
+</shape>

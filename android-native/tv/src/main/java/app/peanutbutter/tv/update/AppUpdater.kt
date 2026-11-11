@@ -7,6 +7,7 @@ import android.content.pm.PackageInstaller
 import android.os.Build
 import android.util.Base64
 import app.peanutbutter.core.ApiClient
+import app.peanutbutter.tv.BuildConfig
 import app.peanutbutter.core.SessionStore
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
@@ -42,7 +43,8 @@ data class AppUpdate(
 object AppUpdater {
     /** Raw Ed25519 key matching packaging/update-signing-public.pem. */
     internal const val PUBLIC_KEY = "ZZiyOouovg/54bH4BjyDRk3gldZtS+oHJjjkUGo6e7c="
-    private const val PLATFORM = "android-tv"
+    /** "android-tv" or "android-tv-launcher": each flavor only installs its own APK. */
+    private val PLATFORM = BuildConfig.UPDATE_PLATFORM
     private val SAFE_NAME = Regex("^[A-Za-z0-9_-][A-Za-z0-9._-]{0,126}$")
     const val ACTION_INSTALL_STATUS = "app.peanutbutter.tv.UPDATE_INSTALL_STATUS"
 

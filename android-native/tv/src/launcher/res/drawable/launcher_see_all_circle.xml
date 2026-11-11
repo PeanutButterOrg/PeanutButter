@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- "See all" round button: panel grey, a lighter grey when focused (it also lifts). -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:enterFadeDuration="150"
+    android:exitFadeDuration="150">
+    <item android:state_selected="true">
+        <shape android:shape="oval">
+            <solid android:color="#FF34344A" />
+        </shape>
+    </item>
+    <item>
+        <shape android:shape="oval">
+            <solid android:color="@color/pb_panel" />
+        </shape>
+    </item>
+</selector>

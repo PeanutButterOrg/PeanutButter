@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Carousel: a light grey-out over the whole art, a little stronger to the right. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android">
+    <gradient android:angle="0" android:startColor="#1A0E0E12" android:centerColor="#330E0E12" android:endColor="#590E0E12" />
+</shape>

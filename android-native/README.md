@@ -15,13 +15,23 @@ Flutter (`frontend/`) stays the desktop / multi-platform client.
 
 ```bash
 cd android-native
-./gradlew :tv:assembleDebug :phone:assembleDebug
+./gradlew :tv:assembleAppDebug :tv:assembleLauncherDebug :phone:assembleDebug
 ```
+
+The TV module has two flavors from the same code:
+
+| Flavor | App id | Name | |
+|---|---|---|---|
+| `app` | `app.peanutbutter.tv` | PeanutButter TV | normal app in the TV's app row |
+| `launcher` | `app.peanutbutter.tv.launcher` | PeanutButter Launcher | the TV's Home screen: PeanutButter, your apps, inputs and quick settings — see [tv/src/launcher/README.md](tv/src/launcher/README.md) |
+
+Both can be installed side by side; each self-updates only to its own APK.
 
 Install on BeyondTV / phone:
 
 ```bash
-adb install -r tv/build/outputs/apk/debug/tv-debug.apk
+adb install -r tv/build/outputs/apk/app/debug/tv-app-universal-debug.apk
+adb install -r tv/build/outputs/apk/launcher/debug/tv-launcher-universal-debug.apk
 adb install -r phone/build/outputs/apk/debug/phone-debug.apk
 ```
 

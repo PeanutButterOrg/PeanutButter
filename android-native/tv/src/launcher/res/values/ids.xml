@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <item name="launcher_row" type="id" />
+    <item name="launcher_row_title" type="id" />
+    <item name="launcher_row_list" type="id" />
+    <item name="launcher_poster_image" type="id" />
+    <item name="launcher_poster_label" type="id" />
+    <item name="launcher_poster_progress" type="id" />
+    <item name="launcher_poster_service" type="id" />
+    <item name="launcher_poster_state" type="id" />
+</resources>

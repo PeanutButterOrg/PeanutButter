@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Quick panels drop down from the control bar. -->
+    <style name="LauncherPanelAnimation">
+        <item name="android:windowEnterAnimation">@anim/launcher_panel_in</item>
+        <item name="android:windowExitAnimation">@anim/launcher_panel_out</item>
+    </style>
+
+    <!-- App picker fades in over the home screen. -->
+    <style name="LauncherPickerAnimation">
+        <item name="android:windowEnterAnimation">@anim/launcher_picker_in</item>
+        <item name="android:windowExitAnimation">@anim/launcher_picker_out</item>
+    </style>
+</resources>

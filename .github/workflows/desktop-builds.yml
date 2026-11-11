@@ -10,6 +10,7 @@
 #   PeanutButter-macos-universal.zip       (ditto zip → PeanutButter.app; compression-level 0)
 #   PeanutButter-android-tv.apk            (universal — any TV box)
 #   PeanutButter-android-tv-arm64-v8a.apk / -armeabi-v7a.apk (smaller, per CPU)
+#   PeanutButter-android-tv-launcher*.apk  (same, as a Home-screen launcher)
 #
 # macOS: never upload a raw .app directory — Actions' zip breaks Frameworks
 # symlinks. We ditto-zip the bundle, then upload with compression-level: 0 so
@@ -535,11 +536,17 @@ jobs:
         working-directory: android-native
         run: |
           chmod +x ./gradlew
-          ./gradlew :tv:assembleRelease --stacktrace -Ppb.versionName="$PB_VERSION" -Ppb.versionCode="$PB_BUILD"
-          out=tv/build/outputs/apk/release
-          cp -f "$out/tv-universal-release.apk" "$GITHUB_WORKSPACE/PeanutButter-android-tv.apk"
-          cp -f "$out/tv-arm64-v8a-release.apk" "$GITHUB_WORKSPACE/PeanutButter-android-tv-arm64-v8a.apk"
-          cp -f "$out/tv-armeabi-v7a-release.apk" "$GITHUB_WORKSPACE/PeanutButter-android-tv-armeabi-v7a.apk"
+          ./gradlew :tv:assembleAppRelease :tv:assembleLauncherRelease --stacktrace \
+            -Ppb.versionName="$PB_VERSION" -Ppb.versionCode="$PB_BUILD"
+          # app -> PeanutButter-android-tv*.apk, launcher -> PeanutButter-android-tv-launcher*.apk
+          for flavor in app launcher; do
+            out=tv/build/outputs/apk/$flavor/release
+            name=PeanutButter-android-tv
+            [ "$flavor" = launcher ] && name=PeanutButter-android-tv-launcher
+            cp -f "$out/tv-$flavor-universal-release.apk" "$GITHUB_WORKSPACE/$name.apk"
+            cp -f "$out/tv-$flavor-arm64-v8a-release.apk" "$GITHUB_WORKSPACE/$name-arm64-v8a.apk"
+            cp -f "$out/tv-$flavor-armeabi-v7a-release.apk" "$GITHUB_WORKSPACE/$name-armeabi-v7a.apk"
+          done
           ls -lh "$GITHUB_WORKSPACE"/PeanutButter-android-tv*.apk
 
       - uses: actions/upload-artifact@v4

@@ -39,6 +39,31 @@ android {
         versionName = (project.findProperty("pb.versionName") as String?) ?: "0.2.0"
     }
 
+    buildFeatures {
+        buildConfig = true
+    }
+
+    // Same code, two products:
+    //   app      -> "PeanutButter TV", a normal app in the TV's app row.
+    //   launcher -> "PeanutButter Launcher", can be chosen as the TV's Home
+    //               screen. Own app id, so both can sit on one TV.
+    // Build with :tv:assembleAppRelease / :tv:assembleLauncherRelease.
+    flavorDimensions += "mode"
+    productFlavors {
+        create("app") {
+            dimension = "mode"
+            buildConfigField("boolean", "IS_LAUNCHER", "false")
+            // Update platform key (backend/src/updates.rs, scripts/release_manifest.py).
+            buildConfigField("String", "UPDATE_PLATFORM", "\"android-tv\"")
+        }
+        create("launcher") {
+            dimension = "mode"
+            applicationIdSuffix = ".launcher"
+            buildConfigField("boolean", "IS_LAUNCHER", "true")
+            buildConfigField("String", "UPDATE_PLATFORM", "\"android-tv-launcher\"")
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
