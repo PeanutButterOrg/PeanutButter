@@ -33,6 +33,8 @@ jobs:
 
       - name: Create the release tag
         id: tag
+        env:
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
         run: |
           ver="$(sed -n 's/^version = "\([0-9][0-9.]*\)"/\1/p' backend/Cargo.toml | head -1)"
           if [ -z "$ver" ]; then
@@ -40,24 +42,53 @@ jobs:
             exit 1
           fi
           tag="v$ver"
-          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null || git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+          git fetch --force --tags origin
+          tagged="$(git rev-parse -q --verify "refs/tags/$tag^{commit}" || true)"
+          if [ -n "$tagged" ] && [ "$tagged" != "$MERGE_SHA" ]; then
+            # An earlier release: the PR didn't bump the version.
             echo "::notice::$tag already exists; bump backend/Cargo.toml to release. No tag created."
-            echo "created=false" >> "$GITHUB_OUTPUT"
+            echo "release=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "$tag" -m "Release $tag (PR #${{ github.event.pull_request.number }})"
-          git push origin "refs/tags/$tag"
-          echo "created=true" >> "$GITHUB_OUTPUT"
+          if [ -z "$tagged" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "$tag" -m "Release $tag (PR #${{ github.event.pull_request.number }})"
+            git push origin "refs/tags/$tag"
+            echo "::notice::Tagged $tag"
+          else
+            # Tagged by an earlier attempt of this run: resume the builds.
+            echo "::notice::$tag already marks this merge; starting any builds not yet started."
+          fi
+          echo "release=true" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "::notice::Tagged $tag"
 
       - name: Start the release builds
-        if: steps.tag.outputs.created == 'true'
+        if: steps.tag.outputs.release == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.tag.outputs.tag }}
         run: |
-          gh workflow run backend-docker.yml --repo "$GITHUB_REPOSITORY" --ref "$TAG"
-          gh workflow run desktop-builds.yml --repo "$GITHUB_REPOSITORY" --ref "$TAG"
+          failed=0
+          for wf in backend-docker.yml desktop-builds.yml; do
+            # Already has a run for this tag (an earlier attempt, or the tag
+            # pushed by hand): don't start a duplicate.
+            runs="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow "$wf" --limit 100 \
+              --json headBranch --jq "[.[] | select(.headBranch == \"$TAG\")] | length")" || runs=""
+            if [ -z "$runs" ]; then
+              echo "::error::Couldn't list $wf runs"
+              failed=1
+              continue
+            fi
+            if [ "$runs" -gt 0 ]; then
+              echo "$wf already has a run for $TAG"
+              continue
+            fi
+            if gh workflow run "$wf" --repo "$GITHUB_REPOSITORY" --ref "$TAG"; then
+              echo "Started $wf on $TAG"
+            else
+              echo "::error::Couldn't start $wf on $TAG; re-run this job to retry"
+              failed=1
+            fi
+          done
+          exit "$failed"
