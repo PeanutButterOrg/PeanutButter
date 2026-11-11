@@ -1038,15 +1038,18 @@ async fn login(
         return Ok((StatusCode::TOO_MANY_REQUESTS, Html(html)).into_response());
     };
     let password = form.password.as_deref().unwrap_or("").trim();
-    let stored = crate::db::admin_password_hash(&state.app.pool).await?;
+    let stored = match crate::db::admin_password_hash(&state.app.pool).await {
+        Ok(stored) => stored,
+        Err(e) => {
+            // Not a wrong password: the lookup failed. Don't count it.
+            attempt.refund();
+            return Err(e.into());
+        }
+    };
     let check = stored
         .as_deref()
         .map(|hash| crate::db::admin_password_check(password, hash))
         .unwrap_or_default();
-    if check.ok && check.needs_rehash {
-        // Upgrade the old fast SHA-256 hash to argon2 on first good login.
-        crate::db::set_admin_password(&state.app.pool, password).await?;
-    }
     if !check.ok {
         drop(attempt); // stays counted
         let html = render(
@@ -1060,7 +1063,12 @@ async fn login(
         .await?;
         return Ok((StatusCode::UNAUTHORIZED, Html(html)).into_response());
     }
+    // Right password: settled before any later database call can fail.
     attempt.succeeded();
+    if check.needs_rehash {
+        // Upgrade the old fast SHA-256 hash to argon2 on first good login.
+        crate::db::set_admin_password(&state.app.pool, password).await?;
+    }
     let token = new_console_session(state).await?;
     let mut response = redirect_console(Some("Signed in."), None);
     response

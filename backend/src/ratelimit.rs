@@ -109,6 +109,13 @@ pub struct Attempt {
 impl Attempt {
     /// The credential was right: give the reserved slots back.
     pub fn succeeded(self) {
+        self.refund();
+    }
+
+    /// The credential couldn't be checked (database error): not a wrong
+    /// guess, so it doesn't count. Retries during an outage would otherwise
+    /// lock the client out after the database is back.
+    pub fn refund(self) {
         for c in &self.counted {
             c.fetch_sub(1, Ordering::Relaxed);
         }
@@ -139,7 +146,7 @@ pub fn reserve(bucket: Bucket, ip: IpAddr) -> Option<Attempt> {
         Some(Attempt { counted })
     } else {
         // Undo whatever was taken before the limit was hit.
-        Attempt { counted }.succeeded();
+        Attempt { counted }.refund();
         None
     }
 }
@@ -208,5 +215,15 @@ mod tests {
             reserve(Bucket::Credential, ip).expect("slot").succeeded();
         }
         assert!(!is_blocked(Bucket::Credential, ip));
+    }
+
+    #[test]
+    fn unchecked_attempts_are_refunded() {
+        let ip: IpAddr = "198.51.100.22".parse().unwrap();
+        // Database down: many retries, none of them a wrong guess.
+        for _ in 0..100 {
+            reserve(Bucket::Pairing, ip).expect("slot").refund();
+        }
+        assert!(!is_blocked(Bucket::Pairing, ip));
     }
 }

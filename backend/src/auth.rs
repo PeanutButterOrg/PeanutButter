@@ -274,7 +274,15 @@ pub async fn pair(
     let Some(attempt) = ratelimit::reserve(Bucket::Pairing, ip) else {
         return Err(AppError::TooManyRequests("pair".into()));
     };
-    match crate::db::exchange_pairing_code(&state.app.pool, &body.code).await? {
+    let found = match crate::db::exchange_pairing_code(&state.app.pool, &body.code).await {
+        Ok(found) => found,
+        Err(e) => {
+            // Not a wrong code: the lookup failed. Don't count it.
+            attempt.refund();
+            return Err(e);
+        }
+    };
+    match found {
         Some((device, key)) => {
             attempt.succeeded();
             Ok(Json(PairResponse {
