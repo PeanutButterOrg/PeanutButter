@@ -269,16 +269,21 @@ pub async fn pair(
     Json(body): Json<PairRequest>,
 ) -> Result<Json<PairResponse>, AppError> {
     let ip = addr.ip();
-    if ratelimit::is_blocked(Bucket::Pairing, ip) {
+    // Counted before the lookup: checking first and recording after the
+    // await let parallel requests try more codes than the limit allows.
+    let Some(attempt) = ratelimit::reserve(Bucket::Pairing, ip) else {
         return Err(AppError::TooManyRequests("pair".into()));
-    }
+    };
     match crate::db::exchange_pairing_code(&state.app.pool, &body.code).await? {
-        Some((device, key)) => Ok(Json(PairResponse {
-            key,
-            device_name: device.name,
-        })),
+        Some((device, key)) => {
+            attempt.succeeded();
+            Ok(Json(PairResponse {
+                key,
+                device_name: device.name,
+            }))
+        }
         None => {
-            ratelimit::record_failure(Bucket::Pairing, ip);
+            drop(attempt); // stays counted
             Err(AppError::Unauthorized(
                 "That pairing code is wrong or expired. Create a new one in the server console."
                     .into(),

@@ -170,7 +170,8 @@ Everything has a sensible default. Most settings, including API keys, Jackett, a
 
 - **Pairing:** a 6-digit code works for 15 minutes and is traded for a long random device key. The server stores only the key's hash. Wrong codes are rate-limited per client and server-wide.
 - **Console:** argon2-hashed password, revocable sessions, and refusal of form posts from other sites.
-- **Updates:** every app and server release is signed with an Ed25519 key that only CI holds. The server and the apps both check the signature and each file's hash, and never install an older version.
+- **App updates:** installers are listed in a manifest signed with an Ed25519 key that only CI holds. The server and the apps both check the signature and each file's hash, and the apps never install an older version.
+- **Server updates:** these are *not* signature-checked. The console has Watchtower pull `ghcr.io/peanutbutterorg/peanutbutter-api:stable` (by default), so you're trusting GitHub's container registry and this repo's CI. For tighter control, pin a version tag in your compose file and update by hand.
 - **Torrents:** never stored on the server. The server won't fetch arbitrary links for clients.
 - **Network:** the database, search and updater containers aren't exposed outside Docker. For access from outside your home, put HTTPS in front of port 3001 with a reverse proxy.
 

@@ -97,6 +97,53 @@ pub fn record_failure(bucket: Bucket, ip: IpAddr) {
         .fetch_add(1, Ordering::Relaxed);
 }
 
+/// A credential check in progress: it already counts as a failure, so
+/// concurrent requests can't all pass a limit check before any of them is
+/// recorded. Call [Attempt::succeeded] when the credential was right;
+/// dropping it otherwise keeps the failure.
+#[must_use]
+pub struct Attempt {
+    counted: Vec<Arc<AtomicU32>>,
+}
+
+impl Attempt {
+    /// The credential was right: give the reserved slots back.
+    pub fn succeeded(self) {
+        for c in &self.counted {
+            c.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+}
+
+/// Take one counted attempt before checking a credential, or None when the
+/// limit is reached. The add and the limit check are one atomic step, so
+/// parallel requests can't exceed the limit.
+pub fn reserve(bucket: Bucket, ip: IpAddr) -> Option<Attempt> {
+    fn take(counter: Arc<AtomicU32>, limit: u32, counted: &mut Vec<Arc<AtomicU32>>) -> bool {
+        if counter.fetch_add(1, Ordering::Relaxed) >= limit {
+            counter.fetch_sub(1, Ordering::Relaxed);
+            return false;
+        }
+        counted.push(counter);
+        true
+    }
+    let mut counted = Vec::with_capacity(2);
+    let ok = (!matches!(bucket, Bucket::Pairing)
+        || take(pairing_total(), PAIRING_GLOBAL_LIMIT, &mut counted))
+        && take(
+            counters(bucket).get_with(client_key(ip), || Arc::new(AtomicU32::new(0))),
+            bucket.limit(),
+            &mut counted,
+        );
+    if ok {
+        Some(Attempt { counted })
+    } else {
+        // Undo whatever was taken before the limit was hit.
+        Attempt { counted }.succeeded();
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -141,5 +188,25 @@ mod tests {
         assert!(is_blocked(Bucket::Pairing, fresh));
         // The console login has its own, per-address limit.
         assert!(!is_blocked(Bucket::Credential, fresh));
+    }
+
+    #[test]
+    fn parallel_attempts_cannot_exceed_the_limit() {
+        let ip: IpAddr = "198.51.100.20".parse().unwrap();
+        // Many requests in flight at once, none finished yet.
+        let held: Vec<_> = (0..50).filter_map(|_| reserve(Bucket::Credential, ip)).collect();
+        assert_eq!(held.len() as u32, Bucket::Credential.limit());
+        assert!(is_blocked(Bucket::Credential, ip));
+        drop(held); // all wrong: they stay counted
+        assert!(reserve(Bucket::Credential, ip).is_none());
+    }
+
+    #[test]
+    fn a_right_credential_gives_its_slot_back() {
+        let ip: IpAddr = "198.51.100.21".parse().unwrap();
+        for _ in 0..100 {
+            reserve(Bucket::Credential, ip).expect("slot").succeeded();
+        }
+        assert!(!is_blocked(Bucket::Credential, ip));
     }
 }

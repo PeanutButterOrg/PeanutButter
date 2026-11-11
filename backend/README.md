@@ -121,7 +121,8 @@ To add one:
 - **Admin rights:** one device is the admin. Server-wide changes in GraphQL (keys, settings, catalog edits) require it.
 - **Console:** argon2 password and random session cookies stored hashed, so they can be revoked.
 - **Failed attempts** are limited per client. Pairing is also capped server-wide.
-- **Updates** are accepted only with a valid Ed25519 signature over a manifest of SHA-256 hashes. The public key is in `src/updates.rs` and `packaging/update-signing-public.pem`.
+- **App updates** are mirrored and offered only with a valid Ed25519 signature over a manifest of SHA-256 hashes, and the apps check it again. The public key is in `src/updates.rs` and `packaging/update-signing-public.pem`.
+- **Server updates** (console → Watchtower) pull the `:stable` image (by default) from GHCR and aren't signature-checked: their trust rests on the registry and CI. Pin a version tag if you'd rather update by hand.
 
 ## Configuration
 

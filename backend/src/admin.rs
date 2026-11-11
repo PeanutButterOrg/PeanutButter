@@ -1023,7 +1023,9 @@ async fn login(
     ip: std::net::IpAddr,
 ) -> Result<Response, AppError> {
     use crate::ratelimit::{self, Bucket};
-    if ratelimit::is_blocked(Bucket::Credential, ip) {
+    // Counted before the password check, so parallel guesses can't all slip
+    // past the limit before any is recorded.
+    let Some(attempt) = ratelimit::reserve(Bucket::Credential, ip) else {
         let html = render(
             state,
             false,
@@ -1034,7 +1036,7 @@ async fn login(
         )
         .await?;
         return Ok((StatusCode::TOO_MANY_REQUESTS, Html(html)).into_response());
-    }
+    };
     let password = form.password.as_deref().unwrap_or("").trim();
     let stored = crate::db::admin_password_hash(&state.app.pool).await?;
     let check = stored
@@ -1046,7 +1048,7 @@ async fn login(
         crate::db::set_admin_password(&state.app.pool, password).await?;
     }
     if !check.ok {
-        ratelimit::record_failure(Bucket::Credential, ip);
+        drop(attempt); // stays counted
         let html = render(
             state,
             false,
@@ -1058,6 +1060,7 @@ async fn login(
         .await?;
         return Ok((StatusCode::UNAUTHORIZED, Html(html)).into_response());
     }
+    attempt.succeeded();
     let token = new_console_session(state).await?;
     let mut response = redirect_console(Some("Signed in."), None);
     response
