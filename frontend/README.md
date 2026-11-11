@@ -1,74 +1,100 @@
-# PeanutButter Frontend
+# PeanutButter for desktop
 
-Flutter client for [PeanutButter](https://github.com/PeanutButterOrg/PeanutButter) — browse catalog, play local library files, and stream Jackett magnets on-device.
+The [PeanutButter](../README.md) app for **Windows, macOS and Linux**, built with Flutter. It's also built for the web for a quick look in a browser (no torrents there).
 
-## Supported platforms
+Android TV has its own native app: see [android-native](../android-native/README.md).
 
-| Platform | Playback | On-device torrents |
-| --- | --- | --- |
-| Linux / Windows / macOS | media_kit (libmpv) | yes (libtorrent) |
-| Web | media_kit (browser `<video>`) | no — `local_torrent_web.dart` stub |
+---
 
-Android TV is **not** built from this project any more — it is the native
-Leanback app in [`../android-native`](../android-native/README.md).
+## Features
 
-Device-specific behavior is selected through `lib/platform/` (`DeviceProfile`, `StreamSeekController`, input policy). Prefer those APIs over raw `Platform.isX` checks.
-Some `tv_*` helpers are still used for desktop keyboard navigation (arrow keys / Esc).
+- **Home:** a hero banner, then Continue watching, Trending, Popular and Recently added, with streaming-service logos on posters.
+- **Browse:** Movies and Series with filters (genre, year, rating, streaming service) and typo-tolerant search.
+- **Title pages:** trailer, scores, seasons and episodes, the source picker, favourite and watched, and **Notify me** for new episodes.
+- **Player (libmpv via media_kit):**
+  - Skip intro, Skip credits, and **Play next** with a countdown.
+  - Subtitles from OpenSubtitles or Wyzie, or your own file or link.
+  - Audio tracks.
+  - Full keyboard control.
+- **On-device torrents:** magnets are downloaded by libtorrent on your computer and played while they download. Seeks move the download straight to the new position.
+- **Lists:** Favourites and Watched.
+- **Pairing:** finds the server on your network, then you type the 6-digit code.
+- **Self-update** from your server, signature-checked, never in the middle of a movie.
 
-## Setup
+| Platform | Player | Torrents | Package |
+|---|---|---|---|
+| Windows | libmpv | ✅ | Setup `.exe` |
+| macOS | libmpv | ✅ | Universal `.app` (Intel + Apple silicon) |
+| Linux | libmpv | ✅ | `.deb` or AppImage |
+| Web | browser `<video>` | — | Docker image behind nginx (`web` service in `docker-compose.yml`) |
+
+---
+
+## Run it
+
+You need [Flutter](https://docs.flutter.dev/get-started/install) on the stable channel.
 
 ```bash
 cd frontend
 flutter pub get
+flutter run -d macos          # or: linux, windows, chrome
 ```
 
-Optional: copy repo-root `.env` for desktop discovery defaults (not required when pairing against a remote server).
-
-## Run
+**Linux** also needs the system libraries CI installs:
 
 ```bash
-flutter run -d linux
-flutter run -d macos
-flutter run -d windows
-flutter run -d chrome
+sudo apt install clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev \
+  libstdc++-12-dev libmpv-dev mpv libwebkit2gtk-4.1-dev \
+  libtorrent-rasterbar-dev libboost-dev libssl-dev
 ```
 
-## Pairing
+Then pair: open the server console, create a device code under **Devices**, and type it in the app.
 
-1. Open the server console (`http://SERVER:3001/`) and sign in
-2. Create a device code
-3. In the app: set server URL (or **Discover on LAN**) → enter the 6-digit code
-
-Discovery probes the saved URL, the router/gateway, common hosts on each LAN subnet (full /24 sweep on desktop) on port 3001. (There is no mDNS discovery yet.)
-
-## Streaming notes
-
-- Torrents are handled by **libtorrent_flutter** on the device (not the API)
-- Scrub / ±10s seeks on streams **debounce 3 seconds**, then Range-retarget the download window and seek the player
-
-## Desktop CI packages
-
-Produced by [Platform Builds](../.github/workflows/desktop-builds.yml)
-(raw deliverables after one Actions download unwrap — not nested zips):
-
-- Linux: portable `PeanutButter/` folder, `.deb`, AppImage
-- Windows: portable `PeanutButter/` folder, Inno Setup `.exe`
-- macOS: universal `PeanutButter.app`
-
-Local Linux packaging helper: `../scripts/package-linux.sh` / `../scripts/build-desktop-docker.sh`.
-
-## Tests
+**Checks** (CI runs both on every release):
 
 ```bash
+flutter analyze
 flutter test
-dart analyze lib
 ```
 
-## Project layout (high level)
+---
+
+## Packaging
+
+Release installers are built by the [Platform Builds](../.github/workflows/desktop-builds.yml) workflow on every `v*` tag and attached to the GitHub Release:
+- `PeanutButter-windows-x64-setup.exe`
+- `PeanutButter-macos-universal.zip`
+- `PeanutButter-linux-amd64.deb`
+- `PeanutButter-linux-x86_64.AppImage`
+
+Each workflow run also keeps portable Windows and Linux folders as build artifacts.
+
+To build locally:
+- **Linux:** `../scripts/package-linux.sh`, or `../scripts/build-desktop-docker.sh` to build inside Docker.
+- **Windows:** `../scripts/build-windows.ps1`.
+- **Any platform:** `flutter build <platform> --release`.
+
+---
+
+## Project layout
 
 ```
 lib/
-  platform/          # DeviceProfile, seek settle, input policy
-  screens/           # home, catalog, detail, player, settings, pairing, …
-  local_torrent.dart # picks local_torrent_io.dart (FFI) or local_torrent_web.dart
+  main.dart               app start, routing, session watch, update checks
+  screens/                home, browse, catalog, detail, player, search, settings, pairing, …
+  widgets/                posters, hero banner, filter bar, source picker, subtitle import, …
+  providers/              Riverpod state: settings and session, catalog data
+  graphql/                queries and the schema snapshot (schema.graphql)
+  platform/               DeviceProfile, seek handling, input policy: use these instead of Platform.isX
+  services/discovery.dart finding the server on the LAN
+  local_torrent.dart      on-device torrents (libtorrent FFI; a stub on the web)
+  app_updater.dart        update check, download, hash and signature verification
+plugins/libtorrent_flutter  vendored libtorrent bindings with a loopback stream server
+packages/                   vendored media_kit Android libs
 ```
+
+### Notes for contributors
+
+- **Device-specific behaviour** goes through `lib/platform/` (`DeviceProfile`), not scattered platform checks.
+- **The player** (`screens/player.dart`) owns its teardown order: player first, then torrent. Changing it has crashed Windows before.
+- **The schema** in `lib/graphql/schema.graphql` is a snapshot of the server's. Update it when you change the server's GraphQL.

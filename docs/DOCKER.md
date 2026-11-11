@@ -15,7 +15,7 @@ docker compose -f docker-compose.server.yml up -d --build
 
 ```bash
 docker pull ghcr.io/peanutbutterorg/peanutbutter-api:latest
-# pin: ghcr.io/peanutbutterorg/peanutbutter-api:0.2.0
+# pin a release: ghcr.io/peanutbutterorg/peanutbutter-api:0.3.17 (or :stable for the newest)
 ```
 
 Or load an offline artifact from the **Backend & Docker** workflow:

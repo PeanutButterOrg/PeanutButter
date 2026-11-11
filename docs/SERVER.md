@@ -72,7 +72,7 @@ docker compose -f docker-compose.server.yml down
 From GitHub Actions (**Backend & Docker**) or the registry:
 
 ```bash
-docker pull ghcr.io/peanutbutterorg/peanutbutter-api:0.2.0
+docker pull ghcr.io/peanutbutterorg/peanutbutter-api:stable   # newest release, or pin one: :0.3.17
 # or: gunzip -c peanutbutter-api-0.2.0.tar.gz | docker load
 
 # Point compose at the image (skip build) — image: peanutbutter-api:0.2.0
@@ -88,8 +88,8 @@ Linux binary-only (no Docker API container): download artifact `peanutbutter-api
 ```bash
 docker build -t peanutbutter-api:0.2.0 ./backend
 # or: gunzip -c dist/peanutbutter-api-0.2.0.tar.gz | docker load
-# or: docker pull ghcr.io/peanutbutterorg/peanutbutter-api:0.2.0
-#     docker tag ghcr.io/peanutbutterorg/peanutbutter-api:0.2.0 peanutbutter-api:0.2.0
+# or: docker pull ghcr.io/peanutbutterorg/peanutbutter-api:stable
+#     docker tag ghcr.io/peanutbutterorg/peanutbutter-api:stable peanutbutter-api:0.2.0
 ```
 
 1. CasaOS → **App Store** → **Custom Install**

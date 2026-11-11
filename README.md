@@ -1,153 +1,185 @@
-# PeanutButter
+# 🥜 PeanutButter
 
-Self-hosted media catalog for **your own legally owned files**. Metadata comes from official APIs:
+**Your own streaming service.** Run one small server at home, then browse and watch from your TV, laptop or desktop with apps that feel like the big streaming services, without the subscriptions or the tracking.
 
-- [TMDB](https://www.themoviedb.org/) — posters, trailers, genres, TMDB ratings
-- [OMDb](http://www.omdbapi.com/) — IMDb ratings only (IMDb is never scraped)
-- [AniList](https://anilist.co/) — anime metadata
+[![Platform Builds](https://github.com/PeanutButterOrg/PeanutButter/actions/workflows/desktop-builds.yml/badge.svg)](https://github.com/PeanutButterOrg/PeanutButter/actions/workflows/desktop-builds.yml)
+[![Backend & Docker](https://github.com/PeanutButterOrg/PeanutButter/actions/workflows/backend-docker.yml/badge.svg)](https://github.com/PeanutButterOrg/PeanutButter/actions/workflows/backend-docker.yml)
+[![Latest release](https://img.shields.io/github/v/release/PeanutButterOrg/PeanutButter)](https://github.com/PeanutButterOrg/PeanutButter/releases/latest)
 
-Local library files are served from a directory you mount (`MEDIA_PATH`). Jackett magnets are resolved by the API; **each client** (desktop / Android TV) downloads and streams torrents itself via libtorrent.
+| | |
+|---|---|
+| 📺 **Android TV** | A native app built for the remote, or swap your whole TV Home screen for the **PeanutButter Launcher** |
+| 💻 **Desktop** | Windows, macOS and Linux |
+| 🖥️ **Server** | One Docker Compose file: catalog, search, pairing and a web console |
 
-## Architecture
+---
 
-| Piece | Role |
-| --- | --- |
-| **API** (Rust / Axum / async-graphql) | Catalog, ingest, Jackett, pairing, local file Range serving |
-| **Postgres 16** | Titles, progress, torrent listings |
-| **Meilisearch** | Typo-tolerant search |
-| **Flutter client** (`frontend/`) | Linux / Windows / macOS desktop, plus a web build |
-| **Native Android TV** (`android-native/`) | Leanback TV app (the only Android client) |
+## What it does
 
-Clients pick a playback backend by device profile:
+**Browse like a streaming app**
+- A catalog of movies and series with posters, trailers, cast, genres, and TMDB, IMDb and Rotten Tomatoes scores
+- Trending, Popular and Recently added rows, each title marked with the streaming services that carry it
+- Fast, typo-tolerant search, plus filters for genre, year, rating and streaming service
+- Titles and descriptions always in English, even for shows from other countries
 
-| Device | Default player |
-| --- | --- |
-| Linux / Windows / macOS | media_kit (libmpv) |
-| Web | media_kit (browser `<video>`); no on-device torrents |
-| Android TV (native Leanback) | LibVLC SurfaceView (`android-native/tv`) |
+**Watch without friction**
+- Continue watching, favourites and watched marks
+- **Skip intro / credits** and **Play next** with a countdown
+- Subtitles from OpenSubtitles or Wyzie, or your own `.srt` / `.vtt` file or link
+- **Follow a series** to get an alert when a new episode airs
 
-See [android-native/README.md](android-native/README.md) to build the Leanback TV app.
+**Your sources**
+- Plays files from your own media folder, with instant seeking
+- Finds streams through [Jackett](https://github.com/Jackett/Jackett) and Stremio add-ons. Torrents download **on the device that plays them**, never on the server.
 
-## Prerequisites
+**Easy to live with**
+- Pair a TV or computer with a **6-digit code** from the console. The app can find the server on your network by itself.
+- Apps update themselves from your server, and every update is signature-checked
+- The server can update itself from the console, backing up the database first
 
-- Docker and Docker Compose v2 (server)
-- Optional native clients: [Flutter stable](https://flutter.dev/docs/get-started/install)
-- API keys (free): [TMDB](https://www.themoviedb.org/settings/api), [OMDb](http://www.omdbapi.com/apikey.aspx); AniList optional
+---
 
-## Quick start (server)
+## How it fits together
+
+```mermaid
+flowchart LR
+    subgraph Home server - Docker
+        API["PeanutButter API<br/>Rust · GraphQL · web console"]
+        PG[(Postgres)]
+        MS[(Meilisearch)]
+        API --- PG
+        API --- MS
+    end
+    TMDB["TMDB · OMDb · AniList<br/>metadata"] --> API
+    SRC["Jackett · Stremio add-ons<br/>stream sources"] --> API
+    API -- "catalog, search, magnets,<br/>your own files" --> TV["📺 Android TV app<br/>& Launcher"]
+    API -- same --> DESK["💻 Desktop app<br/>Windows · macOS · Linux"]
+    TV -. "torrents<br/>(on the TV)" .-> SWARM((BitTorrent))
+    DESK -. "torrents<br/>(on the computer)" .-> SWARM
+```
+
+The server is the brain: metadata, search, sources, pairing and updates. The apps do the playing. Files from your media folder stream from the server with byte-range seeking. Torrents are downloaded by the app itself (libtorrent), so the server never stores or shares them.
+
+---
+
+## Get started in 3 steps
+
+**1. Start the server** on any Linux machine with Docker:
 
 ```bash
 git clone https://github.com/PeanutButterOrg/PeanutButter.git
 cd PeanutButter
-cp .env.example .env   # local full stack only; server compose needs no .env
-```
-
-**Homelab / VPS (recommended):** see [docs/SERVER.md](docs/SERVER.md).
-
-```bash
-# Edit PUBLIC_URL in docker-compose.server.yml to your LAN IP or domain
-docker compose -f docker-compose.server.yml up -d --build
+# Set PUBLIC_URL in docker-compose.server.yml to the address your apps will use,
+# e.g. http://192.168.1.10:3001
+docker compose -f docker-compose.server.yml up -d
 curl http://127.0.0.1:3001/health
 ```
 
-**Local full stack** (API + optional web UI):
+On CasaOS / ZimaOS, use `docker-compose.casaos.yml`. For every option, see the **[server install guide](docs/SERVER.md)**.
+
+**2. Open the console** at `http://YOUR_SERVER:3001/`.
+- Sign in. If you didn't set `ADMIN_PASSWORD`, the generated password is printed in the server log: `docker compose -f docker-compose.server.yml logs api`.
+- Add a TMDB key (free) so the catalog fills up.
+- Optionally, set up Jackett or Stremio add-ons under **Streaming**.
+
+**3. Install an app and pair it.**
+- Download it from the [latest release](https://github.com/PeanutButterOrg/PeanutButter/releases/latest).
+- Create a device code under **Devices** in the console.
+- Type the 6-digit code in the app.
+
+| Platform | Download | Player |
+|---|---|---|
+| Android TV | `PeanutButter-android-tv.apk` (or the `arm64-v8a` / `armeabi-v7a` build for your TV) | ExoPlayer, or LibVLC |
+| Android TV Home screen | `PeanutButter-android-tv-launcher.apk` ([what it is](android-native/tv/src/launcher/README.md)) | ExoPlayer, or LibVLC |
+| Windows | `PeanutButter-windows-x64-setup.exe` | libmpv |
+| macOS | `PeanutButter-macos-universal.zip` (Intel + Apple silicon) | libmpv |
+| Linux | `PeanutButter-linux-amd64.deb` or `PeanutButter-linux-x86_64.AppImage` | libmpv |
+
+---
+
+## What's in this repo
+
+| Folder | What | Read more |
+|---|---|---|
+| [`backend/`](backend/) | The server: Rust, Axum, GraphQL, Postgres, Meilisearch | [backend/README.md](backend/README.md) |
+| [`android-native/`](android-native/) | Android TV app and Launcher, in Kotlin | [android-native/README.md](android-native/README.md) |
+| [`frontend/`](frontend/) | Desktop app (Flutter) for Windows, macOS and Linux | [frontend/README.md](frontend/README.md) |
+| [`docs/`](docs/) | Server install and Docker guides | [SERVER.md](docs/SERVER.md) · [DOCKER.md](docs/DOCKER.md) |
+| [`scripts/`](scripts/) | Build, packaging and install helpers | |
+| [`packaging/`](packaging/) | Installer configs and the update-signing public key | |
+
+---
+
+## Developing
 
 ```bash
-docker compose up --build
+# Server: Postgres + Meilisearch in Docker, API on the host
+docker compose up -d postgres meilisearch
+cp .env.example .env                  # then fill in TMDB_API_KEY etc.
+cd backend && cargo run
+
+# Desktop app
+cd frontend && flutter pub get && flutter run -d macos   # or linux / windows
+
+# Android TV app and Launcher
+cd android-native && ./gradlew :tv:assembleAppDebug :tv:assembleLauncherDebug
+./scripts/update-apps.sh --tv         # build and install on a TV over adb
 ```
 
-On first boot the API applies migrations, configures Meilisearch, scans `MEDIA_PATH`, and starts metadata sync. Sync also runs on a cron (popular ~every 6h, stale nightly).
+Tests: `cd backend && cargo test` · `cd frontend && flutter test` · `cd android-native && ./gradlew :core:testDebugUnitTest`.
 
-| URL | Purpose |
-| --- | --- |
-| `http://SERVER:3001/` | Console (password) — pairing + Jackett |
-| `http://SERVER:3001/health` | Health |
-| `http://SERVER:3001/graphql` | GraphQL |
+### Releasing
 
-## CI artifacts
+Releases are cut by merging, not by hand:
 
-GitHub Actions publishes:
+1. In your pull request, bump `version` in `backend/Cargo.toml` (one "Server 0.x.y" commit).
+2. Merge it into `main`.
+3. The [auto-tag workflow](.github/workflows/auto-tag.yml) tags the merge `v0.x.y` and starts both release builds:
+   - **Backend & Docker** publishes `ghcr.io/peanutbutterorg/peanutbutter-api:stable`, `:latest` and `:0.x.y`.
+   - **Platform Builds** publishes the signed GitHub Release with every installer.
 
-| Workflow | Artifacts |
-| --- | --- |
-| [Platform Builds](.github/workflows/desktop-builds.yml) | Linux portable folder / `.deb` / AppImage, Windows portable folder / setup `.exe`, macOS `PeanutButter-macos-universal.zip` (ditto → `.app`), Android TV APK |
-| [Backend & Docker](.github/workflows/backend-docker.yml) | Linux API binary (`.tar.gz`), Docker image `ghcr.io/peanutbutterorg/peanutbutter-api`, offline image `.tar.gz` |
+A PR that doesn't bump the version releases nothing, and CI runs only for release tags. Servers then offer the new apps to every paired device, and the console offers the server update.
 
-On version tags (`v*`), images are tagged with the semver and `latest`. Pull:
+---
 
-```bash
-docker pull ghcr.io/peanutbutterorg/peanutbutter-api:latest
-# or pin: ghcr.io/peanutbutterorg/peanutbutter-api:0.2.0
-```
+## Configuration
 
-Then point compose `image:` at the pulled tag (or keep `build:` for local builds).
+Everything has a sensible default. Most settings, including API keys, Jackett, add-ons, subtitles and languages, can be changed in the console without a restart.
 
-## Desktop (Flutter) and Android TV clients
+| Variable | What it does |
+|---|---|
+| `PUBLIC_URL` | **The address apps use to reach the server** (LAN IP or domain). Set this. |
+| `ADMIN_PASSWORD` | First console password. Empty means one is generated and logged. `ADMIN_PASSWORD_RESET=1` forces it once. |
+| `TMDB_API_KEY` · `OMDB_API_KEY` · `ANILIST_CLIENT_ID` | Metadata. TMDB is the important one; OMDb adds IMDb and Rotten Tomatoes scores. |
+| `MEDIA_PATH` | Your own media folder, mounted into the container |
+| `JACKETT_URL` · `JACKETT_API_KEY` | Jackett, if you prefer env vars over the console |
+| `OPENSUBTITLES_API_KEY` · `WYZIE_API_KEY` | Subtitle providers |
+| `PREFERRED_LANGUAGES` | Audio and subtitle languages to prefer (e.g. `en,hi`) |
+| `API_KEY` | A fixed pairing code for the admin device, re-opened for 15 minutes on each boot |
+| `CORS_ORIGINS` | Extra browser origins allowed to call the API (comma-separated) |
+| `SYNC_CRON_POPULAR` · `SYNC_CRON_STALE` · `SYNC_WORKERS` | Metadata sync schedule and parallelism |
+| `UPDATES_ENABLED` · `UPDATE_CHECK_HOURS` | App update mirroring (on by default) |
+| `DATABASE_URL` · `MEILI_URL` · `MEILI_MASTER_KEY` | Set by the compose files; change only if you run your own |
+| `BIND_ADDR` · `RUST_LOG` | Listen address and log filter |
 
-```bash
-cd frontend
-flutter pub get
-flutter run -d linux          # or macos / windows / chrome
-```
+[`.env.example`](.env.example) is a starting point for local development; [docs/SERVER.md](docs/SERVER.md) covers server-only settings such as auto-update.
 
-Android TV uses the native app in `android-native/` (`./scripts/update-apps.sh --tv` builds and installs it over adb). Set the server URL (or **Find server on LAN**), then enter the 6-digit pairing code from the console.
+---
 
-Before pushing, `./scripts/verify.sh` runs the same checks as CI (analyze, tests, builds).
+## Security at a glance
 
-More detail: [frontend/README.md](frontend/README.md) · [backend/README.md](backend/README.md) · [docs/DOCKER.md](docs/DOCKER.md)
+- **Pairing:** a 6-digit code works for 15 minutes and is traded for a long random device key. The server stores only the key's hash. Wrong codes are rate-limited per client and server-wide.
+- **Console:** argon2-hashed password, revocable sessions, and refusal of form posts from other sites.
+- **Updates:** every app and server release is signed with an Ed25519 key that only CI holds. The server and the apps both check the signature and each file's hash, and never install an older version.
+- **Torrents:** never stored on the server. The server won't fetch arbitrary links for clients.
+- **Network:** the database, search and updater containers aren't exposed outside Docker. For access from outside your home, put HTTPS in front of port 3001 with a reverse proxy.
 
-## Environment variables
+---
 
-| Variable | Purpose |
-| --- | --- |
-| `DATABASE_URL` | PostgreSQL (host tools: port **5433**; Compose uses internal DNS) |
-| `MEILI_URL` / `MEILI_MASTER_KEY` | Search |
-| `TMDB_API_KEY` / `OMDB_API_KEY` / `ANILIST_CLIENT_ID` | Metadata |
-| `MEDIA_PATH` | Your media folder (mounted into the API) |
-| `STREAM_PATH` | Writable torrent cache (Docker default `/data/streams`) |
-| `PUBLIC_URL` | Base URL clients use for playback links |
-| `API_KEY` | Optional fixed 6-digit pairing code for the admin device (re-opened for 15 minutes on each boot) |
-| `ADMIN_PASSWORD` | Initial web console password (empty = generated and logged; `ADMIN_PASSWORD_RESET=1` forces it) |
-| `CORS_ORIGINS` | Extra browser origins allowed to call the API (comma-separated, `*` for any) |
-| `PB_RUN_AS_ROOT` | `1` keeps the API container running as root (default: uid 10001) |
-| `BIND_ADDR` | Listen address (`0.0.0.0:3001` on host; Compose maps `3001→8080`) |
-| `JACKETT_URL` / `JACKETT_API_KEY` | Optional; prefer console after sign-in |
-| `RUST_LOG` | Tracing filter |
+## Please use it responsibly
 
-## GraphQL (selected)
-
-```graphql
-query {
-  catalog(filter: { kind: MOVIE, yearMin: 1990 }, sort: POPULARITY, page: 1) {
-    totalCount
-    items { id title year posterUrl ratings { tmdbVoteAverage imdbRating } }
-  }
-  title(id: "…") {
-    synopsis genres trailers { youtubeKey } fileReferences { quality playbackUrl }
-  }
-  search(query: "matrix") { items { title year } }
-  serverInfo { version libraryPath syncStatus { syncing totalTitles lastSyncAt } }
-}
-
-mutation { triggerSync { success message } }
-```
-
-## File scanning & playback
-
-1. Put files in `MEDIA_PATH` as `Title.Year.Quality.ext` (episodes: `Title.Year.S01E01.Quality.ext`)
-2. The watcher matches title + year (and `SxxExx`) to catalog rows
-3. `playbackUrl` is `PUBLIC_URL/files/{id}` with HTTP **Range** for seeking
-4. Jackett magnets stream on-device via libtorrent (3s seek settle + Range retarget)
-
-Only files you own should live in `MEDIA_PATH`.
-
-## Tests
-
-```bash
-cd backend && cargo test
-cd frontend && flutter test
-```
+PeanutButter is a catalog and player. It ships with no content and no content sources. You decide what goes in your media folder and which sources you connect, so only use content you have the right to watch.
 
 ## Credits
 
-This product uses the TMDB API but is not endorsed or certified by TMDB. IMDb ratings are provided by OMDb. Anime metadata is provided by AniList.
+Metadata from [TMDB](https://www.themoviedb.org/) (this product uses the TMDB API but is not endorsed or certified by TMDB), IMDb and Rotten Tomatoes scores via [OMDb](https://www.omdbapi.com/), and anime data from [AniList](https://anilist.co/). Intro and credits timings come from [TheIntroDB](https://theintrodb.org/). Playback by [libmpv](https://mpv.io/) / [media_kit](https://github.com/media-kit/media-kit), [ExoPlayer](https://developer.android.com/media/media3) and [LibVLC](https://www.videolan.org/vlc/libvlc.html). Torrents by [libtorrent](https://www.libtorrent.org/).
