@@ -67,6 +67,9 @@ pub struct StreamService {
 struct StreamInner {
     session: tokio::sync::OnceCell<Arc<Session>>,
     sessions: RwLock<HashMap<String, Arc<Mutex<LiveStream>>>>,
+    /// Serializes recording a torrent on a stream with deleting it from the
+    /// engine, so one stream's stop can't delete a torrent another is claiming.
+    torrent_owners: Mutex<()>,
     output_root: PathBuf,
     public_url: String,
 }
@@ -148,6 +151,7 @@ impl StreamService {
             inner: Arc::new(StreamInner {
                 session: tokio::sync::OnceCell::new(),
                 sessions: RwLock::new(HashMap::new()),
+                torrent_owners: Mutex::new(()),
                 output_root: stream_output_root(media_path),
                 public_url,
             }),
@@ -689,6 +693,9 @@ impl StreamService {
 
     /// Delete a torrent from the engine when no remaining session uses it.
     async fn release_torrent(&self, handle: &Arc<ManagedTorrent>) {
+        // Held through the owner scan and the delete, so a stream claiming the
+        // same torrent can't slip in between (see claim_torrent).
+        let _owners = self.inner.torrent_owners.lock().await;
         let id = handle.id();
         let others: Vec<_> = self.inner.sessions.read().await.values().cloned().collect();
         for other in others {
@@ -699,6 +706,23 @@ impl StreamService {
         if let Some(session) = self.inner.session.get() {
             let _ = session.delete(id.into(), true).await;
         }
+    }
+
+    /// Record a torrent the engine just handed us on this stream, under the
+    /// same lock release_torrent deletes under. Returns false when the torrent
+    /// was deleted in the meantime (another stream stopped), so it has to be
+    /// added again; a deleted handle would never start.
+    async fn claim_torrent(&self, live: &Arc<Mutex<LiveStream>>, handle: &Arc<ManagedTorrent>) -> bool {
+        let _owners = self.inner.torrent_owners.lock().await;
+        let still_managed = self
+            .inner
+            .session
+            .get()
+            .is_some_and(|s| s.get(handle.id().into()).is_some());
+        if still_managed {
+            live.lock().await.handle = Some(handle.clone());
+        }
+        still_managed
     }
 
     async fn live(&self, session_id: &str) -> Option<Arc<Mutex<LiveStream>>> {
@@ -808,55 +832,63 @@ async fn bootstrap_torrent(
     };
 
     // 2) Real download — only the chosen file (critical for peer piece interest).
-    let handle = match listed {
-        AddTorrentResponse::Added(_, handle) | AddTorrentResponse::AlreadyManaged(_, handle) => {
-            let _ = session
-                .update_only_files(&handle, &HashSet::from([file_id]))
-                .await;
-            handle
-        }
-        AddTorrentResponse::ListOnly(_) => {
-            let added = session
-                .add_torrent(
-                    resolved.to_add(),
-                    Some(AddTorrentOptions {
-                        overwrite: true,
-                        only_files: Some(vec![file_id]),
-                        output_folder: Some(folder.to_string_lossy().into_owned()),
-                        force_tracker_interval: Some(Duration::from_secs(3)),
-                        defer_writes: Some(true),
-                        peer_opts: Some(PeerConnectionOptions {
-                            connect_timeout: Some(Duration::from_secs(2)),
-                            read_write_timeout: Some(Duration::from_secs(8)),
-                            keep_alive_interval: Some(Duration::from_secs(8)),
-                        }),
-                        trackers: Some(EXTRA_TRACKERS.iter().map(|s| (*s).to_string()).collect()),
-                        ratelimits: torrent_limits(),
-                        ..Default::default()
-                    }),
-                )
-                .await
-                .map_err(|e| friendly_stream_error(&e.to_string()))?;
-            match added {
-                AddTorrentResponse::Added(_, h) | AddTorrentResponse::AlreadyManaged(_, h) => h,
-                AddTorrentResponse::ListOnly(_) => {
-                    return Err("This torrent failed to start. Try another result.".into())
-                }
-            }
-        }
-    };
-
-    // Record the torrent on the session at once so stop() can remove it from
-    // the engine; before, a stream stopped or failed while starting kept
-    // downloading until the server restarted.
-    let session_id = {
-        let mut g = live.lock().await;
-        g.handle = Some(handle.clone());
-        g.id.clone()
-    };
+    // Each torrent is recorded on this session the moment we get it (see
+    // claim_torrent), so stop() can remove it from the engine and another
+    // stream's stop can't delete it from under us.
     let service = StreamService { inner: inner.clone() };
+    let mut handle = match listed {
+        AddTorrentResponse::Added(_, h) | AddTorrentResponse::AlreadyManaged(_, h) => {
+            service.claim_torrent(&live, &h).await.then_some(h)
+        }
+        AddTorrentResponse::ListOnly(_) => None,
+    };
+    // Not added by the listing pass, or deleted by another stream's stop just
+    // before we could claim it: add it (again).
+    for _ in 0..3 {
+        if handle.is_some() {
+            break;
+        }
+        let added = session
+            .add_torrent(
+                resolved.to_add(),
+                Some(AddTorrentOptions {
+                    overwrite: true,
+                    only_files: Some(vec![file_id]),
+                    output_folder: Some(folder.to_string_lossy().into_owned()),
+                    force_tracker_interval: Some(Duration::from_secs(3)),
+                    defer_writes: Some(true),
+                    peer_opts: Some(PeerConnectionOptions {
+                        connect_timeout: Some(Duration::from_secs(2)),
+                        read_write_timeout: Some(Duration::from_secs(8)),
+                        keep_alive_interval: Some(Duration::from_secs(8)),
+                    }),
+                    trackers: Some(EXTRA_TRACKERS.iter().map(|s| (*s).to_string()).collect()),
+                    ratelimits: torrent_limits(),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .map_err(|e| friendly_stream_error(&e.to_string()))?;
+        handle = match added {
+            AddTorrentResponse::Added(_, h) | AddTorrentResponse::AlreadyManaged(_, h) => {
+                service.claim_torrent(&live, &h).await.then_some(h)
+            }
+            AddTorrentResponse::ListOnly(_) => {
+                return Err("This torrent failed to start. Try another result.".into())
+            }
+        };
+    }
+    let Some(handle) = handle else {
+        return Err("This torrent failed to start. Try another result.".into());
+    };
+    let _ = session
+        .update_only_files(&handle, &HashSet::from([file_id]))
+        .await;
+
+    let session_id = live.lock().await.id.clone();
     // Stopped while the torrent was being added: stop() saw no handle.
     if !inner.sessions.read().await.contains_key(&session_id) {
+        live.lock().await.handle = None;
         service.release_torrent(&handle).await;
         return Err("Stream stopped.".into());
     }
