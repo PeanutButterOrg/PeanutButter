@@ -452,7 +452,7 @@ class LauncherActivity : FragmentActivity() {
             subtitle = if (resume && left > 0) getString(R.string.hero_minutes_left, left) + "  ·  " + meta else meta,
             description = item.synopsis?.trim().orEmpty(),
             art = item.backdropUrl ?: item.posterUrl,
-            progress = if (resume) item.progressPercent.toInt() else null,
+            progress = if (resume) HomeContent.progressPercentOf(item) else null,
         ) { openTitle(item) }
     }
 

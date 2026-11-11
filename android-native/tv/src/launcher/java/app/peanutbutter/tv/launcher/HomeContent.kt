@@ -292,9 +292,10 @@ class HomeContent(
             val v = holder.itemView
             Posters.load(v.findViewById(R.id.launcher_poster_image), item.posterUrl ?: item.backdropUrl)
             v.findViewById<ProgressBar>(R.id.launcher_poster_progress).apply {
-                // Watched titles get the tick instead of a full bar.
-                isVisible = item.progressPercent > 0 && !item.watched
-                progress = item.progressPercent.toInt()
+                // Same rule as the TV app's cards; watched titles get the tick instead.
+                val pct = progressPercentOf(item)
+                isVisible = pct > 0
+                progress = pct
             }
             v.findViewById<TextView>(R.id.launcher_poster_label).text = item.displayTitle
             bindService(v.findViewById(R.id.launcher_poster_service), item)
@@ -350,6 +351,17 @@ class HomeContent(
     }
 
     companion object {
+        /**
+         * 0–100 for the progress bars. The server sends a 0–1 fraction (rounding
+         * it as a percentage left every bar empty); a just-started title still
+         * gets a visible sliver.
+         */
+        fun progressPercentOf(item: TitleItem): Int {
+            val p = item.watchProgress
+            if (item.watched || (p <= 0.0 && !item.canResume)) return 0
+            return (p * 100).toInt().coerceIn(8, 98)
+        }
+
         private val WHITE_ON_BADGE = setOf("disney")
 
         /** Same logo set as the TV app's poster cards. */

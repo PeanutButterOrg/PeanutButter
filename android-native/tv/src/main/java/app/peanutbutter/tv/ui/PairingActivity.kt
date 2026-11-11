@@ -103,7 +103,7 @@ class PairingActivity : FragmentActivity() {
                     }
                     app.session.serverUrl = base
                     app.session.apiToken = token
-                    startActivity(Intent(this@PairingActivity, MainActivity::class.java))
+                    startActivity(homeIntent(this@PairingActivity))
                     finish()
                 } catch (e: Exception) {
                     status.text = e.message ?: getString(R.string.error_generic)
@@ -161,3 +161,15 @@ class PairingActivity : FragmentActivity() {
         }
     }
 }
+
+/**
+ * Where to go once paired: the Launcher's own Home screen in the launcher
+ * flavor (not the TV app's home), the TV app's home otherwise.
+ */
+internal fun homeIntent(context: android.content.Context): Intent =
+    if (app.peanutbutter.tv.BuildConfig.IS_LAUNCHER) {
+        Intent().setClassName(context, "app.peanutbutter.tv.launcher.LauncherActivity")
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+    } else {
+        Intent(context, MainActivity::class.java)
+    }
