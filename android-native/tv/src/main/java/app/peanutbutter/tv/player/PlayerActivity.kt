@@ -1321,7 +1321,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             saveWatchProgress(force = true, complete = true)
         }
         showPlayNext(
-            endCountdownLeft > 0 || (!showSkip && (nearEnd || inCredits) && nextEpisode != null),
+            !nextBusy && (endCountdownLeft > 0 || (!showSkip && (nearEnd || inCredits) && nextEpisode != null)),
         )
         updateOverlayFocusChain()
         placeSkipButtons(chromeVisible)
@@ -1454,10 +1454,10 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         val tid = titleId ?: return
         if (nextBusy) return
         nextBusy = true
-        btnNext?.isEnabled = false
-        // Keep focus + pressed look while we look up sources.
-        btnNext?.isSelected = true
-        btnNext?.requestFocus()
+        // The button has done its job: hide it (and stop the end countdown,
+        // which would close the player mid-lookup). The loading card stays.
+        cancelEndCountdown()
+        showPlayNext(false)
         statusView?.text = getString(R.string.looking_up_sources)
         // Finding a source takes a while: stop the old episode and say what's happening.
         val wasPlaying = player?.wantsToPlay == true
@@ -1505,8 +1505,6 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                 Toast.makeText(this@PlayerActivity, e.message, Toast.LENGTH_LONG).show()
             } finally {
                 nextBusy = false
-                btnNext?.isEnabled = true
-                btnNext?.isSelected = false
                 // Handed off: stay covered until the new player takes over.
                 if (!handedOffToNext) {
                     loading.isVisible = false

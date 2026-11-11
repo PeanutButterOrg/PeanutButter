@@ -1978,7 +1978,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   }
 
   void _armPlayNextPrompt({bool force = false}) {
-    if (_nextEpisode == null || _playNextDismissed || _isTrailer) return;
+    if (_nextEpisode == null || _playNextDismissed || _isTrailer || _playNextBusy) return;
     // Don't surface Play Next while still connecting / buffering the first pieces.
     if (!force && !_playbackStarted) return;
     if (!force && _playNextVisible) return;
@@ -2002,6 +2002,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         _playNextTick?.cancel();
         return;
       }
+      // Next episode loading: the button stays hidden and the player stays open.
+      if (_playNextBusy) return;
       final armed = _playNextArmedAt;
       if (armed == null) return;
       final left = _playNextAutoHideSecs - DateTime.now().difference(armed).inSeconds;
@@ -2092,6 +2094,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   Future<void> _onPlayNextPressed() async {
     final next = _nextEpisode;
     if (next == null || _playNextBusy || !mounted) return;
+    // Pressed: the button goes away (the countdown used to bring it back every
+    // second) and the countdown can't close the player while the next loads.
+    _cancelPlayNextCountdown();
+    _playNextArmedAt = null;
     setState(() {
       _playNextBusy = true;
       _playNextVisible = false;
@@ -3965,7 +3971,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         _activeSegment != null &&
         (_activeSegment!.kind == 'INTRO' || _activeSegment!.kind == 'RECAP') &&
         !_isTrailer;
-    final showPlayNext = _playbackStarted && _playNextVisible && _nextEpisode != null;
+    final showPlayNext =
+        _playbackStarted && _playNextVisible && !_playNextBusy && _nextEpisode != null;
     // Same bottom-left spot for both — they never show at the same time.
     return [
       if (showSkip)
