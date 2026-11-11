@@ -1,0 +1,63 @@
+# When a pull request is merged into main, tag the merge commit with the
+# server version in backend/Cargo.toml (v<version>) and start the release
+# builds for that tag.
+#
+# Bump backend/Cargo.toml in the PR to release; if that version is already
+# tagged, nothing happens. A tag pushed by this workflow's token doesn't fire
+# "push: tags" workflows (GitHub's rule against loops), so the builds are
+# started here explicitly on the new tag, which they treat like a tag push.
+name: Auto tag on merge
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: auto-tag
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          fetch-depth: 0
+
+      - name: Create the release tag
+        id: tag
+        run: |
+          ver="$(sed -n 's/^version = "\([0-9][0-9.]*\)"/\1/p' backend/Cargo.toml | head -1)"
+          if [ -z "$ver" ]; then
+            echo "::error::No version found in backend/Cargo.toml"
+            exit 1
+          fi
+          tag="v$ver"
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null || git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+            echo "::notice::$tag already exists; bump backend/Cargo.toml to release. No tag created."
+            echo "created=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$tag" -m "Release $tag (PR #${{ github.event.pull_request.number }})"
+          git push origin "refs/tags/$tag"
+          echo "created=true" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "::notice::Tagged $tag"
+
+      - name: Start the release builds
+        if: steps.tag.outputs.created == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          gh workflow run backend-docker.yml --repo "$GITHUB_REPOSITORY" --ref "$TAG"
+          gh workflow run desktop-builds.yml --repo "$GITHUB_REPOSITORY" --ref "$TAG"
