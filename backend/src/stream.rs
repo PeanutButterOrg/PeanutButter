@@ -291,10 +291,11 @@ impl StreamService {
                 tracing::warn!(error = %e, "torrent list_files retry failed");
             }
         }
+        // Remove the scratch folder whether or not listing worked.
+        let _ = tokio::fs::remove_dir_all(&tmp).await;
         let listed = listed.map_err(|e| {
             AppError::Message(friendly_list_files_error(&e.to_string()))
         })?;
-        let _ = tokio::fs::remove_dir_all(&tmp).await;
 
         let videos = match &listed {
             AddTorrentResponse::ListOnly(resp) => videos_from_info(&resp.info),
@@ -398,7 +399,12 @@ impl StreamService {
                     peers,
                 })
             }
-            Ok(AddTorrentResponse::Added(id, handle) | AddTorrentResponse::AlreadyManaged(id, handle)) => {
+            Ok(AddTorrentResponse::AlreadyManaged(_, handle)) => {
+                // A live stream owns this torrent: read its swarm, never delete it.
+                let live = handle.stats().live.as_ref().map(|l| l.snapshot.peer_stats.live as i32).unwrap_or(0);
+                Ok(SwarmProbe { seeders: live, peers: live })
+            }
+            Ok(AddTorrentResponse::Added(id, handle)) => {
                 // Rare for list_only — sample briefly then delete.
                 let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
                 let mut best_live = 0i32;
@@ -556,8 +562,12 @@ impl StreamService {
                 let folder = self.inner.output_root.join(&live.id);
                 (live.handle.clone(), folder)
             };
-            // Drop the torrent handle first so librqbit releases file locks.
-            drop(handle);
+            // Remove the torrent from the engine (dropping our handle alone left
+            // it downloading and seeding until the server restarted), unless
+            // another live session plays the same torrent.
+            if let Some(handle) = handle {
+                self.release_torrent(&handle).await;
+            }
             // Then wipe the per-session folder that holds downloaded pieces.
             if folder.exists() {
                 let _ = tokio::fs::remove_dir_all(&folder).await;
@@ -674,6 +684,20 @@ impl StreamService {
                 .map(|e| format!("error: {e}"))
                 .unwrap_or_else(|| live.status.clone()),
             stream_url,
+        }
+    }
+
+    /// Delete a torrent from the engine when no remaining session uses it.
+    async fn release_torrent(&self, handle: &Arc<ManagedTorrent>) {
+        let id = handle.id();
+        let others: Vec<_> = self.inner.sessions.read().await.values().cloned().collect();
+        for other in others {
+            if other.lock().await.handle.as_ref().is_some_and(|h| h.id() == id) {
+                return;
+            }
+        }
+        if let Some(session) = self.inner.session.get() {
+            let _ = session.delete(id.into(), true).await;
         }
     }
 
@@ -822,19 +846,38 @@ async fn bootstrap_torrent(
         }
     };
 
-    tokio::time::timeout(Duration::from_secs(45), handle.wait_until_initialized())
-        .await
-        .map_err(|_| "Couldn’t find enough peers to start this stream. Try another result.".to_string())?
-        .map_err(|e| friendly_stream_error(&e.to_string()))?;
+    // Record the torrent on the session at once so stop() can remove it from
+    // the engine; before, a stream stopped or failed while starting kept
+    // downloading until the server restarted.
+    let session_id = {
+        let mut g = live.lock().await;
+        g.handle = Some(handle.clone());
+        g.id.clone()
+    };
+    let service = StreamService { inner: inner.clone() };
+    // Stopped while the torrent was being added: stop() saw no handle.
+    if !inner.sessions.read().await.contains_key(&session_id) {
+        service.release_torrent(&handle).await;
+        return Err("Stream stopped.".into());
+    }
+
+    let started = match tokio::time::timeout(Duration::from_secs(45), handle.wait_until_initialized()).await {
+        Err(_) => Err("Couldn’t find enough peers to start this stream. Try another result.".to_string()),
+        Ok(Err(e)) => Err(friendly_stream_error(&e.to_string())),
+        Ok(Ok(())) => Ok(()),
+    };
+    if let Err(e) = started {
+        live.lock().await.handle = None;
+        service.release_torrent(&handle).await;
+        return Err(e);
+    }
     let _ = session
         .update_only_files(&handle, &HashSet::from([file_id]))
         .await;
 
-    // Expose the handle early so the UI can show live peer counts while we
-    // warm the file header — but keep status != ready until bytes arrive.
+    // Keep status != ready until the file header arrives.
     let resume_ms = {
         let mut g = live.lock().await;
-        g.handle = Some(handle.clone());
         g.file_id = Some(file_id);
         g.status = "buffering".into();
         g.resume_position

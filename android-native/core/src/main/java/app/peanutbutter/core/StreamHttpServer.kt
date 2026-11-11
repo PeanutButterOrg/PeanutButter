@@ -90,7 +90,8 @@ class StreamHttpServer(
     private fun handleClient(socket: Socket) {
         socket.soTimeout = 120_000
         try {
-            val input = socket.getInputStream()
+            // Buffered: headers are parsed a byte at a time (one syscall each before).
+            val input = java.io.BufferedInputStream(socket.getInputStream(), 4096)
             val output = BufferedOutputStream(socket.getOutputStream())
             val request = readRequest(input) ?: return
             if (!request.path.startsWith("/stream")) {

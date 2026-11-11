@@ -124,8 +124,22 @@ jobs:
           mkdir -p ~/apt-cache/partial
           # The runner's DNS sometimes can't resolve the mirror for a minute or
           # two ("Temporary failure resolving"); apt's own retries give up too
-          # fast, so the whole install is tried again after a pause.
+          # fast, so the whole install is tried again after a pause. The
+          # runner's Azure mirror can stay unreachable for the whole job, so
+          # from the second attempt on apt uses the main Ubuntu archive
+          # instead (and finishes configuring anything left half-installed).
           for attempt in 1 2 3 4; do
+            if [ "$attempt" -ge 2 ]; then
+              echo "Switching apt to archive.ubuntu.com"
+              for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list; do
+                [ -f "$f" ] || continue
+                sudo sed -i \
+                  -e 's#mirror+file:/etc/apt/apt-mirrors.txt#http://archive.ubuntu.com/ubuntu/#g' \
+                  -e 's#azure\.archive\.ubuntu\.com#archive.ubuntu.com#g' \
+                  "$f"
+              done
+              sudo dpkg --configure -a || true
+            fi
             sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update -y || true
             if sudo -E apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 \
               -o Dir::Cache::Archives="$HOME/apt-cache" \
