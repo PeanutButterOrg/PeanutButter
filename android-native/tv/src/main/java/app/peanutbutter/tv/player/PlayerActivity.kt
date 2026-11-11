@@ -2124,6 +2124,9 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         main.removeCallbacks(bufferStallRecover)
         main.removeCallbacks(showRebufferSpinner)
         main.removeCallbacks(endCountdown)
+        // Also the one-off delayed lambdas (seek commits, focus, retries): this
+        // handler is the player's own, so nothing else is cancelled.
+        main.removeCallbacksAndMessages(null)
         val sid = sessionId
         if (localTorrent || sid?.startsWith("local-") == true) {
             // Closing the player always stops the torrent. Downloaded pieces are

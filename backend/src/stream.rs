@@ -67,6 +67,9 @@ pub struct StreamService {
 struct StreamInner {
     session: tokio::sync::OnceCell<Arc<Session>>,
     sessions: RwLock<HashMap<String, Arc<Mutex<LiveStream>>>>,
+    /// Serializes recording a torrent on a stream with deleting it from the
+    /// engine, so one stream's stop can't delete a torrent another is claiming.
+    torrent_owners: Mutex<()>,
     output_root: PathBuf,
     public_url: String,
 }
@@ -148,6 +151,7 @@ impl StreamService {
             inner: Arc::new(StreamInner {
                 session: tokio::sync::OnceCell::new(),
                 sessions: RwLock::new(HashMap::new()),
+                torrent_owners: Mutex::new(()),
                 output_root: stream_output_root(media_path),
                 public_url,
             }),
@@ -248,11 +252,13 @@ impl StreamService {
             .map_err(|e| AppError::Message(e.to_string()))?
             .clone();
 
+        // Resolve first: a failed lookup (expired Jackett link, HTTP error)
+        // returned after the scratch folder existed and left it behind.
+        let add = resolve_torrent_source(magnet).await.map_err(AppError::Message)?;
         let tmp = self.inner.output_root.join(format!("list-{}", Uuid::new_v4()));
         tokio::fs::create_dir_all(&tmp)
             .await
             .map_err(AppError::Io)?;
-        let add = resolve_torrent_source(magnet).await.map_err(AppError::Message)?;
         let mut listed = session
             .add_torrent(
                 add.to_add(),
@@ -291,10 +297,11 @@ impl StreamService {
                 tracing::warn!(error = %e, "torrent list_files retry failed");
             }
         }
+        // Remove the scratch folder whether or not listing worked.
+        let _ = tokio::fs::remove_dir_all(&tmp).await;
         let listed = listed.map_err(|e| {
             AppError::Message(friendly_list_files_error(&e.to_string()))
         })?;
-        let _ = tokio::fs::remove_dir_all(&tmp).await;
 
         let videos = match &listed {
             AddTorrentResponse::ListOnly(resp) => videos_from_info(&resp.info),
@@ -398,7 +405,12 @@ impl StreamService {
                     peers,
                 })
             }
-            Ok(AddTorrentResponse::Added(id, handle) | AddTorrentResponse::AlreadyManaged(id, handle)) => {
+            Ok(AddTorrentResponse::AlreadyManaged(_, handle)) => {
+                // A live stream owns this torrent: read its swarm, never delete it.
+                let live = handle.stats().live.as_ref().map(|l| l.snapshot.peer_stats.live as i32).unwrap_or(0);
+                Ok(SwarmProbe { seeders: live, peers: live })
+            }
+            Ok(AddTorrentResponse::Added(id, handle)) => {
                 // Rare for list_only — sample briefly then delete.
                 let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
                 let mut best_live = 0i32;
@@ -556,8 +568,12 @@ impl StreamService {
                 let folder = self.inner.output_root.join(&live.id);
                 (live.handle.clone(), folder)
             };
-            // Drop the torrent handle first so librqbit releases file locks.
-            drop(handle);
+            // Remove the torrent from the engine (dropping our handle alone left
+            // it downloading and seeding until the server restarted), unless
+            // another live session plays the same torrent.
+            if let Some(handle) = handle {
+                self.release_torrent(&handle).await;
+            }
             // Then wipe the per-session folder that holds downloaded pieces.
             if folder.exists() {
                 let _ = tokio::fs::remove_dir_all(&folder).await;
@@ -677,6 +693,40 @@ impl StreamService {
         }
     }
 
+    /// Delete a torrent from the engine when no remaining session uses it.
+    async fn release_torrent(&self, handle: &Arc<ManagedTorrent>) {
+        // Held through the owner scan and the delete, so a stream claiming the
+        // same torrent can't slip in between (see claim_torrent).
+        let _owners = self.inner.torrent_owners.lock().await;
+        let id = handle.id();
+        let others: Vec<_> = self.inner.sessions.read().await.values().cloned().collect();
+        for other in others {
+            if other.lock().await.handle.as_ref().is_some_and(|h| h.id() == id) {
+                return;
+            }
+        }
+        if let Some(session) = self.inner.session.get() {
+            let _ = session.delete(id.into(), true).await;
+        }
+    }
+
+    /// Record a torrent the engine just handed us on this stream, under the
+    /// same lock release_torrent deletes under. Returns false when the torrent
+    /// was deleted in the meantime (another stream stopped), so it has to be
+    /// added again; a deleted handle would never start.
+    async fn claim_torrent(&self, live: &Arc<Mutex<LiveStream>>, handle: &Arc<ManagedTorrent>) -> bool {
+        let _owners = self.inner.torrent_owners.lock().await;
+        let still_managed = self
+            .inner
+            .session
+            .get()
+            .is_some_and(|s| s.get(handle.id().into()).is_some());
+        if still_managed {
+            live.lock().await.handle = Some(handle.clone());
+        }
+        still_managed
+    }
+
     async fn live(&self, session_id: &str) -> Option<Arc<Mutex<LiveStream>>> {
         self.inner.sessions.read().await.get(session_id).cloned()
     }
@@ -784,57 +834,99 @@ async fn bootstrap_torrent(
     };
 
     // 2) Real download — only the chosen file (critical for peer piece interest).
-    let handle = match listed {
-        AddTorrentResponse::Added(_, handle) | AddTorrentResponse::AlreadyManaged(_, handle) => {
-            let _ = session
-                .update_only_files(&handle, &HashSet::from([file_id]))
-                .await;
-            handle
+    // Each torrent is recorded on this session the moment we get it (see
+    // claim_torrent), so stop() can remove it from the engine and another
+    // stream's stop can't delete it from under us.
+    let service = StreamService { inner: inner.clone() };
+    let mut handle = match listed {
+        AddTorrentResponse::Added(_, h) | AddTorrentResponse::AlreadyManaged(_, h) => {
+            service.claim_torrent(&live, &h).await.then_some(h)
         }
-        AddTorrentResponse::ListOnly(_) => {
-            let added = session
-                .add_torrent(
-                    resolved.to_add(),
-                    Some(AddTorrentOptions {
-                        overwrite: true,
-                        only_files: Some(vec![file_id]),
-                        output_folder: Some(folder.to_string_lossy().into_owned()),
-                        force_tracker_interval: Some(Duration::from_secs(3)),
-                        defer_writes: Some(true),
-                        peer_opts: Some(PeerConnectionOptions {
-                            connect_timeout: Some(Duration::from_secs(2)),
-                            read_write_timeout: Some(Duration::from_secs(8)),
-                            keep_alive_interval: Some(Duration::from_secs(8)),
-                        }),
-                        trackers: Some(EXTRA_TRACKERS.iter().map(|s| (*s).to_string()).collect()),
-                        ratelimits: torrent_limits(),
-                        ..Default::default()
-                    }),
-                )
-                .await
-                .map_err(|e| friendly_stream_error(&e.to_string()))?;
-            match added {
-                AddTorrentResponse::Added(_, h) | AddTorrentResponse::AlreadyManaged(_, h) => h,
-                AddTorrentResponse::ListOnly(_) => {
-                    return Err("This torrent failed to start. Try another result.".into())
-                }
-            }
-        }
+        AddTorrentResponse::ListOnly(_) => None,
     };
-
-    tokio::time::timeout(Duration::from_secs(45), handle.wait_until_initialized())
-        .await
-        .map_err(|_| "Couldn’t find enough peers to start this stream. Try another result.".to_string())?
-        .map_err(|e| friendly_stream_error(&e.to_string()))?;
+    // Not added by the listing pass, or deleted by another stream's stop just
+    // before we could claim it: add it (again).
+    for _ in 0..3 {
+        if handle.is_some() {
+            break;
+        }
+        let added = session
+            .add_torrent(
+                resolved.to_add(),
+                Some(AddTorrentOptions {
+                    overwrite: true,
+                    only_files: Some(vec![file_id]),
+                    output_folder: Some(folder.to_string_lossy().into_owned()),
+                    force_tracker_interval: Some(Duration::from_secs(3)),
+                    defer_writes: Some(true),
+                    peer_opts: Some(PeerConnectionOptions {
+                        connect_timeout: Some(Duration::from_secs(2)),
+                        read_write_timeout: Some(Duration::from_secs(8)),
+                        keep_alive_interval: Some(Duration::from_secs(8)),
+                    }),
+                    trackers: Some(EXTRA_TRACKERS.iter().map(|s| (*s).to_string()).collect()),
+                    ratelimits: torrent_limits(),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .map_err(|e| friendly_stream_error(&e.to_string()))?;
+        handle = match added {
+            AddTorrentResponse::Added(_, h) | AddTorrentResponse::AlreadyManaged(_, h) => {
+                service.claim_torrent(&live, &h).await.then_some(h)
+            }
+            AddTorrentResponse::ListOnly(_) => {
+                return Err("This torrent failed to start. Try another result.".into())
+            }
+        };
+    }
+    let Some(handle) = handle else {
+        return Err("This torrent failed to start. Try another result.".into());
+    };
     let _ = session
         .update_only_files(&handle, &HashSet::from([file_id]))
         .await;
 
-    // Expose the handle early so the UI can show live peer counts while we
-    // warm the file header — but keep status != ready until bytes arrive.
+    let session_id = live.lock().await.id.clone();
+    // Stopped while the torrent was being added: stop() saw no handle.
+    if !inner.sessions.read().await.contains_key(&session_id) {
+        live.lock().await.handle = None;
+        service.release_torrent(&handle).await;
+        return Err("Stream stopped.".into());
+    }
+
+    // Every step from here on can fail with the torrent already claimed: on
+    // any failure, take it off this session and out of the engine, or it
+    // keeps downloading and seeding until a stop or the idle reaper.
+    let started = start_claimed_torrent(&live, &session, &handle, file_id).await;
+    if started.is_err() {
+        live.lock().await.handle = None;
+        service.release_torrent(&handle).await;
+    }
+    started
+}
+
+/// Wait for the claimed torrent, warm the file head and mark the stream ready.
+async fn start_claimed_torrent(
+    live: &Arc<Mutex<LiveStream>>,
+    session: &Arc<Session>,
+    handle: &Arc<ManagedTorrent>,
+    file_id: usize,
+) -> Result<(), String> {
+    match tokio::time::timeout(Duration::from_secs(45), handle.wait_until_initialized()).await {
+        Err(_) => {
+            return Err("Couldn’t find enough peers to start this stream. Try another result.".to_string())
+        }
+        Ok(Err(e)) => return Err(friendly_stream_error(&e.to_string())),
+        Ok(Ok(())) => {}
+    }
+    let _ = session
+        .update_only_files(handle, &HashSet::from([file_id]))
+        .await;
+
+    // Keep status != ready until the file header arrives.
     let resume_ms = {
         let mut g = live.lock().await;
-        g.handle = Some(handle.clone());
         g.file_id = Some(file_id);
         g.status = "buffering".into();
         g.resume_position
@@ -851,14 +943,14 @@ async fn bootstrap_torrent(
 
     // Wait for the container header before handing the URL to the player.
     // Marking ready with 0 bytes left clients stuck on "connected" forever.
-    warm_file_head(&handle, file_id).await?;
+    warm_file_head(handle, file_id).await?;
 
     {
         let mut g = live.lock().await;
         g.file_name = file_name;
         g.status = "ready".into();
     }
-    let prefetch_tx = spawn_prefetch_worker(handle, file_id, resume_ms).await;
+    let prefetch_tx = spawn_prefetch_worker(handle.clone(), file_id, resume_ms).await;
     live.lock().await.prefetch_seek = prefetch_tx;
     Ok(())
 }

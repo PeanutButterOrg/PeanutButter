@@ -2709,16 +2709,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
       );
       // Polled every second for the whole movie; only rebuild when the HUD /
       // chip text would actually change.
-      final prev = _streamInfo;
-      final same = prev != null &&
-          prev.status == next.status &&
-          prev.peers == next.peers &&
-          prev.seeders == next.seeders &&
-          prev.swarmActive == next.swarmActive &&
-          prev.streamUrl == next.streamUrl &&
-          (prev.progress * 100).round() == (next.progress * 100).round() &&
-          (prev.downloadMbps * 10).round() == (next.downloadMbps * 10).round();
-      if (same) {
+      if (_sameStreamHud(_streamInfo, next)) {
         _streamInfo = next;
       } else {
         setState(() => _streamInfo = next);
@@ -2737,6 +2728,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
 
     final sessionId = widget.sessionId;
     if (sessionId == null) return;
+    // The timer fires every second; a slow server must not pile up requests.
+    if (_streamPollInFlight) return;
+    _streamPollInFlight = true;
     try {
       final status = await _client.query(
         QueryOptions(
@@ -2766,7 +2760,15 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
                   session.seeders > 0 ||
                   session.downloadMbps > 0,
             );
-      setState(() => _streamInfo = rewritten);
+      // Polled every second for the whole movie: rebuild only when the HUD
+      // would change.
+      if (_sameStreamHud(_streamInfo, rewritten) &&
+          ((_streamInfo?.bufferProgress ?? -1) * 1000).round() ==
+              (rewritten.bufferProgress * 1000).round()) {
+        _streamInfo = rewritten;
+      } else {
+        setState(() => _streamInfo = rewritten);
+      }
       if (!_streamReady && rewritten.isReady && rewritten.streamUrl.isNotEmpty) {
         _url = rewritten.streamUrl;
         _streamReady = true;
@@ -2777,8 +2779,25 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         'status=${rewritten.status} peers=${rewritten.peers} '
         'mbps=${rewritten.downloadMbps.toStringAsFixed(2)} '
         'buf=${(rewritten.bufferProgress * 100).toStringAsFixed(1)}%',
-      );    } catch (_) {}
+      );
+    } catch (_) {
+    } finally {
+      _streamPollInFlight = false;
+    }
   }
+
+  bool _streamPollInFlight = false;
+
+  /// Same HUD / chip text for both stream snapshots.
+  static bool _sameStreamHud(StreamSession? prev, StreamSession next) =>
+      prev != null &&
+      prev.status == next.status &&
+      prev.peers == next.peers &&
+      prev.seeders == next.seeders &&
+      prev.swarmActive == next.swarmActive &&
+      prev.streamUrl == next.streamUrl &&
+      (prev.progress * 100).round() == (next.progress * 100).round() &&
+      (prev.downloadMbps * 10).round() == (next.downloadMbps * 10).round();
 
   bool get _hasVideo {
     final player = _player;

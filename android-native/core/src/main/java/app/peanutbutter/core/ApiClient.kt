@@ -178,9 +178,14 @@ class ApiClient(
                 .build()
             http.newCall(req).execute().use { res ->
                 if (!res.isSuccessful) throw ApiException("Couldn't download that subtitle.")
-                val bytes = res.body?.bytes() ?: throw ApiException("That link didn't return a subtitle file.")
+                val body = res.body ?: throw ApiException("That link didn't return a subtitle file.")
+                // Enforce the cap while reading: bytes() pulled the whole response
+                // into memory first, however large the link turned out to be.
+                if (body.contentLength() > maxBytes) throw ApiException("That subtitle is larger than 5 MB.")
+                val source = body.source()
+                if (source.request(maxBytes + 1L)) throw ApiException("That subtitle is larger than 5 MB.")
+                val bytes = source.buffer.readByteArray()
                 if (bytes.isEmpty()) throw ApiException("That link didn't return a subtitle file.")
-                if (bytes.size > maxBytes) throw ApiException("That subtitle is larger than 5 MB.")
                 bytes
             }
         }

@@ -231,7 +231,10 @@ class VlcPlayback(
         player.addSlave(0, Uri.fromFile(file), true)
         // Indexing is async — pin the new SPU once it appears (otherwise it flashes off).
         android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-            val tracks = player.spuTracks ?: return@postDelayed
+            // Released (player closed) or replaced in the meantime: touching the
+            // old native player then crashes.
+            if (mp !== player) return@postDelayed
+            val tracks = runCatching { player.spuTracks }.getOrNull() ?: return@postDelayed
             val match = tracks.lastOrNull {
                 val n = it.name.orEmpty()
                 label.isNotBlank() && n.contains(label, ignoreCase = true)
