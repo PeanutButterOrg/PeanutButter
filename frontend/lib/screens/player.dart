@@ -2984,9 +2984,24 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         _subs = byId.values.toList();
         _subsLoading = false;
       });
-      if (applyFirst && next.isNotEmpty) {
-        final match = next.where((s) => s.language == language);
-        await _applySubtitle(match.isNotEmpty ? match.first : next.first);
+      if (applyFirst) {
+        // The reply holds every saved subtitle for the title: only apply one
+        // in the language asked for (falling back to the first row put Hindi
+        // back on when English was requested).
+        final match = next.where(
+          (s) => s.language.trim().toLowerCase() == language.trim().toLowerCase(),
+        );
+        if (match.isNotEmpty) {
+          await _applySubtitle(match.first);
+        } else if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                'No ${languageDisplayName(language)} subtitles found for this title.',
+              ),
+            ),
+          );
+        }
       }
     } catch (e) {
       if (mounted) {
@@ -3830,12 +3845,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
       final osReady = info?.opensubtitlesConfigured ?? false;
       final wyzieReady = info?.wyzieConfigured ?? false;
       final subsReady = info?.subtitlesConfigured ?? (osReady || wyzieReady);
-      final preferredCodes = preferredLanguageCodes(
+      final langs = subtitleLanguageCodes(
         info?.preferredLanguages ??
             ref.read(settingsProvider).preferredLanguages,
       );
-      final langs = preferredCodes.isNotEmpty ? preferredCodes : const ['en'];
-      final preferred = langs.first;
       final osLangs = [
         for (final code in langs)
           kContentLanguages.firstWhere(
@@ -3885,13 +3898,15 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         ),
         if (subsReady) ...[
           const PopupMenuDivider(),
+          // One search per language (it used to be the first only).
           if (wyzieReady)
-            PopupMenuItem(
-              value: 'wyzie:$preferred',
-              child: Text(
-                _subsLoading ? 'Searching Wyzie…' : 'Search Wyzie ($preferred)',
+            for (final code in langs)
+              PopupMenuItem(
+                value: 'wyzie:$code',
+                child: Text(
+                  _subsLoading ? 'Searching Wyzie…' : 'Search Wyzie ($code)',
+                ),
               ),
-            ),
           if (osReady)
             for (final lang in osLangs)
               PopupMenuItem(

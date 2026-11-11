@@ -20,6 +20,15 @@ object ContentLanguages {
         "id" to "Indonesian",
     )
 
+    /**
+     * Languages offered for subtitle downloads: the chosen content languages
+     * in order, then English if it isn't one of them. Subtitles follow what
+     * you read, not only what a show is in: Languages = Hindi left English
+     * subtitles unreachable.
+     */
+    fun subtitleLanguages(preferred: Collection<String>): List<String> =
+        (normalize(preferred) + "en").toList()
+
     fun normalize(codes: Collection<String>): Set<String> {
         val known = OPTIONS.map { it.first }.toSet()
         return codes.map { it.trim().lowercase() }

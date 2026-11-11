@@ -40,8 +40,7 @@ class SubtitlePicker(
                 withContext(Dispatchers.IO) { runCatching { api.serverInfo() }.getOrNull() }
             }
             val tracks = player()?.listTextTracks().orEmpty()
-            val langs = languages().ifEmpty { setOf("en") }
-            val preferred = langs.firstOrNull().orEmpty().ifBlank { "en" }
+            val langs = app.peanutbutter.core.ContentLanguages.subtitleLanguages(languages())
             val options = ArrayList<Pair<String, () -> Unit>>()
             options += activity.getString(R.string.subs_off) to { player()?.selectTextTrack(null) }
             tracks.forEach { (id, label) ->
@@ -54,8 +53,11 @@ class SubtitlePicker(
                 info?.wyzieConfigured == true
             if (subsReady) {
                 if (info?.wyzieConfigured == true) {
-                    options += activity.getString(R.string.subs_search_wyzie, preferred.uppercase()) to {
-                        searchWyzie(preferred)
+                    // One search per language (it used to be the first only).
+                    langs.forEach { code ->
+                        options += activity.getString(R.string.subs_search_wyzie, code.uppercase()) to {
+                            searchWyzie(code)
+                        }
                     }
                 }
                 if (info?.opensubtitlesConfigured == true) {
@@ -123,8 +125,8 @@ class SubtitlePicker(
         activity.lifecycleScope.launch {
             try {
                 val rows = api.fetchSubtitles(id, language, season(), episode())
-                val sub = rows.firstOrNull { it.content.contains("-->") } ?: rows.firstOrNull()
-                if (sub == null || !sub.content.contains("-->")) {
+                val sub = app.peanutbutter.core.FetchedSubtitle.pick(rows, language)
+                if (sub == null) {
                     toast(activity.getString(R.string.subs_none))
                     return@launch
                 }
