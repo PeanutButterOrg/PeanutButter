@@ -122,18 +122,31 @@ jobs:
           echo 'set man-db/auto-update false' | sudo debconf-communicate >/dev/null 2>&1 || true
           sudo rm -f /var/lib/man-db/auto-update
           mkdir -p ~/apt-cache/partial
-          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update -y
-          sudo -E apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 \
-            -o Dir::Cache::Archives="$HOME/apt-cache" \
-            -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
-            install -y --no-install-recommends \
-            clang cmake ninja-build pkg-config \
-            libgtk-3-dev liblzma-dev libstdc++-12-dev \
-            libmpv-dev mpv \
-            libwebkit2gtk-4.1-dev \
-            libtorrent-rasterbar-dev libboost-dev libssl-dev \
-            dpkg-dev rsync curl file \
-            python3-pil zip
+          # The runner's DNS sometimes can't resolve the mirror for a minute or
+          # two ("Temporary failure resolving"); apt's own retries give up too
+          # fast, so the whole install is tried again after a pause.
+          for attempt in 1 2 3 4; do
+            sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update -y || true
+            if sudo -E apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 \
+              -o Dir::Cache::Archives="$HOME/apt-cache" \
+              -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
+              install -y --no-install-recommends --fix-missing \
+              clang cmake ninja-build pkg-config \
+              libgtk-3-dev liblzma-dev libstdc++-12-dev \
+              libmpv-dev mpv \
+              libwebkit2gtk-4.1-dev \
+              libtorrent-rasterbar-dev libboost-dev libssl-dev \
+              dpkg-dev rsync curl file \
+              python3-pil zip; then
+              break
+            fi
+            if [ "$attempt" = 4 ]; then
+              echo "::error::apt install failed after $attempt attempts"
+              exit 1
+            fi
+            echo "apt install failed (attempt $attempt); retrying in 60 s"
+            sleep 60
+          done
 
       - name: Prepare apt cache for upload
         if: steps.apt-cache.outputs.cache-hit != 'true'
