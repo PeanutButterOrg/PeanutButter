@@ -27,6 +27,13 @@ object AppLog {
         i("AppLog", "---- session ${Date()} ----")
     }
 
+    /**
+     * A URL safe to log: no query or fragment. Media URLs carry this device's
+     * key as ?key=, and direct links often carry their own tokens.
+     */
+    fun safeUrl(url: String?): String =
+        url?.substringBefore('?')?.substringBefore('#').orEmpty()
+
     fun i(tag: String, msg: String) = write("I", tag, msg, null)
     fun e(tag: String, msg: String, t: Throwable? = null) = write("E", tag, msg, t)
 

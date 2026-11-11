@@ -270,8 +270,8 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             rawUrl?.let { application.asTv().api.playableStreamUrl(it) }
                 ?.takeIf { it.isNotBlank() && it != "null" }
         }
-        AppLog.i(TAG, "onCreate session=$sessionId local=$localTorrent magnet=${magnet?.take(40)} pending=${pendingUrl?.take(80)}")
-        Log.i(TAG, "onCreate session=$sessionId local=$localTorrent resume=$resumeMs pending=${pendingUrl?.take(100)}")
+        AppLog.i(TAG, "onCreate session=$sessionId local=$localTorrent magnet=${magnet?.take(40)} pending=${app.peanutbutter.core.AppLog.safeUrl(pendingUrl).take(80)}")
+        Log.i(TAG, "onCreate session=$sessionId local=$localTorrent resume=$resumeMs pending=${app.peanutbutter.core.AppLog.safeUrl(pendingUrl).take(100)}")
         // Only attach when we already have a URL (library files / resumed local).
         if (surfaceReady && !pendingUrl.isNullOrBlank()) attachAndPlay()
 
@@ -673,7 +673,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             torrentReadyLatched = true
             mediaAttached = false
             streamOpened = false
-            Log.i(TAG, "stream playable url=${pendingUrl?.take(140)}")
+            Log.i(TAG, "stream playable url=${app.peanutbutter.core.AppLog.safeUrl(pendingUrl).take(140)}")
             main.post { attachAndPlay() }
             startStatusPolling(sessionId)
         } catch (e: Exception) {
@@ -861,7 +861,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
 
             override fun onError(isDecoderError: Boolean) {
                 main.post {
-                    Log.e(TAG, "player error url=$pendingUrl hw=$hwDecode decoder=$isDecoderError")
+                    Log.e(TAG, "player error url=${app.peanutbutter.core.AppLog.safeUrl(pendingUrl)} hw=$hwDecode decoder=$isDecoderError")
                     AppLog.e(TAG, "player error hw=$hwDecode decoder=$isDecoderError")
                     if (isDecoderError && hwDecode) {
                         hwDecode = false
@@ -1115,7 +1115,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         ensurePlayer()
         val mp = player ?: return
         try {
-            Log.i(TAG, "attachAndPlay hw=$hwDecode $url")
+            Log.i(TAG, "attachAndPlay hw=$hwDecode ${app.peanutbutter.core.AppLog.safeUrl(url)}")
             mp.attachSurface(findViewById(R.id.surface))
             // A reopen (stuck start, decoder fallback) must keep the resume point:
             // it used to restart the movie from 0:00.
