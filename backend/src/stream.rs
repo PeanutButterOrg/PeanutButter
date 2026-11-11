@@ -893,18 +893,33 @@ async fn bootstrap_torrent(
         return Err("Stream stopped.".into());
     }
 
-    let started = match tokio::time::timeout(Duration::from_secs(45), handle.wait_until_initialized()).await {
-        Err(_) => Err("Couldn’t find enough peers to start this stream. Try another result.".to_string()),
-        Ok(Err(e)) => Err(friendly_stream_error(&e.to_string())),
-        Ok(Ok(())) => Ok(()),
-    };
-    if let Err(e) = started {
+    // Every step from here on can fail with the torrent already claimed: on
+    // any failure, take it off this session and out of the engine, or it
+    // keeps downloading and seeding until a stop or the idle reaper.
+    let started = start_claimed_torrent(&live, &session, &handle, file_id).await;
+    if started.is_err() {
         live.lock().await.handle = None;
         service.release_torrent(&handle).await;
-        return Err(e);
+    }
+    started
+}
+
+/// Wait for the claimed torrent, warm the file head and mark the stream ready.
+async fn start_claimed_torrent(
+    live: &Arc<Mutex<LiveStream>>,
+    session: &Arc<Session>,
+    handle: &Arc<ManagedTorrent>,
+    file_id: usize,
+) -> Result<(), String> {
+    match tokio::time::timeout(Duration::from_secs(45), handle.wait_until_initialized()).await {
+        Err(_) => {
+            return Err("Couldn’t find enough peers to start this stream. Try another result.".to_string())
+        }
+        Ok(Err(e)) => return Err(friendly_stream_error(&e.to_string())),
+        Ok(Ok(())) => {}
     }
     let _ = session
-        .update_only_files(&handle, &HashSet::from([file_id]))
+        .update_only_files(handle, &HashSet::from([file_id]))
         .await;
 
     // Keep status != ready until the file header arrives.
@@ -926,14 +941,14 @@ async fn bootstrap_torrent(
 
     // Wait for the container header before handing the URL to the player.
     // Marking ready with 0 bytes left clients stuck on "connected" forever.
-    warm_file_head(&handle, file_id).await?;
+    warm_file_head(handle, file_id).await?;
 
     {
         let mut g = live.lock().await;
         g.file_name = file_name;
         g.status = "ready".into();
     }
-    let prefetch_tx = spawn_prefetch_worker(handle, file_id, resume_ms).await;
+    let prefetch_tx = spawn_prefetch_worker(handle.clone(), file_id, resume_ms).await;
     live.lock().await.prefetch_seek = prefetch_tx;
     Ok(())
 }
