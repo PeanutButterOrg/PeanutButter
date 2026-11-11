@@ -125,8 +125,8 @@ class SubtitlePicker(
         activity.lifecycleScope.launch {
             try {
                 val rows = api.fetchSubtitles(id, language, season(), episode())
-                val sub = rows.firstOrNull { it.content.contains("-->") } ?: rows.firstOrNull()
-                if (sub == null || !sub.content.contains("-->")) {
+                val sub = app.peanutbutter.core.FetchedSubtitle.pick(rows, language)
+                if (sub == null) {
                     toast(activity.getString(R.string.subs_none))
                     return@launch
                 }

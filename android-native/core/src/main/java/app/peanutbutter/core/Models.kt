@@ -364,7 +364,21 @@ data class FetchedSubtitle(
     val language: String,
     val label: String,
     val content: String,
-)
+) {
+    companion object {
+        /**
+         * The subtitle in [language] from a fetchSubtitles reply. The server
+         * returns every subtitle saved for the title (oldest first), so the
+         * first usable row could be another language: asking for English
+         * after Hindi gave Hindi again.
+         */
+        fun pick(rows: List<FetchedSubtitle>, language: String): FetchedSubtitle? =
+            rows.firstOrNull {
+                it.language.trim().equals(language.trim(), ignoreCase = true) &&
+                    it.content.contains("-->")
+            }
+    }
+}
 
 data class SubtitleHit(
     val id: String,

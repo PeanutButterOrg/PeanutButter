@@ -2984,9 +2984,24 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         _subs = byId.values.toList();
         _subsLoading = false;
       });
-      if (applyFirst && next.isNotEmpty) {
-        final match = next.where((s) => s.language == language);
-        await _applySubtitle(match.isNotEmpty ? match.first : next.first);
+      if (applyFirst) {
+        // The reply holds every saved subtitle for the title: only apply one
+        // in the language asked for (falling back to the first row put Hindi
+        // back on when English was requested).
+        final match = next.where(
+          (s) => s.language.trim().toLowerCase() == language.trim().toLowerCase(),
+        );
+        if (match.isNotEmpty) {
+          await _applySubtitle(match.first);
+        } else if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                'No ${languageDisplayName(language)} subtitles found for this title.',
+              ),
+            ),
+          );
+        }
       }
     } catch (e) {
       if (mounted) {
