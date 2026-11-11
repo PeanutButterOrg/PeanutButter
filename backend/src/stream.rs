@@ -212,12 +212,7 @@ impl StreamService {
 
     /// List playable video files inside a magnet (list-only — nothing is downloaded).
     pub async fn list_files(&self, magnet: &str) -> Result<Vec<TorrentFileEntry>, AppError> {
-        let magnet = magnet.trim();
-        if magnet.is_empty() {
-            return Err(AppError::BadRequest(
-                "That torrent link is missing. Try another result.".into(),
-            ));
-        }
+        let magnet = require_magnet(magnet)?;
         let session = self
             .inner
             .session
@@ -325,12 +320,7 @@ impl StreamService {
     /// Briefly resolve a magnet and sample DHT/tracker peers.
     /// Used to replace Jackett's often-missing Seeders with a live signal.
     pub async fn probe_swarm(&self, magnet: &str) -> Result<SwarmProbe, AppError> {
-        let magnet = magnet.trim();
-        if magnet.is_empty() {
-            return Err(AppError::BadRequest(
-                "That torrent link is missing. Try another result.".into(),
-            ));
-        }
+        let magnet = require_magnet(magnet)?;
         let session = self
             .inner
             .session
@@ -1198,6 +1188,24 @@ impl ResolvedTorrent {
     }
 }
 
+/// Apps only ever get magnets (Jackett links are turned into magnets before
+/// results leave the server). Fetching a client-supplied http(s) link let any
+/// paired device make the server request internal addresses.
+fn require_magnet(input: &str) -> Result<&str, AppError> {
+    let magnet = input.trim();
+    if magnet.is_empty() {
+        return Err(AppError::BadRequest(
+            "That torrent link is missing. Try another result.".into(),
+        ));
+    }
+    if !magnet.get(..7).is_some_and(|p| p.eq_ignore_ascii_case("magnet:")) {
+        return Err(AppError::BadRequest(
+            "That torrent link isn’t a magnet. Search again for fresh results.".into(),
+        ));
+    }
+    Ok(magnet)
+}
+
 async fn resolve_torrent_source(input: &str) -> Result<ResolvedTorrent, String> {
     let mut url = input.trim().to_string();
     if url.is_empty() {
@@ -1564,6 +1572,16 @@ pub async fn serve_stream(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_magnets_are_accepted_from_clients() {
+        assert!(require_magnet("  magnet:?xt=urn:btih:abc ").is_ok());
+        assert!(require_magnet("MAGNET:?xt=urn:btih:abc").is_ok());
+        assert!(require_magnet("http://169.254.169.254/latest/meta-data").is_err());
+        assert!(require_magnet("https://jackett:9117/dl/x?jackett_apikey=k").is_err());
+        assert!(require_magnet("").is_err());
+        assert!(require_magnet("magn").is_err());
+    }
 
     #[test]
     fn sessions_go_idle_only_after_the_limit() {

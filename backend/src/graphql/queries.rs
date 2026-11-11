@@ -415,6 +415,11 @@ impl Query {
 
     async fn server_info(&self, ctx: &Context<'_>) -> async_graphql::Result<ServerInfo> {
         let state = ctx.data::<AppState>()?;
+        // Folder paths and the Jackett address are server internals: only the
+        // admin device sees them.
+        let is_admin = ctx
+            .data_opt::<crate::auth::AuthSession>()
+            .is_some_and(|a| a.is_admin);
         let row: Option<SyncStateRow> = sqlx::query_as(
             r#"
             SELECT id, last_sync_at, syncing, total_titles, last_error,
@@ -440,14 +445,18 @@ impl Query {
             };
         Ok(ServerInfo {
             version: state.config.version.to_string(),
-            library_path: state.config.media_path().display().to_string(),
+            library_path: if is_admin {
+                state.config.media_path().display().to_string()
+            } else {
+                String::new()
+            },
             tmdb_configured: !state.config.tmdb_key().is_empty(),
             omdb_configured: !state.config.omdb_key().is_empty(),
             anilist_configured: true,
             // Apps only know "can stream"; fallback add-ons count too.
             jackett_enabled: state.config.live.jackett_enabled() || crate::providers::active(),
             jackett_configured: state.config.live.jackett_configured() || crate::providers::active(),
-            jackett_url: state.config.live.jackett_url(),
+            jackett_url: if is_admin { state.config.live.jackett_url() } else { None },
             streaming_resolution: state.config.live.streaming_resolution(),
             preferred_languages: state.config.live.preferred_language_codes(),
             // Live public trackers so apps find peers without waiting on DHT.

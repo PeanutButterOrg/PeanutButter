@@ -127,6 +127,46 @@ fn is_console_feed(path: &str) -> bool {
     path.starts_with("/sync/") || path == "/updates/progress"
 }
 
+/// Console endpoints that act on the console cookie.
+fn is_console_post(path: &str) -> bool {
+    matches!(path, "/" | "/tokens" | "/sync/start" | "/sync/flush")
+}
+
+/// "http://h:3001/x" → ("http", "h:3001"), lowercased.
+fn origin_parts(url: &str) -> Option<(String, String)> {
+    let url = reqwest::Url::parse(url.trim()).ok()?;
+    let host = url.host_str()?.to_ascii_lowercase();
+    let authority = match url.port() {
+        Some(p) => format!("{host}:{p}"),
+        None => host,
+    };
+    Some((url.scheme().to_ascii_lowercase(), authority))
+}
+
+/// A browser request from the console's own page: its Origin (or Referer)
+/// names the host it was sent to, or the configured public URL. Requests with
+/// neither header aren't from a browser page and can't carry a forged cookie.
+pub fn same_origin(headers: &HeaderMap, public_url: &str) -> bool {
+    let header = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
+    let Some(source) = header("origin").or_else(|| header("referer")) else {
+        return true;
+    };
+    let Some((_, authority)) = origin_parts(source) else {
+        // "null" (sandboxed frames, some redirects) or garbage.
+        return false;
+    };
+    let hosts = [header("host"), header("x-forwarded-host")];
+    if hosts
+        .iter()
+        .flatten()
+        .filter_map(|h| h.split(',').next())
+        .any(|h| h.trim().eq_ignore_ascii_case(&authority))
+    {
+        return true;
+    }
+    origin_parts(public_url).is_some_and(|p| origin_parts(source) == Some(p))
+}
+
 fn is_media_get(method: &Method, path: &str) -> bool {
     (method == Method::GET || method == Method::HEAD)
         && (path.starts_with("/stream/")
@@ -153,6 +193,15 @@ pub async fn gate(
     // players (VLC/mpv) cannot set X-Api-Key headers. Optional ?key= still works.
     if path.starts_with("/stream/") && (method == Method::GET || method == Method::HEAD) {
         return Ok(next.run(req).await);
+    }
+    // Console forms sign in with a cookie, so a page on another origin could
+    // post them with the admin's session (SameSite=Lax doesn't separate ports
+    // on the same host, e.g. Jackett on :9117). Refuse cross-origin posts.
+    if method == Method::POST
+        && is_console_post(&path)
+        && !same_origin(req.headers(), &state.app.config.public_url)
+    {
+        return Err(AppError::Forbidden("cross-site console request refused".into()));
     }
     if path == "/" || path == "/tokens" {
         return Ok(next.run(req).await);
@@ -220,16 +269,29 @@ pub async fn pair(
     Json(body): Json<PairRequest>,
 ) -> Result<Json<PairResponse>, AppError> {
     let ip = addr.ip();
-    if ratelimit::is_blocked(Bucket::Credential, ip) {
+    // Counted before the lookup: checking first and recording after the
+    // await let parallel requests try more codes than the limit allows.
+    let Some(attempt) = ratelimit::reserve(Bucket::Pairing, ip) else {
         return Err(AppError::TooManyRequests("pair".into()));
-    }
-    match crate::db::exchange_pairing_code(&state.app.pool, &body.code).await? {
-        Some((device, key)) => Ok(Json(PairResponse {
-            key,
-            device_name: device.name,
-        })),
+    };
+    let found = match crate::db::exchange_pairing_code(&state.app.pool, &body.code).await {
+        Ok(found) => found,
+        Err(e) => {
+            // Not a wrong code: the lookup failed. Don't count it.
+            attempt.refund();
+            return Err(e);
+        }
+    };
+    match found {
+        Some((device, key)) => {
+            attempt.succeeded();
+            Ok(Json(PairResponse {
+                key,
+                device_name: device.name,
+            }))
+        }
         None => {
-            ratelimit::record_failure(Bucket::Credential, ip);
+            drop(attempt); // stays counted
             Err(AppError::Unauthorized(
                 "That pairing code is wrong or expired. Create a new one in the server console."
                     .into(),
@@ -267,6 +329,36 @@ mod tests {
         // Apps fetch these with their device key.
         assert!(!is_console_feed("/updates/latest"));
         assert!(!is_console_feed("/updates/files/v1/app.apk"));
+    }
+
+    fn hdrs(pairs: &[(&'static str, &str)]) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        for (k, v) in pairs {
+            h.insert(*k, v.parse().unwrap());
+        }
+        h
+    }
+
+    #[test]
+    fn console_posts_must_come_from_the_console() {
+        let public = "http://192.168.1.5:3001";
+        // Same host the browser sent the form to.
+        assert!(same_origin(&hdrs(&[("host", "192.168.1.5:3001"), ("origin", "http://192.168.1.5:3001")]), public));
+        // Another app on the same machine (Jackett's port): refused.
+        assert!(!same_origin(&hdrs(&[("host", "192.168.1.5:3001"), ("origin", "http://192.168.1.5:9117")]), public));
+        assert!(!same_origin(&hdrs(&[("host", "192.168.1.5:3001"), ("origin", "https://evil.example")]), public));
+        assert!(!same_origin(&hdrs(&[("host", "192.168.1.5:3001"), ("origin", "null")]), public));
+        // Referer when there is no Origin.
+        assert!(same_origin(&hdrs(&[("host", "pb.local:3001"), ("referer", "http://pb.local:3001/?tab=devices")]), public));
+        // Behind a proxy that rewrites Host.
+        assert!(same_origin(&hdrs(&[("host", "api:8080"), ("x-forwarded-host", "tv.example.com"), ("origin", "https://tv.example.com")]), public));
+        // Public URL match.
+        assert!(same_origin(&hdrs(&[("host", "api:8080"), ("origin", "http://192.168.1.5:3001")]), public));
+        // No browser headers at all (curl, scripts).
+        assert!(same_origin(&hdrs(&[("host", "x")]), public));
+        assert!(is_console_post("/sync/flush"));
+        assert!(!is_console_post("/graphql"));
+        assert!(!is_console_post("/pair"));
     }
 
     #[test]

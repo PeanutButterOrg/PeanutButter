@@ -348,6 +348,7 @@ fn html_escape(s: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }
 
 fn urlencoding_minimal(s: &str) -> String {
@@ -1022,7 +1023,9 @@ async fn login(
     ip: std::net::IpAddr,
 ) -> Result<Response, AppError> {
     use crate::ratelimit::{self, Bucket};
-    if ratelimit::is_blocked(Bucket::Credential, ip) {
+    // Counted before the password check, so parallel guesses can't all slip
+    // past the limit before any is recorded.
+    let Some(attempt) = ratelimit::reserve(Bucket::Credential, ip) else {
         let html = render(
             state,
             false,
@@ -1033,19 +1036,22 @@ async fn login(
         )
         .await?;
         return Ok((StatusCode::TOO_MANY_REQUESTS, Html(html)).into_response());
-    }
+    };
     let password = form.password.as_deref().unwrap_or("").trim();
-    let stored = crate::db::admin_password_hash(&state.app.pool).await?;
+    let stored = match crate::db::admin_password_hash(&state.app.pool).await {
+        Ok(stored) => stored,
+        Err(e) => {
+            // Not a wrong password: the lookup failed. Don't count it.
+            attempt.refund();
+            return Err(e.into());
+        }
+    };
     let check = stored
         .as_deref()
         .map(|hash| crate::db::admin_password_check(password, hash))
         .unwrap_or_default();
-    if check.ok && check.needs_rehash {
-        // Upgrade the old fast SHA-256 hash to argon2 on first good login.
-        crate::db::set_admin_password(&state.app.pool, password).await?;
-    }
     if !check.ok {
-        ratelimit::record_failure(Bucket::Credential, ip);
+        drop(attempt); // stays counted
         let html = render(
             state,
             false,
@@ -1056,6 +1062,12 @@ async fn login(
         )
         .await?;
         return Ok((StatusCode::UNAUTHORIZED, Html(html)).into_response());
+    }
+    // Right password: settled before any later database call can fail.
+    attempt.succeeded();
+    if check.needs_rehash {
+        // Upgrade the old fast SHA-256 hash to argon2 on first good login.
+        crate::db::set_admin_password(&state.app.pool, password).await?;
     }
     let token = new_console_session(state).await?;
     let mut response = redirect_console(Some("Signed in."), None);
@@ -1458,7 +1470,9 @@ async fn dashboard(
                         (false, _) => format!("Trending lists ({})", html_escape(&lists_dedup.join(", "))),
                     }
                 },
-                name_js = html_escape(&a.name).replace('\'', ""),
+                // Inside a JS string in an attribute: the browser decodes
+                // entities first, so quotes and backslashes go before escaping.
+                name_js = html_escape(&a.name.replace(['\'', '\\'], "")),
                 url = html_escape(&addon_display_url(&a.url)),
                 id = html_escape(&a.id),
                 pill = if a.enabled { " ok" } else { "" },
@@ -1524,7 +1538,8 @@ The database is backed up first. Apps reconnect on their own after about a minut
               <button type="submit">Update to {v}</button>
               <span class="muted">Backs up the database, then restarts with the new version.</span>
             </form>"#,
-                    v = html_escape(su.latest.as_deref().unwrap_or("")),
+                    // Also inside the confirm() string: no quotes or backslashes.
+                    v = html_escape(&su.latest.as_deref().unwrap_or("").replace(['\'', '\\'], "")),
                 )
             } else {
                 String::new()
