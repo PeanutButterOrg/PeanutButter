@@ -252,11 +252,13 @@ impl StreamService {
             .map_err(|e| AppError::Message(e.to_string()))?
             .clone();
 
+        // Resolve first: a failed lookup (expired Jackett link, HTTP error)
+        // returned after the scratch folder existed and left it behind.
+        let add = resolve_torrent_source(magnet).await.map_err(AppError::Message)?;
         let tmp = self.inner.output_root.join(format!("list-{}", Uuid::new_v4()));
         tokio::fs::create_dir_all(&tmp)
             .await
             .map_err(AppError::Io)?;
-        let add = resolve_torrent_source(magnet).await.map_err(AppError::Message)?;
         let mut listed = session
             .add_torrent(
                 add.to_add(),
