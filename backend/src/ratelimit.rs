@@ -155,6 +155,15 @@ pub fn reserve(bucket: Bucket, ip: IpAddr) -> Option<Attempt> {
 mod tests {
     use super::*;
 
+    /// Tests that touch the server-wide pairing counter run one at a time,
+    /// each starting from zero: tests run in parallel and in any order.
+    fn pairing_counter_alone() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        pairing_total().store(0, Ordering::Relaxed);
+        guard
+    }
+
     #[test]
     fn blocks_after_limit() {
         let ip: IpAddr = "10.9.8.7".parse().unwrap();
@@ -187,6 +196,7 @@ mod tests {
 
     #[test]
     fn pairing_is_capped_across_all_addresses() {
+        let _alone = pairing_counter_alone();
         for i in 0..PAIRING_GLOBAL_LIMIT {
             let ip = IpAddr::V4(std::net::Ipv4Addr::from(0x0b00_0000 + i));
             record_failure(Bucket::Pairing, ip);
@@ -219,11 +229,14 @@ mod tests {
 
     #[test]
     fn unchecked_attempts_are_refunded() {
+        let _alone = pairing_counter_alone();
         let ip: IpAddr = "198.51.100.22".parse().unwrap();
         // Database down: many retries, none of them a wrong guess.
         for _ in 0..100 {
             reserve(Bucket::Pairing, ip).expect("slot").refund();
         }
         assert!(!is_blocked(Bucket::Pairing, ip));
+        // The server-wide counter was refunded too.
+        assert_eq!(pairing_total().load(Ordering::Relaxed), 0);
     }
 }
