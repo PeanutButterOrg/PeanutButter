@@ -348,6 +348,7 @@ fn html_escape(s: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }
 
 fn urlencoding_minimal(s: &str) -> String {
@@ -1458,7 +1459,9 @@ async fn dashboard(
                         (false, _) => format!("Trending lists ({})", html_escape(&lists_dedup.join(", "))),
                     }
                 },
-                name_js = html_escape(&a.name).replace('\'', ""),
+                // Inside a JS string in an attribute: the browser decodes
+                // entities first, so quotes and backslashes go before escaping.
+                name_js = html_escape(&a.name.replace(['\'', '\\'], "")),
                 url = html_escape(&addon_display_url(&a.url)),
                 id = html_escape(&a.id),
                 pill = if a.enabled { " ok" } else { "" },
@@ -1524,7 +1527,8 @@ The database is backed up first. Apps reconnect on their own after about a minut
               <button type="submit">Update to {v}</button>
               <span class="muted">Backs up the database, then restarts with the new version.</span>
             </form>"#,
-                    v = html_escape(su.latest.as_deref().unwrap_or("")),
+                    // Also inside the confirm() string: no quotes or backslashes.
+                    v = html_escape(&su.latest.as_deref().unwrap_or("").replace(['\'', '\\'], "")),
                 )
             } else {
                 String::new()
