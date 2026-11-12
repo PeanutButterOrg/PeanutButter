@@ -163,7 +163,7 @@ class StreamHttpServer(
                 // Throws if the bytes never arrive — closing the connection lets the
                 // player retry instead of decoding the zeros of a sparse file.
                 val chunkEnd = min(pos + buf.size - 1, end)
-                if (!waitForBytes(pos, chunkEnd, gen)) {
+                if (!waitForBytes(pos, chunkEnd, gen, moveWindow = !tail)) {
                     throw IOException("pieces for bytes $pos.. not available yet")
                 }
                 raf.seek(pos)
@@ -195,11 +195,17 @@ class StreamHttpServer(
     }
 
     /** @return true when every piece covering [start]..[end] is on disk. */
-    private fun waitForBytes(start: Long, end: Long, gen: Long): Boolean {
+    /**
+     * @param moveWindow false for the container-index reads at the end of the
+     *   file while the player opens it: they aren't where playback is, and
+     *   moving the download window there (everything behind it is dropped)
+     *   stalled the pieces playback needs next.
+     */
+    private fun waitForBytes(start: Long, end: Long, gen: Long, moveWindow: Boolean = true): Boolean {
         val g = geometry() ?: return false
         val first = ((g.fileOffset + start) / g.pieceLength).toInt()
         val last = ((g.fileOffset + end) / g.pieceLength).toInt().coerceAtMost(g.lastPiece)
-        if (first != lastReadPiece) {
+        if (moveWindow && first != lastReadPiece) {
             lastReadPiece = first
             runCatching { onReadPiece(first) }
         }
@@ -220,11 +226,13 @@ class StreamHttpServer(
                 missing = true
                 // The player is blocked on this piece: make it the most urgent.
                 // Re-assert every 2 s, not every poll (each priority change
-                // re-sorts libtorrent's piece picker).
+                // re-sorts libtorrent's piece picker). A 1 s deadline, not 0: a
+                // deadline that's always due kept the piece on libtorrent's slow
+                // time-critical path.
                 if (urge) {
                     runCatching {
-                        live.setPieceDeadline(p, 0)
                         live.piecePriority(p, org.libtorrent4j.Priority.TOP_PRIORITY)
+                        live.setPieceDeadline(p, 1_000)
                     }
                 }
             }

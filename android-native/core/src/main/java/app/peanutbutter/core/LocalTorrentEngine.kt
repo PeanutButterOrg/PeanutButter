@@ -37,7 +37,6 @@ object LocalTorrentEngine {
     private const val TAG = "LocalTorrent"
     /** Seconds of video kept downloading ahead of the player's read position. */
     private const val READAHEAD_SECONDS = 90.0
-    private const val URGENT_BYTES = 8L * 1024 * 1024
     private const val MAX_MAGNET_TRACKERS = 20
     private const val START_BYTES = 4L * 1024 * 1024
     private const val RESUME_BACK_BYTES = 8L * 1024 * 1024
@@ -289,20 +288,6 @@ object LocalTorrentEngine {
         } == true
         if (!fileOn) AppLog.e(TAG, "file priority not applied after 5s; continuing")
 
-        // Only this file's pieces are wanted (the rest of a season pack is
-        // never downloaded). Set per piece, not with prioritizeFiles(): that
-        // one is applied later on the disk thread and then resets every piece
-        // of the file to its priority, wiping the head / playhead deadlines
-        // below (the first piece took 35 s while 57 MB of the file arrived).
-        runCatching {
-            val fsAll = info.files()
-            val len = info.pieceLength().toLong().coerceAtLeast(1)
-            val from = (fsAll.fileOffset(chosen) / len).toInt()
-            val to = ((fsAll.fileOffset(chosen) + fsAll.fileSize(chosen) - 1) / len).toInt()
-            val prios = Priority.array(Priority.IGNORE, info.numPieces())
-            for (p in from..to) prios[p] = Priority.LOW
-            handle.prioritizePieces(prios)
-        }.onFailure { AppLog.e(TAG, "select file pieces failed", it) }
         // Deadlines (not sequential_download) drive streaming — sequential fights
         // playhead seeks and fills 0→resume (libtorrent streaming docs).
         runCatching { handle.unsetFlags(TorrentFlags.SEQUENTIAL_DOWNLOAD) }
@@ -349,51 +334,29 @@ object LocalTorrentEngine {
         // waiting on skipped pieces before it could seek.
         val headBytes = if (isMp4(fs.fileName(chosen))) 8L * 1024 * 1024 else 4L * 1024 * 1024
         val headKeep = (headBytes / pieceLength).toInt().coerceIn(1, 16)
-        for (i in 0 until headKeep.coerceAtMost(lastPiece - firstPiece + 1)) {
-            val p = firstPiece + i
-            runCatching {
-                handle.setPieceDeadline(p, 4 + i * 8)
-                handle.piecePriority(p, Priority.TOP_PRIORITY)
-            }
-        }
-
-        // Deep window ahead of the playhead, deadlines spread by when each
-        // piece will be needed (see readaheadAt).
         val playWindow = windowPieces(pieceLength.toLong())
-        // Demote the far future so deadlines win, but keep pieces wanted (LOW —
-        // not IGNORE) so st.progress() isn't "100%" after the window fills.
-        // One array call: a per-piece call re-sorts the picker thousands of times.
-        // The gap between head and resume point is LOW too, not IGNORE: the
-        // resume byte is only an estimate, and a skipped piece the player
-        // really needs stalled the start.
-        val demoteFrom = (playPiece + playWindow).coerceAtMost(lastPiece + 1)
-        runCatching {
-            val prios = handle.piecePriorities()
-            for (p in (firstPiece + headKeep) until playPiece) {
-                if (p in prios.indices) prios[p] = Priority.LOW
-            }
-            for (p in demoteFrom..lastPiece) {
-                if (p in prios.indices) prios[p] = Priority.LOW
-            }
-            handle.prioritizePieces(prios)
-        }.onFailure { AppLog.e(TAG, "demote far pieces failed", it) }
-        readaheadAt(handle, playPiece, force = true)
-        // MKV cues / MP4 moov usually sit at the end of the file and the
-        // player reads them before it starts: fetch the tail early.
-        if (needsTailIndex(fs.fileName(chosen))) {
-            val tail = ((4L * 1024 * 1024) / pieceLength).toInt().coerceIn(1, 4)
-            for (i in 0 until tail) {
-                val p = lastPiece - i
-                if (p < playPiece + playWindow) break
-                runCatching {
-                    // The player reads this index before its first frame (it
-                    // waited 11 s for it when it was low priority): right
-                    // after the head piece.
-                    handle.setPieceDeadline(p, 100 + i * 100)
-                    handle.piecePriority(p, Priority.TOP_PRIORITY)
-                }
-            }
+        // MKV cues / MP4 moov usually sit at the end of the file and the player
+        // reads them right after the head, before its first frame.
+        val tailPieces = if (needsTailIndex(fs.fileName(chosen))) {
+            ((4L * 1024 * 1024) / pieceLength).toInt().coerceIn(1, 4)
+        } else {
+            0
         }
+        // Starting: want only what the player needs to open the file (head,
+        // first play pieces, index at the end). Once those are all requested,
+        // idle peers re-request blocks stuck with slow ones ("end game"). With
+        // the whole window wanted that never happened, and libtorrent's own
+        // stall recovery for deadline pieces needs an average piece time it
+        // doesn't have yet on a new torrent: the first piece sat on its last
+        // 3 blocks for 12 s. The full window opens once these are in.
+        applyWindow(
+            handle,
+            playPiece,
+            headPieces = headKeep,
+            tailPieces = tailPieces,
+            fillBeyond = false,
+            windowOverride = startPieces(pieceLength.toLong()),
+        )
         AppLog.i(
             TAG,
             "prioritized playhead=$playPiece headKeep=$headKeep window=$playWindow " +
@@ -440,26 +403,10 @@ object LocalTorrentEngine {
                 }
                 val headHave = countHave(firstPiece, headKeep)
                 val playHave = countHave(playPiece, minPlayContiguous)
-                // Re-assert deadlines while waiting.
-                if (headHave < minHeadContiguous) {
-                    for (i in headHave until minHeadContiguous.coerceAtMost(headKeep)) {
-                        val p = firstPiece + i
-                        runCatching {
-                            h.setPieceDeadline(p, 3 + i * 6)
-                            h.piecePriority(p, Priority.TOP_PRIORITY)
-                        }
-                    }
-                }
-                if (playHave < minPlayContiguous) {
-                    for (i in playHave until minPlayContiguous) {
-                        val p = playPiece + i
-                        if (p > lastPiece) break
-                        runCatching {
-                            h.setPieceDeadline(p, 2 + i * 6)
-                            h.piecePriority(p, Priority.TOP_PRIORITY)
-                        }
-                    }
-                }
+                // No re-asserting here: priorities and deadlines were set once by
+                // applyWindow. Re-setting a ~3 ms deadline every 150 ms kept the
+                // first piece on libtorrent's slow time-critical path, and it
+                // arrived after piece 1 and the tail index.
                 val progress = fileProgress(h, chosen, fileSize)
                 // Never use st.progress() here — IGNORE gap shrinks "wanted" so
                 // progress hits ~1.0 as soon as the playhead window fills.
@@ -553,6 +500,9 @@ object LocalTorrentEngine {
                 throw IllegalStateException("Couldn’t find enough peers to start this stream. Try another result.")
             }
         }
+
+        // Start-up pieces are in: open the full read-ahead window.
+        liveHandle(sm)?.let { applyWindow(it, playPiece) }
 
         val server = StreamHttpServer(
             handleProvider = { liveHandle(sm) },
@@ -737,7 +687,7 @@ object LocalTorrentEngine {
         val idx = fileIndexRef.get() ?: return
         if (positionMs < 0) return
         try {
-            val info = runCatching { handle.torrentFile() }.getOrNull() ?: return
+            val info = streamInfo ?: runCatching { handle.torrentFile() }.getOrNull() ?: return
             val fs = info.files()
             val fileSize = fs.fileSize(idx)
             if (fileSize <= 0) return
@@ -755,8 +705,6 @@ object LocalTorrentEngine {
             }
             val offset = (fileSize * ratio).toLong()
             val piece = ((fs.fileOffset(idx) + offset) / pieceLength).toInt()
-            val last = ((fs.fileOffset(idx) + fileSize - 1) / pieceLength).toInt()
-            val firstFile = (fs.fileOffset(idx) / pieceLength).toInt()
 
             // Deadlines only — sequential_download / setSequentialRange fight seeks
             // (libtorrent streaming docs + libtorrent_flutter).
@@ -778,13 +726,6 @@ object LocalTorrentEngine {
                 // estimate from position / duration (they can be tens of MB apart).
                 val anchor = if (httpServer.get() != null && readaheadFrom >= 0) readaheadFrom else piece
                 readaheadAt(handle, anchor, force = true)
-                val headKeep = ((2L * 1024 * 1024) / pieceLength).toInt().coerceIn(1, 2)
-                for (i in 0 until headKeep) {
-                    val p = firstFile + i
-                    if (p > last || p >= piece) break
-                    handle.setPieceDeadline(p, 4 + i * 6)
-                    handle.piecePriority(p, Priority.TOP_PRIORITY)
-                }
             }
             handle.resume()
             AppLog.i(
@@ -916,65 +857,72 @@ object LocalTorrentEngine {
         return (bytes / pieceLength.coerceAtLeast(1)).toInt().coerceIn(8, 384)
     }
 
-    /**
-     * The player jumped to [piece]: drop the old window and download from
-     * there. Pieces behind the playhead and every other file in the torrent
-     * are off (a season pack downloads only this episode); the window ahead
-     * is urgent and the rest of the file after it fills in slowly.
-     */
+    /** The player jumped to [piece] (seek / resume): move the window there. */
     private fun jumpTo(handle: TorrentHandle, piece: Int) {
+        if (streamLastPiece < 0) return
+        // The pre-start buffer % measures from here.
+        lastSoftPiece = piece.coerceIn(streamFirstPiece, streamLastPiece)
+        applyWindow(handle, piece)
+        runCatching { handle.resume() }
+        AppLog.i(TAG, "jump to piece ${piece.coerceIn(streamFirstPiece, streamLastPiece)} (window ${windowPieces(streamPieceLength)} of $streamLastPiece)")
+    }
+
+    /** The player's reading entered [piece]: slide the window to it. */
+    private fun readaheadAt(handle: TorrentHandle, piece: Int, force: Boolean = false) {
+        val last = streamLastPiece
+        if (last < 0) return
+        val from = piece.coerceIn(streamFirstPiece, last)
+        if (!force && from == readaheadFrom) return
+        applyWindow(handle, from)
+    }
+
+    /**
+     * Reader-driven window, the approach of Stremio's streaming server,
+     * TorrServer and the desktop engine: a piece's priority falls with its
+     * distance from where the player reads, and libtorrent's normal picker
+     * does the downloading. Only the next two pieces get deadlines, set to
+     * when they'll really be needed, once per window move.
+     *
+     * - behind the reader and outside the file: not downloaded
+     * - next 2 pieces: top; next 2: 6; first half of the window: 5; rest: 4
+     * - past the window: 1 (fills in when the swarm has spare capacity), or
+     *   not downloaded while starting ([fillBeyond] false)
+     * - [headPieces] at the file's start and [tailPieces] at its end (the
+     *   container index the player reads before the first frame): 7 and 6
+     *
+     * One prioritizePieces call: per-piece calls re-sort the picker each time.
+     */
+    private fun applyWindow(
+        handle: TorrentHandle,
+        piece: Int,
+        headPieces: Int = 0,
+        tailPieces: Int = 0,
+        fillBeyond: Boolean = true,
+        windowOverride: Int? = null,
+    ) {
         val first = streamFirstPiece
         val last = streamLastPiece
         val total = streamNumPieces
         if (last < 0 || total <= last) return
         val from = piece.coerceIn(first, last)
-        runCatching { handle.clearPieceDeadlines() }
-        val window = windowPieces(streamPieceLength)
-        val prios = Priority.array(Priority.IGNORE, total)
-        for (p in from..last) {
-            prios[p] = if (p < from + window) Priority.FIVE else Priority.LOW
-        }
-        runCatching { handle.prioritizePieces(prios) }
-        lastSoftPiece = from
-        readaheadAt(handle, from, force = true)
-        runCatching { handle.resume() }
-        AppLog.i(TAG, "jump to piece $from (window $window of $last)")
-    }
-
-    /**
-     * Keep a sliding window of pieces wanted ahead of [piece] (the player's
-     * read position). Each deadline is about half the time playback needs to
-     * reach that piece, so the next piece is always the most urgent and later
-     * ones are fetched in order instead of all at once.
-     */
-    private fun readaheadAt(handle: TorrentHandle, piece: Int, force: Boolean = false) {
-        val last = streamLastPiece
-        val pieceLength = streamPieceLength
-        if (last < 0 || pieceLength <= 0) return
-        val from = piece.coerceIn(streamFirstPiece, last)
-        if (!force && from == readaheadFrom) return
         readaheadFrom = from
-        val msPerPiece = pieceLength * 1000.0 / planBytesPerSec()
-        val n = windowPieces(pieceLength)
-        // Only the next ~8 MB get deadlines and top priority, so every peer
-        // works on the piece the player needs next. With deadlines on the
-        // whole window, peers spread over 9+ pieces and a 4 MB piece took
-        // 10 s at 2.6 MB/s after a seek. The rest of the window is still
-        // wanted, just behind those.
-        val urgent = (URGENT_BYTES / pieceLength).toInt().coerceAtLeast(2)
-        for (i in 0 until n) {
-            val p = from + i
-            if (p > last) break
-            if (runCatching { handle.havePiece(p) }.getOrDefault(false)) continue
-            runCatching {
-                if (i < urgent) {
-                    handle.setPieceDeadline(p, (i * msPerPiece * 0.5).toInt())
-                    handle.piecePriority(p, Priority.TOP_PRIORITY)
-                } else {
-                    handle.resetPieceDeadline(p)
-                    handle.piecePriority(p, Priority.FIVE)
-                }
-            }
+        val window = windowOverride ?: windowPieces(streamPieceLength)
+        val prios = windowPriorities(total, first, last, from, window, headPieces, tailPieces, fillBeyond)
+        runCatching { handle.clearPieceDeadlines() }
+        runCatching { handle.prioritizePieces(prios) }
+            .onFailure { AppLog.e(TAG, "window priorities failed", it) }
+        // Deadlines a realistic time ahead (half the time playback needs to
+        // reach the piece, at least 1 s), not ~0: a deadline that's always
+        // due put the piece on the slow time-critical path.
+        val msPerPiece = streamPieceLength * 1000.0 / planBytesPerSec()
+        val due = buildList {
+            for (i in 0 until headPieces) add(first + i)
+            for (i in 0 until minOf(2, window)) add(from + i)
+        }.filter { it in first..last }.distinct()
+        due.forEachIndexed { i, p ->
+            if (runCatching { handle.havePiece(p) }.getOrDefault(false)) return@forEachIndexed
+            val ms = ((i + 1) * msPerPiece * 0.5).toInt().coerceIn(1_000, 30_000)
+            runCatching { handle.setPieceDeadline(p, ms) }
         }
     }
 
@@ -1101,4 +1049,40 @@ internal fun withTrackers(magnet: String, candidates: List<String>, max: Int): S
         count++
     }
     return uri
+}
+
+/**
+ * Piece priorities for [applyWindow] (see there): reading at [from], file
+ * pieces [first]..[last] of [total], window of [window] pieces.
+ */
+internal fun windowPriorities(
+    total: Int,
+    first: Int,
+    last: Int,
+    from: Int,
+    window: Int,
+    headPieces: Int = 0,
+    tailPieces: Int = 0,
+    fillBeyond: Boolean = true,
+): Array<Priority> {
+    val prios = Priority.array(Priority.IGNORE, total)
+    for (p in from..last) {
+        val d = p - from
+        prios[p] = when {
+            d >= window -> if (fillBeyond) Priority.LOW else Priority.IGNORE
+            d < 2 -> Priority.TOP_PRIORITY
+            d < 4 -> Priority.SIX
+            d < window / 2 -> Priority.FIVE
+            else -> Priority.DEFAULT
+        }
+    }
+    for (i in 0 until tailPieces) {
+        val p = last - i
+        if (p >= first && p >= from + 2) prios[p] = Priority.SIX
+    }
+    for (i in 0 until headPieces) {
+        val p = first + i
+        if (p <= last) prios[p] = Priority.TOP_PRIORITY
+    }
+    return prios
 }
