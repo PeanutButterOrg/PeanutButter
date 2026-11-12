@@ -131,10 +131,13 @@ TORRENT_API void lt_poll_alerts(lt_session_t session,
                                 lt_alert_callback cb, void* user_data);
 
 /* torrent management */
+/* flags: 1 = stream only (as before); 2 = select later: start with no file
+   wanted (playback picks the file, then lt_start_stream). 0 downloads every
+   file as usual. */
 TORRENT_API lt_torrent_id lt_add_magnet(lt_session_t session,
                                         const char* magnet_uri,
                                         const char* save_path,
-                                        int stream_only);
+                                        int flags);
 TORRENT_API lt_torrent_id lt_add_torrent_file(lt_session_t session,
                                               const char* file_path,
                                               const char* save_path,

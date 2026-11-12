@@ -312,6 +312,15 @@ class SettingsActivity : FragmentActivity() {
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 }
 
-/** Total length of the files under this folder (a sparse torrent file counts its full length). */
+/**
+ * Disk space the files under this folder actually use. Torrent files are
+ * sparse: a partly downloaded video has its full length but only the
+ * downloaded blocks allocated, and length() reported gigabytes that weren't
+ * used (or cleared).
+ */
 private fun File.sizeOnDisk(): Long =
-    if (!exists()) 0L else walkTopDown().filter { it.isFile }.sumOf { it.length() }
+    if (!exists()) 0L else walkTopDown().filter { it.isFile }.sumOf { it.allocatedBytes() }
+
+/** Allocated blocks (st_blocks counts 512-byte units); apparent length if stat fails. */
+internal fun File.allocatedBytes(): Long =
+    runCatching { android.system.Os.stat(path).st_blocks * 512L }.getOrElse { length() }
