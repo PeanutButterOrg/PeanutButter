@@ -1,21 +1,25 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Same sections and order as the desktop app's Settings: Playback, Library &
+     sources, Subtitles, This device, About. Each section is a card of rows. -->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@color/pb_canvas">
 
     <ScrollView
+        android:id="@+id/settings_scroll"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:overScrollMode="never"
-        android:padding="28dp"
+        android:paddingHorizontal="@dimen/shelf_inset"
+        android:paddingTop="28dp"
         android:scrollbars="none">
 
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="vertical"
-            android:paddingBottom="32dp">
+            android:paddingBottom="40dp">
 
             <TextView
                 android:layout_width="match_parent"
@@ -27,82 +31,58 @@
 
             <!-- Playback -->
             <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="24dp"
-                android:text="@string/settings_playback"
-                android:textColor="@color/pb_seed"
-                android:textSize="14sp"
-                android:textStyle="bold" />
+                style="@style/SettingsSectionTitle"
+                android:text="@string/settings_playback" />
 
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
-                android:background="@drawable/settings_card"
-                android:orientation="vertical"
-                android:padding="16dp">
+            <LinearLayout style="@style/SettingsCard">
 
                 <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="@string/video_quality"
-                    android:textColor="@color/pb_white"
-                    android:textSize="16sp"
-                    android:textStyle="bold" />
+                    style="@style/SettingsLabel"
+                    android:text="@string/video_quality" />
 
                 <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="4dp"
-                    android:text="@string/video_quality_hint"
-                    android:textColor="@color/pb_muted"
-                    android:textSize="12sp" />
+                    style="@style/SettingsHint"
+                    android:text="@string/video_quality_hint" />
 
-                <!-- Flutter-style quality chips (Spinner is unusable on TV) -->
                 <LinearLayout
                     android:id="@+id/quality_chips"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="12dp"
-                    android:gravity="center_vertical"
-                    android:orientation="horizontal" />
+                    style="@style/SettingsChips" />
+
+                <View style="@style/SettingsDivider" />
 
                 <TextView
-                    android:id="@+id/quality_value"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:textColor="@color/pb_muted"
-                    android:textSize="13sp" />
-
-                <View
-                    android:layout_width="match_parent"
-                    android:layout_height="1dp"
-                    android:layout_marginTop="16dp"
-                    android:layout_marginBottom="16dp"
-                    android:background="@color/pb_hairline" />
+                    style="@style/SettingsLabel"
+                    android:text="@string/android_player" />
 
                 <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="@string/languages"
-                    android:textColor="@color/pb_white"
-                    android:textSize="16sp"
-                    android:textStyle="bold" />
+                    style="@style/SettingsHint"
+                    android:text="@string/player_hint" />
+
+                <LinearLayout
+                    android:id="@+id/player_chips"
+                    style="@style/SettingsChips" />
+            </LinearLayout>
+
+            <!-- Library & sources -->
+            <TextView
+                style="@style/SettingsSectionTitle"
+                android:text="@string/settings_library" />
+
+            <LinearLayout style="@style/SettingsCard">
 
                 <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="4dp"
-                    android:text="@string/languages_hint"
-                    android:textColor="@color/pb_muted"
-                    android:textSize="12sp" />
+                    style="@style/SettingsLabel"
+                    android:text="@string/languages" />
+
+                <TextView
+                    style="@style/SettingsHint"
+                    android:text="@string/languages_hint" />
 
                 <HorizontalScrollView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="12dp"
+                    android:clipToPadding="false"
                     android:scrollbars="none">
 
                     <LinearLayout
@@ -115,133 +95,48 @@
 
                 <TextView
                     android:id="@+id/language_value"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:textColor="@color/pb_muted"
-                    android:textSize="13sp" />
+                    style="@style/SettingsValue" />
 
-                <View
-                    android:layout_width="match_parent"
-                    android:layout_height="1dp"
-                    android:layout_marginTop="16dp"
-                    android:layout_marginBottom="16dp"
-                    android:background="@color/pb_hairline" />
+                <View style="@style/SettingsDivider" />
 
                 <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="@string/android_player"
-                    android:textColor="@color/pb_white"
-                    android:textSize="16sp"
-                    android:textStyle="bold" />
-
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="4dp"
-                    android:text="@string/player_hint"
-                    android:textColor="@color/pb_muted"
-                    android:textSize="12sp" />
-
-                <LinearLayout
-                    android:id="@+id/player_chips"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="12dp"
-                    android:gravity="center_vertical"
-                    android:orientation="horizontal" />
-
-                <TextView
-                    android:id="@+id/player_value"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:textColor="@color/pb_muted"
-                    android:textSize="13sp" />
-            </LinearLayout>
-
-            <!-- Server -->
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="24dp"
-                android:text="@string/settings_server"
-                android:textColor="@color/pb_seed"
-                android:textSize="14sp"
-                android:textStyle="bold" />
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
-                android:background="@drawable/settings_card"
-                android:orientation="vertical"
-                android:padding="16dp">
+                    style="@style/SettingsLabel"
+                    android:text="@string/settings_server" />
 
                 <TextView
                     android:id="@+id/server_url"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
+                    style="@style/SettingsHint"
                     android:textColor="@color/pb_white"
-                    android:textSize="15sp" />
+                    android:textSize="14sp" />
 
                 <TextView
                     android:id="@+id/server_info"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:textColor="@color/pb_muted"
-                    android:textSize="13sp" />
+                    style="@style/SettingsValue" />
 
                 <TextView
                     android:id="@+id/jackett_status"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:textSize="13sp"
+                    style="@style/SettingsValue"
                     android:textStyle="bold" />
             </LinearLayout>
 
+            <!-- Subtitles -->
             <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="24dp"
-                android:text="@string/subs_title"
-                android:textColor="@color/pb_seed"
-                android:textSize="14sp"
-                android:textStyle="bold" />
+                style="@style/SettingsSectionTitle"
+                android:text="@string/subs_title" />
 
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
-                android:background="@drawable/settings_card"
-                android:orientation="vertical"
-                android:padding="16dp">
+            <LinearLayout style="@style/SettingsCard">
 
                 <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="@string/opensubtitles"
-                    android:textColor="@color/pb_white"
-                    android:textSize="16sp"
-                    android:textStyle="bold" />
+                    style="@style/SettingsLabel"
+                    android:text="@string/opensubtitles" />
 
                 <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="4dp"
-                    android:text="@string/opensubtitles_hint"
-                    android:textColor="@color/pb_muted"
-                    android:textSize="12sp" />
+                    style="@style/SettingsHint"
+                    android:text="@string/opensubtitles_hint" />
 
                 <LinearLayout
                     android:id="@+id/opensub_chips"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="12dp"
-                    android:orientation="horizontal" />
+                    style="@style/SettingsChips" />
 
                 <EditText
                     android:id="@+id/opensub_key"
@@ -275,89 +170,94 @@
 
                 <TextView
                     android:id="@+id/opensub_save"
-                    android:layout_width="wrap_content"
-                    android:layout_height="44dp"
-                    android:layout_marginTop="12dp"
-                    android:background="@drawable/bg_button_primary"
-                    android:focusable="true"
-                    android:focusableInTouchMode="true"
-                    android:gravity="center"
-                    android:minWidth="120dp"
-                    android:paddingHorizontal="18dp"
-                    android:text="@string/subs_save"
-                    android:textColor="@color/pb_white"
-                    android:textSize="14sp"
-                    android:textStyle="bold" />
+                    style="@style/SettingsButtonPrimary"
+                    android:text="@string/subs_save" />
 
                 <TextView
                     android:id="@+id/opensub_status"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:textColor="@color/pb_muted"
-                    android:textSize="13sp" />
+                    style="@style/SettingsValue" />
             </LinearLayout>
 
-            <!-- Device -->
+            <!-- This device -->
             <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="24dp"
-                android:text="@string/settings_device"
-                android:textColor="@color/pb_seed"
-                android:textSize="14sp"
-                android:textStyle="bold" />
+                style="@style/SettingsSectionTitle"
+                android:text="@string/settings_device" />
 
+            <LinearLayout style="@style/SettingsCard">
+
+                <TextView
+                    style="@style/SettingsLabel"
+                    android:text="@string/clear_cache_on_exit" />
+
+                <TextView
+                    style="@style/SettingsHint"
+                    android:text="@string/clear_cache_on_exit_hint" />
+
+                <LinearLayout
+                    android:id="@+id/clear_cache_chips"
+                    style="@style/SettingsChips" />
+
+                <View style="@style/SettingsDivider" />
+
+                <TextView
+                    style="@style/SettingsLabel"
+                    android:text="@string/downloaded_streams" />
+
+                <TextView
+                    android:id="@+id/downloads_size"
+                    style="@style/SettingsHint" />
+
+                <TextView
+                    android:id="@+id/clear_now"
+                    style="@style/SettingsButtonGhost"
+                    android:text="@string/clear_now" />
+            </LinearLayout>
+
+            <!-- About -->
             <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="16dp"
-                android:text="@string/clear_cache_on_exit"
-                android:textColor="@color/pb_white"
-                android:textSize="16sp"
-                android:textStyle="bold" />
+                style="@style/SettingsSectionTitle"
+                android:text="@string/settings_about" />
 
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:text="@string/clear_cache_on_exit_hint"
-                android:textColor="@color/pb_muted"
-                android:textSize="12sp" />
+            <LinearLayout style="@style/SettingsCard">
 
-            <LinearLayout
-                android:id="@+id/clear_cache_chips"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
-                android:orientation="horizontal" />
+                <TextView
+                    style="@style/SettingsLabel"
+                    android:text="@string/app_version" />
 
-            <TextView
-                android:id="@+id/check_updates"
-                android:layout_width="match_parent"
-                android:layout_height="48dp"
-                android:layout_marginTop="12dp"
-                android:background="@drawable/bg_button_ghost"
-                android:focusable="true"
-                android:focusableInTouchMode="true"
-                android:gravity="center"
-                android:textColor="@color/pb_white"
-                android:textSize="15sp"
-                android:textStyle="bold" />
+                <TextView
+                    android:id="@+id/app_version"
+                    style="@style/SettingsHint" />
 
-            <TextView
-                android:id="@+id/disconnect"
-                android:layout_width="match_parent"
-                android:layout_height="48dp"
-                android:layout_marginTop="12dp"
-                android:background="@drawable/bg_button_ghost"
-                android:focusable="true"
-                android:focusableInTouchMode="true"
-                android:gravity="center"
-                android:text="@string/disconnect"
-                android:textColor="@color/pb_white"
-                android:textSize="15sp"
-                android:textStyle="bold" />
+                <TextView
+                    android:id="@+id/check_updates"
+                    style="@style/SettingsButtonGhost"
+                    android:text="@string/check_for_updates" />
+
+                <View style="@style/SettingsDivider" />
+
+                <TextView
+                    style="@style/SettingsLabel"
+                    android:text="@string/server_version" />
+
+                <TextView
+                    android:id="@+id/server_version"
+                    style="@style/SettingsHint" />
+
+                <View style="@style/SettingsDivider" />
+
+                <TextView
+                    style="@style/SettingsLabel"
+                    android:text="@string/disconnect" />
+
+                <TextView
+                    style="@style/SettingsHint"
+                    android:text="@string/disconnect_hint" />
+
+                <TextView
+                    android:id="@+id/disconnect"
+                    style="@style/SettingsButtonGhost"
+                    android:text="@string/disconnect" />
+            </LinearLayout>
         </LinearLayout>
     </ScrollView>
 
