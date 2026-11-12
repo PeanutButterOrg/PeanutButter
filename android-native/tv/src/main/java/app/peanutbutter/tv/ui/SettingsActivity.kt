@@ -1,7 +1,9 @@
 package app.peanutbutter.tv.ui
 
 import android.content.Intent
+import android.graphics.Typeface
 import android.os.Bundle
+import android.text.format.Formatter
 import android.view.View
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -13,14 +15,28 @@ import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.lifecycleScope
 import app.peanutbutter.core.ContentLanguages
 import app.peanutbutter.core.SessionStore
+import app.peanutbutter.core.StreamDownloads
 import app.peanutbutter.core.StreamQuality
 import app.peanutbutter.tv.R
 import app.peanutbutter.tv.asTv
 import app.peanutbutter.tv.update.checkForTvUpdate
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
 
-/** Flutter Settings: quality, languages, server/Jackett, disconnect. */
+/**
+ * Same sections as the desktop app's Settings: Playback, Library & sources,
+ * Subtitles, This device, About.
+ *
+ * Choice chips are built once and restyled in place when one is picked.
+ * Rebuilding the row on every pick destroyed the focused chip, so the
+ * remote's focus jumped elsewhere after each choice.
+ */
 class SettingsActivity : FragmentActivity() {
+    private val session get() = application.asTv().session
+    private var opensubEnabled = false
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_settings)
@@ -29,20 +45,63 @@ class SettingsActivity : FragmentActivity() {
         findViewById<TextView>(R.id.server_url).text =
             app.session.serverUrl.ifBlank { getString(R.string.not_paired) }
 
-        bindQualityChips(app.session.preferredQuality)
-        bindLanguageChips(app.session.preferredLanguages)
-        bindPlayerChips(app.session.playbackEngine)
-        bindOpenSubtitles(enabled = false)
-        bindClearCache(app.session.clearCacheOnExit)
+        // Playback
+        bindChoices(
+            R.id.quality_chips,
+            StreamQuality.OPTIONS,
+            isOn = { it == StreamQuality.normalize(session.preferredQuality) },
+            onPick = { session.preferredQuality = it },
+        )
+        bindChoices(
+            R.id.player_chips,
+            listOf(
+                SessionStore.PLAYER_EXO to getString(R.string.player_exo),
+                SessionStore.PLAYER_VLC to getString(R.string.player_vlc),
+            ),
+            isOn = { it == SessionStore.normalizePlayer(session.playbackEngine) },
+            onPick = { session.playbackEngine = it },
+        )
+
+        // Library & sources
+        bindChoices(
+            R.id.language_chips,
+            listOf("" to getString(R.string.languages_all)) + ContentLanguages.OPTIONS,
+            isOn = { code ->
+                val current = session.preferredLanguages
+                if (code.isEmpty()) current.isEmpty() else code in current
+            },
+            onPick = { code -> toggleLanguage(code) },
+        )
+        refreshLanguageLabel()
+
+        // Subtitles
+        bindChoices(
+            R.id.opensub_chips,
+            listOf(false to getString(R.string.opensubtitles_off), true to getString(R.string.opensubtitles_on)),
+            isOn = { it == opensubEnabled },
+            onPick = { setOpenSubtitles(it) },
+        )
+        setOpenSubtitles(false)
         findViewById<TextView>(R.id.opensub_save).setOnClickListener { saveOpenSubtitles() }
         findViewById<EditText>(R.id.opensub_key).closeKeyboardOnIme()
 
-        findViewById<TextView>(R.id.check_updates).apply {
-            val version = packageManager.getPackageInfo(packageName, 0).versionName.orEmpty()
-            text = getString(R.string.update_check, version)
-            setOnClickListener { checkForTvUpdate(this@SettingsActivity, manual = true) }
-        }
+        // This device
+        bindChoices(
+            R.id.clear_cache_chips,
+            listOf(false to getString(R.string.opensubtitles_off), true to getString(R.string.opensubtitles_on)),
+            isOn = { it == session.clearCacheOnExit },
+            onPick = { session.clearCacheOnExit = it },
+        )
+        findViewById<TextView>(R.id.clear_now).setOnClickListener { clearDownloads() }
+        refreshDownloadsSize()
 
+        // About
+        findViewById<TextView>(R.id.app_version).text =
+            runCatching { packageManager.getPackageInfo(packageName, 0).versionName }.getOrNull().orEmpty()
+        findViewById<TextView>(R.id.check_updates).setOnClickListener {
+            checkForTvUpdate(this@SettingsActivity, manual = true)
+        }
+        findViewById<TextView>(R.id.server_version).text = "…"
         findViewById<TextView>(R.id.disconnect).setOnClickListener {
             app.session.clear()
             startActivity(
@@ -52,6 +111,11 @@ class SettingsActivity : FragmentActivity() {
             finish()
         }
 
+        loadServerInfo()
+    }
+
+    private fun loadServerInfo() {
+        val app = application.asTv()
         val overlay = findViewById<View>(R.id.loading_overlay)
         overlay.isVisible = true
         lifecycleScope.launch {
@@ -59,11 +123,11 @@ class SettingsActivity : FragmentActivity() {
                 val info = app.api.serverInfo()
                 findViewById<TextView>(R.id.server_info).text =
                     getString(R.string.server_info_line, info.version, info.totalTitles)
-                val jackett = findViewById<TextView>(R.id.jackett_status)
-                val langs = ContentLanguages.normalize(info.preferredLanguages)
-                app.session.preferredLanguages = langs
-                bindLanguageChips(langs)
-                bindOpenSubtitles(info.opensubtitlesEnabled)
+                findViewById<TextView>(R.id.server_version).text = info.version
+                session.preferredLanguages = ContentLanguages.normalize(info.preferredLanguages)
+                restyle(R.id.language_chips)
+                refreshLanguageLabel()
+                setOpenSubtitles(info.opensubtitlesEnabled)
                 if (info.opensubtitlesConfigured) {
                     findViewById<EditText>(R.id.opensub_key).hint =
                         getString(R.string.subs_key_hint) + " — paste to replace"
@@ -72,6 +136,7 @@ class SettingsActivity : FragmentActivity() {
                     findViewById<EditText>(R.id.wyzie_key).hint =
                         getString(R.string.subs_wyzie_hint) + " — paste to replace"
                 }
+                val jackett = findViewById<TextView>(R.id.jackett_status)
                 if (info.jackettConfigured) {
                     jackett.text = getString(R.string.jackett_ok)
                     jackett.setTextColor(ContextCompat.getColor(this@SettingsActivity, R.color.pb_completed))
@@ -80,6 +145,7 @@ class SettingsActivity : FragmentActivity() {
                     jackett.setTextColor(ContextCompat.getColor(this@SettingsActivity, R.color.pb_muted))
                 }
             } catch (e: Exception) {
+                findViewById<TextView>(R.id.server_version).text = getString(R.string.error_generic)
                 Toast.makeText(this@SettingsActivity, e.message, Toast.LENGTH_LONG).show()
             } finally {
                 overlay.isVisible = false
@@ -89,152 +155,95 @@ class SettingsActivity : FragmentActivity() {
         }
     }
 
-    private fun bindQualityChips(selected: String) {
-        val chips = findViewById<LinearLayout>(R.id.quality_chips)
-        val valueLabel = findViewById<TextView>(R.id.quality_value)
-        chips.removeAllViews()
-        val current = StreamQuality.normalize(selected)
+    // ── Choice chips ────────────────────────────────────────────────────────
 
-        fun refresh() {
-            chips.removeAllViews()
-            StreamQuality.OPTIONS.forEachIndexed { index, (value, label) ->
-                val chip = TextView(this).apply {
-                    text = label
-                    textSize = 14f
-                    setPadding(dp(18), dp(10), dp(18), dp(10))
-                    isFocusable = true
-                    isFocusableInTouchMode = true
-                    background = getDrawable(R.drawable.kind_tab_bg)
-                    val on = value == current
-                    setTextColor(
-                        ContextCompat.getColor(
-                            this@SettingsActivity,
-                            if (on) R.color.pb_seed else R.color.pb_muted,
-                        ),
-                    )
-                    setTypeface(null, if (on) android.graphics.Typeface.BOLD else android.graphics.Typeface.NORMAL)
-                    val lp = LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.WRAP_CONTENT,
-                        LinearLayout.LayoutParams.WRAP_CONTENT,
-                    )
-                    if (index > 0) lp.marginStart = dp(10)
-                    layoutParams = lp
-                    setOnClickListener {
-                        application.asTv().session.preferredQuality = value
-                        bindQualityChips(value)
-                    }
-                }
-                chips.addView(chip)
-            }
-            val label = StreamQuality.OPTIONS.firstOrNull { it.first == current }?.second ?: current
-            valueLabel.text = getString(R.string.quality_selected, label)
-        }
-        refresh()
-    }
+    /** Chip state per container: whether a chip's value is the selected one. */
+    private val chipState = HashMap<Int, (Any?) -> Boolean>()
 
-    private fun bindPlayerChips(selected: String) {
-        val chips = findViewById<LinearLayout>(R.id.player_chips)
-        val valueLabel = findViewById<TextView>(R.id.player_value)
-        val current = SessionStore.normalizePlayer(selected)
-        chips.removeAllViews()
-        val options = listOf(
-            SessionStore.PLAYER_EXO to getString(R.string.player_exo),
-            SessionStore.PLAYER_VLC to getString(R.string.player_vlc),
-        )
+    /**
+     * One row of focusable chips. [isOn] reads the live setting, so after
+     * [onPick] the row is restyled in place and focus stays on the chip.
+     */
+    @Suppress("UNCHECKED_CAST")
+    private fun <T> bindChoices(
+        containerId: Int,
+        options: List<Pair<T, String>>,
+        isOn: (T) -> Boolean,
+        onPick: (T) -> Unit,
+    ) {
+        val container = findViewById<LinearLayout>(containerId)
+        container.removeAllViews()
+        chipState[containerId] = { value -> isOn(value as T) }
         options.forEachIndexed { index, (value, label) ->
-            val on = value == current
             val chip = TextView(this).apply {
                 text = label
+                tag = value
                 textSize = 14f
                 setPadding(dp(18), dp(10), dp(18), dp(10))
                 isFocusable = true
                 isFocusableInTouchMode = true
-                background = getDrawable(R.drawable.kind_tab_bg)
-                setTextColor(
-                    ContextCompat.getColor(
-                        this@SettingsActivity,
-                        if (on) R.color.pb_seed else R.color.pb_muted,
-                    ),
-                )
-                setTypeface(null, if (on) android.graphics.Typeface.BOLD else android.graphics.Typeface.NORMAL)
-                val lp = LinearLayout.LayoutParams(
+                background = ContextCompat.getDrawable(this@SettingsActivity, R.drawable.kind_tab_bg)
+                layoutParams = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.WRAP_CONTENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT,
-                )
-                if (index > 0) lp.marginStart = dp(10)
-                layoutParams = lp
+                ).apply { if (index > 0) marginStart = dp(10) }
                 setOnClickListener {
-                    application.asTv().session.playbackEngine = value
-                    bindPlayerChips(value)
+                    onPick(value)
+                    restyle(containerId)
                 }
             }
-            chips.addView(chip)
+            container.addView(chip)
         }
-        val label = options.firstOrNull { it.first == current }?.second ?: current
-        valueLabel.text = getString(R.string.player_selected, label)
+        restyle(containerId)
     }
 
-    private fun bindClearCache(enabled: Boolean) {
-        val chips = findViewById<LinearLayout>(R.id.clear_cache_chips)
-        chips.removeAllViews()
-        listOf(false to getString(R.string.opensubtitles_off), true to getString(R.string.opensubtitles_on))
-            .forEachIndexed { index, (value, label) ->
-                val on = value == enabled
-                val chip = TextView(this).apply {
-                    text = label
-                    textSize = 14f
-                    setPadding(dp(18), dp(10), dp(18), dp(10))
-                    isFocusable = true
-                    isFocusableInTouchMode = true
-                    background = getDrawable(R.drawable.kind_tab_bg)
-                    setTextColor(ContextCompat.getColor(this@SettingsActivity, if (on) R.color.pb_seed else R.color.pb_muted))
-                    setTypeface(null, if (on) android.graphics.Typeface.BOLD else android.graphics.Typeface.NORMAL)
-                    val lp = LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.WRAP_CONTENT,
-                        LinearLayout.LayoutParams.WRAP_CONTENT,
-                    )
-                    if (index > 0) lp.marginStart = dp(10)
-                    layoutParams = lp
-                    setOnClickListener {
-                        application.asTv().session.clearCacheOnExit = value
-                        bindClearCache(value)
-                    }
+    private fun restyle(containerId: Int) {
+        val container = findViewById<LinearLayout>(containerId)
+        val isOn = chipState[containerId] ?: return
+        for (i in 0 until container.childCount) {
+            val chip = container.getChildAt(i) as? TextView ?: continue
+            val on = isOn(chip.tag)
+            chip.setTextColor(ContextCompat.getColor(this, if (on) R.color.pb_seed else R.color.pb_muted))
+            chip.setTypeface(null, if (on) Typeface.BOLD else Typeface.NORMAL)
+        }
+    }
+
+    // ── Library & sources ───────────────────────────────────────────────────
+
+    private fun toggleLanguage(code: String) {
+        val current = session.preferredLanguages
+        val next = if (code.isEmpty()) {
+            emptySet()
+        } else {
+            current.toMutableSet().apply { if (code in this) remove(code) else add(code) }
+        }
+        session.preferredLanguages = next
+        refreshLanguageLabel()
+        val app = application.asTv()
+        lifecycleScope.launch {
+            runCatching { app.api.updatePreferredLanguages(next.toList()) }
+                .onFailure { err ->
+                    Toast.makeText(this@SettingsActivity, err.message, Toast.LENGTH_SHORT).show()
                 }
-                chips.addView(chip)
-            }
+        }
     }
 
-    private var opensubEnabled = false
+    private fun refreshLanguageLabel() {
+        val current = session.preferredLanguages
+        findViewById<TextView>(R.id.language_value).text = if (current.isEmpty()) {
+            getString(R.string.languages_all)
+        } else {
+            getString(R.string.languages_selected, current.joinToString(", ").uppercase())
+        }
+    }
 
-    private fun bindOpenSubtitles(enabled: Boolean) {
+    // ── Subtitles ───────────────────────────────────────────────────────────
+
+    private fun setOpenSubtitles(enabled: Boolean) {
         opensubEnabled = enabled
-        val chips = findViewById<LinearLayout>(R.id.opensub_chips)
-        val key = findViewById<EditText>(R.id.opensub_key)
-        chips.removeAllViews()
-        listOf(false to getString(R.string.opensubtitles_off), true to getString(R.string.opensubtitles_on))
-            .forEachIndexed { index, (value, label) ->
-                val on = value == opensubEnabled
-                val chip = TextView(this).apply {
-                    text = label
-                    textSize = 14f
-                    setPadding(dp(18), dp(10), dp(18), dp(10))
-                    isFocusable = true
-                    isFocusableInTouchMode = true
-                    background = getDrawable(R.drawable.kind_tab_bg)
-                    setTextColor(ContextCompat.getColor(this@SettingsActivity, if (on) R.color.pb_seed else R.color.pb_muted))
-                    setTypeface(null, if (on) android.graphics.Typeface.BOLD else android.graphics.Typeface.NORMAL)
-                    val lp = LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.WRAP_CONTENT,
-                        LinearLayout.LayoutParams.WRAP_CONTENT,
-                    )
-                    if (index > 0) lp.marginStart = dp(10)
-                    layoutParams = lp
-                    setOnClickListener { bindOpenSubtitles(value) }
-                }
-                chips.addView(chip)
-            }
-        key.isVisible = opensubEnabled
-        findViewById<EditText>(R.id.wyzie_key).isVisible = opensubEnabled
+        restyle(R.id.opensub_chips)
+        findViewById<EditText>(R.id.opensub_key).isVisible = enabled
+        findViewById<EditText>(R.id.wyzie_key).isVisible = enabled
     }
 
     private fun saveOpenSubtitles() {
@@ -257,61 +266,61 @@ class SettingsActivity : FragmentActivity() {
         }
     }
 
-    private fun bindLanguageChips(selected: Set<String>) {
-        val chips = findViewById<LinearLayout>(R.id.language_chips)
-        val valueLabel = findViewById<TextView>(R.id.language_value)
-        val current = ContentLanguages.normalize(selected)
-        chips.removeAllViews()
-        val options = listOf("" to getString(R.string.languages_all)) + ContentLanguages.OPTIONS
-        options.forEachIndexed { index, (code, label) ->
-            val on = if (code.isEmpty()) current.isEmpty() else code in current
-            val chip = TextView(this).apply {
-                text = label
-                textSize = 14f
-                setPadding(dp(18), dp(10), dp(18), dp(10))
-                isFocusable = true
-                isFocusableInTouchMode = true
-                background = getDrawable(R.drawable.kind_tab_bg)
-                setTextColor(
-                    ContextCompat.getColor(
-                        this@SettingsActivity,
-                        if (on) R.color.pb_seed else R.color.pb_muted,
-                    ),
-                )
-                setTypeface(null, if (on) android.graphics.Typeface.BOLD else android.graphics.Typeface.NORMAL)
-                val lp = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.WRAP_CONTENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT,
-                )
-                if (index > 0) lp.marginStart = dp(10)
-                layoutParams = lp
-                setOnClickListener {
-                    val next = if (code.isEmpty()) {
-                        emptySet()
-                    } else {
-                        current.toMutableSet().apply {
-                            if (code in this) remove(code) else add(code)
-                        }
-                    }
-                    val app = application.asTv()
-                    app.session.preferredLanguages = next
-                    lifecycleScope.launch {
-                        runCatching { app.api.updatePreferredLanguages(next.toList()) }
-                            .onFailure { err ->
-                                Toast.makeText(this@SettingsActivity, err.message, Toast.LENGTH_SHORT).show()
-                            }
-                    }
-                    bindLanguageChips(next)
-                }
+    // ── This device ─────────────────────────────────────────────────────────
+
+    /** Streamed pieces and player caches that [StreamDownloads.wipe] deletes. */
+    private fun downloadDirs(): List<File> = listOfNotNull(
+        File(filesDir, "pb-streams"),
+        File(cacheDir, "pb-streams"),
+        externalCacheDir?.let { File(it, "pb-streams") },
+        File(cacheDir, "exoplayer"),
+    )
+
+    private fun refreshDownloadsSize() {
+        val label = findViewById<TextView>(R.id.downloads_size)
+        lifecycleScope.launch {
+            val bytes = withContext(Dispatchers.IO) { downloadDirs().sumOf { it.sizeOnDisk() } }
+            label.text = if (bytes <= 0L) {
+                getString(R.string.downloads_none)
+            } else {
+                getString(R.string.downloads_size, Formatter.formatShortFileSize(this@SettingsActivity, bytes))
             }
-            chips.addView(chip)
         }
-        valueLabel.text = if (current.isEmpty()) {
-            getString(R.string.languages_all)
-        } else {
-            getString(R.string.languages_selected, current.joinToString(", ").uppercase())
+    }
+
+    private fun clearDownloads() {
+        val button = findViewById<TextView>(R.id.clear_now)
+        button.isEnabled = false
+        lifecycleScope.launch {
+            val freed = withContext(Dispatchers.IO) {
+                val before = downloadDirs().sumOf { it.sizeOnDisk() }
+                // Settings isn't reachable while something plays, so no stream
+                // is reading these files. Stops any torrent, then deletes.
+                runCatching { StreamDownloads.wipe(applicationContext) }
+                before
+            }
+            button.isEnabled = true
+            Toast.makeText(
+                this@SettingsActivity,
+                getString(R.string.cleared_downloads, Formatter.formatShortFileSize(this@SettingsActivity, freed)),
+                Toast.LENGTH_SHORT,
+            ).show()
+            refreshDownloadsSize()
         }
     }
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 }
+
+/**
+ * Disk space the files under this folder actually use. Torrent files are
+ * sparse: a partly downloaded video has its full length but only the
+ * downloaded blocks allocated, and length() reported gigabytes that weren't
+ * used (or cleared).
+ */
+private fun File.sizeOnDisk(): Long =
+    if (!exists()) 0L else walkTopDown().filter { it.isFile }.sumOf { it.allocatedBytes() }
+
+/** Allocated blocks (st_blocks counts 512-byte units); apparent length if stat fails. */
+internal fun File.allocatedBytes(): Long =
+    runCatching { android.system.Os.stat(path).st_blocks * 512L }.getOrElse { length() }

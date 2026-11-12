@@ -281,12 +281,17 @@ class LibtorrentFlutter {
   ///
   /// Returns the torrent ID. [savePath] defaults to the path set in init().
   /// Set [streamOnly] to true to prevent background downloading.
-  int addMagnet(String magnetUri, [String? savePath, bool streamOnly = false]) {
+  /// Set [selectLater] to true to start with no file wanted (for playback:
+  /// pick the file once metadata is in, then [startStream]); by default every
+  /// file downloads as usual.
+  int addMagnet(String magnetUri,
+      [String? savePath, bool streamOnly = false, bool selectLater = false]) {
     final enhanced = TrackerManager.injectTrackers(magnetUri);
     final m = enhanced.toNativeUtf8();
     final s = (savePath ?? _defaultSavePath).toNativeUtf8();
     try {
-      final id = _b.addMagnet(_session, m, s, streamOnly ? 1 : 0);
+      final id = _b.addMagnet(
+          _session, m, s, (streamOnly ? 1 : 0) | (selectLater ? 2 : 0));
       if (id < 0) throw Exception(_b.lastError().toDartString());
       return id;
     } finally {

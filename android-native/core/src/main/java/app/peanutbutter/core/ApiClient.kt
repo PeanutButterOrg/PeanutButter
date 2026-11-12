@@ -54,7 +54,9 @@ class ApiClient(
             el.takeUnless { it.isJsonNull }?.asString?.trim()?.takeIf { it.isNotEmpty() }
         }.orEmpty()
         if (trackers.isNotEmpty()) {
-            LocalTorrentEngine.setExtraTrackers(trackers)
+            // The engine lives in the :torrent process: TorrentClient sends
+            // the list along with each start.
+            TorrentClient.extraTrackers = trackers
         }
         val osConfigured = info.getBooleanOr("opensubtitlesConfigured", false)
         val wyzieConfigured = info.getBooleanOr("wyzieConfigured", false)

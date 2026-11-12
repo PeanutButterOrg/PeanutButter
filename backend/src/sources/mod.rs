@@ -61,8 +61,6 @@ pub enum Outcome {
     Found(usize),
     Failed(String),
     TimedOut,
-    /// The others already had plenty; this one was still going after the grace period.
-    CutShort,
 }
 
 #[derive(Clone, Debug)]
@@ -72,18 +70,14 @@ pub struct Report {
     pub elapsed: Duration,
 }
 
-/// Once the sources that answered already give a good list, the rest get
-/// this much longer (on top of what they've had) and no more.
-pub const GRACE: Duration = Duration::from_secs(10);
-
-/// Ask every provider in parallel. Each gets its own timeout, a failure only
-/// loses that provider's results, and a slow one stops holding the answer up
-/// [GRACE] after the others already found enough. Results come back tagged
+/// Ask every provider in parallel and wait for all of them: each answers or
+/// reaches its own timeout, and a failure only loses that provider's
+/// results. (Stopping early once a few good results were in dropped the
+/// slower sources, usually Jackett, from the list.) Results come back tagged
 /// with their provider, unmerged.
 pub async fn gather(
     providers: &[Box<dyn SourceProvider>],
     query: &SourceQuery,
-    grace: Duration,
 ) -> (Vec<Vec<StreamSource>>, Vec<Report>) {
     let started = Instant::now();
     let mut pending: FuturesUnordered<_> = providers
@@ -96,17 +90,8 @@ pub async fn gather(
         .collect();
     let mut found: Vec<Vec<StreamSource>> = Vec::new();
     let mut reports: Vec<Option<Report>> = vec![None; providers.len()];
-    let mut cutoff: Option<tokio::time::Instant> = None;
 
-    loop {
-        let next = match cutoff {
-            Some(at) => match tokio::time::timeout_at(at, pending.next()).await {
-                Ok(n) => n,
-                Err(_) => break,
-            },
-            None => pending.next().await,
-        };
-        let Some((i, result)) = next else { break };
+    while let Some((i, result)) = pending.next().await {
         let p = &providers[i];
         let outcome = match result {
             Ok(Ok(mut list)) => {
@@ -129,35 +114,11 @@ pub async fn gather(
             }
         };
         reports[i] = Some(Report { label: p.label().to_string(), outcome, elapsed: started.elapsed() });
-        if cutoff.is_none() && !pending.is_empty() && enough(found.iter().flatten()) {
-            cutoff = Some(tokio::time::Instant::now() + grace);
-        }
     }
 
-    let reports = reports
-        .into_iter()
-        .enumerate()
-        .map(|(i, r)| {
-            r.unwrap_or_else(|| {
-                tracing::info!(source = providers[i].label(), "stream source cut short; others already found enough");
-                Report {
-                    label: providers[i].label().to_string(),
-                    outcome: Outcome::CutShort,
-                    elapsed: started.elapsed(),
-                }
-            })
-        })
-        .collect();
+    // Every future ran to completion, so every provider has a report.
+    let reports = reports.into_iter().flatten().collect();
     (found, reports)
-}
-
-/// A list good enough that waiting longer for a slow source isn't worth it.
-fn enough<'a>(sources: impl Iterator<Item = &'a StreamSource>) -> bool {
-    sources
-        .filter(|s| s.is_http() || (s.health != "unknown" && s.seeders >= 5))
-        .take(4)
-        .count()
-        >= 4
 }
 
 /// What makes two results the same: the torrent's info hash (hex, lower
@@ -357,9 +318,8 @@ pub fn collapse_mirrors(sources: Vec<StreamSource>) -> Vec<StreamSource> {
 pub async fn search(
     providers: &[Box<dyn SourceProvider>],
     query: &SourceQuery,
-    grace: Duration,
 ) -> (Vec<StreamSource>, Vec<Report>) {
-    let (lists, reports) = gather(providers, query, grace).await;
+    let (lists, reports) = gather(providers, query).await;
     let merged = merge(lists);
     (rank::rank(merged, &prefs(query)), reports)
 }
@@ -542,7 +502,7 @@ mod tests {
             fake("Broken", 0, 5, Err("HTTP 500".into())),
             fake("Good", 1, 5, Ok(vec![src("Good", HASH, "Troy.2004.1080p.BluRay", Some(50))])),
         ];
-        let (found, reports) = search(&providers, &movie_query(), GRACE).await;
+        let (found, reports) = search(&providers, &movie_query()).await;
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].providers, vec!["Good"]);
         assert_eq!(reports[0].outcome, Outcome::Failed("HTTP 500".into()));
@@ -556,7 +516,7 @@ mod tests {
             fake("Fast", 1, 8, Ok(vec![src("Fast", "1123456789abcdef0123456789abcdef01234567", "Troy.2004.720p.WEB", Some(9))])),
         ];
         let t0 = tokio::time::Instant::now();
-        let (found, reports) = search(&providers, &movie_query(), GRACE).await;
+        let (found, reports) = search(&providers, &movie_query()).await;
         assert!(t0.elapsed() <= Duration::from_secs(9), "waited {:?}", t0.elapsed());
         assert_eq!(found.len(), 1);
         assert_eq!(reports[0].outcome, Outcome::TimedOut);
@@ -564,7 +524,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_slow_source_is_cut_short_once_the_others_have_plenty() {
+    async fn slow_sources_are_waited_for_even_when_others_have_plenty() {
         let plenty: Vec<StreamSource> = (0..5)
             .map(|i| src("Fast", &format!("{i}123456789abcdef0123456789abcdef01234567"), &format!("Troy.2004.1080p.WEB.{i}"), Some(40)))
             .collect();
@@ -573,11 +533,15 @@ mod tests {
             fake("Fast", 2, 10, Ok(plenty)),
         ];
         let t0 = tokio::time::Instant::now();
-        let (found, reports) = search(&providers, &movie_query(), GRACE).await;
+        let (found, reports) = search(&providers, &movie_query()).await;
         let waited = t0.elapsed();
-        assert!(waited >= Duration::from_secs(12) && waited < Duration::from_secs(13), "waited {waited:?}");
+        // Jackett answers after 50 s, within its own 60 s limit: its result
+        // is in the list, not dropped because Fast already had five.
+        assert!(waited >= Duration::from_secs(50) && waited < Duration::from_secs(51), "waited {waited:?}");
+        assert_eq!(reports[0].outcome, Outcome::Found(1));
+        // Same torrent as one of Fast's: one row that both sources found.
         assert_eq!(found.len(), 5);
-        assert_eq!(reports[0].outcome, Outcome::CutShort);
+        assert!(found.iter().any(|s| s.providers.iter().any(|p| p == "Jackett")));
     }
 
     #[tokio::test(start_paused = true)]
@@ -590,7 +554,7 @@ mod tests {
             ])),
             fake("Torrentio", 1, 10, Ok(vec![src("Torrentio", shared, "Troy.2004.1080p.BluRay.x264", Some(120))])),
         ];
-        let (found, _) = search(&providers, &movie_query(), GRACE).await;
+        let (found, _) = search(&providers, &movie_query()).await;
         assert_eq!(found.len(), 2);
         assert_eq!(found[0].title, "Troy.2004.1080p.BluRay.x264");
         assert_eq!(found[0].seeders, 120);

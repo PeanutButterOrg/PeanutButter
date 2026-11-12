@@ -206,6 +206,11 @@ class CatalogActivity : androidx.fragment.app.FragmentActivity() {
         dialog.show()
     }
 
+    /** Slim bar at the bottom while a further page loads. */
+    fun setLoadingMore(loading: Boolean) {
+        findViewById<View>(R.id.loading_more).isVisible = loading
+    }
+
     fun setLoading(loading: Boolean) {
         findViewById<View>(R.id.loading_overlay).apply {
             isVisible = loading
@@ -324,6 +329,7 @@ class CatalogFragment : VerticalGridSupportFragment() {
     }
 
     private fun reload() {
+        (activity as? CatalogActivity)?.setLoadingMore(false)
         page = 1
         hasNext = true
         loadGen++
@@ -396,8 +402,8 @@ class CatalogFragment : VerticalGridSupportFragment() {
         if (loading || !hasNext) return
         loading = true
         val host = activity as? CatalogActivity
-        // Full-screen busy only on first page
-        if (page == 1) host?.setLoading(true)
+        // Full-screen busy on the first page, a slim bar for the next ones.
+        if (page == 1) host?.setLoading(true) else host?.setLoadingMore(true)
         val app = requireActivity().application.asTv()
         val pageToLoad = page
         val gen = loadGen
@@ -437,6 +443,7 @@ class CatalogFragment : VerticalGridSupportFragment() {
                 if (gen == loadGen) {
                     loading = false
                     host?.setLoading(false)
+                    host?.setLoadingMore(false)
                 }
             }
         }

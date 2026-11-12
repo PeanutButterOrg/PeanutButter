@@ -7,5 +7,17 @@
             android:name=".player.PlayerActivity"
             android:exported="true"
             tools:replace="android:exported" />
+        <activity
+            android:name=".ui.SettingsActivity"
+            android:exported="true"
+            tools:replace="android:exported" />
+        <activity
+            android:name=".ui.SearchActivity"
+            android:exported="true"
+            tools:replace="android:exported" />
+        <activity
+            android:name=".ui.CatalogActivity"
+            android:exported="true"
+            tools:replace="android:exported" />
     </application>
 </manifest>

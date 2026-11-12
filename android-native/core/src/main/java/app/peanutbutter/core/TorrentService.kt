@@ -35,6 +35,9 @@ class TorrentService : Service() {
                 val fileIndex = data.getInt(KEY_FILE_INDEX, -1).takeIf { it >= 0 }
                 val resumeMs = data.getLong(KEY_POSITION_MS, 0L).coerceAtLeast(0L)
                 val durationMs = data.getLong(KEY_DURATION_MS, 0L).coerceAtLeast(0L)
+                data.getStringArrayList(KEY_TRACKERS)?.takeIf { it.isNotEmpty() }?.let {
+                    LocalTorrentEngine.setExtraTrackers(it)
+                }
                 AppLog.i(TAG, "MSG_START magnet=${magnet.take(48)}… resumeMs=$resumeMs")
                 startTorrent(replyTo, magnet, season, episode, fileIndex, resumeMs, durationMs)
                 true
@@ -208,5 +211,6 @@ class TorrentService : Service() {
         const val KEY_AGGRESSIVE = "aggressive"
         const val KEY_PAUSED = "paused"
         const val KEY_DOWNLOADED_TO = "downloaded_to"
+        const val KEY_TRACKERS = "trackers"
     }
 }

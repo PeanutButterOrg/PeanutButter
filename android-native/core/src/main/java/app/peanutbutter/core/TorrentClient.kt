@@ -23,6 +23,13 @@ object TorrentClient {
     private val connRef = AtomicReference<ServiceConnection?>(null)
     @Volatile private var lastStats: LocalStreamStats? = null
 
+    /**
+     * The server's live tracker list (serverInfo.streamTrackers). Set in the
+     * UI process and sent with every start: the engine runs in the `:torrent`
+     * process, so setting it on LocalTorrentEngine here never reached it.
+     */
+    @Volatile var extraTrackers: List<String> = emptyList()
+
     /** Optional UI refresh when a stats reply arrives from `:torrent`. */
     @Volatile var onStatsUpdated: ((LocalStreamStats) -> Unit)? = null
 
@@ -145,6 +152,7 @@ object TorrentClient {
                         putInt(TorrentService.KEY_FILE_INDEX, fileIndex ?: -1)
                         putLong(TorrentService.KEY_POSITION_MS, resumeMs.coerceAtLeast(0L))
                         putLong(TorrentService.KEY_DURATION_MS, durationMs.coerceAtLeast(0L))
+                        putStringArrayList(TorrentService.KEY_TRACKERS, ArrayList(extraTrackers))
                     }
                     try {
                         messenger.send(msg)

@@ -189,7 +189,9 @@ class LocalTorrentEngine {
     // metadata, libtorrent marks the torrent "finished", and the session
     // sticks paused (~0 KB/s). Pause ourselves right after metadata instead,
     // then let startStream() apply head piece deadlines + resume.
-    final id = engine.addMagnet(magnetUri, _savePath, false);
+    // selectLater: no file wanted until startStream() picks the episode, so
+    // the rest of a season pack doesn't start downloading meanwhile.
+    final id = engine.addMagnet(magnetUri, _savePath, false, true);
     _torrentId = id;
 
     StreamSubscription<Map<int, TorrentInfo>>? updates;

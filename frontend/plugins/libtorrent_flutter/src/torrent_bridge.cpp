@@ -2238,7 +2238,12 @@ TORRENT_API void lt_poll_alerts(lt_session_t session,
 
 TORRENT_API lt_torrent_id lt_add_magnet(lt_session_t session,
                                         const char* uri, const char* path,
-                                        int stream_only) {
+                                        int flags) {
+    // flags: LT_ADD_STREAM_ONLY (1) as before; LT_ADD_SELECT_LATER (2): start
+    // with no file wanted (playback picks the file, then startStream()).
+    bool const stream_only = (flags & 1) != 0;
+    bool const select_later = (flags & 2) != 0;
+    (void)select_later; // unused when built against libtorrent < 2.0
     try {
         if (!session || !uri || !path) { set_err("null arg"); return -1; }
         auto* sw = to_sw(session);
@@ -2249,6 +2254,16 @@ TORRENT_API lt_torrent_id lt_add_magnet(lt_session_t session,
             atp.save_path = path;
             atp.flags &= ~lt::torrent_flags::paused;
             atp.flags &= ~lt::torrent_flags::auto_managed;
+#if LIBTORRENT_VERSION_NUM >= 20000
+            // Playback (LT_ADD_SELECT_LATER): nothing is wanted until
+            // startStream() enables the chosen file's pieces. With default
+            // priorities every file of a season pack was wanted between
+            // metadata and startStream(), so other episodes started
+            // downloading. (Data of files left at dont_download goes to the
+            // parts file; streams read through read_piece(), so that's
+            // transparent.) Plain adds keep downloading everything.
+            if (select_later) atp.flags |= lt::torrent_flags::default_dont_download;
+#endif
     
             // Trackerless magnet (only an info-hash, no &tr=...)? Seed it with a
             // curated set of public open trackers so peer discovery doesn't have

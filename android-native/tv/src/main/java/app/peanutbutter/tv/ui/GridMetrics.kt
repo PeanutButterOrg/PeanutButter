@@ -111,15 +111,28 @@ fun VerticalGridView.pinPosterGrid() {
     }
     // A focused card grows past its cell. Leanback nests the grid in several
     // frames (grid dock, browse frame, fragment root…) and any one of them
-    // still clipping cut the zoomed card at the screen edge or under the
-    // title, so unclip the whole chain like the home screen does.
-    unclipAncestors()
+    // still clipping cut the zoomed card at the grid's padding. Unclip those,
+    // but stop at the screen's grid container: past it, scrolled rows drew
+    // over the filter bar / search bar above the grid. The grid's padding
+    // leaves room for the zoom inside the container.
+    unclipAncestors(stopAt = GRID_CONTAINERS)
 }
 
-/** Let a zoomed child draw past this view and every parent up to the window. */
-fun View.unclipAncestors() {
+/** Screen containers a poster grid must stay inside (filter bar / search bar above them). */
+private val GRID_CONTAINERS = setOf(R.id.browse_host, R.id.results)
+
+/**
+ * Let a zoomed child draw past this view and its parents, up to the window,
+ * or up to the first parent whose id is in [stopAt], which keeps clipping.
+ */
+fun View.unclipAncestors(stopAt: Set<Int> = emptySet()) {
     var p: ViewGroup? = this as? ViewGroup ?: parent as? ViewGroup
     while (p != null) {
+        if (p.id != View.NO_ID && p.id in stopAt) {
+            p.clipChildren = true
+            p.clipToPadding = true
+            return
+        }
         p.clipChildren = false
         p.clipToPadding = false
         p = p.parent as? ViewGroup
