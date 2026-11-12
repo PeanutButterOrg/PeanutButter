@@ -2249,6 +2249,15 @@ TORRENT_API lt_torrent_id lt_add_magnet(lt_session_t session,
             atp.save_path = path;
             atp.flags &= ~lt::torrent_flags::paused;
             atp.flags &= ~lt::torrent_flags::auto_managed;
+#if LIBTORRENT_VERSION_NUM >= 20000
+            // Nothing is wanted until startStream() enables the chosen file's
+            // pieces. With default priorities every file of a season pack was
+            // wanted between metadata and startStream(), so other episodes
+            // started downloading. (Data of files left at dont_download goes
+            // to the parts file; streams read through read_piece(), so that's
+            // transparent here.)
+            atp.flags |= lt::torrent_flags::default_dont_download;
+#endif
     
             // Trackerless magnet (only an info-hash, no &tr=...)? Seed it with a
             // curated set of public open trackers so peer discovery doesn't have

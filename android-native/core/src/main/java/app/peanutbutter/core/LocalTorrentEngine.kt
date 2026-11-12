@@ -38,6 +38,7 @@ object LocalTorrentEngine {
     /** Seconds of video kept downloading ahead of the player's read position. */
     private const val READAHEAD_SECONDS = 90.0
     private const val URGENT_BYTES = 8L * 1024 * 1024
+    private const val MAX_MAGNET_TRACKERS = 20
     private const val START_BYTES = 4L * 1024 * 1024
     private const val RESUME_BACK_BYTES = 8L * 1024 * 1024
     /** Fallback when the server hasn't sent its live list (serverInfo.streamTrackers). */
@@ -80,6 +81,8 @@ object LocalTorrentEngine {
     @Volatile private var streamLastPiece = -1
     @Volatile private var streamNumPieces = 0
     @Volatile private var readaheadFrom = -1
+    /** The playing torrent's metadata, read once when it starts. */
+    @Volatile private var streamInfo: TorrentInfo? = null
 
     val isSupported: Boolean get() = !nativeUnavailable
     val isActive: Boolean get() = handleRef.get()?.isValid == true
@@ -214,7 +217,11 @@ object LocalTorrentEngine {
         val magnetUri = slimMagnet(TorrentFilePicker.withoutSelection(magnet.trim()))
         AppLog.i(TAG, "download() len=${magnetUri.length}")
         try {
-            sm.download(magnetUri, dir, torrent_flags_t())
+            // Nothing is wanted until the chosen file is switched on after
+            // metadata. With default flags every file of a season pack was
+            // wanted until then, so other episodes started downloading (and
+            // their files appeared at full size).
+            sm.download(magnetUri, dir, TorrentFlags.DEFAULT_DONT_DOWNLOAD)
         } catch (t: Throwable) {
             AppLog.e(TAG, "download() threw", t)
             throw t
@@ -266,7 +273,21 @@ object LocalTorrentEngine {
                 throw IllegalStateException("This source doesn’t contain a playable video file. Try another result.")
             }
         fileIndexRef.set(chosen)
+        streamInfo = info
         AppLog.i(TAG, "chosen file index=$chosen name=${runCatching { info.files().fileName(chosen) }.getOrNull()}")
+
+        // Switch the chosen file on (a file left at "don't download" is written
+        // to libtorrent's parts file, not the file the stream server reads).
+        // The change is applied asynchronously and then resets that file's
+        // piece priorities, so wait until it's in before setting the piece
+        // priorities and deadlines below, or they'd be wiped.
+        runCatching { handle.filePriority(chosen, Priority.LOW) }
+            .onFailure { AppLog.e(TAG, "file priority failed", it) }
+        val fileOn = withTimeoutOrNull(5_000L) {
+            while (runCatching { handle.filePriority(chosen) }.getOrNull() == Priority.IGNORE) delay(50)
+            true
+        } == true
+        if (!fileOn) AppLog.e(TAG, "file priority not applied after 5s; continuing")
 
         // Only this file's pieces are wanted (the rest of a season pack is
         // never downloaded). Set per piece, not with prioritizeFiles(): that
@@ -585,7 +606,9 @@ object LocalTorrentEngine {
         val idx = fileIndexRef.get() ?: 0
         return try {
             val st = handle.status()
-            val info = handle.torrentFile()
+            // Read once per stream: torrentFile() copies the whole torrent's
+            // metadata over JNI, and stats are polled every second.
+            val info = streamInfo ?: handle.torrentFile()
             val fileSize = info?.files()?.fileSize(idx) ?: st.totalWanted().coerceAtLeast(1)
             val progress = fileProgress(handle, idx, fileSize)
             val complete = progress >= 0.99
@@ -775,6 +798,7 @@ object LocalTorrentEngine {
         val handle = handleRef.getAndSet(null)
         infoHashRef.set(null)
         fileIndexRef.set(null)
+        streamInfo = null
         videoFileRef.set(null)
         metadataLatch.set(false)
         lastSoftPiece = -1
@@ -961,26 +985,14 @@ object LocalTorrentEngine {
         // Do NOT forceReannounce here — native crash on BeyondTV after metadata.
     }
 
-    /** Keep magnet lean enough for ARM, but ensure enough public trackers for peers. */
-    private fun slimMagnet(magnet: String): String {
-        val uri = magnet.trim()
-        if (!uri.lowercase().startsWith("magnet:")) return uri
-        val trCount = Regex("[?&]tr=").findAll(uri).count()
-        if (trCount >= 6) return uri
-        return withPublicTrackers(uri)
-    }
-
-    private fun withPublicTrackers(magnet: String): String {
-        var uri = magnet.trim()
-        if (!uri.lowercase().startsWith("magnet:")) return uri
-        for (tr in publicTrackers.take(10)) {
-            val enc = URLEncoder.encode(tr, "UTF-8")
-            if (!uri.contains(enc) && !uri.contains(tr)) {
-                uri = "$uri&tr=$enc"
-            }
-        }
-        return uri
-    }
+    /**
+     * Give the magnet live trackers from the start, so metadata (which needs
+     * peers) isn't left to the magnet's own, often dead, trackers and DHT.
+     * The server's list goes first, then the built-in one, up to
+     * [MAX_MAGNET_TRACKERS] in all: stuffing dozens has crashed native on ARM.
+     */
+    private fun slimMagnet(magnet: String): String =
+        withTrackers(magnet.trim(), extraTrackers + publicTrackers, MAX_MAGNET_TRACKERS)
 
     private fun pickFile(info: TorrentInfo, season: Int?, episode: Int?, hint: Int?): Int? {
         val fs = info.files()
@@ -1063,4 +1075,22 @@ data class LocalStreamStats(
         fun empty() = LocalStreamStats(0.0, 0.0, 0, 0, false)
     }
 
+}
+
+/**
+ * [magnet] with trackers from [candidates] appended (skipping ones it already
+ * has) until it has [max] in all. Not a magnet: returned as is.
+ */
+internal fun withTrackers(magnet: String, candidates: List<String>, max: Int): String {
+    if (!magnet.lowercase().startsWith("magnet:")) return magnet
+    var uri = magnet
+    var count = Regex("[?&]tr=").findAll(uri).count()
+    for (tr in candidates.map { it.trim() }.filter { it.isNotEmpty() }.distinct()) {
+        if (count >= max) break
+        val enc = URLEncoder.encode(tr, "UTF-8")
+        if (uri.contains(enc) || uri.contains(tr)) continue
+        uri = "$uri&tr=$enc"
+        count++
+    }
+    return uri
 }
