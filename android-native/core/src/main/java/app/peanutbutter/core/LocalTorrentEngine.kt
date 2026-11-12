@@ -513,9 +513,17 @@ object LocalTorrentEngine {
                 val now = System.currentTimeMillis()
                 if (now - lastStartLogMs >= 3_000L) {
                     lastStartLogMs = now
+                    // Where the bandwidth is going while the player waits:
+                    // pieces in flight (blocks finished / in piece).
+                    val inFlight = runCatching {
+                        h.getDownloadQueue()
+                            .sortedBy { it.pieceIndex() }
+                            .take(10)
+                            .joinToString(",") { "${it.pieceIndex()}:${it.finished()}/${it.blocksInPiece()}" }
+                    }.getOrDefault("?")
                     AppLog.i(
                         TAG,
-                        "starting peers=${stats.peers} seeds=${stats.seeders} rate=%.2fMB/s head=$headHave/$minHeadContiguous play=$playHave/$minPlayContiguous"
+                        "starting peers=${stats.peers} seeds=${stats.seeders} rate=%.2fMB/s head=$headHave/$minHeadContiguous play=$playHave/$minPlayContiguous fetching=[$inFlight]"
                             .format(rate),
                     )
                 }
