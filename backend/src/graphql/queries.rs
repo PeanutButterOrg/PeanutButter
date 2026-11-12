@@ -704,7 +704,7 @@ impl Query {
             providers.extend(crate::providers::enabled_sources(&state.http));
         }
         let (lists, reports) =
-            crate::sources::gather(&providers, &q, crate::sources::GRACE).await;
+            crate::sources::gather(&providers, &q).await;
         tracing::info!(
             title = %q.target.title,
             sources = ?reports.iter().map(|r| format!("{}: {:?} in {:.1}s", r.label, r.outcome, r.elapsed.as_secs_f32())).collect::<Vec<_>>(),
