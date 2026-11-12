@@ -115,6 +115,18 @@
             android:layout_weight="1" />
     </LinearLayout>
 
+    <!-- Shown while the next page loads as you scroll down (the first page
+         uses the full-screen overlay below). -->
+    <ProgressBar
+        android:id="@+id/loading_more"
+        style="?android:attr/progressBarStyleHorizontal"
+        android:layout_width="match_parent"
+        android:layout_height="4dp"
+        android:layout_gravity="bottom"
+        android:indeterminate="true"
+        android:indeterminateTint="@color/pb_seed"
+        android:visibility="gone" />
+
     <FrameLayout
         android:id="@+id/loading_overlay"
         android:layout_width="match_parent"
