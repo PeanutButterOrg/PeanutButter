@@ -1110,10 +1110,10 @@ class _SeasonList extends StatefulWidget {
 class _SeasonListState extends State<_SeasonList> {
   String? _busyEpisodeId;
   late List<bool> _expanded;
-  final Map<String, ExpansionTileController> _controllers = {};
+  final Map<String, ExpansibleController> _controllers = {};
 
-  ExpansionTileController _controllerFor(String id) {
-    return _controllers.putIfAbsent(id, ExpansionTileController.new);
+  ExpansibleController _controllerFor(String id) {
+    return _controllers.putIfAbsent(id, ExpansibleController.new);
   }
 
   List<Season> get _seasons {

@@ -12,7 +12,6 @@ import 'package:go_router/go_router.dart';
 import 'package:graphql_flutter/graphql_flutter.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
-import 'package:media_kit_video/media_kit_video_controls/media_kit_video_controls.dart';
 
 import '../content_languages.dart';
 import '../graphql/client.dart';
@@ -231,7 +230,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   double _volumeBeforeMute = 100;
   bool _muted = false;
   late final StreamSeekController _seekCtl;
-  bool _seekSettling = false;
   bool _episodeMarkedComplete = false;
   DateTime _lastProgress = DateTime.fromMillisecondsSinceEpoch(0);
   bool _progressFlushed = false;
@@ -325,7 +323,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
       onSettlingChanged: (settling) {
         if (!mounted) return;
         setState(() {
-          _seekSettling = settling;
           if (settling) {
             _buffering = true;
             _seeking = true;
@@ -2107,6 +2104,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         }
       } catch (_) {}
 
+      // The player may have closed during the stop above.
+      if (!mounted) return;
       final previousSession = widget.sessionId;
       var opened = false;
       // Next episode is a fresh play — always pick a torrent (don't reuse prior ep magnet).

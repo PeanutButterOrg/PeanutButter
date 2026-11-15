@@ -151,8 +151,9 @@ class LibtorrentFlutter {
 
   /// The singleton instance. Only available after [init] completes.
   static LibtorrentFlutter get instance {
-    if (_instance == null)
+    if (_instance == null) {
       throw StateError('LibtorrentFlutter.init() not called');
+    }
     return _instance!;
   }
 

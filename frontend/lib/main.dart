@@ -85,11 +85,19 @@ Future<void> main() async {
   // themselves when streaming actually starts.
   debugPrint('PeanutButter loading SharedPreferences…');
   SharedPreferences prefs;
+  final loadPrefs = SharedPreferences.getInstance();
   try {
-    prefs = await SharedPreferences.getInstance().timeout(const Duration(seconds: 5));
+    prefs = await loadPrefs.timeout(const Duration(seconds: 5));
+  } on TimeoutException {
+    // Slow disk after boot: keep waiting for the real store. Switching to an
+    // empty in-memory one here made the app look unpaired and lost anything
+    // saved (pairing included) on the next start.
+    debugPrint('PeanutButter SharedPreferences slow — still waiting');
+    prefs = await loadPrefs;
   } catch (e) {
     debugPrint('PeanutButter SharedPreferences failed: $e — continuing with empty prefs');
-    // Last-resort empty store so UI can still mount on flaky emulators.
+    // Last resort when the store can't be read at all, so the UI can mount.
+    // ignore: invalid_use_of_visible_for_testing_member
     SharedPreferences.setMockInitialValues(const {});
     prefs = await SharedPreferences.getInstance();
   }

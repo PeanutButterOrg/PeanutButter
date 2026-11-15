@@ -358,10 +358,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 icon: Icons.info_outline_rounded,
                 title: 'About',
                 children: [
-                  _SettingRow(
+                  const _SettingRow(
                     icon: Icons.apps_rounded,
                     label: 'App version',
-                    trailing: const _AppVersion(),
+                    trailing: _AppVersion(),
                   ),
                   _SettingRow(
                     icon: Icons.dns_outlined,
