@@ -436,6 +436,7 @@ Future<StreamStart?> beginStreaming({
     }
   }
 
+  if (!context.mounted) return null;
   return showStreamingPicker(
     context: context,
     client: client,
@@ -568,6 +569,7 @@ Future<StreamStart?> _showStreamingPickerDialogs({
     final cacheLooksDead = groups.isNotEmpty &&
         !groups.any((g) => g.sources.any((s) => s.isHttp || s.seeders >= 2));
     if ((groups.isEmpty || cacheLooksDead) && !searchCancel.isCompleted) {
+      if (!context.mounted) return null;
       try {
         final liveGroups = await searchStreamingSourcesGrouped(
           resolution: _deviceQuality(context),

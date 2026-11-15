@@ -35,7 +35,7 @@ class _AppState extends State<_App> {
   }
 
   Future<void> _run() async {
-    final path = const String.fromEnvironment(
+    const path = String.fromEnvironment(
       'MAGNET_FILE',
       defaultValue: '/tmp/pb-spiderman/magnet.txt',
     );

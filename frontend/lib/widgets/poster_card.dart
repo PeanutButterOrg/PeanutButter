@@ -65,7 +65,7 @@ class _PosterCardState extends ConsumerState<PosterCard> {
         mouseCursor: SystemMouseCursors.click,
         onShowFocusHighlight: (_) {},
         onFocusChange: _onFocus,
-        shortcuts: {
+        shortcuts: const {
           SingleActivator(LogicalKeyboardKey.enter): ActivateIntent(),
           SingleActivator(LogicalKeyboardKey.select): ActivateIntent(),
           SingleActivator(LogicalKeyboardKey.space): ActivateIntent(),

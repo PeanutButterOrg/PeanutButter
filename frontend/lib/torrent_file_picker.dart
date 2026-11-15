@@ -79,7 +79,7 @@ int? pickTorrentFile(List<PickEntry> files, {int? season, int? episode, int? hin
     PickEntry? best;
     var bestScore = 0;
     for (final f in features) {
-      final s = episodeScore(f.path, season!, episode!);
+      final s = episodeScore(f.path, season, episode);
       if (s > bestScore || (s == bestScore && s > 0 && f.size > best!.size)) {
         best = f;
         bestScore = s;

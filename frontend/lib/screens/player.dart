@@ -12,7 +12,6 @@ import 'package:go_router/go_router.dart';
 import 'package:graphql_flutter/graphql_flutter.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
-import 'package:media_kit_video/media_kit_video_controls/media_kit_video_controls.dart';
 
 import '../content_languages.dart';
 import '../graphql/client.dart';
@@ -231,7 +230,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   double _volumeBeforeMute = 100;
   bool _muted = false;
   late final StreamSeekController _seekCtl;
-  bool _seekSettling = false;
   bool _episodeMarkedComplete = false;
   DateTime _lastProgress = DateTime.fromMillisecondsSinceEpoch(0);
   bool _progressFlushed = false;
@@ -325,7 +323,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
       onSettlingChanged: (settling) {
         if (!mounted) return;
         setState(() {
-          _seekSettling = settling;
           if (settling) {
             _buffering = true;
             _seeking = true;
@@ -894,53 +891,53 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
             : isMacOS
                 ? 'videotoolbox,auto'
                 : 'auto';
-    native.setProperty('hwdec', hwdec);
+    _setMpv(native, 'hwdec', hwdec);
     if (softDecode) {
-      native.setProperty('vd-lavc-dr', 'no');
-      native.setProperty('hwdec-codecs', 'no');
+      _setMpv(native, 'vd-lavc-dr', 'no');
+      _setMpv(native, 'hwdec-codecs', 'no');
     }
     // Safer defaults on desktop — display-resample + heavy interpolation OOMs some GPUs.
-    native.setProperty('video-sync', 'audio');
-    native.setProperty('interpolation', 'no');
-    native.setProperty('audio-pitch-correction', 'yes');
+    _setMpv(native, 'video-sync', 'audio');
+    _setMpv(native, 'interpolation', 'no');
+    _setMpv(native, 'audio-pitch-correction', 'yes');
     // Keep prefetching while paused so resume is smooth (mpv still demuxes into cache).
-    native.setProperty('cache', 'yes');
-    native.setProperty('demuxer-thread', 'yes');
+    _setMpv(native, 'cache', 'yes');
+    _setMpv(native, 'demuxer-thread', 'yes');
     // Cap demuxer RAM — match Windows stream caps on every desktop.
     final demuxCap = widget.isStream ? '96MiB' : '64MiB';
-    native.setProperty('demuxer-max-bytes', demuxCap);
-    native.setProperty('demuxer-max-back-bytes', '32MiB');
+    _setMpv(native, 'demuxer-max-bytes', demuxCap);
+    _setMpv(native, 'demuxer-max-back-bytes', '32MiB');
     // Enough ahead to ride out slow pieces and to keep filling while paused.
-    native.setProperty('demuxer-readahead-secs', widget.isStream ? '60' : '120');
-    native.setProperty('cache-secs', widget.isStream ? '60' : '120');
+    _setMpv(native, 'demuxer-readahead-secs', widget.isStream ? '60' : '120');
+    _setMpv(native, 'cache-secs', widget.isStream ? '60' : '120');
     // Pause on underrun and refill before resuming. Without this a swarm slower
     // than the bitrate plays a moment, stalls, plays a moment, and the buffering
     // state (and spinner) never reports it.
-    native.setProperty('cache-pause', 'yes');
-    native.setProperty('cache-pause-wait', widget.isStream ? '6' : '3');
+    _setMpv(native, 'cache-pause', 'yes');
+    _setMpv(native, 'cache-pause-wait', widget.isStream ? '6' : '3');
     // Linux: software decode into the Flutter GL texture — disable hwdec
     // interop (VAAPI-EGL blue frames) without switching to the fragile S/W VO.
     if (isLinux) {
-      native.setProperty('gpu-hwdec-interop', 'no');
-      native.setProperty('gpu-context', 'auto');
-      native.setProperty('opengl-es', 'no');
-      native.setProperty('vd-lavc-dr', 'no');
+      _setMpv(native, 'gpu-hwdec-interop', 'no');
+      _setMpv(native, 'gpu-context', 'auto');
+      _setMpv(native, 'opengl-es', 'no');
+      _setMpv(native, 'vd-lavc-dr', 'no');
     }
     // Accurate seeks + HW/progressive streams hard-crash libmpv on scrub
     // (seen on Windows; same stack on macOS/Linux). Keyframe seeks are stable.
-    native.setProperty(
+    _setMpv(native, 
       'hr-seek',
       (isWindows || widget.isStream) ? 'no' : 'yes',
     );
-    native.setProperty('force-seekable', 'yes');
+    _setMpv(native, 'force-seekable', 'yes');
     // Progressive HTTP/torrent streams hit EOF when the next piece isn't ready.
     // Keep the file open so we can resume instead of restarting at 0.
     // Do NOT pause at EOF — that left torrents stuck on "connected" with a
     // black frame after a premature underrun before pieces arrived.
     if (widget.isStream) {
-      native.setProperty('keep-open', 'yes');
-      native.setProperty('keep-open-pause', 'no');
-      native.setProperty('stream-lavf-o', 'reconnect_streamed=1,reconnect_delay_max=5');
+      _setMpv(native, 'keep-open', 'yes');
+      _setMpv(native, 'keep-open-pause', 'no');
+      _setMpv(native, 'stream-lavf-o', 'reconnect_streamed=1,reconnect_delay_max=5');
     }
   }
 
@@ -2107,6 +2104,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         }
       } catch (_) {}
 
+      // The player may have closed during the stop above.
+      if (!mounted) return;
       final previousSession = widget.sessionId;
       var opened = false;
       // Next episode is a fresh play — always pick a torrent (don't reuse prior ep magnet).
@@ -2841,12 +2840,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     final native = _player?.platform;
     if (native is NativePlayer) {
       // Clear any leftover external-audio binding from older builds.
-      await native.setProperty('audio-files', '');
+      await _setMpv(native, 'audio-files', '');
       if (isYoutube) {
         // HW decode of progressive googlevideo often paints a solid blue frame.
-        await native.setProperty('hwdec', 'no');
-        await native.setProperty('vd-lavc-dr', 'no');
-        await native.setProperty(
+        await _setMpv(native, 'hwdec', 'no');
+        await _setMpv(native, 'vd-lavc-dr', 'no');
+        await _setMpv(native, 
           'demuxer-lavf-o',
           'protocol_whitelist=file,http,https,tcp,tls,crypto,data',
         );
@@ -4465,4 +4464,11 @@ class _ActionChipFocusState extends State<_ActionChipFocus> {
       ),
     );
   }
+}
+
+/// Set an mpv property (desktop only). Called dynamically because media_kit's
+/// web build has a NativePlayer stub without setProperty, so a direct call
+/// stopped the web app from compiling. Callers check `is NativePlayer` first.
+Future<void> _setMpv(NativePlayer player, String name, String value) async {
+  await (player as dynamic).setProperty(name, value);
 }

@@ -8,7 +8,11 @@ enum TvNavDir { up, down, left, right }
 
 /// Where a move should go — id, live resolver, focus node, or side-effect.
 class TvNavEdge {
-  const TvNavEdge._({this.id, this.node, this.resolve, this.run});
+  const TvNavEdge._()
+      : id = null,
+        node = null,
+        resolve = null,
+        run = null;
 
   const TvNavEdge.id(String this.id)
       : node = null,

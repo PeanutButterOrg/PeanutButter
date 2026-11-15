@@ -9,7 +9,7 @@
 | | |
 |---|---|
 | 📺 **Android TV** | A native app built for the remote, or swap your whole TV Home screen for the **PeanutButter Launcher** |
-| 💻 **Desktop** | Windows, macOS and Linux |
+| 💻 **Desktop** | Windows, macOS and Linux, plus an optional web build that runs in a browser against your server |
 | 🖥️ **Server** | One Docker Compose file: catalog, search, pairing and a web console |
 
 ---
