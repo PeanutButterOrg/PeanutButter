@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:graphql_flutter/graphql_flutter.dart';
 
+import '../graphql/client.dart' show resolveArtUrl;
 import '../graphql/queries.dart';
 import '../models.dart';
 import '../player_launch.dart';
@@ -901,7 +902,13 @@ class _CastTileState extends State<_CastTile> {
             child: Center(child: Icon(Icons.person, color: Colors.white24, size: 36)),
           )
         : CachedNetworkImage(
-            imageUrl: person.profileUrl!,
+            // Same address rewrite as posters (CachedArt): the server's
+            // PUBLIC_URL may not be how this app reaches it, and on the web
+            // it's another origin, so photos failed while posters loaded.
+            imageUrl: resolveArtUrl(
+              person.profileUrl!,
+              ProviderScope.containerOf(context, listen: false).read(settingsProvider).serverUrl,
+            ),
             fit: BoxFit.cover,
             width: widget.cardWidth,
             height: widget.imageHeight,
@@ -1266,7 +1273,16 @@ class _SeasonListState extends State<_SeasonList> {
                     fit: StackFit.expand,
                     children: [
                       e.stillPath != null
-                          ? CachedNetworkImage(imageUrl: e.stillPath!, fit: BoxFit.cover)
+                          ? CachedNetworkImage(
+                              // Rewritten like posters (see the cast tile).
+                              imageUrl: resolveArtUrl(
+                                e.stillPath!,
+                                ProviderScope.containerOf(context, listen: false)
+                                    .read(settingsProvider)
+                                    .serverUrl,
+                              ),
+                              fit: BoxFit.cover,
+                            )
                           : ColoredBox(
                               color: const Color(0xFF1C1C24),
                               child: Icon(

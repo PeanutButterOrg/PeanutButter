@@ -403,11 +403,13 @@ class SettingsNotifier extends StateNotifier<SettingsState> {
           return found;
         }
         if (state.apiToken.isEmpty) {
+          // Not an error: the pairing screen's subtitle already says the
+          // server was found and to enter the code (this showed it again in
+          // the error colour).
           state = state.copyWith(
             discovering: false,
             connected: false,
-            lastError:
-                'Server found. Type the 6-digit pairing code from the console, then Connect.',
+            clearError: true,
           );
           return found;
         }

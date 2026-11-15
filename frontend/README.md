@@ -26,7 +26,7 @@ Android TV has its own native app: see [android-native](../android-native/README
 | Windows | libmpv | ✅ | Setup `.exe` |
 | macOS | libmpv | ✅ | Universal `.app` (Intel + Apple silicon) |
 | Linux | libmpv | ✅ | `.deb` or AppImage |
-| Web | browser `<video>` | — | Docker image behind nginx (`web` service in `docker-compose.yml`) |
+| Web | libmpv's browser build (`<video>`) | — | Docker image behind nginx (`web` service in `docker-compose.yml`), see [The web build](#the-web-build) |
 
 ---
 
@@ -59,6 +59,20 @@ flutter test
 
 ---
 
+## The web build
+
+The web build is the same app compiled for a browser. It's only static files, so it **always needs a PeanutButter server**: the catalog, search, pairing, posters and your media files all come from it. A browser can't run libtorrent, so it plays your server's own files (`/files/…`) but not torrents.
+
+**How it's hosted:** the `web` service in the repo's `docker-compose.yml` builds [`Dockerfile`](Dockerfile) and serves the app with nginx on port **3000**. [`nginx.conf`](nginx.conf) passes `/graphql`, `/pair`, `/health`, `/files/` and `/art/` to the API container, so the browser talks to a single address and needs no CORS setup. It isn't part of `docker-compose.server.yml` and isn't published by CI. Add the `web` service yourself if you want it next to your server.
+
+```bash
+docker compose up -d --build web   # then open http://YOUR_SERVER:3000
+```
+
+If you host the files somewhere else, without that proxy, add the page's origin to the server's `CORS_ORIGINS`.
+
+---
+
 ## Packaging
 
 Release installers are built by the [Platform Builds](../.github/workflows/desktop-builds.yml) workflow on every `v*` tag and attached to the GitHub Release:
@@ -87,7 +101,8 @@ lib/
   graphql/                queries and the schema snapshot (schema.graphql)
   platform/               DeviceProfile, seek handling, input policy: use these instead of Platform.isX
   services/discovery.dart finding the server on the LAN
-  local_torrent.dart      on-device torrents (libtorrent FFI; a stub on the web)
+  local_torrent.dart      on-device torrents: picks local_torrent_io.dart (libtorrent FFI)
+                          or local_torrent_web.dart (a stub) at compile time
   app_updater.dart        update check, download, hash and signature verification
 plugins/libtorrent_flutter  vendored libtorrent bindings with a loopback stream server
 packages/                   vendored media_kit Android libs
