@@ -95,6 +95,9 @@ class LauncherActivity : FragmentActivity() {
         }
         // Start on the carousel (Android would otherwise start on the first tab).
         list.post { focusFirstSection(force = true) }
+        // Offer app updates like the TV app's home screen (it never checked
+        // here, so the Launcher only updated from Settings).
+        window.decorView.postDelayed({ if (!isFinishing) app.peanutbutter.tv.update.checkForTvUpdate(this) }, 8_000)
     }
 
     override fun onResume() {

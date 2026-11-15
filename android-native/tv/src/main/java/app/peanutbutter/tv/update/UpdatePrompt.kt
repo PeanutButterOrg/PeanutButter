@@ -35,7 +35,11 @@ fun checkForTvUpdate(activity: FragmentActivity, manual: Boolean = false) {
             return@launch
         }
         when {
-            update == null -> if (manual) toast(activity, activity.getString(R.string.update_none))
+            update == null -> {
+                // Up to date: a kept APK from an earlier update isn't needed.
+                AppUpdater.clearDownloads(activity)
+                if (manual) toast(activity, activity.getString(R.string.update_none))
+            }
             !manual && update.build == deferredBuild -> Unit
             !activity.isFinishing && !activity.isDestroyed -> showUpdateDialog(activity, update)
         }
@@ -85,9 +89,12 @@ private fun showUpdateDialog(activity: FragmentActivity, update: AppUpdate) {
                 }
                 downloading = false
                 message.setText(R.string.update_installing)
-                // Android's own confirm screen takes over from here.
-                dialog.dismiss()
+                // Hand the APK to Android's installer first, then close: the
+                // dialog's dismiss listener cancels this job, and dismissing
+                // before install() cancelled the install itself, so Install
+                // often did nothing.
                 AppUpdater.install(activity, apk)
+                dialog.dismiss()
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
