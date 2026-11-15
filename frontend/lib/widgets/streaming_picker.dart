@@ -315,21 +315,6 @@ Future<StreamStart?> startStreamDirect({
   int? fileIndex,
   String? stopPreviousSessionId,
 }) async {
-  // Ignore legacy server session ids — downloads are on-device only now.
-  final previous = stopPreviousSessionId?.trim();
-  if (previous != null &&
-      previous.isNotEmpty &&
-      !previous.startsWith('local-')) {
-    try {
-      await client.mutate(
-        MutationOptions(
-          document: gql(STOP_STREAM),
-          fetchPolicy: FetchPolicy.networkOnly,
-          variables: {'sessionId': previous},
-        ),
-      );
-    } catch (_) {}
-  }
   if (_isHttpLink(magnet)) {
     return directStreamStart(url: magnet.trim(), title: title);
   }
@@ -752,20 +737,6 @@ Future<StreamStart?> _showStreamingPickerDialogs({
     ),
   );
   try {
-    final previous = stopPreviousSessionId?.trim();
-    if (previous != null &&
-        previous.isNotEmpty &&
-        !previous.startsWith('local-')) {
-      try {
-        await client.mutate(
-          MutationOptions(
-            document: gql(STOP_STREAM),
-            fetchPolicy: FetchPolicy.networkOnly,
-            variables: {'sessionId': previous},
-          ),
-        );
-      } catch (_) {}
-    }
     final started = await prepareLocalStreamStart(
       magnet: picked.magnet,
       title: title,
@@ -990,22 +961,6 @@ class _TvStreamingPickerPageState extends State<_TvStreamingPickerPage> {
     await Future<void>.delayed(const Duration(milliseconds: 50));
     if (!mounted) return;
     try {
-      final previous = widget.stopPreviousSessionId?.trim();
-      if (previous != null &&
-          previous.isNotEmpty &&
-          !previous.startsWith('local-')) {
-        try {
-          await widget.client
-              .mutate(
-                MutationOptions(
-                  document: gql(STOP_STREAM),
-                  fetchPolicy: FetchPolicy.networkOnly,
-                  variables: {'sessionId': previous},
-                ),
-              )
-              .timeout(const Duration(seconds: 8));
-        } catch (_) {}
-      }
       if (!mounted) return;
       final result = await prepareLocalStreamStart(
         magnet: source.magnet,

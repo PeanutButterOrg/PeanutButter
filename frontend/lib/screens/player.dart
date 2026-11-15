@@ -1505,21 +1505,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   /// Doesn't touch `ref` — it also runs after dispose().
   Future<void> _releaseStreamResources({required bool wipe}) async {
     final sessionId = widget.sessionId;
-    if (widget.isStream &&
-        sessionId != null &&
-        !widget.localTorrent &&
-        !sessionId.startsWith('local-')) {
-      try {
-        await _client
-            .mutate(
-              MutationOptions(
-                document: gql(STOP_STREAM),
-                variables: {'sessionId': sessionId},
-              ),
-            )
-            .timeout(const Duration(seconds: 3));
-      } catch (_) {}
-    }
     final localActive = widget.localTorrent ||
         (widget.isStream && (sessionId?.startsWith('local-') ?? false)) ||
         LocalTorrentEngine.instance.isActive;
@@ -2689,8 +2674,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   Future<void> _pollStream() async {
     if (!widget.isStream || !mounted) return;
 
-    // Only treat as local when this screen owns a device-side torrent.
-    // A leftover LocalTorrentEngine.isActive must not block remote streamStatus.
+    // Only report a device-side torrent this screen owns.
     if (widget.localTorrent || (widget.sessionId?.startsWith('local-') ?? false)) {
       final local = LocalTorrentEngine.instance.currentStats();
       if (local == null || !mounted) return;
@@ -2726,67 +2710,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
       return;
     }
 
-    final sessionId = widget.sessionId;
-    if (sessionId == null) return;
-    // The timer fires every second; a slow server must not pile up requests.
-    if (_streamPollInFlight) return;
-    _streamPollInFlight = true;
-    try {
-      final status = await _client.query(
-        QueryOptions(
-          document: gql(STREAM_STATUS),
-          fetchPolicy: FetchPolicy.networkOnly,
-          variables: {'sessionId': sessionId},
-        ),
-      );
-      final json = status.data?['streamStatus'] as Map<String, dynamic>?;
-      if (json == null || !mounted) return;
-      final session = StreamSession.fromJson(json);
-      final rewritten = session.streamUrl.isEmpty
-          ? session
-          : StreamSession(
-              id: session.id,
-              title: session.title,
-              progress: session.progress,
-              bufferProgress: session.bufferProgress,
-              downloadMbps: session.downloadMbps,
-              seeders: session.seeders,
-              peers: session.peers,
-              resumePosition: session.resumePosition,
-              status: session.status,
-              streamUrl: _rewriteMediaUrl(session.streamUrl),
-              swarmActive: session.swarmActive ||
-                  session.peers > 0 ||
-                  session.seeders > 0 ||
-                  session.downloadMbps > 0,
-            );
-      // Polled every second for the whole movie: rebuild only when the HUD
-      // would change.
-      if (_sameStreamHud(_streamInfo, rewritten) &&
-          ((_streamInfo?.bufferProgress ?? -1) * 1000).round() ==
-              (rewritten.bufferProgress * 1000).round()) {
-        _streamInfo = rewritten;
-      } else {
-        setState(() => _streamInfo = rewritten);
-      }
-      if (!_streamReady && rewritten.isReady && rewritten.streamUrl.isNotEmpty) {
-        _url = rewritten.streamUrl;
-        _streamReady = true;
-        unawaited(_tryOpenPreparedStream());
-      }
-      debugPrint(
-        'PeanutButter streamStatus '
-        'status=${rewritten.status} peers=${rewritten.peers} '
-        'mbps=${rewritten.downloadMbps.toStringAsFixed(2)} '
-        'buf=${(rewritten.bufferProgress * 100).toStringAsFixed(1)}%',
-      );
-    } catch (_) {
-    } finally {
-      _streamPollInFlight = false;
-    }
+    // Direct links have no torrent to report on (the server no longer runs
+    // stream sessions; asking it every second only wasted requests).
   }
-
-  bool _streamPollInFlight = false;
 
   /// Same HUD / chip text for both stream snapshots.
   static bool _sameStreamHud(StreamSession? prev, StreamSession next) =>
