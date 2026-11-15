@@ -160,6 +160,7 @@
     <string name="update_title">PeanutButter %1$s is available</string>
     <string name="update_message">Download and install the update (%1$d MB)? Android will ask you to confirm.</string>
     <string name="update_downloading">Downloading… %1$d%%</string>
+    <string name="update_not_installed">Update not installed. Choose Install again, and allow PeanutButter if Android asks.</string>
     <string name="update_installing">Opening the installer…</string>
     <string name="update_install">Install</string>
     <string name="update_retry">Retry</string>

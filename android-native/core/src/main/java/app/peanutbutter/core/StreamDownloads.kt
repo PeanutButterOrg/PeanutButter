@@ -23,12 +23,19 @@ object StreamDownloads {
             if (!seen.add(dir.absolutePath)) continue
             wipeTree(dir)
         }
-        // Wipe loose files under cache except keep pb-streams root for recreation.
+        // Other player leftovers under cache. Keep pb-streams (recreated by
+        // the engine), the poster image cache and a downloaded app update:
+        // wiping those made every launch re-download all posters, and deleted
+        // the update while Android's installer was open (leaving the app
+        // counts as exit), so Install downloaded it again.
         app.cacheDir.listFiles()?.forEach { child ->
-            if (child.name == "pb-streams") return@forEach
+            if (child.name in KEEP_IN_CACHE) return@forEach
             if (child.isDirectory) wipeTree(child) else child.delete()
         }
     }
+
+    /** Cache folders that aren't stream data (Glide's "pb_img", app updates). */
+    private val KEEP_IN_CACHE = setOf("pb-streams", "pb_img", "updates")
 
     private fun wipeTree(dir: File) {
         if (!dir.exists()) return

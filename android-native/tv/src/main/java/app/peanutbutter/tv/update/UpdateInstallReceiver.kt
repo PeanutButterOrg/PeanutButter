@@ -21,7 +21,10 @@ class UpdateInstallReceiver : BroadcastReceiver() {
                 confirm?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)?.let(context::startActivity)
             }
             PackageInstaller.STATUS_SUCCESS -> Unit
-            PackageInstaller.STATUS_FAILURE_ABORTED -> Unit
+            // Cancelled on Android's screen (or "install unknown apps" was
+            // refused): say so, instead of looking like Install did nothing.
+            PackageInstaller.STATUS_FAILURE_ABORTED ->
+                Toast.makeText(context, R.string.update_not_installed, Toast.LENGTH_LONG).show()
             else -> {
                 val message = when (status) {
                     // Old installs signed with the debug key can't take the release key.
