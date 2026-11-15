@@ -454,73 +454,6 @@ class ApiClient(
         )
     }
 
-    suspend fun startStream(
-        magnet: String,
-        title: String,
-        titleId: String?,
-        seeders: Int = 0,
-        peers: Int = 0,
-        season: Int? = null,
-        episode: Int? = null,
-        fileIndex: Int? = null,
-        resume: Boolean = true,
-    ): StreamStart = withContext(Dispatchers.IO) {
-        val data = gql(
-            Gql.START_STREAM,
-            mapOf(
-                "magnet" to magnet,
-                "title" to title,
-                "titleId" to titleId,
-                "resume" to resume,
-                "seeders" to seeders,
-                "peers" to peers,
-                "season" to season,
-                "episode" to episode,
-                "fileIndex" to fileIndex,
-            ),
-        )
-        val s = parseStreamSession(data.getAsJsonObject("startStream"))
-        StreamStart(
-            sessionId = s.id,
-            streamUrl = s.streamUrl,
-            title = s.title.ifBlank { title },
-            status = s.status,
-            localTorrent = false,
-        )
-    }
-
-    suspend fun streamStatus(sessionId: String): StreamSession = withContext(Dispatchers.IO) {
-        val data = gql(Gql.STREAM_STATUS, mapOf("sessionId" to sessionId))
-        parseStreamSession(data.getAsJsonObject("streamStatus"))
-    }
-
-    /**
-     * Poll until the torrent session is ready (or errors / times out).
-     * Mirrors Flutter player wait loop (~350ms cadence).
-     */
-    suspend fun waitUntilStreamReady(
-        sessionId: String,
-        timeoutMs: Long = 90_000L,
-        pollMs: Long = 400L,
-        onTick: ((StreamSession) -> Unit)? = null,
-    ): StreamSession = withContext(Dispatchers.IO) {
-        val deadline = System.currentTimeMillis() + timeoutMs
-        var last = streamStatus(sessionId)
-        onTick?.invoke(last)
-        while (last.streamUrl.isBlank() && !last.isError && System.currentTimeMillis() < deadline) {
-            // delay (not Thread.sleep) so leaving the player cancels the poll.
-            delay(pollMs)
-            last = streamStatus(sessionId)
-            onTick?.invoke(last)
-        }
-        last
-    }
-
-    suspend fun stopStream(sessionId: String) = withContext(Dispatchers.IO) {
-        gql(Gql.STOP_STREAM, mapOf("sessionId" to sessionId))
-        Unit
-    }
-
     /** Null when the server is too old to know about following. */
     suspend fun isFollowing(titleId: String): Boolean? = withContext(Dispatchers.IO) {
         runCatching {
@@ -818,24 +751,6 @@ class ApiClient(
             return root.getAsJsonObject("data")
                 ?: throw ApiException("Empty GraphQL response")
         }
-    }
-
-    private fun parseStreamSession(o: JsonObject?): StreamSession {
-        if (o == null) {
-            return StreamSession(id = "", title = "", status = "error: empty session")
-        }
-        return StreamSession(
-            id = o.getStringOr("id", ""),
-            title = o.getStringOr("title", ""),
-            progress = o.get("progress")?.takeUnless { it.isJsonNull }?.asDouble ?: 0.0,
-            bufferProgress = o.get("bufferProgress")?.takeUnless { it.isJsonNull }?.asDouble ?: 0.0,
-            downloadMbps = o.get("downloadMbps")?.takeUnless { it.isJsonNull }?.asDouble ?: 0.0,
-            seeders = o.getIntOr("seeders", 0),
-            peers = o.getIntOr("peers", 0),
-            resumePosition = o.getIntOr("resumePosition", 0),
-            status = o.getStringOr("status", ""),
-            streamUrl = o.getStringOr("streamUrl", ""),
-        )
     }
 
     private fun parseTitles(arr: JsonArray?): List<TitleItem> {

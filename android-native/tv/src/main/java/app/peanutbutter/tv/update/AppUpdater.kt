@@ -143,7 +143,7 @@ object AppUpdater {
                 digest.update(buf, 0, n)
             }
         }
-        return digest.digest().joinToString("") { "%02x".format(it) }
+        return digest.digest().joinToString("") { "%02x".format(java.util.Locale.US, it) }
     }
 
     /**
@@ -185,7 +185,7 @@ object AppUpdater {
                 }
             }
         }
-        val hex = digest.digest().joinToString("") { "%02x".format(it) }
+        val hex = digest.digest().joinToString("") { "%02x".format(java.util.Locale.US, it) }
         if (got != update.size || hex != update.sha256) {
             part.delete()
             throw UpdateException("The downloaded update does not match the signed release.")

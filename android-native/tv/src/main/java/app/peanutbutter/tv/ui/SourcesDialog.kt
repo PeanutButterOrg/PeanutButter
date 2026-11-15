@@ -41,7 +41,11 @@ class SourcesDialog : DialogFragment() {
         super.onViewCreated(view, savedInstanceState)
         val title = requireArguments().getString(ARG_TITLE).orEmpty()
         @Suppress("UNCHECKED_CAST")
-        val sources = requireArguments().getSerializable(ARG_SOURCES) as ArrayList<SourceParcel>
+        val sources = androidx.core.os.BundleCompat.getSerializable(
+            requireArguments(),
+            ARG_SOURCES,
+            ArrayList::class.java,
+        ) as ArrayList<SourceParcel>
 
         view.findViewById<TextView>(R.id.subtitle).text =
             getString(R.string.sources_subtitle, title)

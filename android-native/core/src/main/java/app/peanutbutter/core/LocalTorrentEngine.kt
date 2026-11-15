@@ -820,7 +820,7 @@ object LocalTorrentEngine {
         }.getOrDefault("?")
         AppLog.i(
             TAG,
-            "health rate=%.2fMB/s peers=%d seeds=%d reader=%d ready_ahead=%d pieces (~%.0fs) fetching=[%s]".format(
+            "health rate=%.2fMB/s peers=%d seeds=%d reader=%d ready_ahead=%d pieces (~%.0fs) fetching=[%s]".format(java.util.Locale.US, 
                 st.downloadPayloadRate() / 1048576.0, st.numPeers(), st.numSeeds(), from, ahead, secs, inFlight,
             ),
         )

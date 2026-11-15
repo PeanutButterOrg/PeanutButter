@@ -80,17 +80,17 @@ data class TitleItem(
         get() {
             if (kind.equals("SERIES", true) || kind.equals("TV", true)) {
                 tmdbVoteAverage?.takeIf { it > 0 }?.let {
-                    return DisplayScore("TMDB", String.format("%.1f", it), it)
+                    return DisplayScore("TMDB", String.format(java.util.Locale.US, "%.1f", it), it)
                 }
             }
             imdbRating?.takeIf { it > 0 }?.let {
-                return DisplayScore("IMDb", String.format("%.1f", it), it)
+                return DisplayScore("IMDb", String.format(java.util.Locale.US, "%.1f", it), it)
             }
             rtScore?.takeIf { it > 0 }?.let {
                 return DisplayScore("RT", "$it%", it / 10.0, rtScore = it)
             }
             tmdbVoteAverage?.takeIf { it > 0 }?.let {
-                return DisplayScore("TMDB", String.format("%.1f", it), it)
+                return DisplayScore("TMDB", String.format(java.util.Locale.US, "%.1f", it), it)
             }
             return null
         }
@@ -317,14 +317,6 @@ data class StreamBookmark(
     val season: Int? = null,
     val episode: Int? = null,
     val fileIndex: Int? = null,
-)
-
-data class StreamStart(
-    val sessionId: String,
-    val streamUrl: String,
-    val title: String,
-    val status: String = "starting",
-    val localTorrent: Boolean = false,
 )
 
 data class StreamSession(

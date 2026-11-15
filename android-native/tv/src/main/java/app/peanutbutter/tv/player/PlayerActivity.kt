@@ -390,8 +390,6 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                 statusView?.text = getString(R.string.stream_start_failed)
                 busy?.isVisible = false
             }
-        } else if (!sid.isNullOrBlank()) {
-            waitJob = lifecycleScope.launch { waitAndPlay(sid) }
         } else if (!pendingUrl.isNullOrBlank()) {
             attachAndPlay()
         } else {
@@ -609,7 +607,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         val aheadS = if (mp != null) ((mp.bufferedPositionMs - mp.time) / 1000L).coerceAtLeast(0L) else 0L
         return buildString {
             append("Playing")
-            if (downloadMbps >= 0.05) append(String.format("  ·  %.1f MB/s", downloadMbps))
+            if (downloadMbps >= 0.05) append(String.format(java.util.Locale.US, "  ·  %.1f MB/s", downloadMbps))
             if (peers > 0) append("  ·  $peers peers")
             if (aheadS > 0) append("  ·  ${aheadS}s buffered")
         }
@@ -618,13 +616,13 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
     /** It keeps downloading while paused; show that it does. */
     private fun pausedLine(downloadMbps: Double, peers: Int): String = buildString {
         append("Paused")
-        if (downloadMbps >= 0.05) append(String.format("  ·  %.1f MB/s", downloadMbps))
+        if (downloadMbps >= 0.05) append(String.format(java.util.Locale.US, "  ·  %.1f MB/s", downloadMbps))
         if (peers > 0) append("  ·  $peers peers")
     }
 
     private fun underrunBufferLine(downloadMbps: Double): String =
         if (downloadMbps >= 0.05) {
-            String.format("Buffering… · %.1f MB/s", downloadMbps)
+            String.format(java.util.Locale.US, "Buffering… · %.1f MB/s", downloadMbps)
         } else {
             "Buffering…"
         }
@@ -637,76 +635,6 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                 playingLine(downloadMbps, peers)
             else ->
                 prePlayBufferLine(pct.coerceAtLeast(1), downloadMbps, peers)
-        }
-    }
-
-    private suspend fun waitAndPlay(sessionId: String) {
-        val api = application.asTv().api
-        try {
-            val session = withContext(Dispatchers.IO) {
-                api.waitUntilStreamReady(sessionId, timeoutMs = 180_000L) { tick ->
-                    main.post { showTorrentStatus(tick) }
-                }
-            }
-            if (stopped) return
-            Log.i(
-                TAG,
-                "wait done status=${session.status} ready=${session.isReady} " +
-                    "buf=${session.bufferProgress} url=${session.streamUrl.take(100)}",
-            )
-            if (session.isError) {
-                statusView?.text = session.status.ifBlank { getString(R.string.playback_error) }
-                busy?.isVisible = false
-                return
-            }
-            val url = session.streamUrl.ifBlank {
-                withContext(Dispatchers.IO) { api.streamStatus(sessionId) }.streamUrl
-            }.ifBlank {
-                statusView?.text = getString(R.string.stream_start_failed)
-                busy?.isVisible = false
-                return
-            }
-            if (session.resumePosition > 0 && resumeMs <= 0) {
-                resumeMs = session.resumePosition.toLong()
-            }
-            pendingUrl = api.playableStreamUrl(url)
-            torrentReadyLatched = true
-            mediaAttached = false
-            streamOpened = false
-            Log.i(TAG, "stream playable url=${app.peanutbutter.core.AppLog.safeUrl(pendingUrl).take(140)}")
-            main.post { attachAndPlay() }
-            startStatusPolling(sessionId)
-        } catch (e: Exception) {
-            Log.e(TAG, "waitAndPlay failed", e)
-            if (!stopped) {
-                statusView?.text = e.message ?: getString(R.string.playback_error)
-                busy?.isVisible = false
-            }
-        }
-    }
-
-    private fun startStatusPolling(sessionId: String) {
-        statusPollJob?.cancel()
-        statusPollJob = lifecycleScope.launch {
-            val api = application.asTv().api
-            while (isActive && !stopped) {
-                try {
-                    val tick = withContext(Dispatchers.IO) { api.streamStatus(sessionId) }
-                    if (stopped) return@launch
-                    main.post { showTorrentStatus(tick) }
-                    if (!mediaAttached && tick.streamUrl.isNotBlank()) {
-                        val next = api.playableStreamUrl(tick.streamUrl)
-                        if (next != pendingUrl) {
-                            pendingUrl = next
-                            torrentReadyLatched = true
-                            main.post { attachAndPlay() }
-                        }
-                    }
-                } catch (e: Exception) {
-                    Log.w(TAG, "status poll failed", e)
-                }
-                delay(1_000L)
-            }
         }
     }
 
@@ -881,7 +809,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                         val recover = lastGoodPosMs.coerceAtLeast(0L)
                         val mbps = lastSession?.downloadMbps ?: 0.0
                         statusView?.text = if (mbps > 0.05) {
-                            String.format("Buffering… · %.1f MB/s", mbps)
+                            String.format(java.util.Locale.US, "Buffering… · %.1f MB/s", mbps)
                         } else {
                             "Buffering…"
                         }
@@ -1261,7 +1189,9 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
     private fun findNextEpisode(item: TitleItem, season: Int, episode: Int): NextEpisode? {
         val seasons = item.seasons.filter { it.seasonNumber > 0 }.sortedBy { it.seasonNumber }
         val current = seasons.firstOrNull { it.seasonNumber == season }
-        val today = java.time.LocalDate.now().toString()
+        // java.time needs Android 8 (API 26); the app supports 7.0, where
+        // LocalDate.now() crashed the player at the end of an episode.
+        val today = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date())
         fun aired(e: app.peanutbutter.core.Episode) = e.airDate?.take(10)?.let { it <= today } ?: true
         // Same order as the episode list on the details screen.
         val later = current?.let { TorrentFilePicker.inViewingOrder(item.seasons, it) }
@@ -1464,7 +1394,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         runCatching { player?.pause() }
         val loading = findViewById<View>(R.id.next_loading)
         findViewById<TextView>(R.id.next_loading_label).text =
-            String.format("%s · S%02dE%02d", next.catalogTitle, next.season, next.episode)
+            String.format(java.util.Locale.US, "%s · S%02dE%02d", next.catalogTitle, next.season, next.episode)
         loading.isVisible = true
         loading.bringToFront()
         lifecycleScope.launch {
@@ -1473,9 +1403,9 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                 // Drop previous episode pieces when clear-cache-on-exit is enabled.
                 maybeWipeStreamCache()
                 val api = application.asTv().api
-                val label = String.format("%s S%02dE%02d", next.catalogTitle, next.season, next.episode)
+                val label = String.format(java.util.Locale.US, "%s S%02dE%02d", next.catalogTitle, next.season, next.episode)
                 val searchEp = next.fileEpisode ?: next.episode
-                val query = String.format("%s S%02dE%02d", next.catalogTitle, next.season, searchEp)
+                val query = String.format(java.util.Locale.US, "%s S%02dE%02d", next.catalogTitle, next.season, searchEp)
                 // Already ranked by the server (same order the picker shows).
                 val source = api.lookupSources(query, next.kind, tid, next.season, searchEp).firstOrNull()
                 if (source == null) {
@@ -1676,8 +1606,8 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         val h = total / 3600
         val m = (total % 3600) / 60
         val s = total % 60
-        return if (h > 0) String.format("%d:%02d:%02d", h, m, s)
-        else String.format("%d:%02d", m, s)
+        return if (h > 0) String.format(java.util.Locale.US, "%d:%02d:%02d", h, m, s)
+        else String.format(java.util.Locale.US, "%d:%02d", m, s)
     }
 
     private fun showChrome() {
@@ -2140,11 +2070,6 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                     runCatching { TorrentClient.stop(this, deleteFiles = false) }
                 }
             }
-        } else if (!sid.isNullOrBlank()) {
-            val api = application.asTv().api
-            Thread {
-                runCatching { kotlinx.coroutines.runBlocking { api.stopStream(sid) } }
-            }.start()
         }
         // Don't clear the session a newer player (Play next) already registered.
         val tvApp = application.asTv()

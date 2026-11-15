@@ -446,7 +446,7 @@ class LauncherActivity : FragmentActivity() {
         val kindLabel = getString(if (item.kind == "SERIES") R.string.kind_series else R.string.kind_movie)
         // One short line: year · length · rating · genre (whatever the title has).
         val runtime = item.runtimeMinutes?.takeIf { it > 0 }?.let { m -> if (m >= 60) "${m / 60}h ${m % 60}m" else "${m}m" }
-        val rating = (item.tmdbVoteAverage ?: item.imdbRating)?.takeIf { it > 0 }?.let { "★ %.1f".format(it) }
+        val rating = (item.tmdbVoteAverage ?: item.imdbRating)?.takeIf { it > 0 }?.let { "★ %.1f".format(java.util.Locale.US, it) }
         val meta = listOfNotNull(item.year?.toString(), runtime, rating, item.genres.firstOrNull()).joinToString("  ·  ")
         return HeroCarousel.Slide(
             key = item.id,

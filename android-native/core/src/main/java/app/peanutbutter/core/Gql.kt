@@ -142,38 +142,6 @@ mutation StreamResume(
 }
 """
 
-    const val START_STREAM = """
-mutation StartStream(
-  ${'$'}magnet: String!, ${'$'}title: String!, ${'$'}titleId: UUID,
-  ${'$'}resume: Boolean, ${'$'}seeders: Int, ${'$'}peers: Int,
-  ${'$'}season: Int, ${'$'}episode: Int, ${'$'}fileIndex: Int
-) {
-  startStream(
-    magnet: ${'$'}magnet, title: ${'$'}title, titleId: ${'$'}titleId,
-    resume: ${'$'}resume, seeders: ${'$'}seeders, peers: ${'$'}peers,
-    season: ${'$'}season, episode: ${'$'}episode, fileIndex: ${'$'}fileIndex
-  ) {
-    id title progress bufferProgress downloadMbps
-    seeders peers resumePosition status streamUrl
-  }
-}
-"""
-
-    const val STREAM_STATUS = """
-query StreamStatus(${'$'}sessionId: String!) {
-  streamStatus(sessionId: ${'$'}sessionId) {
-    id title progress bufferProgress downloadMbps
-    seeders peers resumePosition status streamUrl
-  }
-}
-"""
-
-    const val STOP_STREAM = """
-mutation StopStream(${'$'}sessionId: String!) {
-  stopStream(sessionId: ${'$'}sessionId)
-}
-"""
-
     /** Separate from [TITLE]: servers before 0.3.10 don't have the field. */
     const val FOLLOWING = """
 query Following(${'$'}id: UUID!) { title(id: ${'$'}id) { following } }
