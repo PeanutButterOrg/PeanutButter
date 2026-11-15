@@ -4,16 +4,20 @@
 # Usage:
 #   ./scripts/update-apps.sh              # Linux + TV
 #   ./scripts/update-apps.sh --linux      # Linux only
-#   ./scripts/update-apps.sh --tv         # TV APK only
+#   ./scripts/update-apps.sh --tv         # Android TV app only (native, android-native/)
+#   ./scripts/update-apps.sh --launcher   # PeanutButter Launcher only
 #   ./scripts/update-apps.sh --no-launch  # install without launching
+# The TV builds are debug builds (release ones are signed by CI).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FRONT="$ROOT/frontend"
+NATIVE="$ROOT/android-native"
 DIST="$ROOT/dist"
 TV_HOST="${PB_TV_HOST:-10.0.0.9}"
 TV_PORT="${PB_TV_PORT:-5555}"
-PKG="app.peanutbutter.peanutbutter"
+TV_FLAVOR="app"
+DESKTOP_ID="app.peanutbutter.peanutbutter"
 OPT_DIR="${HOME}/.local/opt/peanutbutter"
 BIN_DIR="${HOME}/.local/bin"
 
@@ -24,6 +28,7 @@ for arg in "$@"; do
   case "$arg" in
     --linux) do_tv=0 ;;
     --tv) do_linux=0 ;;
+    --launcher) do_linux=0; TV_FLAVOR="launcher" ;;
     --no-launch) do_launch=0 ;;
     -h|--help)
       sed -n '2,10p' "$0"
@@ -32,15 +37,14 @@ for arg in "$@"; do
   esac
 done
 
-if ! command -v flutter >/dev/null 2>&1; then
-  echo "flutter is required" >&2
-  exit 1
-fi
-
 mkdir -p "$DIST" "$OPT_DIR" "$BIN_DIR"
-cd "$FRONT"
 
 install_linux() {
+  if ! command -v flutter >/dev/null 2>&1; then
+    echo "flutter is required for the Linux build" >&2
+    exit 1
+  fi
+  cd "$FRONT"
   echo "==> Building Linux release"
   # Flutter sometimes expects this path even when unused.
   mkdir -p build/native_assets/linux
@@ -70,7 +74,7 @@ EOF
     icon_src="${OPT_DIR}/data/icon.png"
   fi
   local share="${HOME}/.local/share"
-  local icon_name="$PKG"
+  local icon_name="$DESKTOP_ID"
   mkdir -p \
     "${share}/applications" \
     "${share}/icons/hicolor/128x128/apps" \
@@ -140,13 +144,19 @@ EOF
 }
 
 install_tv() {
-  echo "==> Building Android TV APK"
+  # The TV app and the Launcher are the native app in android-native/ (the
+  # Flutter Android build is no longer used on TVs).
+  local pkg="app.peanutbutter.tv"
+  [[ "$TV_FLAVOR" == "launcher" ]] && pkg="app.peanutbutter.tv.launcher"
+  local cap="App"
+  [[ "$TV_FLAVOR" == "launcher" ]] && cap="Launcher"
+  echo "==> Building Android TV ($TV_FLAVOR, debug)"
+  (cd "$NATIVE" && ./gradlew -q ":tv:assemble${cap}Debug")
+  local out="$NATIVE/tv/build/outputs/apk/$TV_FLAVOR/debug"
+
   if ! command -v adb >/dev/null 2>&1; then
-    flutter build apk --release
-    local apk="build/app/outputs/flutter-apk/app-release.apk"
-    [[ -f "$apk" ]] || { echo "APK missing at $apk" >&2; exit 1; }
-    cp -f "$apk" "$DIST/PeanutButter-tv.apk"
-    echo "adb not found — APK saved to dist/ only" >&2
+    cp -f "$out/tv-$TV_FLAVOR-universal-debug.apk" "$DIST/"
+    echo "adb not found: APK saved to dist/ only" >&2
     return 0
   fi
 
@@ -155,53 +165,33 @@ install_tv() {
   local dev
   dev="$(adb devices | awk -v t="$target" '$1==t && $2=="device"{print $1; exit}')"
   if [[ -z "$dev" ]]; then
-    # Prefer physical / network TV over Studio emulator when both are present.
+    # Prefer a network TV over an emulator when both are present.
     dev="$(adb devices | awk '/:5555[[:space:]]+device/{print $1; exit}')"
-  fi
-  if [[ -z "$dev" ]]; then
-    # Fall back to any already-connected device (USB / emulator).
-    # Prefer emulator when that is the only target (Android Studio TV).
-    dev="$(adb devices | awk '/^emulator-.*device$/{print $1; exit}')"
   fi
   if [[ -z "$dev" ]]; then
     dev="$(adb devices | awk '/[[:space:]]device$/{print $1; exit}')"
   fi
-
-  local apk="build/app/outputs/flutter-apk/app-release.apk"
-  local abi=""
-  if [[ -n "$dev" ]]; then
-    abi="$(adb -s "$dev" shell getprop ro.product.cpu.abi 2>/dev/null | tr -d '\r')"
-  fi
-
-  # Flutter no longer ships release AOT for 32-bit x86. Android Studio's
-  # Television_* x86 AVD needs a debug x86 APK (JIT).
-  if [[ "$abi" == "x86" ]]; then
-    echo "==> Device $dev is x86 — building debug APK for emulator"
-    flutter build apk --debug --target-platform android-x86
-    apk="build/app/outputs/flutter-apk/app-debug.apk"
-    cp -f "$apk" "$DIST/PeanutButter-tv-emulator-x86-debug.apk"
-  else
-    flutter build apk --release
-    cp -f "$apk" "$DIST/PeanutButter-tv.apk"
-    ls -lh "$DIST/PeanutButter-tv.apk"
-  fi
-
-  if [[ ! -f "$apk" ]]; then
-    echo "APK missing at $apk" >&2
-    exit 1
-  fi
   if [[ -z "$dev" ]]; then
+    cp -f "$out/tv-$TV_FLAVOR-universal-debug.apk" "$DIST/"
     echo "No Android TV found via adb (tried $target). APK is in dist/." >&2
     return 0
   fi
 
-  echo "==> Installing on $dev (abi=${abi:-unknown})"
+  # The APK for the TV's CPU is smaller than the universal one.
+  local abi apk
+  abi="$(adb -s "$dev" shell getprop ro.product.cpu.abi 2>/dev/null | tr -d '\r')"
+  apk="$out/tv-$TV_FLAVOR-$abi-debug.apk"
+  [[ -f "$apk" ]] || apk="$out/tv-$TV_FLAVOR-universal-debug.apk"
+
+  echo "==> Installing $(basename "$apk") on $dev (abi=${abi:-unknown})"
   adb -s "$dev" install -r "$apk"
-  adb -s "$dev" shell am force-stop "$PKG" >/dev/null 2>&1 || true
+  adb -s "$dev" shell am force-stop "$pkg" >/dev/null 2>&1 || true
   if [[ "$do_launch" -eq 1 ]]; then
-    adb -s "$dev" shell am start -n "${PKG}/.MainActivity" >/dev/null 2>&1 \
-      || adb -s "$dev" shell monkey -p "$PKG" -c android.intent.category.LEANBACK_LAUNCHER 1 >/dev/null 2>&1 \
-      || adb -s "$dev" shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 >/dev/null
+    if [[ "$TV_FLAVOR" == "launcher" ]]; then
+      adb -s "$dev" shell am start -n "$pkg/app.peanutbutter.tv.launcher.LauncherActivity" >/dev/null
+    else
+      adb -s "$dev" shell am start -n "$pkg/app.peanutbutter.tv.ui.SplashActivity" >/dev/null
+    fi
     echo "TV launched on $dev"
   else
     echo "TV installed on $dev (not launched)"
