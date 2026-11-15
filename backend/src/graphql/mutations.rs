@@ -579,7 +579,10 @@ impl Mutation {
     ) -> async_graphql::Result<bool> {
         let state = ctx.data::<AppState>()?;
         let auth = ctx.data::<crate::auth::AuthSession>()?;
-        let ok = state.streams.set_resume(&session_id, position as i64).await;
+        // Playback runs on the device: the session id is the device's own, so
+        // only the per-torrent resume position is kept here.
+        let _ = session_id;
+        let saved = magnet.is_some();
         if let Some(magnet) = magnet {
             let key = crate::stream::StreamService::magnet_key(&magnet);
             crate::db::save_stream_resume(
@@ -596,12 +599,13 @@ impl Mutation {
             )
             .await?;
         }
-        Ok(ok)
+        Ok(saved)
     }
 
-    async fn stop_stream(&self, ctx: &Context<'_>, session_id: String) -> async_graphql::Result<bool> {
-        let state = ctx.data::<AppState>()?;
-        Ok(state.streams.stop(&session_id).await)
+    /// Kept for older apps: the server no longer runs stream sessions.
+    async fn stop_stream(&self, _ctx: &Context<'_>, session_id: String) -> async_graphql::Result<bool> {
+        let _ = session_id;
+        Ok(false)
     }
 
     async fn start_jackett_catalog(

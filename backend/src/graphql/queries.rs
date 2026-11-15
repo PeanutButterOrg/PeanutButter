@@ -849,8 +849,9 @@ impl Query {
         ctx: &Context<'_>,
         session_id: String,
     ) -> async_graphql::Result<Option<StreamSession>> {
-        let state = ctx.data::<AppState>()?;
-        Ok(state.streams.status(&session_id).await)
+        // Kept for older apps: the server no longer runs stream sessions.
+        let _ = (ctx, session_id);
+        Ok(None)
     }
 
     /// Magnet + file this device used last for this title/episode — Resume skips the picker.

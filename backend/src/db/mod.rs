@@ -47,10 +47,6 @@ const EMBEDDED_MIGRATION_034: &str = include_str!("migrations/034_addon_catalog_
 const EMBEDDED_MIGRATION_035: &str = include_str!("migrations/035_episode_follows.sql");
 const EMBEDDED_MIGRATION_036: &str = include_str!("migrations/036_text_locale.sql");
 
-pub async fn connect(database_url: &str) -> Result<PgPool> {
-    connect_with(database_url, 40, 4, Duration::from_secs(15)).await
-}
-
 /// Pool for GraphQL / playback — fail fast so sync never starves clients.
 pub async fn connect_api(database_url: &str) -> Result<PgPool> {
     connect_with(database_url, 24, 4, Duration::from_secs(5)).await
@@ -214,15 +210,6 @@ async fn apply_one(pool: &PgPool, version: &str, sql: &str) -> Result<()> {
     tx.commit().await?;
     info!(version, "applied migration");
     Ok(())
-}
-
-pub async fn title_imdb_id(pool: &PgPool, title_id: Uuid) -> Result<Option<String>> {
-    let row: Option<(Option<String>,)> =
-        sqlx::query_as("SELECT imdb_id FROM titles WHERE id = $1")
-            .bind(title_id)
-            .fetch_optional(pool)
-            .await?;
-    Ok(row.and_then(|(s,)| s))
 }
 
 #[derive(Debug, Clone)]
@@ -497,20 +484,6 @@ pub async fn list_sync_logs(pool: &PgPool, limit: i64) -> Result<Vec<(chrono::Da
     .fetch_all(pool)
     .await?;
     Ok(rows)
-}
-
-pub async fn bump_sync_progress(pool: &PgPool, by: i32) -> Result<()> {
-    sqlx::query(
-        r#"
-        UPDATE sync_state SET
-            progress_done = LEAST(progress_total, progress_done + $1)
-        WHERE id = 1
-        "#,
-    )
-    .bind(by.max(0))
-    .execute(pool)
-    .await?;
-    Ok(())
 }
 
 pub async fn sync_state(pool: &PgPool) -> Result<crate::db::models::SyncStateRow> {
@@ -1163,86 +1136,6 @@ pub async fn save_settings(
     Ok(())
 }
 
-pub async fn load_stream_resume(
-    pool: &PgPool,
-    token_id: Uuid,
-    magnet_key: &str,
-) -> Result<i64> {
-    let pos: Option<i64> = sqlx::query_scalar(
-        "SELECT resume_position FROM stream_progress WHERE token_id = $1 AND magnet_key = $2",
-    )
-    .bind(token_id)
-    .bind(magnet_key)
-    .fetch_optional(pool)
-    .await?;
-    Ok(pos.unwrap_or(0))
-}
-
-/// Resume for a title regardless of which magnet the user picks.
-pub async fn load_title_resume(pool: &PgPool, title_id: Uuid) -> Result<i64> {
-    load_title_resume_for_token(pool, title_id, None).await
-}
-
-pub async fn load_title_resume_for_token(
-    pool: &PgPool,
-    title_id: Uuid,
-    token_id: Option<Uuid>,
-) -> Result<i64> {
-    let user: Option<i64> = if let Some(token_id) = token_id {
-        sqlx::query_scalar(
-            r#"
-            SELECT position_ms FROM user_progress
-            WHERE token_id = $1 AND title_id = $2 AND COALESCE(watched, FALSE) = FALSE
-            ORDER BY updated_at DESC
-            LIMIT 1
-            "#,
-        )
-        .bind(token_id)
-        .bind(title_id)
-        .fetch_optional(pool)
-        .await?
-    } else {
-        sqlx::query_scalar(
-            r#"
-            SELECT position_ms FROM user_progress
-            WHERE title_id = $1 AND COALESCE(watched, FALSE) = FALSE
-            ORDER BY updated_at DESC
-            LIMIT 1
-            "#,
-        )
-        .bind(title_id)
-        .fetch_optional(pool)
-        .await?
-    };
-    let stream: Option<i64> = if let Some(token_id) = token_id {
-        sqlx::query_scalar(
-            r#"
-            SELECT resume_position FROM stream_progress
-            WHERE token_id = $1 AND title_id = $2
-            ORDER BY updated_at DESC
-            LIMIT 1
-            "#,
-        )
-        .bind(token_id)
-        .bind(title_id)
-        .fetch_optional(pool)
-        .await?
-    } else {
-        sqlx::query_scalar(
-            r#"
-            SELECT resume_position FROM stream_progress
-            WHERE title_id = $1
-            ORDER BY updated_at DESC
-            LIMIT 1
-            "#,
-        )
-        .bind(title_id)
-        .fetch_optional(pool)
-        .await?
-    };
-    Ok(user.unwrap_or(0).max(stream.unwrap_or(0)))
-}
-
 pub async fn save_stream_resume(
     pool: &PgPool,
     token_id: Uuid,
@@ -1357,56 +1250,25 @@ pub async fn load_stream_bookmark(
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
-pub struct JackettListingRow {
-    pub id: Uuid,
-    pub magnet: String,
-    pub torrent_title: String,
-    pub seeders: i32,
-    pub peers: i32,
-    pub rating: i32,
-    pub health: String,
-    pub size: String,
-    pub tracker: String,
-    pub indexer: String,
-    pub language: String,
-}
-
-#[derive(Debug, Clone, sqlx::FromRow)]
 pub struct JackettSyncRow {
-    pub syncing: bool,
     pub last_full_sync_at: Option<chrono::DateTime<chrono::Utc>>,
-    #[allow(dead_code)]
-    pub last_update_at: Option<chrono::DateTime<chrono::Utc>>,
-    pub titles_done: i32,
-    pub titles_total: i32,
-    pub last_error: Option<String>,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct JackettTitleWork {
     pub id: Uuid,
     pub title: String,
-    pub kind: String,
-    pub year: Option<i32>,
 }
 
 pub async fn jackett_sync_status(pool: &PgPool) -> Result<JackettSyncRow> {
     let row: Option<JackettSyncRow> = sqlx::query_as(
         r#"
-        SELECT syncing, last_full_sync_at, last_update_at, titles_done, titles_total, last_error
-        FROM jackett_sync_state WHERE id = 1
+        SELECT last_full_sync_at FROM jackett_sync_state WHERE id = 1
         "#,
     )
     .fetch_optional(pool)
     .await?;
-    Ok(row.unwrap_or(JackettSyncRow {
-        syncing: false,
-        last_full_sync_at: None,
-        last_update_at: None,
-        titles_done: 0,
-        titles_total: 0,
-        last_error: None,
-    }))
+    Ok(row.unwrap_or(JackettSyncRow { last_full_sync_at: None }))
 }
 
 pub async fn jackett_begin_sync(pool: &PgPool, total: i32, reset_progress: bool) -> Result<()> {
@@ -1543,113 +1405,6 @@ pub async fn jackett_checked_count(pool: &PgPool) -> Result<i32> {
     Ok(n as i32)
 }
 
-pub async fn replace_jackett_listings(
-    pool: &PgPool,
-    title_id: Uuid,
-    listings: &[JackettListingRow],
-) -> Result<()> {
-    sqlx::query("DELETE FROM jackett_listings WHERE title_id = $1")
-        .bind(title_id)
-        .execute(pool)
-        .await?;
-    for row in listings {
-        sqlx::query(
-            r#"
-            INSERT INTO jackett_listings (
-                id, title_id, magnet, torrent_title, seeders, peers, rating, health,
-                size, tracker, indexer, language, updated_at
-            )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now())
-            ON CONFLICT (title_id, magnet) DO UPDATE SET
-                torrent_title = EXCLUDED.torrent_title,
-                seeders = EXCLUDED.seeders,
-                peers = EXCLUDED.peers,
-                rating = EXCLUDED.rating,
-                health = EXCLUDED.health,
-                size = EXCLUDED.size,
-                tracker = EXCLUDED.tracker,
-                indexer = EXCLUDED.indexer,
-                language = EXCLUDED.language,
-                updated_at = now()
-            "#,
-        )
-        .bind(row.id)
-        .bind(title_id)
-        .bind(&row.magnet)
-        .bind(&row.torrent_title)
-        .bind(row.seeders)
-        .bind(row.peers)
-        .bind(row.rating)
-        .bind(&row.health)
-        .bind(&row.size)
-        .bind(&row.tracker)
-        .bind(&row.indexer)
-        .bind(&row.language)
-        .execute(pool)
-        .await?;
-    }
-    Ok(())
-}
-
-pub async fn upsert_jackett_listings(
-    pool: &PgPool,
-    title_id: Uuid,
-    listings: &[JackettListingRow],
-) -> Result<()> {
-    for row in listings {
-        sqlx::query(
-            r#"
-            INSERT INTO jackett_listings (
-                id, title_id, magnet, torrent_title, seeders, peers, rating, health,
-                size, tracker, indexer, language, updated_at
-            )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now())
-            ON CONFLICT (title_id, magnet) DO UPDATE SET
-                torrent_title = EXCLUDED.torrent_title,
-                seeders = EXCLUDED.seeders,
-                peers = EXCLUDED.peers,
-                rating = EXCLUDED.rating,
-                health = EXCLUDED.health,
-                size = EXCLUDED.size,
-                tracker = EXCLUDED.tracker,
-                indexer = EXCLUDED.indexer,
-                language = EXCLUDED.language,
-                updated_at = now()
-            "#,
-        )
-        .bind(row.id)
-        .bind(title_id)
-        .bind(&row.magnet)
-        .bind(&row.torrent_title)
-        .bind(row.seeders)
-        .bind(row.peers)
-        .bind(row.rating)
-        .bind(&row.health)
-        .bind(&row.size)
-        .bind(&row.tracker)
-        .bind(&row.indexer)
-        .bind(&row.language)
-        .execute(pool)
-        .await?;
-    }
-    Ok(())
-}
-
-pub async fn jackett_listings_for_title(pool: &PgPool, title_id: Uuid) -> Result<Vec<JackettListingRow>> {
-    Ok(sqlx::query_as(
-        r#"
-        SELECT id, magnet, torrent_title, seeders, peers, rating, health, size, tracker, indexer, language
-        FROM jackett_listings
-        WHERE title_id = $1 AND seeders >= 2
-        ORDER BY seeders DESC
-        LIMIT 40
-        "#,
-    )
-    .bind(title_id)
-    .fetch_all(pool)
-    .await?)
-}
-
 /// Cache key for stream picker results (title + optional S/E + language).
 pub fn stream_search_cache_key(
     title_id: Option<Uuid>,
@@ -1679,22 +1434,6 @@ pub fn stream_search_cache_key(
 pub struct StreamSearchCacheRow {
     pub sources: serde_json::Value,
     pub updated_at: chrono::DateTime<chrono::Utc>,
-}
-
-/// Fresh cache hit: sources updated within `max_age`.
-pub async fn stream_search_cache_get(
-    pool: &PgPool,
-    cache_key: &str,
-    max_age: Duration,
-) -> Result<Option<serde_json::Value>> {
-    let row = stream_search_cache_get_row(pool, cache_key).await?;
-    let Some((sources, age)) = row else {
-        return Ok(None);
-    };
-    if age > max_age {
-        return Ok(None);
-    }
-    Ok(Some(sources))
 }
 
 /// Cache row + age since `updated_at` (no TTL filter).
@@ -1752,39 +1491,12 @@ pub async fn stream_search_cache_upsert(
     Ok(())
 }
 
-pub async fn stream_search_cache_delete_key(pool: &PgPool, cache_key: &str) -> Result<()> {
-    sqlx::query("DELETE FROM stream_search_cache WHERE cache_key = $1")
-        .bind(cache_key)
-        .execute(pool)
-        .await?;
-    Ok(())
-}
-
 pub async fn stream_search_cache_delete_title(pool: &PgPool, title_id: Uuid) -> Result<()> {
     sqlx::query("DELETE FROM stream_search_cache WHERE title_id = $1")
         .bind(title_id)
         .execute(pool)
         .await?;
     Ok(())
-}
-
-/// Recent Jackett search payloads — used to harvest announce URLs for clients.
-pub async fn stream_search_cache_recent(
-    pool: &PgPool,
-    limit: i64,
-) -> Result<Vec<serde_json::Value>> {
-    let rows: Vec<(serde_json::Value,)> = sqlx::query_as(
-        r#"
-        SELECT sources
-        FROM stream_search_cache
-        ORDER BY updated_at DESC
-        LIMIT $1
-        "#,
-    )
-    .bind(limit.clamp(1, 50))
-    .fetch_all(pool)
-    .await?;
-    Ok(rows.into_iter().map(|(sources,)| sources).collect())
 }
 
 /// Create Season 1 + numbered episodes when a series/anime has no episode list yet.
@@ -2066,28 +1778,6 @@ pub async fn episode_progress_for_season(
     .fetch_all(pool)
     .await?;
     Ok(rows)
-}
-
-/// Whether this episode is the last in the series (season_number > 0).
-pub async fn is_last_episode(pool: &PgPool, title_id: Uuid, episode_id: Uuid) -> Result<bool> {
-    let row: Option<(bool,)> = sqlx::query_as(
-        r#"
-        WITH ordered AS (
-            SELECT e.id,
-                   ROW_NUMBER() OVER (ORDER BY s.season_number ASC, e.episode_number ASC) AS rn,
-                   COUNT(*) OVER () AS total
-            FROM episodes e
-            JOIN seasons s ON s.id = e.season_id
-            WHERE s.title_id = $1 AND s.season_number > 0
-        )
-        SELECT rn >= total FROM ordered WHERE id = $2
-        "#,
-    )
-    .bind(title_id)
-    .bind(episode_id)
-    .fetch_optional(pool)
-    .await?;
-    Ok(row.map(|r| r.0).unwrap_or(false))
 }
 
 /// Paginated title list for the server console Catalog tab.

@@ -169,9 +169,7 @@ pub fn same_origin(headers: &HeaderMap, public_url: &str) -> bool {
 
 fn is_media_get(method: &Method, path: &str) -> bool {
     (method == Method::GET || method == Method::HEAD)
-        && (path.starts_with("/stream/")
-            || path.starts_with("/files/")
-            || path.starts_with("/updates/files/"))
+        && (path.starts_with("/files/") || path.starts_with("/updates/files/"))
 }
 
 pub async fn gate(
@@ -187,11 +185,6 @@ pub async fn gate(
     }
     // Public art proxy — TVs often lack DNS for image.tmdb.org / YouTube.
     if path.starts_with("/art/") && (method == Method::GET || method == Method::HEAD) {
-        return Ok(next.run(req).await);
-    }
-    // Opaque stream session IDs are the capability token — external Android
-    // players (VLC/mpv) cannot set X-Api-Key headers. Optional ?key= still works.
-    if path.starts_with("/stream/") && (method == Method::GET || method == Method::HEAD) {
         return Ok(next.run(req).await);
     }
     // Console forms sign in with a cookie, so a page on another origin could
@@ -364,7 +357,9 @@ mod tests {
     #[test]
     fn query_keys_only_for_media() {
         assert!(is_media_get(&Method::GET, "/files/abc"));
-        assert!(is_media_get(&Method::HEAD, "/stream/abc"));
+        assert!(is_media_get(&Method::HEAD, "/files/abc"));
+        // The old server-stream route is gone: no unauthenticated /stream/.
+        assert!(!is_media_get(&Method::GET, "/stream/abc"));
         assert!(!is_media_get(&Method::POST, "/graphql"));
         assert!(!is_media_get(&Method::GET, "/graphql"));
     }

@@ -336,15 +336,6 @@ pub fn backdrop_url(public_url: &str, path: &Option<String>) -> Option<String> {
     tmdb_proxy_url(public_url, "w1280", path)
 }
 
-pub fn youtube_thumb_url(public_url: &str, youtube_key: &str) -> Option<String> {
-    let key = youtube_key.trim();
-    if key.is_empty() {
-        return None;
-    }
-    let base = public_url.trim_end_matches('/');
-    Some(format!("{base}/art/youtube/{key}"))
-}
-
 fn required(key: &str) -> Result<String> {
     std::env::var(key).map_err(|_| AppError::Config(format!("missing required env var {key}")))
 }

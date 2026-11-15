@@ -132,16 +132,12 @@ async fn main() -> Result<()> {
         syncing: syncing.clone(),
         http: http.clone(),
         gql_cache: GqlCache::new(),
-        streams: Arc::new(crate::stream::StreamService::new(
-            config.media_path(),
-            config.public_url.clone(),
-        )),
+        streams: Arc::new(crate::stream::StreamService::new(config.media_path())),
         jackett_syncing: jackett_syncing.clone(),
         introdb: crate::introdb::IntroDb::new(http.clone()),
     };
-    // Wipe any leftover stream download folders from a previous run.
+    // Wipe scratch folders left from a previous run.
     app_state.streams.cleanup_stale().await;
-    app_state.streams.spawn_idle_reaper();
     let schema = build_schema(app_state.clone());
     let http_state = HttpState {
         app: app_state.clone(),
@@ -241,7 +237,6 @@ async fn main() -> Result<()> {
                 .layer(tower_http::compression::CompressionLayer::new()),
         )
         .route("/files/{id}", get(media::serve_file).head(media::serve_file))
-        .route("/stream/{id}", get(stream::serve_stream).head(stream::serve_stream))
         .route("/art/tmdb/{size}/{*path}", get(media::proxy_tmdb).head(media::proxy_tmdb))
         .route("/art/youtube/{key}", get(media::proxy_youtube).head(media::proxy_youtube))
         .route("/updates/latest", get(updates::latest))
@@ -260,7 +255,7 @@ async fn main() -> Result<()> {
         .map_err(|e| error::AppError::Config(format!("invalid BIND_ADDR: {e}")))?;
     // Mirror signed app releases from GitHub for LAN updates.
     updates::spawn_background();
-    server_update::spawn_auto(app_state.http.clone(), app_state.streams.clone());
+    server_update::spawn_auto(app_state.http.clone());
     trackers::spawn_refresh(app_state.http.clone());
     let listener = TcpListener::bind(addr).await?;
     info!(addr = %addr, "listening");

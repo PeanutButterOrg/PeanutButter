@@ -11,33 +11,10 @@ use crate::db;
 use crate::error::Result;
 use crate::search::SearchClient;
 
-pub mod anilist;
 pub mod jackett;
-pub mod jikan;
 pub mod omdb;
 pub mod scheduler;
 pub mod tmdb;
-pub mod tvmaze;
-pub mod yts;
-
-/// Concurrent page workers per catalog pipeline (movies + series run in parallel).
-/// Override with `SYNC_WORKERS` env (e.g. `8`). Keep modest so GraphQL stays responsive.
-pub fn sync_workers() -> usize {
-    if let Ok(raw) = std::env::var("SYNC_WORKERS") {
-        let trimmed = raw.trim();
-        if !trimmed.is_empty() {
-            if let Ok(n) = trimmed.parse::<usize>() {
-                return n.clamp(1, 24);
-            }
-        }
-    }
-    std::thread::available_parallelism()
-        .map(|n| (n.get()).clamp(4, 10))
-        .unwrap_or(6)
-}
-
-/// Back-compat name used by YTS / TVMaze / AniList modules.
-pub const SYNC_WORKERS: usize = 16;
 
 #[derive(Clone)]
 pub struct IngestContext {
@@ -298,60 +275,6 @@ async fn run_full_sync_inner(ctx: IngestContext) -> Result<()> {
     let _ = db::set_sync_progress(&ctx.pool, "Done", 100, 100).await;
     let _ = db::set_sync_workers(&ctx.pool, 0).await;
     info!("metadata sync complete");
-    Ok(())
-}
-
-/// Clear vote/popularity fields polluted by YTS download/like counts and
-/// YTS “rating” written into imdb_rating without real IMDb vote support.
-async fn scrub_fake_movie_votes(ctx: &IngestContext) -> Result<()> {
-    // Any movie rating with no IMDb votes and no TMDB votes is not trustworthy
-    // for Popular / Trending (almost always YTS noise).
-    let res = sqlx::query(
-        r#"
-        UPDATE ratings r
-        SET
-            imdb_rating = NULL,
-            imdb_votes = NULL,
-            tmdb_vote_count = CASE
-                WHEN r.tmdb_vote_average IS NULL THEN NULL
-                ELSE r.tmdb_vote_count
-            END,
-            anilist_popularity = CASE
-                WHEN r.anilist_score IS NULL THEN NULL
-                ELSE r.anilist_popularity
-            END
-        FROM titles t
-        WHERE r.title_id = t.id
-          AND t.kind = 'movie'
-          AND COALESCE(r.imdb_votes, 0) = 0
-          AND COALESCE(r.tmdb_vote_count, 0) = 0
-          AND (
-            r.imdb_rating IS NOT NULL
-            OR COALESCE(r.anilist_popularity, 0) > 0
-          )
-        "#,
-    )
-    .execute(&ctx.pool)
-    .await?;
-    if res.rows_affected() > 0 {
-        info!(cleared = res.rows_affected(), "cleared untrusted movie ratings (no IMDb/TMDB votes)");
-    }
-    let res2 = sqlx::query(
-        r#"
-        UPDATE ratings r
-        SET tmdb_vote_count = NULL
-        FROM titles t
-        WHERE r.title_id = t.id
-          AND t.kind = 'series'
-          AND t.tmdb_id IS NULL
-          AND COALESCE(r.tmdb_vote_count, 0) > 0
-        "#,
-    )
-    .execute(&ctx.pool)
-    .await?;
-    if res2.rows_affected() > 0 {
-        info!(cleared = res2.rows_affected(), "cleared TVMaze weight from series vote counts");
-    }
     Ok(())
 }
 
