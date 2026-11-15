@@ -147,7 +147,7 @@ class HeroBannerPresenter(
                     }
                     (title.imdbRating ?: title.tmdbVoteAverage)?.let {
                         if (isNotEmpty()) append("  ·  ")
-                        append(String.format("%.1f", it))
+                        append(String.format(java.util.Locale.US, "%.1f", it))
                     }
                     if (title.genres.isNotEmpty()) {
                         if (isNotEmpty()) append("  ·  ")

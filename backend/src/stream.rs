@@ -1,37 +1,26 @@
-use std::collections::{HashMap, HashSet};
-use std::io::SeekFrom;
+//! Torrent metadata on the server: list a magnet's video files (the source
+//! picker's season-pack file list) and sample its swarm (seeder counts when an
+//! index has none). Nothing is downloaded or streamed here: playback runs on
+//! each device. Torrents are added "list only", so only metadata is fetched.
+
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::body::Body;
-use axum::extract::{Path as AxumPath, State};
-use axum::http::{header, HeaderMap, Method, StatusCode};
-use axum::response::Response;
 use librqbit::limits::LimitsConfig;
 use librqbit::{
     AddTorrent, AddTorrentOptions, AddTorrentResponse, ManagedTorrent, PeerConnectionOptions,
     Session, SessionOptions, TorrentMetaV1Info,
 };
 use sha2::{Digest, Sha256};
-use tokio::io::{AsyncReadExt, AsyncSeekExt};
-use tokio::sync::{Mutex, RwLock};
-use bytes::Bytes;
-use tokio_util::io::ReaderStream;
 use uuid::Uuid;
 
 use crate::error::AppError;
-use crate::graphql::types::StreamSession;
-use crate::HttpState;
 
 const VIDEO_EXT: &[&str] = &["mkv", "mp4", "avi", "webm", "mov", "m4v"];
-const HEAD_BYTES: u64 = 2 * 1024 * 1024; // soft pre-buffer target once peers connect
-const MIN_HEAD_BYTES: u64 = 96 * 1024; // enough for most containers to open
-const ABSOLUTE_MIN_HEAD_BYTES: u64 = 24 * 1024; // last-resort floor when the swarm is live
+/// Smaller video files are samples, trailers or extras, not the feature.
 const MIN_PLAYABLE_BYTES: u64 = 80 * 1024 * 1024;
-const STREAM_CHUNK: usize = 256 * 1024;        // 256 KB read chunks for smooth HTTP streaming
 const UPLOAD_BPS: u32 = 20 * 1024; // cap upload at 20 KB/s
 const EXTRA_TRACKERS: &[&str] = &[
     "udp://tracker.opentrackr.org:1337/announce",
@@ -66,54 +55,8 @@ pub struct StreamService {
 
 struct StreamInner {
     session: tokio::sync::OnceCell<Arc<Session>>,
-    sessions: RwLock<HashMap<String, Arc<Mutex<LiveStream>>>>,
-    /// Serializes recording a torrent on a stream with deleting it from the
-    /// engine, so one stream's stop can't delete a torrent another is claiming.
-    torrent_owners: Mutex<()>,
+    /// Scratch folders for list-only adds (librqbit wants an output folder).
     output_root: PathBuf,
-    public_url: String,
-}
-
-struct LiveStream {
-    id: String,
-    #[allow(dead_code)]
-    magnet: String,
-    title: String,
-    #[allow(dead_code)]
-    seeders: i32,
-    #[allow(dead_code)]
-    peers: i32,
-    resume_position: i64,
-    status: String,
-    error: Option<String>,
-    handle: Option<Arc<ManagedTorrent>>,
-    file_id: Option<usize>,
-    /// When set, bootstrap uses this file instead of auto-picking.
-    preferred_file_id: Option<usize>,
-    file_name: Option<String>,
-    season: Option<i32>,
-    episode: Option<i32>,
-    /// Retargets the sequential piece window when the player seeks.
-    /// Dropping this sender stops the prefetch worker.
-    prefetch_seek: Option<tokio::sync::mpsc::UnboundedSender<u64>>,
-    /// Last sign of a client (status poll, progress save, bytes sent), unix seconds.
-    /// Shared with response bodies, which outlive the lock on this struct.
-    last_seen: Arc<AtomicU64>,
-}
-
-/// With no client for this long, a session is stopped. An app that crashes or
-/// loses the network never says "stop", and the session kept downloading to disk.
-const IDLE_SESSION_LIMIT_SECS: u64 = 30 * 60;
-
-fn unix_now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
-fn session_is_idle(now: u64, last_seen: u64) -> bool {
-    now.saturating_sub(last_seen) >= IDLE_SESSION_LIMIT_SECS
 }
 
 fn stream_output_root(media_path: PathBuf) -> PathBuf {
@@ -140,88 +83,32 @@ fn torrent_listen_range() -> std::ops::Range<u16> {
     }
 }
 
-impl StreamService {
-    /// Server-side streams currently open (auto-update waits for none).
-    pub async fn active_sessions(&self) -> usize {
-        self.inner.sessions.read().await.len()
+fn peer_opts(read_write_secs: u64) -> PeerConnectionOptions {
+    PeerConnectionOptions {
+        connect_timeout: Some(Duration::from_secs(2)),
+        read_write_timeout: Some(Duration::from_secs(read_write_secs)),
+        keep_alive_interval: Some(Duration::from_secs(read_write_secs)),
     }
+}
 
-    pub fn new(media_path: PathBuf, public_url: String) -> Self {
+impl StreamService {
+    pub fn new(media_path: PathBuf) -> Self {
         Self {
             inner: Arc::new(StreamInner {
                 session: tokio::sync::OnceCell::new(),
-                sessions: RwLock::new(HashMap::new()),
-                torrent_owners: Mutex::new(()),
                 output_root: stream_output_root(media_path),
-                public_url,
             }),
         }
     }
 
-    pub async fn start(
-        &self,
-        magnet: String,
-        title: String,
-        resume_position: i64,
-        preferred_resolution: String,
-        seeders: i32,
-        peers: i32,
-        season: Option<i32>,
-        episode: Option<i32>,
-        preferred_file_id: Option<usize>,
-    ) -> Result<StreamSession, AppError> {
-        let magnet = magnet.trim().to_string();
-        if magnet.is_empty() {
-            return Err(AppError::BadRequest(
-                "That torrent link is missing. Try another result.".into(),
-            ));
-        }
-        let id = Uuid::new_v4().to_string();
-        let live = Arc::new(Mutex::new(LiveStream {
-            id: id.clone(),
-            magnet: magnet.clone(),
-            title: title.clone(),
-            seeders,
-            peers,
-            resume_position,
-            status: "starting".into(),
-            error: None,
-            handle: None,
-            file_id: None,
-            preferred_file_id,
-            file_name: None,
-            season,
-            episode,
-            prefetch_seek: None,
-            last_seen: Arc::new(AtomicU64::new(unix_now())),
-        }));
-        self.inner.sessions.write().await.insert(id.clone(), live.clone());
-        let boot = live.clone();
-        let inner = self.inner.clone();
-        tokio::spawn(async move {
-            if let Err(e) = bootstrap_torrent(inner, boot.clone(), magnet, preferred_resolution).await {
-                let mut g = boot.lock().await;
-                g.status = "error".into();
-                // bootstrap already returns user-facing messages.
-                g.error = Some(e);
-            }
-        });
-        let g = live.lock().await;
-        Ok(self.to_graphql(&id, &g).await)
-    }
-
-    /// List playable video files inside a magnet (list-only — nothing is downloaded).
-    pub async fn list_files(&self, magnet: &str) -> Result<Vec<TorrentFileEntry>, AppError> {
-        let magnet = require_magnet(magnet)?;
-        let session = self
-            .inner
+    /// The torrent engine, started on first use.
+    async fn session(&self) -> Result<Arc<Session>, AppError> {
+        self.inner
             .session
             .get_or_try_init(|| async {
                 tokio::fs::create_dir_all(&self.inner.output_root)
                     .await
-                    .map_err(|_| {
-                        "Couldn’t prepare the stream folder on the server. Try again.".to_string()
-                    })?;
+                    .map_err(|_| "Couldn’t prepare the torrent folder on the server. Try again.".to_string())?;
                 Session::new_with_opts(
                     self.inner.output_root.clone(),
                     SessionOptions {
@@ -231,70 +118,49 @@ impl StreamService {
                         listen_port_range: Some(torrent_listen_range()),
                         defer_writes_up_to: Some(512),
                         concurrent_init_limit: Some(16),
-                        peer_opts: Some(PeerConnectionOptions {
-                            connect_timeout: Some(Duration::from_secs(2)),
-                            read_write_timeout: Some(Duration::from_secs(8)),
-                            keep_alive_interval: Some(Duration::from_secs(8)),
-                        }),
+                        peer_opts: Some(peer_opts(8)),
                         ratelimits: torrent_limits(),
                         ..Default::default()
                     },
                 )
                 .await
-                .map_err(|_| "Couldn’t start the stream engine. Try again.".to_string())
+                .map_err(|_| "Couldn’t start the torrent engine. Try again.".to_string())
             })
             .await
-            .map_err(|e| AppError::Message(e.to_string()))?
-            .clone();
+            .cloned()
+            .map_err(AppError::Message)
+    }
 
-        // Resolve first: a failed lookup (expired Jackett link, HTTP error)
-        // returned after the scratch folder existed and left it behind.
-        let add = resolve_torrent_source(magnet).await.map_err(AppError::Message)?;
+    /// List playable video files inside a magnet (list-only — nothing is downloaded).
+    pub async fn list_files(&self, magnet: &str) -> Result<Vec<TorrentFileEntry>, AppError> {
+        let magnet = require_magnet(magnet)?;
+        let session = self.session().await?;
         let tmp = self.inner.output_root.join(format!("list-{}", Uuid::new_v4()));
-        tokio::fs::create_dir_all(&tmp)
-            .await
-            .map_err(AppError::Io)?;
+        tokio::fs::create_dir_all(&tmp).await.map_err(AppError::Io)?;
+        let options = || AddTorrentOptions {
+            list_only: true,
+            overwrite: true,
+            output_folder: Some(tmp.to_string_lossy().into_owned()),
+            force_tracker_interval: Some(Duration::from_secs(3)),
+            trackers: Some(EXTRA_TRACKERS.iter().map(|s| (*s).to_string()).collect()),
+            ratelimits: torrent_limits(),
+            ..Default::default()
+        };
         let mut listed = session
-            .add_torrent(
-                add.to_add(),
-                Some(AddTorrentOptions {
-                    list_only: true,
-                    overwrite: true,
-                    output_folder: Some(tmp.to_string_lossy().into_owned()),
-                    force_tracker_interval: Some(Duration::from_secs(3)),
-                    trackers: Some(EXTRA_TRACKERS.iter().map(|s| (*s).to_string()).collect()),
-                    ratelimits: torrent_limits(),
-                    ..Default::default()
-                }),
-            )
+            .add_torrent(AddTorrent::from_url(magnet.to_string()), Some(options()))
             .await;
-        if let Err(e) = &listed {
-            tracing::warn!(error = %e, "torrent list_files failed");
-        }
         // One retry helps when DHT/metadata is slow on the first attempt.
-        if listed.is_err() {
+        if let Err(e) = &listed {
+            tracing::warn!(error = %e, "torrent list_files failed; retrying");
             tokio::time::sleep(Duration::from_millis(400)).await;
             listed = session
-                .add_torrent(
-                    add.to_add(),
-                    Some(AddTorrentOptions {
-                        list_only: true,
-                        overwrite: true,
-                        output_folder: Some(tmp.to_string_lossy().into_owned()),
-                        force_tracker_interval: Some(Duration::from_secs(3)),
-                        trackers: Some(EXTRA_TRACKERS.iter().map(|s| (*s).to_string()).collect()),
-                        ratelimits: torrent_limits(),
-                        ..Default::default()
-                    }),
-                )
+                .add_torrent(AddTorrent::from_url(magnet.to_string()), Some(options()))
                 .await;
-            if let Err(e) = &listed {
-                tracing::warn!(error = %e, "torrent list_files retry failed");
-            }
         }
         // Remove the scratch folder whether or not listing worked.
         let _ = tokio::fs::remove_dir_all(&tmp).await;
         let listed = listed.map_err(|e| {
+            tracing::warn!(error = %e, "torrent list_files retry failed");
             AppError::Message(friendly_list_files_error(&e.to_string()))
         })?;
 
@@ -321,54 +187,15 @@ impl StreamService {
     /// Used to replace Jackett's often-missing Seeders with a live signal.
     pub async fn probe_swarm(&self, magnet: &str) -> Result<SwarmProbe, AppError> {
         let magnet = require_magnet(magnet)?;
-        let session = self
-            .inner
-            .session
-            .get_or_try_init(|| async {
-                tokio::fs::create_dir_all(&self.inner.output_root)
-                    .await
-                    .map_err(|_| {
-                        "Couldn’t prepare the stream folder on the server. Try again.".to_string()
-                    })?;
-                Session::new_with_opts(
-                    self.inner.output_root.clone(),
-                    SessionOptions {
-                        disable_dht: false,
-                        disable_dht_persistence: false,
-                        enable_upnp_port_forwarding: true,
-                        listen_port_range: Some(torrent_listen_range()),
-                        defer_writes_up_to: Some(512),
-                        concurrent_init_limit: Some(16),
-                        peer_opts: Some(PeerConnectionOptions {
-                            connect_timeout: Some(Duration::from_secs(2)),
-                            read_write_timeout: Some(Duration::from_secs(8)),
-                            keep_alive_interval: Some(Duration::from_secs(8)),
-                        }),
-                        ratelimits: torrent_limits(),
-                        ..Default::default()
-                    },
-                )
-                .await
-                .map_err(|_| "Couldn’t start the stream engine. Try again.".to_string())
-            })
-            .await
-            .map_err(|e| AppError::Message(e.to_string()))?
-            .clone();
-
-        let tmp = self
-            .inner
-            .output_root
-            .join(format!("probe-{}", Uuid::new_v4()));
-        tokio::fs::create_dir_all(&tmp)
-            .await
-            .map_err(AppError::Io)?;
-        let add = resolve_torrent_source(magnet).await.map_err(AppError::Message)?;
+        let session = self.session().await?;
+        let tmp = self.inner.output_root.join(format!("probe-{}", Uuid::new_v4()));
+        tokio::fs::create_dir_all(&tmp).await.map_err(AppError::Io)?;
 
         // list_only resolves metadata via DHT/trackers and returns seen_peers —
         // that's the live swarm signal Jackett usually lacks.
         let listed = session
             .add_torrent(
-                add.to_add(),
+                AddTorrent::from_url(magnet.to_string()),
                 Some(AddTorrentOptions {
                     list_only: true,
                     overwrite: true,
@@ -376,11 +203,7 @@ impl StreamService {
                     force_tracker_interval: Some(Duration::from_secs(2)),
                     trackers: Some(EXTRA_TRACKERS.iter().map(|s| (*s).to_string()).collect()),
                     ratelimits: torrent_limits(),
-                    peer_opts: Some(PeerConnectionOptions {
-                        connect_timeout: Some(Duration::from_secs(2)),
-                        read_write_timeout: Some(Duration::from_secs(6)),
-                        keep_alive_interval: Some(Duration::from_secs(6)),
-                    }),
+                    peer_opts: Some(peer_opts(6)),
                     ..Default::default()
                 }),
             )
@@ -390,13 +213,10 @@ impl StreamService {
         match listed {
             Ok(AddTorrentResponse::ListOnly(resp)) => {
                 let peers = resp.seen_peers.len() as i32;
-                Ok(SwarmProbe {
-                    seeders: peers,
-                    peers,
-                })
+                Ok(SwarmProbe { seeders: peers, peers })
             }
             Ok(AddTorrentResponse::AlreadyManaged(_, handle)) => {
-                // A live stream owns this torrent: read its swarm, never delete it.
+                // Another probe holds this torrent right now: read it, don't delete it.
                 let live = handle.stats().live.as_ref().map(|l| l.snapshot.peer_stats.live as i32).unwrap_or(0);
                 Ok(SwarmProbe { seeders: live, peers: live })
             }
@@ -450,9 +270,11 @@ impl StreamService {
             .collect();
         // If everything already has seeders, still spot-check the top magnet.
         if idxs.is_empty() && known_good < 2 {
-            if let Some((i, _)) = sources.iter().enumerate().find(|(_, s)| {
-                s.magnet.to_ascii_lowercase().starts_with("magnet:")
-            }) {
+            if let Some((i, _)) = sources
+                .iter()
+                .enumerate()
+                .find(|(_, s)| s.magnet.to_ascii_lowercase().starts_with("magnet:"))
+            {
                 idxs.push(i);
             }
         }
@@ -464,8 +286,7 @@ impl StreamService {
             let magnet = sources[i].magnet.clone();
             let this = self.clone();
             async move {
-                let result =
-                    tokio::time::timeout(Duration::from_secs(3), this.probe_swarm(&magnet)).await;
+                let result = tokio::time::timeout(Duration::from_secs(3), this.probe_swarm(&magnet)).await;
                 (i, result)
             }
         }))
@@ -497,84 +318,8 @@ impl StreamService {
         sources
     }
 
-    pub async fn status(&self, session_id: &str) -> Option<StreamSession> {
-        let map = self.inner.sessions.read().await;
-        let live = map.get(session_id)?;
-        let g = live.lock().await;
-        g.last_seen.store(unix_now(), Ordering::Relaxed);
-        Some(self.to_graphql(session_id, &g).await)
-    }
-
-    pub async fn set_resume(&self, session_id: &str, position: i64) -> bool {
-        let map = self.inner.sessions.read().await;
-        let Some(live) = map.get(session_id) else {
-            return false;
-        };
-        // Persist only — do NOT retarget piece priority here.
-        // Progress saves fire every few seconds; retargeting from a bitrate guess
-        // steals bandwidth from the live HTTP reader and freezes playback.
-        // Seeks retarget via HTTP Range in serve_stream.
-        let mut g = live.lock().await;
-        g.last_seen.store(unix_now(), Ordering::Relaxed);
-        g.resume_position = position.max(0);
-        true
-    }
-
-    /// Stop sessions no client has touched for a while. Runs for the server's life.
-    pub fn spawn_idle_reaper(&self) {
-        let this = self.clone();
-        tokio::spawn(async move {
-            let mut tick = tokio::time::interval(Duration::from_secs(5 * 60));
-            loop {
-                tick.tick().await;
-                let mut idle = Vec::new();
-                {
-                    let map = this.inner.sessions.read().await;
-                    for (id, live) in map.iter() {
-                        let seen = live.lock().await.last_seen.load(Ordering::Relaxed);
-                        if session_is_idle(unix_now(), seen) {
-                            idle.push(id.clone());
-                        }
-                    }
-                }
-                for id in idle {
-                    tracing::info!(session = %id, "stopping idle stream session");
-                    this.stop(&id).await;
-                }
-            }
-        });
-    }
-
-    pub async fn stop(&self, session_id: &str) -> bool {
-        let removed = {
-            let mut map = self.inner.sessions.write().await;
-            map.remove(session_id)
-        };
-        if let Some(live_arc) = removed {
-            let (handle, folder) = {
-                let mut live = live_arc.lock().await;
-                // Stop prefetch worker so its FileStream drops before the torrent handle.
-                live.prefetch_seek = None;
-                let folder = self.inner.output_root.join(&live.id);
-                (live.handle.clone(), folder)
-            };
-            // Remove the torrent from the engine (dropping our handle alone left
-            // it downloading and seeding until the server restarted), unless
-            // another live session plays the same torrent.
-            if let Some(handle) = handle {
-                self.release_torrent(&handle).await;
-            }
-            // Then wipe the per-session folder that holds downloaded pieces.
-            if folder.exists() {
-                let _ = tokio::fs::remove_dir_all(&folder).await;
-            }
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Wipe all leftover stream folders on startup / app restart.
+    /// Wipe scratch folders left over from a previous run (and from the old
+    /// server-side streaming, which kept whole downloads here).
     pub async fn cleanup_stale(&self) {
         let root = &self.inner.output_root;
         let Ok(mut rd) = tokio::fs::read_dir(root).await else { return };
@@ -586,537 +331,14 @@ impl StreamService {
         }
     }
 
+    /// Stable key for a magnet (resume positions are stored per torrent).
     pub fn magnet_key(magnet: &str) -> String {
         hex::encode(Sha256::digest(magnet.trim().as_bytes()))
-    }
-
-    async fn to_graphql(&self, id: &str, live: &LiveStream) -> StreamSession {
-        let (progress, seeders, peers, download_mbps, buffer_progress) = if let Some(handle) = &live.handle {
-            let stats = handle.stats();
-            let progress = if stats.total_bytes == 0 {
-                0.0
-            } else {
-                (stats.progress_bytes as f64 / stats.total_bytes as f64) as f32
-            };
-            let live_peers = stats
-                .live
-                .as_ref()
-                .map(|s| s.snapshot.peer_stats.live as i32)
-                .unwrap_or(0);
-            let download_mbps = stats
-                .live
-                .as_ref()
-                .map(|s| s.download_speed.mbps)
-                .unwrap_or(0.0);
-            // HUD % = selected-file download (have / selected).
-            // librqbit sets finished=true whenever needed_bytes==0, including when
-            // nothing is selected yet (total_bytes==0) — that used to flash 100%.
-            let buffer_progress = {
-                let file_frac = if let Some(file_id) = live.file_id {
-                    let got = stats.file_progress.get(file_id).copied().unwrap_or(0);
-                    let total = handle
-                        .with_metadata(|m| m.file_infos.get(file_id).map(|f| f.len).unwrap_or(0))
-                        .unwrap_or(0);
-                    if total == 0 {
-                        0.0f32
-                    } else {
-                        (got as f64 / total as f64).clamp(0.0, 1.0) as f32
-                    }
-                } else {
-                    progress
-                };
-                let selected_frac = if stats.total_bytes == 0 {
-                    0.0f32
-                } else {
-                    (stats.progress_bytes as f64 / stats.total_bytes as f64).clamp(0.0, 1.0) as f32
-                };
-                // Prefer the more conservative of the two so a sliding window can't
-                // report "complete" while the rest of the file is still needed.
-                let frac = file_frac.min(selected_frac);
-                let complete = stats.finished
-                    && stats.total_bytes > 0
-                    && stats.progress_bytes > 0
-                    && progress >= 0.999;
-                if complete {
-                    1.0
-                } else {
-                    frac.clamp(0.0, 0.99)
-                }
-            };
-            // Live swarm only — never Jackett listed counts (those looked "connected"
-            // while the player was still waiting on the first bytes).
-            (
-                progress,
-                live_peers,
-                live_peers,
-                download_mbps,
-                buffer_progress,
-            )
-        } else {
-            // Still bootstrapping metadata — show finding peers, not Jackett numbers.
-            (0.0, 0, 0, 0.0, 0.0)
-        };
-        let stream_url = if live.status == "ready" {
-            format!(
-                "{}/stream/{}",
-                self.inner.public_url.trim_end_matches('/'),
-                id
-            )
-        } else {
-            String::new()
-        };
-        StreamSession {
-            id: id.to_string(),
-            title: live.title.clone(),
-            progress,
-            buffer_progress,
-            download_mbps,
-            seeders,
-            peers,
-            resume_position: live.resume_position as i32,
-            status: live
-                .error
-                .as_ref()
-                .map(|e| format!("error: {e}"))
-                .unwrap_or_else(|| live.status.clone()),
-            stream_url,
-        }
-    }
-
-    /// Delete a torrent from the engine when no remaining session uses it.
-    async fn release_torrent(&self, handle: &Arc<ManagedTorrent>) {
-        // Held through the owner scan and the delete, so a stream claiming the
-        // same torrent can't slip in between (see claim_torrent).
-        let _owners = self.inner.torrent_owners.lock().await;
-        let id = handle.id();
-        let others: Vec<_> = self.inner.sessions.read().await.values().cloned().collect();
-        for other in others {
-            if other.lock().await.handle.as_ref().is_some_and(|h| h.id() == id) {
-                return;
-            }
-        }
-        if let Some(session) = self.inner.session.get() {
-            let _ = session.delete(id.into(), true).await;
-        }
-    }
-
-    /// Record a torrent the engine just handed us on this stream, under the
-    /// same lock release_torrent deletes under. Returns false when the torrent
-    /// was deleted in the meantime (another stream stopped), so it has to be
-    /// added again; a deleted handle would never start.
-    async fn claim_torrent(&self, live: &Arc<Mutex<LiveStream>>, handle: &Arc<ManagedTorrent>) -> bool {
-        let _owners = self.inner.torrent_owners.lock().await;
-        let still_managed = self
-            .inner
-            .session
-            .get()
-            .is_some_and(|s| s.get(handle.id().into()).is_some());
-        if still_managed {
-            live.lock().await.handle = Some(handle.clone());
-        }
-        still_managed
-    }
-
-    async fn live(&self, session_id: &str) -> Option<Arc<Mutex<LiveStream>>> {
-        self.inner.sessions.read().await.get(session_id).cloned()
-    }
-}
-
-async fn bootstrap_torrent(
-    inner: Arc<StreamInner>,
-    live: Arc<Mutex<LiveStream>>,
-    magnet: String,
-    preferred_resolution: String,
-) -> Result<(), String> {
-    let session = inner
-        .session
-        .get_or_try_init(|| async {
-            tokio::fs::create_dir_all(&inner.output_root)
-                .await
-                .map_err(|_| {
-                    "Couldn’t prepare the stream folder on the server. Try again.".to_string()
-                })?;
-            Session::new_with_opts(
-                inner.output_root.clone(),
-                SessionOptions {
-                    disable_dht: false,
-                    disable_dht_persistence: false,
-                    enable_upnp_port_forwarding: true,
-                    listen_port_range: Some(torrent_listen_range()),
-                    // Keep 512 pieces (≈ 256 MB for 512KB pieces) in memory before flushing.
-                    // This prevents constant disk flushes that stall sequential reads.
-                    defer_writes_up_to: Some(512),
-                    concurrent_init_limit: Some(16),
-                    peer_opts: Some(PeerConnectionOptions {
-                        connect_timeout: Some(Duration::from_secs(2)),
-                        read_write_timeout: Some(Duration::from_secs(8)),
-                        keep_alive_interval: Some(Duration::from_secs(8)),
-                    }),
-                    ratelimits: torrent_limits(),
-                    ..Default::default()
-                },
-            )
-            .await
-            .map_err(|_| "Couldn’t start the stream engine. Try again.".to_string())
-        })
-        .await
-        .map_err(|e| e.to_string())?
-        .clone();
-
-    let folder = inner.output_root.join(&live.lock().await.id);
-    tokio::fs::create_dir_all(&folder)
-        .await
-        .map_err(|_| "Couldn’t prepare the stream folder on the server. Try again.".to_string())?;
-
-    let (preferred_resolution, season, episode, preferred_file_id) = {
-        let g = live.lock().await;
-        (
-            preferred_resolution,
-            g.season,
-            g.episode,
-            g.preferred_file_id,
-        )
-    };
-
-    let resolved = resolve_torrent_source(&magnet).await?;
-
-    // 1) Metadata-only pass so we can pick the right file (and set only_files).
-    let listed = session
-        .add_torrent(
-            resolved.to_add(),
-            Some(AddTorrentOptions {
-                list_only: true,
-                overwrite: true,
-                output_folder: Some(folder.to_string_lossy().into_owned()),
-                force_tracker_interval: Some(Duration::from_secs(3)),
-                defer_writes: Some(true),
-                peer_opts: Some(PeerConnectionOptions {
-                    connect_timeout: Some(Duration::from_secs(2)),
-                    read_write_timeout: Some(Duration::from_secs(8)),
-                    keep_alive_interval: Some(Duration::from_secs(8)),
-                }),
-                trackers: Some(EXTRA_TRACKERS.iter().map(|s| (*s).to_string()).collect()),
-                ratelimits: torrent_limits(),
-                ..Default::default()
-            }),
-        )
-        .await
-        .map_err(|e| friendly_stream_error(&e.to_string()))?;
-
-    let listed_videos = match &listed {
-        AddTorrentResponse::ListOnly(resp) => videos_from_info(&resp.info),
-        AddTorrentResponse::Added(_, handle) | AddTorrentResponse::AlreadyManaged(_, handle) => {
-            videos_from_handle(handle)
-        }
-    };
-    let file_id = if let Some(idx) = preferred_file_id {
-        if listed_videos.iter().any(|(i, _, _)| *i == idx) {
-            idx
-        } else {
-            return Err(
-                "That file isn’t in this torrent anymore. Pick another file.".into(),
-            );
-        }
-    } else {
-        pick_playable_video(&listed_videos, &preferred_resolution, season, episode).ok_or_else(
-            || "This torrent doesn’t contain a playable video file. Try another result.".to_string(),
-        )?
-    };
-
-    // 2) Real download — only the chosen file (critical for peer piece interest).
-    // Each torrent is recorded on this session the moment we get it (see
-    // claim_torrent), so stop() can remove it from the engine and another
-    // stream's stop can't delete it from under us.
-    let service = StreamService { inner: inner.clone() };
-    let mut handle = match listed {
-        AddTorrentResponse::Added(_, h) | AddTorrentResponse::AlreadyManaged(_, h) => {
-            service.claim_torrent(&live, &h).await.then_some(h)
-        }
-        AddTorrentResponse::ListOnly(_) => None,
-    };
-    // Not added by the listing pass, or deleted by another stream's stop just
-    // before we could claim it: add it (again).
-    for _ in 0..3 {
-        if handle.is_some() {
-            break;
-        }
-        let added = session
-            .add_torrent(
-                resolved.to_add(),
-                Some(AddTorrentOptions {
-                    overwrite: true,
-                    only_files: Some(vec![file_id]),
-                    output_folder: Some(folder.to_string_lossy().into_owned()),
-                    force_tracker_interval: Some(Duration::from_secs(3)),
-                    defer_writes: Some(true),
-                    peer_opts: Some(PeerConnectionOptions {
-                        connect_timeout: Some(Duration::from_secs(2)),
-                        read_write_timeout: Some(Duration::from_secs(8)),
-                        keep_alive_interval: Some(Duration::from_secs(8)),
-                    }),
-                    trackers: Some(EXTRA_TRACKERS.iter().map(|s| (*s).to_string()).collect()),
-                    ratelimits: torrent_limits(),
-                    ..Default::default()
-                }),
-            )
-            .await
-            .map_err(|e| friendly_stream_error(&e.to_string()))?;
-        handle = match added {
-            AddTorrentResponse::Added(_, h) | AddTorrentResponse::AlreadyManaged(_, h) => {
-                service.claim_torrent(&live, &h).await.then_some(h)
-            }
-            AddTorrentResponse::ListOnly(_) => {
-                return Err("This torrent failed to start. Try another result.".into())
-            }
-        };
-    }
-    let Some(handle) = handle else {
-        return Err("This torrent failed to start. Try another result.".into());
-    };
-    let _ = session
-        .update_only_files(&handle, &HashSet::from([file_id]))
-        .await;
-
-    let session_id = live.lock().await.id.clone();
-    // Stopped while the torrent was being added: stop() saw no handle.
-    if !inner.sessions.read().await.contains_key(&session_id) {
-        live.lock().await.handle = None;
-        service.release_torrent(&handle).await;
-        return Err("Stream stopped.".into());
-    }
-
-    // Every step from here on can fail with the torrent already claimed: on
-    // any failure, take it off this session and out of the engine, or it
-    // keeps downloading and seeding until a stop or the idle reaper.
-    let started = start_claimed_torrent(&live, &session, &handle, file_id).await;
-    if started.is_err() {
-        live.lock().await.handle = None;
-        service.release_torrent(&handle).await;
-    }
-    started
-}
-
-/// Wait for the claimed torrent, warm the file head and mark the stream ready.
-async fn start_claimed_torrent(
-    live: &Arc<Mutex<LiveStream>>,
-    session: &Arc<Session>,
-    handle: &Arc<ManagedTorrent>,
-    file_id: usize,
-) -> Result<(), String> {
-    match tokio::time::timeout(Duration::from_secs(45), handle.wait_until_initialized()).await {
-        Err(_) => {
-            return Err("Couldn’t find enough peers to start this stream. Try another result.".to_string())
-        }
-        Ok(Err(e)) => return Err(friendly_stream_error(&e.to_string())),
-        Ok(Ok(())) => {}
-    }
-    let _ = session
-        .update_only_files(handle, &HashSet::from([file_id]))
-        .await;
-
-    // Keep status != ready until the file header arrives.
-    let resume_ms = {
-        let mut g = live.lock().await;
-        g.file_id = Some(file_id);
-        g.status = "buffering".into();
-        g.resume_position
-    };
-
-    let file_name = handle
-        .with_metadata(|m| {
-            m.file_infos
-                .get(file_id)
-                .map(|f| f.relative_filename.to_string_lossy().into_owned())
-        })
-        .ok()
-        .flatten();
-
-    // Wait for the container header before handing the URL to the player.
-    // Marking ready with 0 bytes left clients stuck on "connected" forever.
-    warm_file_head(handle, file_id).await?;
-
-    {
-        let mut g = live.lock().await;
-        g.file_name = file_name;
-        g.status = "ready".into();
-    }
-    let prefetch_tx = spawn_prefetch_worker(handle.clone(), file_id, resume_ms).await;
-    live.lock().await.prefetch_seek = prefetch_tx;
-    Ok(())
-}
-
-/// Pull the first chunk of the chosen file so demuxers can open it.
-async fn warm_file_head(handle: &Arc<ManagedTorrent>, file_id: usize) -> Result<(), String> {
-    let Ok(mut stream) = handle.clone().stream(file_id) else {
-        return Err("Couldn’t open this torrent’s video file. Try another result.".into());
-    };
-    let len = stream.len().max(1);
-    let need = MIN_HEAD_BYTES.min(len);
-    let soft = HEAD_BYTES.min(len);
-    let absolute_min = ABSOLUTE_MIN_HEAD_BYTES.min(need);
-    let mut buf = vec![0u8; 128 * 1024];
-    let mut got = 0u64;
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(180);
-    let _ = stream.seek(SeekFrom::Start(0)).await;
-
-    while got < need && tokio::time::Instant::now() < deadline {
-        // Torrent engine may already have head pieces on disk even when this
-        // sequential read is still catching up — don't fail a healthy swarm.
-        if file_downloaded_bytes(handle, file_id) >= need {
-            return Ok(());
-        }
-        match tokio::time::timeout(Duration::from_secs(4), stream.read(&mut buf)).await {
-            Ok(Ok(0)) => {
-                tokio::time::sleep(Duration::from_millis(250)).await;
-            }
-            Ok(Ok(n)) => {
-                got = got.saturating_add(n as u64);
-                // Keep going toward the soft target when peers are fast, but
-                // don't block playback once the minimum header is present.
-                if got >= need && got >= soft {
-                    break;
-                }
-                if got >= need {
-                    // One more short attempt for a fatter buffer, then start.
-                    let soft_deadline = tokio::time::Instant::now() + Duration::from_secs(3);
-                    while got < soft && tokio::time::Instant::now() < soft_deadline {
-                        match tokio::time::timeout(Duration::from_secs(1), stream.read(&mut buf))
-                            .await
-                        {
-                            Ok(Ok(0)) | Err(_) => break,
-                            Ok(Ok(n2)) => got = got.saturating_add(n2 as u64),
-                            Ok(Err(_)) => break,
-                        }
-                    }
-                    break;
-                }
-            }
-            Ok(Err(_)) => {
-                tokio::time::sleep(Duration::from_millis(200)).await;
-                let _ = stream
-                    .seek(SeekFrom::Start(got.min(len.saturating_sub(1))))
-                    .await;
-            }
-            Err(_) => {
-                // Timed out waiting for pieces — stay on the head window.
-                let _ = stream
-                    .seek(SeekFrom::Start(got.min(len.saturating_sub(1))))
-                    .await;
-            }
-        }
-    }
-
-    if got >= need || file_downloaded_bytes(handle, file_id) >= need {
-        return Ok(());
-    }
-    // Healthy swarm with a usable header: start playback and keep filling.
-    let live_peers = handle
-        .stats()
-        .live
-        .as_ref()
-        .map(|l| l.snapshot.peer_stats.live)
-        .unwrap_or(0);
-    let file_got = file_downloaded_bytes(handle, file_id);
-    if live_peers > 0 && (got.max(file_got) >= absolute_min) {
-        tracing::info!(
-            got,
-            file_got,
-            live_peers,
-            need,
-            "warm_file_head accepting partial head with live peers"
-        );
-        return Ok(());
-    }
-
-    Err(
-        "Connected to peers but couldn’t download enough video data to start. Try another result."
-            .into(),
-    )
-}
-
-fn file_downloaded_bytes(handle: &Arc<ManagedTorrent>, file_id: usize) -> u64 {
-    handle
-        .stats()
-        .file_progress
-        .get(file_id)
-        .copied()
-        .unwrap_or(0)
-}
-
-/// Keep one FileStream alive so piece priority follows playback.
-/// Seeking the stream updates rqbit's 32 MB sequential window; without this,
-/// an old window at t=0 keeps stealing bandwidth after the player seeks.
-async fn spawn_prefetch_worker(
-    handle: Arc<ManagedTorrent>,
-    file_id: usize,
-    resume_ms: i64,
-) -> Option<tokio::sync::mpsc::UnboundedSender<u64>> {
-    let Ok(prefetch) = handle.clone().stream(file_id) else {
-        return None;
-    };
-    let len = prefetch.len();
-    // Prefer pieces around the resume timestamp so any magnet can start mid-title.
-    // ~2.5 MB/s is a conservative 1080p estimate.
-    let est = ((resume_ms.max(0) as u64).saturating_mul(2_500_000) / 1000).min(len.saturating_sub(1));
-    let start = est.saturating_sub(HEAD_BYTES / 4);
-
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<u64>();
-    tokio::spawn(async move {
-        let mut stream = prefetch;
-        let mut buf = vec![0u8; 128 * 1024];
-        let _ = stream.seek(SeekFrom::Start(start)).await;
-        let mut pos = start;
-        // Keep reading forever — empty reads mean "peers not ready yet", not EOF.
-        // Without this, Jackett/magnet swarms sit at 0 MB/s after metadata.
-        loop {
-            tokio::select! {
-                cmd = rx.recv() => {
-                    match cmd {
-                        Some(new_pos) => {
-                            pos = new_pos.min(len.saturating_sub(1));
-                            if stream.seek(SeekFrom::Start(pos)).await.is_err() {
-                                break;
-                            }
-                        }
-                        None => break,
-                    }
-                }
-                result = tokio::time::timeout(Duration::from_secs(2), stream.read(&mut buf)) => {
-                    match result {
-                        Ok(Ok(0)) => {
-                            // No bytes yet — pause briefly then keep interest in the swarm.
-                            tokio::time::sleep(Duration::from_millis(250)).await;
-                        }
-                        Ok(Ok(n)) => {
-                            pos = pos.saturating_add(n as u64).min(len.saturating_sub(1));
-                        }
-                        Ok(Err(_)) => {
-                            tokio::time::sleep(Duration::from_millis(200)).await;
-                            let _ = stream.seek(SeekFrom::Start(pos)).await;
-                        }
-                        Err(_) => {
-                            // Read timed out waiting for pieces — stay on the window.
-                            let _ = stream.seek(SeekFrom::Start(pos)).await;
-                        }
-                    }
-                }
-            }
-        }
-    });
-    Some(tx)
-}
-
-fn retarget_prefetch_bytes(live: &LiveStream, byte_offset: u64) {
-    if let Some(tx) = live.prefetch_seek.as_ref() {
-        let _ = tx.send(byte_offset);
     }
 }
 
 fn friendly_list_files_error(raw: &str) -> String {
     let t = raw.to_ascii_lowercase();
-    if t.contains("302") || t.contains("301") || t.contains("redirect") {
-        return "Couldn’t open this Jackett download link. Try another result (prefer magnet links).".into();
-    }
     if t.contains("timeout") || t.contains("timed out") {
         return "Couldn’t read this torrent’s file list (timeout). Try another result, or Play again.".into();
     }
@@ -1128,64 +350,6 @@ fn friendly_list_files_error(raw: &str) -> String {
     }
     tracing::debug!(raw, "unmapped list_files error");
     "Couldn’t read this torrent’s files. Try another result.".into()
-}
-
-fn friendly_stream_error(raw: &str) -> String {
-    let t = raw.to_ascii_lowercase();
-    // Already user-facing from resolve_torrent_source / earlier mapping.
-    if t.contains("couldn’t") || t.contains("couldn't") || t.contains("try another") {
-        return raw.to_string();
-    }
-    if t.contains("302") || t.contains("301") || t.contains("redirect") {
-        return "Couldn’t open this Jackett download link. Try another result (prefer magnet links).".into();
-    }
-    if t.contains("timeout") || t.contains("timed out") || t.contains("peers") {
-        return "Couldn’t find enough peers to start this stream. Try another result.".into();
-    }
-    if t.contains("metadata")
-        || t.contains("dht")
-        || t.contains("announce")
-        || t.contains("unable to resolve")
-        || t.contains("no response")
-    {
-        return "Couldn’t fetch this torrent’s metadata. Try another result with more seeders.".into();
-    }
-    if t.contains("no video") || t.contains("playable video") {
-        return "This torrent doesn’t contain a playable video file. Try another result.".into();
-    }
-    if t.contains("magnet") && (t.contains("invalid") || t.contains("missing") || t.contains("parse")) {
-        return "That torrent link isn’t valid. Try another result.".into();
-    }
-    if t.contains("failed to start") || t.contains("listed without") {
-        return "This torrent failed to start. Try another result.".into();
-    }
-    if t.contains("connection refused")
-        || t.contains("unreachable")
-        || t.contains("network")
-        || t.contains("i/o")
-        || t.contains("io error")
-    {
-        return "Couldn’t reach peers for this torrent. Try another result.".into();
-    }
-    tracing::warn!(raw, "unmapped stream error");
-    "Couldn’t start this stream. Try another result with more seeders.".into()
-}
-
-/// Jackett often returns `/dl/...` HTTP links that 302 to a magnet or .torrent.
-/// librqbit does not follow those redirects, so resolve them here first.
-#[derive(Clone)]
-enum ResolvedTorrent {
-    Magnet(String),
-    File(Bytes),
-}
-
-impl ResolvedTorrent {
-    fn to_add(&self) -> AddTorrent<'static> {
-        match self {
-            Self::Magnet(u) => AddTorrent::from_url(u.clone()),
-            Self::File(b) => AddTorrent::from_bytes(b.clone()),
-        }
-    }
 }
 
 /// Apps only ever get magnets (Jackett links are turned into magnets before
@@ -1204,101 +368,6 @@ fn require_magnet(input: &str) -> Result<&str, AppError> {
         ));
     }
     Ok(magnet)
-}
-
-async fn resolve_torrent_source(input: &str) -> Result<ResolvedTorrent, String> {
-    let mut url = input.trim().to_string();
-    if url.is_empty() {
-        return Err("That torrent link is missing. Try another result.".into());
-    }
-    if url.to_ascii_lowercase().starts_with("magnet:") {
-        return Ok(ResolvedTorrent::Magnet(url));
-    }
-    if !(url.to_ascii_lowercase().starts_with("http://")
-        || url.to_ascii_lowercase().starts_with("https://"))
-    {
-        return Err("That torrent link isn’t valid. Try another result.".into());
-    }
-
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(Duration::from_secs(20))
-        .user_agent("PeanutButter/0.2")
-        .build()
-        .map_err(|_| "Couldn’t prepare torrent download. Try again.".to_string())?;
-
-    for _ in 0..12 {
-        let lower = url.to_ascii_lowercase();
-        if lower.starts_with("magnet:") {
-            return Ok(ResolvedTorrent::Magnet(url));
-        }
-        if !(lower.starts_with("http://") || lower.starts_with("https://")) {
-            break;
-        }
-
-        let resp = client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| {
-                tracing::warn!(error = %e, "torrent link fetch failed");
-                "Couldn’t download this torrent link. Try another result.".to_string()
-            })?;
-        let status = resp.status();
-        if status.is_redirection() {
-            let loc = resp
-                .headers()
-                .get(reqwest::header::LOCATION)
-                .and_then(|v| v.to_str().ok())
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty());
-            let Some(loc) = loc else {
-                return Err(
-                    "Couldn’t open this Jackett download link. Try another result.".into(),
-                );
-            };
-            url = join_redirect_url(&url, &loc);
-            continue;
-        }
-        if !status.is_success() {
-            return Err(format!(
-                "Couldn’t download this torrent (HTTP {}). Try another result.",
-                status.as_u16()
-            ));
-        }
-
-        let bytes = resp.bytes().await.map_err(|_| {
-            "Couldn’t download this torrent file. Try another result.".to_string()
-        })?;
-        if let Ok(text) = std::str::from_utf8(&bytes) {
-            let trimmed = text.trim();
-            if trimmed.to_ascii_lowercase().starts_with("magnet:") {
-                return Ok(ResolvedTorrent::Magnet(trimmed.to_string()));
-            }
-        }
-        // Bencoded .torrent files start with 'd' (dictionary).
-        if bytes.len() > 16 && bytes.starts_with(b"d") {
-            return Ok(ResolvedTorrent::File(bytes));
-        }
-        return Err(
-            "That download wasn’t a torrent or magnet. Try another result.".into(),
-        );
-    }
-
-    Err("Couldn’t open this Jackett download link. Try another result.".into())
-}
-
-fn join_redirect_url(base: &str, location: &str) -> String {
-    if location.to_ascii_lowercase().starts_with("magnet:")
-        || location.to_ascii_lowercase().starts_with("http://")
-        || location.to_ascii_lowercase().starts_with("https://")
-    {
-        return location.to_string();
-    }
-    match reqwest::Url::parse(base).and_then(|b| b.join(location)) {
-        Ok(u) => u.to_string(),
-        Err(_) => location.to_string(),
-    }
 }
 
 fn torrent_limits() -> LimitsConfig {
@@ -1326,13 +395,7 @@ fn videos_from_handle(handle: &Arc<ManagedTorrent>) -> Vec<(usize, u64, String)>
             meta.file_infos
                 .iter()
                 .enumerate()
-                .map(|(i, fi)| {
-                    (
-                        i,
-                        fi.len,
-                        fi.relative_filename.to_string_lossy().into_owned(),
-                    )
-                })
+                .map(|(i, fi)| (i, fi.len, fi.relative_filename.to_string_lossy().into_owned()))
                 .collect()
         })
         .unwrap_or_default()
@@ -1359,6 +422,7 @@ fn padded_name(name: &str) -> String {
     out
 }
 
+/// Samples, trailers, extras and tiny files: not the feature or episode.
 fn is_junk_video(name: &str, len: u64) -> bool {
     let h = padded_name(name);
     const JUNK: &[&str] = &[
@@ -1382,21 +446,19 @@ fn is_junk_video(name: &str, len: u64) -> bool {
     if JUNK.iter().any(|t| h.contains(&format!(" {t} "))) {
         return true;
     }
-    let lower = name.to_ascii_lowercase();
-    if lower.contains("/sample/")
-        || lower.contains("/samples/")
-        || lower.contains("/extras/")
-        || lower.contains("/extra/")
-        || lower.contains("/featurettes/")
-        || lower.contains("/featurette/")
-        || lower.contains("/bonus/")
-        || lower.contains("/proof/")
-        || lower.contains("/screens/")
-        || lower.contains("\\sample\\")
-        || lower.contains("\\samples\\")
-        || lower.contains("\\extras\\")
-        || lower.contains("\\featurettes\\")
-    {
+    let lower = name.to_ascii_lowercase().replace('\\', "/");
+    const JUNK_DIRS: &[&str] = &[
+        "/sample/",
+        "/samples/",
+        "/extras/",
+        "/extra/",
+        "/featurettes/",
+        "/featurette/",
+        "/bonus/",
+        "/proof/",
+        "/screens/",
+    ];
+    if JUNK_DIRS.iter().any(|d| lower.contains(d)) {
         return true;
     }
     len > 0 && len < MIN_PLAYABLE_BYTES
@@ -1407,171 +469,11 @@ pub(crate) fn matches_episode(name: &str, season: i32, episode: i32) -> bool {
     crate::jackett::torrent_matches_episode(name, season, episode)
 }
 
-fn resolution_score(name: &str, preferred: &str) -> i32 {
-    let t = name.to_ascii_lowercase();
-    if !preferred.is_empty() && t.contains(preferred) {
-        return 3;
-    }
-    if t.contains("2160p") || t.contains("4k") {
-        return 2;
-    }
-    if t.contains("1080p") {
-        return 1;
-    }
-    0
-}
-
-fn pick_playable_video(
-    files: &[(usize, u64, String)],
-    preferred_resolution: &str,
-    season: Option<i32>,
-    episode: Option<i32>,
-) -> Option<usize> {
-    let preferred = preferred_resolution.trim().to_ascii_lowercase();
-    let mut videos: Vec<&(usize, u64, String)> = files
-        .iter()
-        .filter(|(_, _, name)| VIDEO_EXT.contains(&file_ext(name).as_str()))
-        .collect();
-    if videos.is_empty() {
-        return None;
-    }
-    let playable: Vec<&(usize, u64, String)> = videos
-        .iter()
-        .copied()
-        .filter(|(_, len, name)| !is_junk_video(name, *len))
-        .collect();
-    if !playable.is_empty() {
-        videos = playable;
-    } else {
-        videos.retain(|(_, _, name)| {
-            let h = padded_name(name);
-            !h.contains(" sample ") && !h.contains(" trailer ")
-        });
-        if videos.is_empty() {
-            videos = files
-                .iter()
-                .filter(|(_, _, name)| VIDEO_EXT.contains(&file_ext(name).as_str()))
-                .collect();
-        }
-    }
-    if let (Some(season), Some(episode)) = (season, episode) {
-        let hits: Vec<&(usize, u64, String)> = videos
-            .iter()
-            .copied()
-            .filter(|(_, _, name)| matches_episode(name, season, episode))
-            .collect();
-        // Never play a random file from a pack when we asked for a specific episode.
-        if hits.is_empty() {
-            return None;
-        }
-        videos = hits;
-    }
-    videos.sort_by(|a, b| {
-        resolution_score(&b.2, &preferred)
-            .cmp(&resolution_score(&a.2, &preferred))
-            .then(b.1.cmp(&a.1))
-    });
-    videos.first().map(|v| v.0)
-}
-
-/// Stream reader using large chunks so the HTTP layer never blocks on tiny reads.
-fn chunked_stream<R>(reader: R) -> impl futures::Stream<Item = std::io::Result<Bytes>>
-where
-    R: tokio::io::AsyncRead + Send + 'static,
-{
-    ReaderStream::with_capacity(reader, STREAM_CHUNK)
-}
-
-pub async fn serve_stream(
-    AxumPath(id): AxumPath<String>,
-    headers: HeaderMap,
-    method: Method,
-    State(state): State<HttpState>,
-) -> Result<Response, AppError> {
-    let Some(live) = state.app.streams.live(&id).await else {
-        return Err(AppError::NotFound("stream session not found".into()));
-    };
-    let g = live.lock().await;
-    if g.status != "ready" {
-        return Err(AppError::BadRequest(
-            "This stream isn’t ready yet. Wait a moment and try again.".into(),
-        ));
-    }
-    let handle = g
-        .handle
-        .clone()
-        .ok_or_else(|| AppError::Internal("stream handle missing".into()))?;
-    let file_id = g
-        .file_id
-        .ok_or_else(|| AppError::Internal("stream file missing".into()))?;
-    let file_name = g.file_name.clone().unwrap_or_else(|| "video.mkv".into());
-    let last_seen = g.last_seen.clone();
-    last_seen.store(unix_now(), Ordering::Relaxed);
-    drop(g);
-    // An external player can read one long response for a whole film.
-    let touch = move |_: &std::io::Result<bytes::Bytes>| {
-        last_seen.store(unix_now(), Ordering::Relaxed);
-    };
-
-    let mut stream = handle
-        .stream(file_id)
-        .map_err(|e| AppError::Internal(e.to_string()))?;
-    let len = stream.len();
-    let mime = mime_guess::from_path(&file_name)
-        .first_or_octet_stream()
-        .to_string();
-
-    if method == Method::HEAD {
-        return Ok(Response::builder()
-            .status(StatusCode::OK)
-            .header(header::CONTENT_TYPE, mime)
-            .header(header::CONTENT_LENGTH, len)
-            .header(header::ACCEPT_RANGES, "bytes")
-            .header(header::CACHE_CONTROL, "no-store")
-            .body(Body::empty())
-            .map_err(|e| AppError::Internal(e.to_string()))?);
-    }
-
-    if let Some(range) = headers.get(header::RANGE).and_then(|v| v.to_str().ok()) {
-        if let Some((start, end)) = crate::media::serve::parse_range(range, len) {
-            // Redirect sequential piece priority to the seek target immediately.
-            {
-                let g = live.lock().await;
-                retarget_prefetch_bytes(&g, start);
-            }
-            stream
-                .seek(SeekFrom::Start(start))
-                .await
-                .map_err(AppError::Io)?;
-            let length = end - start + 1;
-            let body = Body::from_stream(futures::StreamExt::inspect(chunked_stream(stream.take(length)), touch));
-            return Ok(Response::builder()
-                .status(StatusCode::PARTIAL_CONTENT)
-                .header(header::CONTENT_TYPE, mime)
-                .header(header::CONTENT_LENGTH, length)
-                .header(header::CONTENT_RANGE, format!("bytes {start}-{end}/{len}"))
-                .header(header::ACCEPT_RANGES, "bytes")
-                .header(header::CACHE_CONTROL, "no-store")
-                .body(body)
-                .map_err(|e| AppError::Internal(e.to_string()))?);
-        }
-        return crate::media::serve::range_not_satisfiable(len);
-    }
-
-    let body = Body::from_stream(futures::StreamExt::inspect(chunked_stream(stream), touch));
-    Ok(Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, mime)
-        .header(header::CONTENT_LENGTH, len)
-        .header(header::ACCEPT_RANGES, "bytes")
-        .header(header::CACHE_CONTROL, "no-store")
-        .body(body)
-        .map_err(|e| AppError::Internal(e.to_string()))?)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const MB: u64 = 1024 * 1024;
 
     #[test]
     fn only_magnets_are_accepted_from_clients() {
@@ -1584,60 +486,30 @@ mod tests {
     }
 
     #[test]
-    fn sessions_go_idle_only_after_the_limit() {
-        assert!(!session_is_idle(1_000, 1_000));
-        assert!(!session_is_idle(1_000 + IDLE_SESSION_LIMIT_SECS - 1, 1_000));
-        assert!(session_is_idle(1_000 + IDLE_SESSION_LIMIT_SECS, 1_000));
-        // A clock step backwards must not end a session.
-        assert!(!session_is_idle(500, 1_000));
+    fn samples_trailers_and_extras_are_junk() {
+        assert!(is_junk_video("Movie.1080p.Sample.mkv", 12 * MB));
+        assert!(is_junk_video("Trailers/official.mp4", 8 * MB));
+        assert!(is_junk_video("Extras/featurette.mkv", 400 * MB));
+        assert!(is_junk_video("Show.S01E02.sample.mkv", 20 * MB));
     }
 
     #[test]
-    fn skips_samples_and_picks_the_feature() {
-        let files = [
-            (0, 12 * 1024 * 1024, "Movie.1080p.Sample.mkv".into()),
-            (1, 8 * 1024 * 1024, "Trailers/official.mp4".into()),
-            (2, 9_000 * 1024 * 1024, "Movie.2024.1080p.BluRay.mkv".into()),
-            (3, 400 * 1024 * 1024, "Extras/featurette.mkv".into()),
-        ];
-        assert_eq!(pick_playable_video(&files, "1080p", None, None), Some(2));
+    fn sample_and_proof_folders_are_junk_on_any_os() {
+        assert!(is_junk_video("Pack/Sample/movie.mkv", 900 * MB));
+        assert!(is_junk_video("Pack\\Samples\\movie.mkv", 900 * MB));
+        assert!(is_junk_video("Proof/screens.mkv", 200 * MB));
     }
 
     #[test]
-    fn picks_episode_from_a_season_pack() {
-        let files = [
-            (0, 2_000 * 1024 * 1024, "Show.S01E01.1080p.mkv".into()),
-            (1, 2_100 * 1024 * 1024, "Show.S01E02.1080p.mkv".into()),
-            (2, 20 * 1024 * 1024, "Show.S01E02.sample.mkv".into()),
-        ];
-        assert_eq!(pick_playable_video(&files, "1080p", Some(1), Some(2)), Some(1));
+    fn features_and_episodes_are_kept() {
+        assert!(!is_junk_video("Movie.2024.1080p.BluRay.mkv", 9_000 * MB));
+        assert!(!is_junk_video("Show.S01E01.1080p.mkv", 2_000 * MB));
+        assert!(!is_junk_video("Season 1/05 - Title.mkv", 700 * MB));
     }
 
     #[test]
-    fn refuses_missing_episode_instead_of_wrong_file() {
-        let files = [
-            (0, 2_000 * 1024 * 1024, "Show.S01E01.1080p.mkv".into()),
-            (1, 2_100 * 1024 * 1024, "Show.S01E03.1080p.mkv".into()),
-        ];
-        assert_eq!(pick_playable_video(&files, "1080p", Some(1), Some(2)), None);
-    }
-
-    #[test]
-    fn prefers_requested_resolution() {
-        let files = [
-            (0, 12_000 * 1024 * 1024, "Movie.2160p.mkv".into()),
-            (1, 8_000 * 1024 * 1024, "Movie.1080p.mkv".into()),
-        ];
-        assert_eq!(pick_playable_video(&files, "1080p", None, None), Some(1));
-    }
-
-    #[test]
-    fn skips_sample_folder_and_screens() {
-        let files = [
-            (0, 90 * 1024 * 1024, "Sample/movie.sample.mkv".into()),
-            (1, 200 * 1024 * 1024, "Proof/screens.mkv".into()),
-            (2, 7_000 * 1024 * 1024, "Movie.2024.1080p.mkv".into()),
-        ];
-        assert_eq!(pick_playable_video(&files, "1080p", None, None), Some(2));
+    fn episodes_match_exactly() {
+        assert!(matches_episode("Show.S01E02.1080p.mkv", 1, 2));
+        assert!(!matches_episode("Show.S01E12.1080p.mkv", 1, 2));
     }
 }

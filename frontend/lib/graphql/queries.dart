@@ -452,23 +452,6 @@ query StreamingSearch($query: String!, $kind: TitleKind!, $season: Int, $episode
 }
 ''';
 
-const String STREAM_STATUS = r'''
-query StreamStatus($sessionId: String!) {
-  streamStatus(sessionId: $sessionId) {
-    id
-    title
-    progress
-    bufferProgress
-    downloadMbps
-    seeders
-    peers
-    resumePosition
-    status
-    streamUrl
-  }
-}
-''';
-
 const String MEDIA_SEGMENTS = r'''
 query MediaSegments($titleId: UUID!, $season: Int, $episode: Int, $durationMs: Int) {
   mediaSegments(titleId: $titleId, season: $season, episode: $episode, durationMs: $durationMs) {
@@ -491,23 +474,6 @@ query TorrentFiles($magnet: String!, $season: Int, $episode: Int) {
     size
     sizeBytes
     recommended
-  }
-}
-''';
-
-const String START_STREAM = r'''
-mutation StartStream($magnet: String!, $title: String!, $titleId: UUID, $resume: Boolean, $seeders: Int, $peers: Int, $season: Int, $episode: Int, $fileIndex: Int) {
-  startStream(magnet: $magnet, title: $title, titleId: $titleId, resume: $resume, seeders: $seeders, peers: $peers, season: $season, episode: $episode, fileIndex: $fileIndex) {
-    id
-    title
-    progress
-    bufferProgress
-    downloadMbps
-    seeders
-    peers
-    resumePosition
-    status
-    streamUrl
   }
 }
 ''';
@@ -545,12 +511,6 @@ query StreamBookmark($titleId: UUID!, $season: Int, $episode: Int) {
     episode
     fileIndex
   }
-}
-''';
-
-const String STOP_STREAM = r'''
-mutation StopStream($sessionId: String!) {
-  stopStream(sessionId: $sessionId)
 }
 ''';
 

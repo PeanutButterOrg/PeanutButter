@@ -124,7 +124,12 @@ class LibraryFragment : VerticalGridSupportFragment() {
                     gridAdapter.clear()
                     items.forEach { gridAdapter.add(it) }
                 }
-                host?.findViewById<View>(R.id.catalog_header)?.isVisible = items.isNotEmpty()
+                // Keep the heading; an empty list used to hide it and leave a
+                // blank screen. Say what goes here instead.
+                host?.findViewById<TextView>(R.id.empty_state)?.apply {
+                    setText(if (mode == LibraryActivity.MODE_WATCHED) R.string.empty_watched else R.string.empty_favourites)
+                    isVisible = items.isEmpty()
+                }
                 view?.post { view?.let { refit(it) } }
             } catch (e: Exception) {
                 if (showOverlay) {

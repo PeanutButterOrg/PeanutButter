@@ -318,9 +318,10 @@ async fn prune_backups(dir: &Path) {
     }
 }
 
-/// With Auto-update on, apply a newer release once no server-side stream is
-/// open (checked every 30 minutes; GitHub itself is checked by `updates`).
-pub fn spawn_auto(http: reqwest::Client, streams: std::sync::Arc<crate::stream::StreamService>) {
+/// With Auto-update on, apply a newer release (checked every 30 minutes;
+/// GitHub itself is checked by `updates`). Playback runs on the devices, so
+/// a server restart doesn't interrupt anything being watched.
+pub fn spawn_auto(http: reqwest::Client) {
     if watchtower_url().is_none() {
         return;
     }
@@ -336,7 +337,7 @@ pub fn spawn_auto(http: reqwest::Client, streams: std::sync::Arc<crate::stream::
                     .unwrap_or_else(|e| e.into_inner())
                     .as_ref()
                     .is_some_and(|(v, at)| *v == latest && at.elapsed() < AUTO_RETRY);
-                if !recently && streams.active_sessions().await == 0 {
+                if !recently {
                     *state().last_auto.lock().unwrap_or_else(|e| e.into_inner()) =
                         Some((latest.clone(), Instant::now()));
                     info!(%latest, "auto-update: updating the server");

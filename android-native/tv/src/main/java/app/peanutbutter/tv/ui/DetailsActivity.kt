@@ -648,7 +648,7 @@ class DetailsActivity : FragmentActivity() {
             episode
         }
         val query = if (season != null && searchEpisode != null) {
-            String.format("%s S%02dE%02d", t.displayTitle, season, searchEpisode)
+            String.format(java.util.Locale.US, "%s S%02dE%02d", t.displayTitle, season, searchEpisode)
         } else {
             t.displayTitle
         }
@@ -700,7 +700,7 @@ class DetailsActivity : FragmentActivity() {
                     supportFragmentManager,
                     // The episode the user chose, even when the search used the release's number.
                     if (season != null && episode != null) {
-                        String.format("%s S%02dE%02d", t.displayTitle, season, episode)
+                        String.format(java.util.Locale.US, "%s S%02dE%02d", t.displayTitle, season, episode)
                     } else {
                         query
                     },
@@ -768,7 +768,7 @@ class DetailsActivity : FragmentActivity() {
     ) {
         val api = application.asTv().api
         val label = if (season != null && episode != null) {
-            String.format("%s S%02dE%02d", t.displayTitle, season, episode)
+            String.format(java.util.Locale.US, "%s S%02dE%02d", t.displayTitle, season, episode)
         } else t.displayTitle
         try {
             // Flutter parity: open the player immediately; torrent starts there.

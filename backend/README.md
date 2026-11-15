@@ -17,7 +17,7 @@ It doesn't play or store torrents. The apps do that themselves. The server's job
 
 | Area | How |
 |---|---|
-| **Catalog** | Syncs movies and series from TMDB on a schedule (popular titles about every 6 hours, stale ones nightly). OMDb adds IMDb and Rotten Tomatoes scores, and AniList adds anime data. Text is always English, with English fallbacks for titles from other countries. Adult content is blocked at ingest. |
+| **Catalog** | Syncs movies and series from TMDB on a schedule (popular titles about every 6 hours, stale ones nightly). OMDb adds IMDb and Rotten Tomatoes scores. Text is always English, with English fallbacks for titles from other countries. Adult content is blocked at ingest. |
 | **Search** | Meilisearch, typo-tolerant, kept in sync with Postgres |
 | **Streaming services** | Catalog add-ons ("Netflix", "HBO Max", …) mark titles with where they're streaming and feed the Trending row |
 | **Stream sources** | Jackett and Stremio add-ons (Torrentio, MediaFusion, your own, …), queried in parallel and ranked. Jackett `.torrent` links are turned into magnets before results leave the server. |
@@ -96,7 +96,7 @@ CI builds with the toolchain pinned in the [Backend & Docker workflow](../.githu
 | `src/admin.rs` | The web console (server-rendered HTML) |
 | `src/graphql/` | Schema, queries, mutations, types, data loaders |
 | `src/db/` | Postgres access and numbered SQL migrations |
-| `src/ingest/` | TMDB, OMDb, AniList, Jikan, TVmaze and YTS ingest, plus the sync scheduler |
+| `src/ingest/` | TMDB and OMDb ingest, Jackett listings, and the sync scheduler |
 | `src/search/` | Meilisearch indexing and queries |
 | `src/sources/`, `jackett.rs`, `providers.rs`, `torrent_links.rs`, `trackers.rs` | Finding and ranking stream sources |
 | `src/addon_catalogs.rs` | Streaming-service lists from catalog add-ons |

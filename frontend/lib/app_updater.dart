@@ -132,7 +132,16 @@ Future<File> downloadAppUpdate(
   final dir = Directory('${(await getTemporaryDirectory()).path}/pb-update');
   await dir.create(recursive: true);
   final file = File('${dir.path}/${u.name}');
-  if (await file.exists()) await file.delete();
+  // Reuse an installer that was already downloaded and still verifies (it
+  // used to be deleted and fetched again on every Install press).
+  if (await file.exists()) {
+    if (await file.length() == u.size &&
+        (await crypto.sha256.bind(file.openRead()).first).toString() == u.sha256) {
+      onProgress?.call(1);
+      return file;
+    }
+    await file.delete();
+  }
   await Dio().download(
     u.url,
     file.path,

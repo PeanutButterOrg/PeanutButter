@@ -43,7 +43,7 @@ object EpisodeNotifier {
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
             )
-            val episode = String.format("S%02dE%02d", a.season, a.episode) +
+            val episode = String.format(java.util.Locale.US, "S%02dE%02d", a.season, a.episode) +
                 (a.episodeName?.takeIf { it.isNotBlank() }?.let { " · $it" } ?: "")
             val notification = NotificationCompat.Builder(context, CHANNEL)
                 .setSmallIcon(R.drawable.ic_notifications)

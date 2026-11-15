@@ -122,22 +122,56 @@ object AppUpdater {
         )
     }
 
-    /** Download into the cache and check it against the signed size + SHA-256. */
+    private fun updatesDir(context: Context) = File(context.cacheDir, "updates")
+
+    /** The verified APK for [update], kept so a second Install doesn't download it again. */
+    private fun cachedApk(context: Context, update: AppUpdate) =
+        File(updatesDir(context), "update-${update.build}-${update.sha256.take(16)}.apk")
+
+    /** Drop downloaded updates (called once the app is up to date). */
+    fun clearDownloads(context: Context) {
+        updatesDir(context).listFiles()?.forEach { it.delete() }
+    }
+
+    private fun sha256Of(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input ->
+            val buf = ByteArray(64 * 1024)
+            while (true) {
+                val n = input.read(buf)
+                if (n < 0) break
+                digest.update(buf, 0, n)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(java.util.Locale.US, it) }
+    }
+
+    /**
+     * The update's APK, checked against the signed size + SHA-256. One that was
+     * already downloaded and still verifies is reused (it used to be deleted
+     * and fetched again on every Install press).
+     */
     suspend fun download(
         context: Context,
         session: SessionStore,
         update: AppUpdate,
         onProgress: (Float) -> Unit,
     ): File = withContext(Dispatchers.IO) {
-        val dir = File(context.cacheDir, "updates").apply { mkdirs() }
+        val dir = updatesDir(context).apply { mkdirs() }
+        val file = cachedApk(context, update)
+        if (file.length() == update.size && sha256Of(file) == update.sha256) {
+            onProgress(1f)
+            return@withContext file
+        }
+        // Anything else here is an older or broken download.
         dir.listFiles()?.forEach { it.delete() }
-        val file = File(dir, "update.apk")
+        val part = File(dir, file.name + ".part")
         val digest = MessageDigest.getInstance("SHA-256")
         var got = 0L
         http.newCall(authed(Request.Builder().url(update.url), session).build()).execute().use { res ->
             if (!res.isSuccessful) throw UpdateException("Download failed (HTTP ${res.code}).")
             val input = res.body?.byteStream() ?: throw UpdateException("Empty download.")
-            file.outputStream().use { out ->
+            part.outputStream().use { out ->
                 val buf = ByteArray(64 * 1024)
                 while (true) {
                     coroutineContext.ensureActive()
@@ -151,11 +185,12 @@ object AppUpdater {
                 }
             }
         }
-        val hex = digest.digest().joinToString("") { "%02x".format(it) }
+        val hex = digest.digest().joinToString("") { "%02x".format(java.util.Locale.US, it) }
         if (got != update.size || hex != update.sha256) {
-            file.delete()
+            part.delete()
             throw UpdateException("The downloaded update does not match the signed release.")
         }
+        if (!part.renameTo(file)) throw UpdateException("Couldn't save the update.")
         file
     }
 

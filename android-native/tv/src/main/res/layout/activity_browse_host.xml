@@ -115,6 +115,19 @@
             android:layout_weight="1" />
     </LinearLayout>
 
+    <!-- Nothing to show (no favourites yet, no titles match the filters). -->
+    <TextView
+        android:id="@+id/empty_state"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:layout_marginHorizontal="@dimen/shelf_inset"
+        android:gravity="center"
+        android:maxWidth="720dp"
+        android:textColor="@color/pb_muted"
+        android:textSize="18sp"
+        android:visibility="gone" />
+
     <!-- Shown while the next page loads as you scroll down (the first page
          uses the full-screen overlay below). -->
     <ProgressBar

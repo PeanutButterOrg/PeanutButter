@@ -50,7 +50,7 @@ flowchart LR
         API --- PG
         API --- MS
     end
-    TMDB["TMDB · OMDb · AniList<br/>metadata"] --> API
+    TMDB["TMDB · OMDb<br/>metadata"] --> API
     SRC["Jackett · Stremio add-ons<br/>stream sources"] --> API
     API -- "catalog, search, magnets,<br/>your own files" --> TV["📺 Android TV app<br/>& Launcher"]
     API -- same --> DESK["💻 Desktop app<br/>Windows · macOS · Linux"]
@@ -150,14 +150,14 @@ Everything has a sensible default. Most settings, including API keys, Jackett, a
 |---|---|
 | `PUBLIC_URL` | **The address apps use to reach the server** (LAN IP or domain). Set this. |
 | `ADMIN_PASSWORD` | First console password. Empty means one is generated and logged. `ADMIN_PASSWORD_RESET=1` forces it once. |
-| `TMDB_API_KEY` · `OMDB_API_KEY` · `ANILIST_CLIENT_ID` | Metadata. TMDB is the important one; OMDb adds IMDb and Rotten Tomatoes scores. |
+| `TMDB_API_KEY` · `OMDB_API_KEY` | Metadata. TMDB is the important one; OMDb adds IMDb and Rotten Tomatoes scores. |
 | `MEDIA_PATH` | Your own media folder, mounted into the container |
 | `JACKETT_URL` · `JACKETT_API_KEY` | Jackett, if you prefer env vars over the console |
 | `OPENSUBTITLES_API_KEY` · `WYZIE_API_KEY` | Subtitle providers |
 | `PREFERRED_LANGUAGES` | Audio and subtitle languages to prefer (e.g. `en,hi`) |
 | `API_KEY` | A fixed pairing code for the admin device, re-opened for 15 minutes on each boot |
 | `CORS_ORIGINS` | Extra browser origins allowed to call the API (comma-separated) |
-| `SYNC_CRON_POPULAR` · `SYNC_CRON_STALE` · `SYNC_WORKERS` | Metadata sync schedule and parallelism |
+| `SYNC_CRON_POPULAR` · `SYNC_CRON_STALE` | Metadata sync schedule |
 | `UPDATES_ENABLED` · `UPDATE_CHECK_HOURS` | App update mirroring (on by default) |
 | `DATABASE_URL` · `MEILI_URL` · `MEILI_MASTER_KEY` | Set by the compose files; change only if you run your own |
 | `BIND_ADDR` · `RUST_LOG` | Listen address and log filter |
@@ -183,4 +183,4 @@ PeanutButter is a catalog and player. It ships with no content and no content so
 
 ## Credits
 
-Metadata from [TMDB](https://www.themoviedb.org/) (this product uses the TMDB API but is not endorsed or certified by TMDB), IMDb and Rotten Tomatoes scores via [OMDb](https://www.omdbapi.com/), and anime data from [AniList](https://anilist.co/). Intro and credits timings come from [TheIntroDB](https://theintrodb.org/). Playback by [libmpv](https://mpv.io/) / [media_kit](https://github.com/media-kit/media-kit), [ExoPlayer](https://developer.android.com/media/media3) and [LibVLC](https://www.videolan.org/vlc/libvlc.html). Torrents by [libtorrent](https://www.libtorrent.org/).
+Metadata from [TMDB](https://www.themoviedb.org/) (this product uses the TMDB API but is not endorsed or certified by TMDB), and IMDb and Rotten Tomatoes scores via [OMDb](https://www.omdbapi.com/). Intro and credits timings come from [TheIntroDB](https://theintrodb.org/). Playback by [libmpv](https://mpv.io/) / [media_kit](https://github.com/media-kit/media-kit), [ExoPlayer](https://developer.android.com/media/media3) and [LibVLC](https://www.videolan.org/vlc/libvlc.html). Torrents by [libtorrent](https://www.libtorrent.org/).

@@ -1486,26 +1486,6 @@ fn shelf_ensure_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
-/// Map catalog sort → TMDB shelf name used for lazy pagination.
-pub fn shelf_for_sort(sort: &str) -> Option<&'static str> {
-    match sort {
-        "TRENDING" | "trending" => Some("trending"),
-        "POPULARITY" | "popularity" => Some("popular"),
-        "DATE_ADDED" | "date_added" | "DATEADDED" => Some("fresh"),
-        _ => None,
-    }
-}
-
-/// Ensure TMDB list pages covering `catalog_page * per_page` items are cached.
-/// Called from GraphQL `catalog` when the user scrolls trending / popular / fresh.
-pub async fn shelf_has_more_for_catalog(
-    ctx: &IngestContext,
-    shelf: &str,
-    kind: Option<&str>,
-) -> Result<bool> {
-    shelf_has_more_remote(ctx, shelf, kind).await
-}
-
 /// Catalog filters that can be translated to TMDB Discover parameters.
 #[derive(Debug, Clone, Default)]
 pub struct DiscoverFilter {
@@ -1657,8 +1637,8 @@ pub async fn ensure_discover_pages_for_catalog(
         // Filters discard some results (language lock, blocked genres): one page of slack.
         (pages + 1).clamp(1, TMDB_LIST_MAX_PAGES)
     };
-    // Anime comes from AniList: titles from TMDB's TV list are stored as series,
-    // so fetching them here never adds anything to an anime page.
+    // No anime list: anime in TMDB's TV list is stored as a series, so
+    // fetching it here never adds anything to an anime page.
     let medias: Vec<&str> = match kind {
         Some("movie") => vec!["movie"],
         Some("series") => vec!["tv"],
@@ -1753,7 +1733,7 @@ pub async fn ensure_shelf_pages_for_catalog(
     let medias: Vec<&str> = match kind {
         Some("movie") => vec!["movie"],
         Some("series") => vec!["tv"],
-        // Anime comes from AniList, not TMDB's lists.
+        // No anime list (anime in TMDB's TV list is stored as a series).
         Some("anime") => vec![],
         _ => vec!["movie", "tv"],
     };
@@ -1832,7 +1812,7 @@ async fn shelf_has_more_remote(
     let medias: Vec<&str> = match kind {
         Some("movie") => vec!["movie"],
         Some("series") => vec!["tv"],
-        // Anime comes from AniList, not TMDB's lists.
+        // No anime list (anime in TMDB's TV list is stored as a series).
         Some("anime") => vec![],
         _ => vec!["movie", "tv"],
     };

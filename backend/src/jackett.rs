@@ -19,7 +19,6 @@ const STREAM_ALL_BUDGET: Duration = Duration::from_secs(20);
 #[derive(Clone)]
 pub struct JackettClient {
     http: reqwest::Client,
-    catalog_http: reqwest::Client,
     base_url: String,
     api_key: String,
     skip_indexers: Arc<Mutex<HashSet<String>>>,
@@ -43,8 +42,6 @@ struct JackettResponse {
 
 #[derive(Debug, Deserialize)]
 struct JackettIndexer {
-    #[serde(default, rename = "ID")]
-    id: Option<String>,
     #[serde(default, rename = "Error")]
     error: Option<String>,
 }
@@ -100,7 +97,6 @@ struct JackettHit {
 impl JackettClient {
     pub fn new(http: reqwest::Client, base_url: String, api_key: String) -> Self {
         Self {
-            catalog_http: http.clone(),
             http,
             base_url,
             api_key,
@@ -127,15 +123,8 @@ impl JackettClient {
             .redirect(reqwest::redirect::Policy::limited(4))
             .build()
             .map_err(|e| AppError::Internal(e.to_string()))?;
-        let catalog_http = reqwest::Client::builder()
-            .user_agent("PeanutButter")
-            .timeout(Duration::from_secs(8))
-            .redirect(reqwest::redirect::Policy::limited(4))
-            .build()
-            .map_err(|e| AppError::Internal(e.to_string()))?;
         Ok(Self {
             http,
-            catalog_http,
             base_url: normalize_jackett_url(&url)?,
             api_key: key,
             skip_indexers: Arc::new(Mutex::new(HashSet::new())),
@@ -291,63 +280,6 @@ impl JackettClient {
         Err(jackett_err(http_status_message(status, &body)))
     }
 
-    /// Catalog pass: query a few healthy indexers in parallel and stop once we have
-    /// enough seeders. Skips broken definitions (empty-page parse errors) for the rest
-    /// of the run instead of waiting on `/all/results`.
-    pub async fn search_index(
-        &self,
-        query: &str,
-        kind: &str,
-        preferred_resolution: &str,
-    ) -> Result<Vec<StreamSource>> {
-        let q = build_query(query, kind, None, None, None, "");
-        if q.trim().is_empty() {
-            return Ok(vec![]);
-        }
-        let ids = self.catalog_indexer_ids(kind).await;
-        if ids.is_empty() {
-            return self
-                .search_all_catalog(&q, preferred_resolution, kind)
-                .await;
-        }
-        let mut set = tokio::task::JoinSet::new();
-        for id in ids {
-            let this = self.clone();
-            let q = q.clone();
-            let kind2 = kind.to_string();
-            set.spawn(async move {
-                let result = tokio::time::timeout(
-                    Duration::from_secs(8),
-                    this.search_one_indexer_catalog(&id, &q, &kind2),
-                )
-                .await;
-                (id, result)
-            });
-        }
-        let mut hits = Vec::new();
-        while let Some(joined) = set.join_next().await {
-            let Ok((id, timed)) = joined else { continue };
-            match timed {
-                Ok(Ok(batch)) => {
-                    hits.extend(batch);
-                    if healthy_hit_count(&hits) >= 2 {
-                        set.abort_all();
-                        break;
-                    }
-                }
-                Ok(Err(ref err)) if err == "rate_limited" => self.skip_indexer(&id),
-                Ok(Err(err)) if is_broken_indexer_error(&err) => self.skip_indexer(&id),
-                Err(_) => self.skip_indexer(&id),
-                Ok(Err(_)) => {}
-            }
-        }
-        Ok(self.transform_results(hits, preferred_resolution, "", kind))
-    }
-
-    fn rank_vec(&self, v: Vec<StreamSource>, preferred_resolution: &str) -> Vec<StreamSource> {
-        crate::jackett::rank_sources(v, preferred_resolution)
-    }
-
     /// Torznab search: hit kind-matching indexers in parallel and stop once we have
     /// enough healthy releases. Falls back gracefully if an indexer doesn't support it.
     async fn search_torznab_all(
@@ -419,88 +351,6 @@ impl JackettClient {
             }
         }
         Ok(self.transform_results(hits, preferred_resolution, preferred_language, kind))
-    }
-
-    async fn fetch_indexer_results(
-        &self,
-        url: &str,
-        params: &[(&str, String)],
-    ) -> std::result::Result<Vec<JackettHit>, String> {
-        let res = self
-            .http
-            .get(url)
-            .query(params)
-            .send()
-            .await
-            .map_err(|e| self.redact_text(&e.to_string()))?;
-
-        let status = res.status();
-        if !status.is_success() {
-            let body = res.text().await.unwrap_or_default();
-            if status.as_u16() == 429 {
-                return Err("rate_limited".to_string());
-            }
-            return Err(self.redact_text(&body));
-        }
-        let body: JackettResponse = res
-            .json()
-            .await
-            .map_err(|e| self.redact_text(&e.to_string()))?;
-        if let Some(err) = body
-            .indexers
-            .iter()
-            .filter_map(|i| i.error.as_deref())
-            .find(|e| is_broken_indexer_error(e))
-        {
-            return Err(err.to_string());
-        }
-        Ok(body.results)
-    }
-
-    async fn search_all_catalog(
-        &self,
-        query: &str,
-        preferred_resolution: &str,
-        kind: &str,
-    ) -> Result<Vec<StreamSource>> {
-        let url = format!("{}/api/v2.0/indexers/all/results", self.base_url);
-        let res = match tokio::time::timeout(
-            Duration::from_secs(10),
-            {
-                let mut req = self.catalog_http.get(&url).query(&[
-                    ("apikey", self.api_key.as_str()),
-                    ("Query", query),
-                ]);
-                for cat in kind_category_ids(kind) {
-                    req = req.query(&[("Category", cat.to_string())]);
-                }
-                req.send()
-            },
-        )
-        .await
-        {
-            Ok(Ok(res)) => res,
-            _ => return Ok(vec![]),
-        };
-        if !res.status().is_success() {
-            return Ok(vec![]);
-        }
-        let body: JackettResponse = match res.json().await {
-            Ok(body) => body,
-            Err(_) => return Ok(vec![]),
-        };
-        for indexer in &body.indexers {
-            if let (Some(id), Some(err)) = (indexer.id.as_deref(), indexer.error.as_deref()) {
-                if is_broken_indexer_error(err) {
-                    self.skip_indexer(id);
-                }
-            }
-        }
-        Ok(self.transform_results(body.results, preferred_resolution, "", kind))
-    }
-
-    async fn catalog_indexer_ids(&self, kind: &str) -> Vec<String> {
-        self.ranked_indexer_ids(kind, 4).await
     }
 
     /// Live Play searches: few ranked indexers — more just slows Jackett.
@@ -590,16 +440,6 @@ impl JackettClient {
     async fn search_one_indexer(&self, id: &str, query: &str, kind: &str) -> std::result::Result<Vec<JackettHit>, String> {
         let cats = kind_categories(kind);
         self.search_one_indexer_with(&self.http, id, query, Some(cats)).await
-    }
-
-    async fn search_one_indexer_catalog(
-        &self,
-        id: &str,
-        query: &str,
-        kind: &str,
-    ) -> std::result::Result<Vec<JackettHit>, String> {
-        let cats = kind_categories(kind);
-        self.search_one_indexer_with(&self.catalog_http, id, query, Some(cats)).await
     }
 
     async fn search_one_indexer_with(
@@ -1312,15 +1152,6 @@ fn strip_trailing_year(raw: &str) -> String {
     re.replace(raw, "").to_string().trim().to_string()
 }
 
-fn primary_language_term(language: &str) -> Option<&'static str> {
-    for part in language.split([',', '/', '|', '+']) {
-        if let Some(term) = language_query_term(part.trim()) {
-            return Some(term);
-        }
-    }
-    None
-}
-
 fn torrent_locator(hit: &JackettHit) -> Option<String> {
     for raw in [hit.magnet_uri.as_deref(), hit.link.as_deref()]
         .into_iter()
@@ -1446,10 +1277,6 @@ pub(crate) fn language_codes(title: &str) -> Vec<&'static str> {
     out
 }
 
-pub fn languages_for_title(title: &str) -> String {
-    language_codes(title).join(",")
-}
-
 /// Match preferred languages against tags in the release name.
 ///
 /// Untagged titles are treated as English when `en` is in the preference list —
@@ -1486,27 +1313,6 @@ pub(crate) fn stored_language(found: &[&str], _kind: &str) -> String {
         return "unknown".into();
     }
     found.join(",")
-}
-
-fn language_query_term(code: &str) -> Option<&'static str> {
-    match code.trim().to_ascii_lowercase().as_str() {
-        "" | "all" | "en" => None,
-        "ja" => Some("Japanese"),
-        "ko" => Some("Korean"),
-        "zh" => Some("Chinese"),
-        "hi" => Some("Hindi"),
-        "es" => Some("Spanish"),
-        "fr" => Some("French"),
-        "de" => Some("German"),
-        "it" => Some("Italian"),
-        "pt" => Some("Portuguese"),
-        "ar" => Some("Arabic"),
-        "tr" => Some("Turkish"),
-        "ru" => Some("Russian"),
-        "th" => Some("Thai"),
-        "id" => Some("Indonesian"),
-        _ => None,
-    }
 }
 
 pub fn calculate_rating(seeders: i32) -> i32 {
@@ -1936,10 +1742,7 @@ mod tests {
     }
 
     #[test]
-    fn language_query_skips_english() {
-        assert_eq!(super::language_query_term("en"), None);
-        assert_eq!(super::language_query_term("hi"), Some("Hindi"));
-        // Year and language names are never baked into the query.
+    fn query_never_bakes_in_year_or_language() {
         let movie = super::build_query("Dune", "movie", None, None, Some(2021), "hi");
         assert!(!movie.contains("2021"));
         assert!(!movie.contains("Hindi"));
