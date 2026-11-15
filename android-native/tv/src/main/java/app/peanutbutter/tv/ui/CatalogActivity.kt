@@ -206,6 +206,14 @@ class CatalogActivity : androidx.fragment.app.FragmentActivity() {
         dialog.show()
     }
 
+    /** "No titles match" when the first page comes back empty. */
+    fun setEmpty(empty: Boolean) {
+        findViewById<TextView>(R.id.empty_state).apply {
+            setText(R.string.empty_catalog)
+            isVisible = empty
+        }
+    }
+
     /** Slim bar at the bottom while a further page loads. */
     fun setLoadingMore(loading: Boolean) {
         findViewById<View>(R.id.loading_more).isVisible = loading
@@ -330,6 +338,7 @@ class CatalogFragment : VerticalGridSupportFragment() {
 
     private fun reload() {
         (activity as? CatalogActivity)?.setLoadingMore(false)
+        (activity as? CatalogActivity)?.setEmpty(false)
         page = 1
         hasNext = true
         loadGen++
@@ -428,6 +437,7 @@ class CatalogFragment : VerticalGridSupportFragment() {
                     gridAdapter.add(it)
                 }
                 hasNext = result.hasNextPage
+                if (pageToLoad == 1) host?.setEmpty(loaded.isEmpty())
                 // A short page: the server is still bringing titles in. Ask for it
                 // again, or the ones landing in the gap are skipped.
                 if (result.items.size >= PER_PAGE || !result.hasNextPage) page = pageToLoad + 1
