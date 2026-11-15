@@ -87,14 +87,18 @@ Future<void> main() async {
   SharedPreferences prefs;
   final loadPrefs = SharedPreferences.getInstance();
   try {
-    prefs = await loadPrefs.timeout(const Duration(seconds: 5));
-  } on TimeoutException {
-    // Slow disk after boot: keep waiting for the real store. Switching to an
-    // empty in-memory one here made the app look unpaired and lost anything
-    // saved (pairing included) on the next start.
-    debugPrint('PeanutButter SharedPreferences slow — still waiting');
-    prefs = await loadPrefs;
+    try {
+      prefs = await loadPrefs.timeout(const Duration(seconds: 5));
+    } on TimeoutException {
+      // Slow disk after boot: keep waiting for the real store. Switching to an
+      // empty in-memory one here made the app look unpaired and lost anything
+      // saved (pairing included) on the next start.
+      debugPrint('PeanutButter SharedPreferences slow — still waiting');
+      prefs = await loadPrefs;
+    }
   } catch (e) {
+    // Outer handler: also catches a store that fails after being slow (an
+    // error thrown inside `on TimeoutException` skips a sibling `catch`).
     debugPrint('PeanutButter SharedPreferences failed: $e — continuing with empty prefs');
     // Last resort when the store can't be read at all, so the UI can mount.
     // ignore: invalid_use_of_visible_for_testing_member

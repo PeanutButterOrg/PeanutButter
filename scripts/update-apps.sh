@@ -17,6 +17,7 @@ DIST="$ROOT/dist"
 TV_HOST="${PB_TV_HOST:-10.0.0.9}"
 TV_PORT="${PB_TV_PORT:-5555}"
 TV_FLAVOR="app"
+TV_APK=""
 DESKTOP_ID="app.peanutbutter.peanutbutter"
 OPT_DIR="${HOME}/.local/opt/peanutbutter"
 BIN_DIR="${HOME}/.local/bin"
@@ -154,9 +155,13 @@ install_tv() {
   (cd "$NATIVE" && ./gradlew -q ":tv:assemble${cap}Debug")
   local out="$NATIVE/tv/build/outputs/apk/$TV_FLAVOR/debug"
 
+  # Always keep a copy under dist/ for sharing or sideloading, whether or not
+  # a TV is connected. The universal APK runs on any TV.
+  cp -f "$out/tv-$TV_FLAVOR-universal-debug.apk" "$TV_APK"
+  echo "TV APK saved → $TV_APK"
+
   if ! command -v adb >/dev/null 2>&1; then
-    cp -f "$out/tv-$TV_FLAVOR-universal-debug.apk" "$DIST/"
-    echo "adb not found: APK saved to dist/ only" >&2
+    echo "adb not found: not installing (APK is in dist/)" >&2
     return 0
   fi
 
@@ -172,7 +177,6 @@ install_tv() {
     dev="$(adb devices | awk '/[[:space:]]device$/{print $1; exit}')"
   fi
   if [[ -z "$dev" ]]; then
-    cp -f "$out/tv-$TV_FLAVOR-universal-debug.apk" "$DIST/"
     echo "No Android TV found via adb (tried $target). APK is in dist/." >&2
     return 0
   fi
@@ -202,10 +206,15 @@ if [[ "$do_linux" -eq 1 ]]; then
   install_linux
 fi
 if [[ "$do_tv" -eq 1 ]]; then
+  if [[ "$TV_FLAVOR" == "launcher" ]]; then
+    TV_APK="$DIST/PeanutButter-tv-launcher.apk"
+  else
+    TV_APK="$DIST/PeanutButter-tv.apk"
+  fi
   install_tv
 fi
 
 echo
 echo "Done."
-echo "  Linux: peanutbutter"
-echo "  TV APK: $DIST/PeanutButter-tv.apk"
+if [[ "$do_linux" -eq 1 ]]; then echo "  Linux: peanutbutter"; fi
+if [[ -n "$TV_APK" ]]; then echo "  TV APK: $TV_APK"; fi
