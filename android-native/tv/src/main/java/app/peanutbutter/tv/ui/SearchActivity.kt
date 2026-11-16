@@ -150,41 +150,13 @@ class SearchActivity : FragmentActivity() {
         }
         button.text = label()
         button.setOnClickListener {
-            val options = sortOptions.map { it.first to getString(it.second) }
-            val col = android.widget.LinearLayout(this).apply {
-                orientation = android.widget.LinearLayout.VERTICAL
-                val pad = dp(16)
-                setPadding(pad, pad / 2, pad, pad / 2)
-            }
-            val dialog = android.app.AlertDialog.Builder(this)
-                .setTitle(R.string.sort)
-                .setNegativeButton(android.R.string.cancel, null)
-                .create()
-            options.forEachIndexed { index, (key, text) ->
-                val row = TextView(this).apply {
-                    this.text = text
-                    textSize = 16f
-                    setTextColor(getColor(R.color.pb_white))
-                    val py = dp(12)
-                    setPadding(py, py, py, py)
-                    isFocusable = true
-                    background = getDrawable(R.drawable.kind_tab_bg)
-                    setTypeface(null, if (key == sortKey) android.graphics.Typeface.BOLD else android.graphics.Typeface.NORMAL)
-                    setOnClickListener {
-                        dialog.dismiss()
-                        selectSort(key)
-                    }
-                }
-                val lp = android.widget.LinearLayout.LayoutParams(
-                    android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
-                    android.widget.LinearLayout.LayoutParams.WRAP_CONTENT,
-                )
-                if (index > 0) lp.topMargin = dp(8)
-                col.addView(row, lp)
-            }
-            dialog.setView(android.widget.ScrollView(this).apply { addView(col) })
-            dialog.setOnShowListener { (col.getChildAt(0) as? TextView)?.requestFocus() }
-            dialog.show()
+            // The app's own rounded menu, like the catalog filters.
+            showRoundListDialog(
+                this,
+                getString(R.string.sort),
+                sortOptions.map { getString(it.second) },
+                checked = sortOptions.indexOfFirst { it.first == sortKey },
+            ) { i -> selectSort(sortOptions[i].first) }
         }
     }
 

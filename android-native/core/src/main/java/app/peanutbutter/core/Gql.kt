@@ -189,6 +189,11 @@ mutation SetWatched(${'$'}titleId: UUID!, ${'$'}watched: Boolean!) {
 query Genres { genres }
 """
 
+    /** Genres titles of one kind actually have (servers from 0.3.23). */
+    const val GENRES_FOR_KIND = """
+query GenresForKind(${'$'}kind: TitleKind) { genres(kind: ${'$'}kind) }
+"""
+
     const val SEARCH = """
 query Search(${'$'}q: String!, ${'$'}kind: TitleKind) {
   search(query: ${'$'}q, kind: ${'$'}kind) {

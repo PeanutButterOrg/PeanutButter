@@ -223,8 +223,17 @@ class ApiClient(
         parseTitles(root.getAsJsonArray("items"))
     }
 
-    suspend fun genres(): List<String> = withContext(Dispatchers.IO) {
-        val data = gql(Gql.GENRES)
+    /**
+     * Genres for the filter. With a kind, only the genres those titles have (no
+     * TV-only genres for movies); an older server that doesn't take a kind
+     * gets the full list.
+     */
+    suspend fun genres(kind: String? = null): List<String> = withContext(Dispatchers.IO) {
+        val data = if (kind == null) {
+            gql(Gql.GENRES)
+        } else {
+            runCatching { gql(Gql.GENRES_FOR_KIND, mapOf("kind" to kind)) }.getOrElse { gql(Gql.GENRES) }
+        }
         data.getAsJsonArray("genres")?.mapNotNull { el ->
             el.takeUnless { it.isJsonNull }?.asString?.trim()?.takeIf { it.isNotEmpty() }
         }.orEmpty()

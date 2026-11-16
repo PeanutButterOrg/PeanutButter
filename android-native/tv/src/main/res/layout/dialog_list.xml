@@ -18,12 +18,13 @@
         android:textSize="20sp"
         android:textStyle="bold" />
 
+    <!-- Height is capped in code for long lists (ScrollView has no maxHeight). -->
     <ScrollView
+        android:id="@+id/dialog_scroll"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="14dp"
         android:clipToPadding="false"
-        android:maxHeight="420dp"
         android:padding="4dp">
 
         <LinearLayout

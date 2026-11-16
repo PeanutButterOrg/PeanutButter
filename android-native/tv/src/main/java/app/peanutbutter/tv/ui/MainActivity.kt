@@ -181,6 +181,23 @@ class MainActivity : FragmentActivity() {
         // Keep header above Leanback scroll content; never scroll with rows
         findViewById<View>(R.id.home_header).elevation = 24f
         findViewById<View>(R.id.main_browse_fragment).elevation = 0f
+        window.decorView.viewTreeObserver.addOnGlobalFocusChangeListener { _, _ -> updateHeaderScrim() }
+    }
+
+    private var headerScrolled = false
+
+    /**
+     * Light fade over the hero; once focus is down in the rows (which then sit
+     * under the tabs), a near-solid bar so posters don't show through the
+     * labels. Same as the desktop home header.
+     */
+    private fun updateHeaderScrim() {
+        val scrolled = !focusIsInHeader() && (browseFragment()?.selectedPosition ?: 0) > 0
+        if (scrolled == headerScrolled) return
+        headerScrolled = scrolled
+        findViewById<View>(R.id.home_header).setBackgroundResource(
+            if (scrolled) R.drawable.home_header_solid else R.drawable.home_header_gradient,
+        )
     }
 
     private fun styleKind(movies: TextView, series: TextView, selected: String) {

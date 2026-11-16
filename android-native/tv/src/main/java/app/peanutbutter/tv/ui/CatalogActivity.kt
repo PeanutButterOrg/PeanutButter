@@ -1,14 +1,10 @@
 package app.peanutbutter.tv.ui
 
-import android.app.AlertDialog
 import android.content.Intent
 import android.os.Bundle
 import android.util.Log
 import android.view.KeyEvent
 import android.view.View
-import android.view.ViewGroup
-import android.widget.LinearLayout
-import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
@@ -40,7 +36,7 @@ class CatalogActivity : androidx.fragment.app.FragmentActivity() {
         findViewById<TextView>(R.id.filter_sort).setOnClickListener { pickSort(sort, kind) }
         findViewById<TextView>(R.id.filter_year).setOnClickListener { pickYear() }
         findViewById<TextView>(R.id.filter_rating).setOnClickListener { pickRating() }
-        findViewById<TextView>(R.id.filter_genre).setOnClickListener { pickGenre() }
+        findViewById<TextView>(R.id.filter_genre).setOnClickListener { pickGenre(kind) }
         findViewById<TextView>(R.id.filter_service).setOnClickListener { pickService(kind) }
         if (sort == "TRENDING") showServiceFilterIfAny(kind)
         val downToGrid = View.OnKeyListener { _, keyCode, event ->
@@ -106,7 +102,7 @@ class CatalogActivity : androidx.fragment.app.FragmentActivity() {
     }
 
     private fun pickSort(current: String, kind: String?) {
-        showChoices(getString(R.string.sort), SORTS.map { it.first to getString(it.second) }) { key ->
+        showChoices(getString(R.string.sort), SORTS.map { it.first to getString(it.second) }, current) { key ->
             refreshHeading(key, kind)
             // The Provider chip belongs to Trending only.
             if (key == "TRENDING") {
@@ -149,9 +145,9 @@ class CatalogActivity : androidx.fragment.app.FragmentActivity() {
         }
     }
 
-    private fun pickGenre() {
+    private fun pickGenre(kind: String?) {
         lifecycleScope.launch {
-            val names = runCatching { application.asTv().api.genres() }.getOrDefault(emptyList())
+            val names = runCatching { application.asTv().api.genres(kind) }.getOrDefault(emptyList())
             val options = listOf("" to getString(R.string.filter_all_genres)) + names.map { it to it }
             showChoices(getString(R.string.filter_genre), options) { value ->
                 findViewById<TextView>(R.id.filter_genre).text =
@@ -181,39 +177,19 @@ class CatalogActivity : androidx.fragment.app.FragmentActivity() {
         }
     }
 
-    private fun showChoices(title: String, options: List<Pair<String, String>>, onPick: (String) -> Unit) {
-        val col = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            val pad = (16 * resources.displayMetrics.density).toInt()
-            setPadding(pad, pad / 2, pad, pad / 2)
-        }
-        val dialog = AlertDialog.Builder(this)
-            .setTitle(title)
-            .setView(ScrollView(this).apply {
-                addView(col, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-            })
-            .setNegativeButton(android.R.string.cancel, null)
-            .create()
-        options.forEachIndexed { index, (value, label) ->
-            val row = TextView(this).apply {
-                text = label
-                textSize = 16f
-                setTextColor(getColor(R.color.pb_white))
-                val py = (12 * resources.displayMetrics.density).toInt()
-                setPadding(py, py, py, py)
-                isFocusable = true
-                background = getDrawable(R.drawable.kind_tab_bg)
-                setOnClickListener {
-                    dialog.dismiss()
-                    onPick(value)
-                }
-            }
-            val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-            if (index > 0) lp.topMargin = (8 * resources.displayMetrics.density).toInt()
-            col.addView(row, lp)
-        }
-        dialog.setOnShowListener { (col.getChildAt(0) as? TextView)?.requestFocus() }
-        dialog.show()
+    /** Filter and sort menus, in the app's own rounded panel. */
+    private fun showChoices(
+        title: String,
+        options: List<Pair<String, String>>,
+        current: String? = null,
+        onPick: (String) -> Unit,
+    ) {
+        showRoundListDialog(
+            this,
+            title,
+            options.map { it.second },
+            checked = options.indexOfFirst { it.first == current },
+        ) { i -> onPick(options[i].first) }
     }
 
     /** "No titles match" when the first page comes back empty. */

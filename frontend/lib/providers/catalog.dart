@@ -576,11 +576,25 @@ final streamingServicesProvider =
   ];
 });
 
-final genresProvider = FutureProvider<List<String>>((ref) async {
+/// Genres for the filter. With a kind ('MOVIE', 'SERIES'), only the genres
+/// those titles have, so movies don't list TV-only genres; an older server
+/// that doesn't take a kind gets the full list.
+final genresProvider = FutureProvider.family<List<String>, String?>((ref, kind) async {
   final client = ref.watch(graphQLClientProvider);
-  final result = await client.query(
-    QueryOptions(document: gql(GET_GENRES), fetchPolicy: FetchPolicy.cacheFirst),
+  var result = await client.query(
+    kind == null
+        ? QueryOptions(document: gql(GET_GENRES), fetchPolicy: FetchPolicy.cacheFirst)
+        : QueryOptions(
+            document: gql(GET_GENRES_FOR_KIND),
+            variables: {'kind': kind},
+            fetchPolicy: FetchPolicy.cacheFirst,
+          ),
   );
+  if (result.hasException && kind != null) {
+    result = await client.query(
+      QueryOptions(document: gql(GET_GENRES), fetchPolicy: FetchPolicy.cacheFirst),
+    );
+  }
   if (result.hasException) return const [];
   const blocked = {
     'sex',

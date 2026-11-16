@@ -539,6 +539,26 @@ pub async fn all_genre_names(pool: &PgPool) -> Result<Vec<String>> {
         .collect())
 }
 
+/// Genres that titles of this kind ("movie" / "series" / "anime") actually
+/// have, so the movie filter doesn't offer TV-only genres such as
+/// "Action & Adventure".
+pub async fn genre_names_for_kind(pool: &PgPool, kind: &str) -> Result<Vec<String>> {
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "SELECT DISTINCT g.name FROM genres g \
+         JOIN title_genres tg ON tg.genre_id = g.id \
+         JOIN titles t ON t.id = tg.title_id \
+         WHERE t.kind = $1 ORDER BY g.name",
+    )
+    .bind(kind)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(n,)| n)
+        .filter(|n| !crate::content_filter::is_blocked_genre(n))
+        .collect())
+}
+
 #[derive(sqlx::FromRow)]
 struct SettingsRow {
     tmdb_api_key: String,

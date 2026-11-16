@@ -429,7 +429,7 @@ class CatalogGenreMenu extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final genres = ref.watch(genresProvider).maybeWhen(
+    final genres = ref.watch(genresProvider(filter.kind)).maybeWhen(
           data: (v) => v,
           orElse: () => const <String>[],
         );

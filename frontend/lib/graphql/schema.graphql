@@ -50,7 +50,7 @@ type Query {
   ): TitleConnection!
   title(id: UUID, imdbId: String, tmdbId: Int): Title
   search(query: String!, kind: TitleKind, page: Int, perPage: Int): SearchResult!
-  genres: [String!]!
+  genres(kind: TitleKind): [String!]!
   serverInfo: ServerInfo!
   homeFeed(kind: TitleKind!): HomeFeed!
   nextPlayback(fileId: UUID!): FileReference

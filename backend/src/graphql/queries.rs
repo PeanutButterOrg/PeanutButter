@@ -419,9 +419,13 @@ impl Query {
         Ok(services_by_size(rows))
     }
 
-    async fn genres(&self, ctx: &Context<'_>) -> async_graphql::Result<Vec<String>> {
+    /// Every genre, or with `kind` only the genres titles of that kind have.
+    async fn genres(&self, ctx: &Context<'_>, kind: Option<TitleKind>) -> async_graphql::Result<Vec<String>> {
         let state = ctx.data::<AppState>()?;
-        Ok(crate::db::all_genre_names(&state.pool).await?)
+        Ok(match kind {
+            Some(kind) => crate::db::genre_names_for_kind(&state.pool, kind.as_db()).await?,
+            None => crate::db::all_genre_names(&state.pool).await?,
+        })
     }
 
     async fn server_info(&self, ctx: &Context<'_>) -> async_graphql::Result<ServerInfo> {
