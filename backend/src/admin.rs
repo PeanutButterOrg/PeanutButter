@@ -1907,7 +1907,6 @@ The database is backed up first. Apps reconnect on their own after about a minut
             <div><span class="muted">Titles</span><strong id="stat-total">—</strong></div>
             <div><span class="muted">Movies</span><strong id="stat-movies">—</strong></div>
             <div><span class="muted">Series</span><strong id="stat-series">—</strong></div>
-            <div><span class="muted">Anime</span><strong id="stat-anime">—</strong></div>
             <div><span class="muted">Workers</span><strong id="stat-workers">0</strong></div>
             <div><span class="muted">Last sync</span><strong id="stat-last">—</strong></div>
           </div>
@@ -2010,7 +2009,7 @@ The database is backed up first. Apps reconnect on their own after about a minut
                 const ph = l.phase ? ('[' + l.phase + '] ') : '';
                 return fmtLogTime(l.at) + '  ' + (l.level || 'info').toUpperCase().padEnd(5) + '  ' + ph + l.message;
               }});
-              syncLog.textContent = lines.length ? lines.join('\\n') : 'Waiting for sync activity…';
+              syncLog.textContent = lines.length ? lines.join('\n') : 'Waiting for sync activity…';
               syncLog.scrollTop = syncLog.scrollHeight;
             }} catch (_) {{}}
           }}
@@ -2031,7 +2030,6 @@ The database is backed up first. Apps reconnect on their own after about a minut
             stat('stat-total', s.total_titles);
             stat('stat-movies', s.movies);
             stat('stat-series', s.series);
-            stat('stat-anime', s.anime);
             stat('stat-workers', s.workers_active || 0);
             stat('stat-last', fmtWhen(s.last_sync_at));
             if (err) {{
@@ -2096,7 +2094,7 @@ The database is backed up first. Apps reconnect on their own after about a minut
           if (forceBtn) forceBtn.addEventListener('click', () => postSync('/sync/start', {{ force: true }},
             'Restart sync even if one looks stuck?'));
           if (flushBtn) flushBtn.addEventListener('click', () => postSync('/sync/flush', {{}},
-            'Flush the entire catalog and start a clean sync?\\n\\nAll titles will be removed. Pairing codes and Jackett stay.\\n\\nThis cannot be undone.'));
+            'Flush the entire catalog and start a clean sync?\n\nAll titles will be removed. Pairing codes and Jackett stay.\n\nThis cannot be undone.'));
           tick();
           tickLogs();
           setInterval(tick, 1000);
