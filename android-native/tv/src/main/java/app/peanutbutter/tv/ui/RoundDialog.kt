@@ -41,7 +41,8 @@ fun showRoundDialog(
 
 /**
  * Pick-one list in the same rounded panel as [showRoundDialog] (aspect,
- * audio track, subtitle menus). The current choice is marked and focused.
+ * audio track, subtitle menus, catalog filters, search sort). The current
+ * choice is marked and focused.
  */
 fun showRoundListDialog(
     activity: Activity,
@@ -56,6 +57,13 @@ fun showRoundListDialog(
     val cancel = view.findViewById<TextView>(R.id.dialog_negative)
     val dialog = AlertDialog.Builder(activity).setView(view).create()
     val density = activity.resources.displayMetrics.density
+    // Long lists (genres, years) scroll inside the panel so Cancel stays on
+    // screen: a TV is only 540dp tall, and the title and Cancel need ~150dp.
+    if (options.size > 5) {
+        val screenDp = activity.resources.configuration.screenHeightDp
+        val capDp = (screenDp - 230).coerceIn(200, 420)
+        view.findViewById<android.widget.ScrollView>(R.id.dialog_scroll).layoutParams.height = (capDp * density).toInt()
+    }
     val rows = options.mapIndexed { i, label ->
         TextView(activity).apply {
             text = label

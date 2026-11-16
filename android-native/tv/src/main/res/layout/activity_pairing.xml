@@ -81,11 +81,14 @@
 
                 <Button
                     android:id="@+id/change"
-                    style="?android:attr/borderlessButtonStyle"
                     android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
+                    android:layout_height="40dp"
+                    android:background="@drawable/bg_button_ghost"
+                    android:minWidth="96dp"
+                    android:paddingHorizontal="16dp"
                     android:text="Change"
-                    android:textColor="@color/pb_seed" />
+                    android:textAllCaps="false"
+                    android:textColor="@color/pb_white" />
             </LinearLayout>
 
             <EditText
@@ -137,15 +140,16 @@
                 android:textAllCaps="false"
                 android:textColor="@color/pb_white" />
 
+            <!-- Rounded outline like the app's other secondary buttons. -->
             <Button
                 android:id="@+id/find"
-                style="?android:attr/borderlessButtonStyle"
                 android:layout_width="match_parent"
                 android:layout_height="48dp"
                 android:layout_marginTop="10dp"
+                android:background="@drawable/bg_button_ghost"
                 android:text="@string/pair_find"
                 android:textAllCaps="false"
-                android:textColor="@color/pb_seed" />
+                android:textColor="@color/pb_white" />
         </LinearLayout>
     </LinearLayout>
 </ScrollView>

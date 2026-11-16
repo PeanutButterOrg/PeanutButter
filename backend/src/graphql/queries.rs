@@ -51,7 +51,12 @@ impl Query {
             None => None,
         };
         // A service filter shows that service's lists, not TMDB's shelves.
-        if !personal && service_names.is_none() {
+        // Availability ranks your own files and Now in HD the quality checks;
+        // TMDB can't add to either.
+        if !personal
+            && service_names.is_none()
+            && !matches!(sort, SortField::Availability | SortField::NowInHd)
+        {
             let shelf = match sort {
                 SortField::Trending => Some("trending"),
                 SortField::Popularity => Some("popular"),
@@ -109,6 +114,9 @@ impl Query {
         if watched {
             qb.push(" AND p.watched = TRUE");
         }
+        if sort == SortField::NowInHd {
+            qb.push(NOW_IN_HD_SQL);
+        }
 
         qb.push(" ORDER BY ");
         if let Some(names) = &service_names {
@@ -151,6 +159,9 @@ impl Query {
         }
         if watched {
             count_qb.push(" AND p.watched = TRUE");
+        }
+        if sort == SortField::NowInHd {
+            count_qb.push(NOW_IN_HD_SQL);
         }
         let (total_count,): (i64,) = count_qb.build_query_as().fetch_one(&state.pool).await?;
 
@@ -408,9 +419,13 @@ impl Query {
         Ok(services_by_size(rows))
     }
 
-    async fn genres(&self, ctx: &Context<'_>) -> async_graphql::Result<Vec<String>> {
+    /// Every genre, or with `kind` only the genres titles of that kind have.
+    async fn genres(&self, ctx: &Context<'_>, kind: Option<TitleKind>) -> async_graphql::Result<Vec<String>> {
         let state = ctx.data::<AppState>()?;
-        Ok(crate::db::all_genre_names(&state.pool).await?)
+        Ok(match kind {
+            Some(kind) => crate::db::genre_names_for_kind(&state.pool, kind.as_db()).await?,
+            None => crate::db::all_genre_names(&state.pool).await?,
+        })
     }
 
     async fn server_info(&self, ctx: &Context<'_>) -> async_graphql::Result<ServerInfo> {
@@ -588,6 +603,7 @@ impl Query {
         // Prefer explicit client language (per-language picker searches) over the
         // server-wide list so English / Hindi / … can be fetched separately.
         let server_langs = state.config.live.preferred_languages();
+        let server_langs_for_quality = server_langs.trim().to_string();
         let preferred = {
             let from_client = language.as_deref().unwrap_or("").trim();
             if !from_client.is_empty() {
@@ -598,7 +614,8 @@ impl Query {
                 String::new()
             }
         };
-        // v5: merged + ranked across all sources, with `score` / `kind` / `url`.
+        // v6: merged + ranked across all sources, with `score` / `kind` / `url`,
+        // HD only (v5 lists still had SD copies).
         // The enabled sources are part of the key, so switching one on or off
         // doesn't serve a list made without it.
         let sources_sig = {
@@ -620,7 +637,7 @@ impl Query {
             .unwrap_or_else(|| state.config.live.streaming_resolution());
         let cache_key = crate::db::stream_search_cache_key(
             title_id,
-            &format!("v5:{sources_sig}:{preferred_res}|{query}"),
+            &format!("v6:{sources_sig}:{preferred_res}|{query}"),
             kind.as_db(),
             season,
             episode,
@@ -660,32 +677,7 @@ impl Query {
 
         // Prefer catalog metadata over the client string so searches stay exact
         // (clean title + imdb + S/E), even if the app sends a messy query.
-        let mut target = crate::jackett::SearchTarget {
-            title: query.clone(),
-            year,
-            ..Default::default()
-        };
-        if let Some(id) = title_id {
-            if let Ok(Some(meta)) = crate::db::title_stream_meta(&state.pool, id).await {
-                // Catalog title is the canonical English/UI name torrents usually use.
-                if !meta.title.trim().is_empty() {
-                    target.title = meta.title;
-                }
-                target.year = meta.year.or(year);
-                target.imdb_id = meta.imdb_id.filter(|s| !s.trim().is_empty());
-                // Releases may use the original title (anime romaji, foreign films)
-                // or whatever the app sent.
-                for alt in [meta.original_title, Some(query.clone())].into_iter().flatten() {
-                    let alt = alt.trim().to_string();
-                    if !alt.is_empty()
-                        && !alt.eq_ignore_ascii_case(&target.title)
-                        && !target.alt_titles.iter().any(|a| a.eq_ignore_ascii_case(&alt))
-                    {
-                        target.alt_titles.push(alt);
-                    }
-                }
-            }
-        }
+        let target = crate::sources::target_for_title(&state.pool, title_id, &query, year).await;
 
         let q = crate::sources::SourceQuery {
             target,
@@ -738,6 +730,18 @@ impl Query {
             }
         };
         let found = crate::sources::rank::rank(merged, &crate::sources::prefs(&q));
+        // A movie's ordinary search in the server's languages doubles as its
+        // "Now in HD" check, unless every source failed.
+        if let (Some(id), TitleKind::Movie, None) = (title_id, kind, episode) {
+            let default_langs = language.as_deref().map(str::trim).unwrap_or("").is_empty()
+                || language.as_deref().map(str::trim) == Some(server_langs_for_quality.as_str());
+            let answered = reports.iter().any(|r| matches!(r.outcome, crate::sources::Outcome::Found(_)));
+            if default_langs && answered {
+                if let Err(e) = crate::quality::record(&state.pool, id, crate::quality::verdict(&found)).await {
+                    tracing::warn!(error = %e, "saving quality verdict failed");
+                }
+            }
+        }
 
         if found.is_empty() {
             // Sources flaked — last resort: filtered expired cache.
@@ -1148,6 +1152,11 @@ async fn trending_with_addon_catalogs(
 
 /// In progress: a resume position, or a series whose last episode was finished
 /// (position back to 0) with more episodes after it.
+/// Movies from the last six months with an HD copy (see quality.rs).
+const NOW_IN_HD_SQL: &str = " AND t.kind = 'movie' \
+    AND t.released_at >= CURRENT_DATE - INTERVAL '180 days' \
+    AND EXISTS (SELECT 1 FROM title_quality q WHERE q.title_id = t.id AND q.status = 'ready')";
+
 const CONTINUE_WATCHING_SQL: &str = " AND p.watched = FALSE AND (\
     p.position_ms > 2000 OR EXISTS (\
         SELECT 1 FROM episodes cur \
@@ -1338,19 +1347,22 @@ async fn fill_catalog_page(
         rating_min: filter.rating_min,
         order,
     };
-    let filtered = discover.is_active();
-    let shelf = shelf.filter(|_| !filtered);
-    if !filtered && shelf.is_none() {
+    // Filters, or a sort with no TMDB shelf of its own (Rating, Year, Title,
+    // …), go through Discover; plain Trending / Popular / Fresh use their
+    // shelf. Before, the second case fetched nothing and only ever showed
+    // titles already stored.
+    let shelf = shelf.filter(|_| !discover.is_active());
+    if kind == Some("anime") && shelf.is_none() {
+        // Anime has no Discover list of its own (stored as TMDB series).
         return false;
     }
     // Enough rows to fill this page, plus the next so scrolling doesn't wait.
     let wanted = (i64::from(page) + 1) * i64::from(per_page);
     let mut depth = page;
     loop {
-        let more = if filtered {
-            tmdb::ensure_discover_pages_for_catalog(&ingest, kind, &discover, depth, per_page).await
-        } else {
-            tmdb::ensure_shelf_pages_for_catalog(&ingest, shelf.unwrap_or_default(), kind, depth, per_page).await
+        let more = match shelf {
+            Some(shelf) => tmdb::ensure_shelf_pages_for_catalog(&ingest, shelf, kind, depth, per_page).await,
+            None => tmdb::ensure_discover_pages_for_catalog(&ingest, kind, &discover, depth, per_page).await,
         };
         let more = match more {
             Ok(more) => more,
@@ -1359,7 +1371,7 @@ async fn fill_catalog_page(
                 return false;
             }
         };
-        if !more || ingest.syncing.load(std::sync::atomic::Ordering::Relaxed) {
+        if !more {
             return more;
         }
         let mut count = sqlx::QueryBuilder::new(
@@ -1460,6 +1472,14 @@ fn order_sql(kind: Option<TitleKind>, sort: SortField, dir: SortDir) -> String {
                 "(SELECT COALESCE(MAX(fr.available_peers), 0) FROM file_references fr WHERE fr.title_id = t.id) DESC, t.title ASC, t.id ASC".into()
             }
         }
+        SortField::NowInHd => {
+            let since = "(SELECT q.good_since FROM title_quality q WHERE q.title_id = t.id)";
+            if asc {
+                format!("{since} ASC NULLS LAST, t.released_at ASC NULLS LAST, t.id ASC")
+            } else {
+                format!("{since} DESC NULLS LAST, t.released_at DESC NULLS LAST, t.id ASC")
+            }
+        }
         SortField::ContinueWatching => {
             if asc {
                 "p.updated_at ASC, t.title ASC, t.id ASC".into()
@@ -1533,6 +1553,48 @@ fn retain_tryable_sources(sources: Vec<StreamSource>) -> Vec<StreamSource> {
 
 #[cfg(test)]
 mod tests {
+    /// `PB_TEST_DATABASE_URL=postgres://… cargo test now_in_hd -- --ignored`
+    #[tokio::test]
+    #[ignore]
+    async fn now_in_hd_lists_new_movies_with_an_hd_copy() {
+        use uuid::Uuid;
+        let url = std::env::var("PB_TEST_DATABASE_URL").expect("PB_TEST_DATABASE_URL");
+        let pool = sqlx::PgPool::connect(&url).await.unwrap();
+        let ready = Uuid::new_v4();
+        let low = Uuid::new_v4();
+        let old = Uuid::new_v4();
+        for (id, imdb, days_ago) in [(ready, "tt9100001", 20), (low, "tt9100002", 20), (old, "tt9100003", 400)] {
+            sqlx::query(
+                "INSERT INTO titles (id, kind, title, imdb_id, released_at) VALUES ($1, 'movie', 'T', $2, CURRENT_DATE - $3::int)",
+            )
+            .bind(id)
+            .bind(imdb)
+            .bind(days_ago)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        let good = crate::quality::Verdict { status: crate::quality::Status::Ready, best_resolution: Some(2160), good_sources: 1 };
+        let poor = crate::quality::Verdict { status: crate::quality::Status::None, best_resolution: None, good_sources: 0 };
+        crate::quality::record(&pool, ready, good).await.unwrap();
+        crate::quality::record(&pool, low, poor).await.unwrap();
+        crate::quality::record(&pool, old, good).await.unwrap();
+        // The same filter and order as `catalog(sort: NOW_IN_HD)`.
+        let mut qb = sqlx::QueryBuilder::new("SELECT ");
+        qb.push(super::TITLE_COLUMNS);
+        qb.push(" FROM titles t LEFT JOIN ratings r ON r.title_id = t.id WHERE 1=1");
+        super::apply_filters(&mut qb, &super::TitleFilter { kind: Some(super::TitleKind::Movie), ..Default::default() });
+        qb.push(super::NOW_IN_HD_SQL);
+        qb.push(" ORDER BY ");
+        qb.push(super::order_sql(Some(super::TitleKind::Movie), super::SortField::NowInHd, super::SortDir::Desc));
+        let rows: Vec<crate::db::models::TitleRow> = qb.build_query_as().fetch_all(&pool).await.unwrap();
+        let ids: Vec<Uuid> = rows.iter().map(|t| t.id).collect();
+        assert!(ids.contains(&ready), "ready new movie listed");
+        assert!(!ids.contains(&low), "no HD copy yet: left out");
+        assert!(!ids.contains(&old), "older than six months left out");
+        sqlx::query("DELETE FROM titles WHERE id = ANY($1)").bind(vec![ready, low, old]).execute(&pool).await.unwrap();
+    }
+
     #[test]
     fn services_merge_lists_and_sort_by_size() {
         let tags = super::services_by_size(vec![

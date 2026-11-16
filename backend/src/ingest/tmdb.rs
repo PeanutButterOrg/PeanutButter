@@ -21,8 +21,11 @@ const TMDB_PER_SEC: f64 = 30.0;
 const TMDB_CONCURRENCY: usize = 6;
 /// Max TMDB list pages fetched during a full/cron sync (trending / popular / fresh).
 const TMDB_LIST_INITIAL_PAGES: i32 = 5;
-/// Hard ceiling for on-demand scroll fetches (and TMDB's own total_pages clamp).
+/// Hard ceiling for on-demand scroll fetches of a shelf (trending / popular).
 const TMDB_LIST_MAX_PAGES: i32 = 30;
+/// Discover goes as deep as TMDB allows (it stops at page 500), so scrolling
+/// a filtered catalog keeps bringing in new titles instead of ending at 600.
+const TMDB_DISCOVER_MAX_PAGES: i32 = 500;
 /// TMDB list endpoints return 20 results per page.
 const TMDB_LIST_PAGE_SIZE: i32 = 20;
 /// TMDB search returns up to 20 hits per page.
@@ -558,6 +561,7 @@ struct TvRating {
 
 #[derive(Debug, Deserialize)]
 struct TmdbCast {
+    id: Option<i32>,
     name: Option<String>,
     character: Option<String>,
     #[serde(default)]
@@ -573,6 +577,7 @@ struct TmdbRole {
 
 #[derive(Debug, Deserialize)]
 struct TmdbCrew {
+    id: Option<i32>,
     name: Option<String>,
     job: Option<String>,
     #[serde(default)]
@@ -1615,9 +1620,14 @@ fn discover_progress() -> &'static moka::sync::Cache<String, (i32, i32)> {
     })
 }
 
-/// Filtered catalog scrolling: fetch TMDB Discover pages matching the
-/// filters until `catalog_page` can be filled, saving every title to the
-/// catalog. Returns whether TMDB has more pages for these filters.
+/// Catalog scrolling beyond the shelves: fetch TMDB Discover pages matching
+/// the filters (or just the kind and sort, when no filter is set) until
+/// `catalog_page` can be filled, saving every title to the catalog. Returns
+/// whether TMDB has more pages.
+///
+/// It runs during a catalog sync too: every TMDB call shares one rate limit
+/// (`wait_tmdb_slot`), and pausing here meant filtered scrolling showed only
+/// what was already stored for as long as a sync ran.
 pub async fn ensure_discover_pages_for_catalog(
     ctx: &IngestContext,
     kind: Option<&str>,
@@ -1625,18 +1635,10 @@ pub async fn ensure_discover_pages_for_catalog(
     catalog_page: i32,
     per_page: i32,
 ) -> Result<bool> {
-    if ctx.config.tmdb_key().is_empty() || !filter.is_active() {
+    if ctx.config.tmdb_key().is_empty() {
         return Ok(false);
     }
-    if ctx.syncing.load(std::sync::atomic::Ordering::Relaxed) {
-        return Ok(true);
-    }
-    let needed = {
-        let items = (catalog_page.max(1) as i64) * (per_page.max(1) as i64);
-        let pages = ((items + TMDB_LIST_PAGE_SIZE as i64 - 1) / TMDB_LIST_PAGE_SIZE as i64) as i32;
-        // Filters discard some results (language lock, blocked genres): one page of slack.
-        (pages + 1).clamp(1, TMDB_LIST_MAX_PAGES)
-    };
+    let needed = discover_pages_needed(catalog_page, per_page);
     // No anime list: anime in TMDB's TV list is stored as a series, so
     // fetching it here never adds anything to an anime page.
     let medias: Vec<&str> = match kind {
@@ -1662,12 +1664,12 @@ pub async fn ensure_discover_pages_for_catalog(
         let key = format!("{path}|{}|{}", tmdb_locale(ctx), original_language_query(ctx));
         let (mut done, mut total) = discover_progress()
             .get(&key)
-            .unwrap_or((0, TMDB_LIST_MAX_PAGES));
+            .unwrap_or((0, TMDB_DISCOVER_MAX_PAGES));
         while done < needed && done < total {
             let page = done + 1;
             info!(media, page, path = %path, "fetching TMDB discover page for filtered catalog");
             let (ids, total_pages) = fetch_list_page_ids(ctx, &path, true, page).await?;
-            total = total_pages.min(TMDB_LIST_MAX_PAGES);
+            total = total_pages.min(TMDB_DISCOVER_MAX_PAGES);
             done = page;
             if ids.is_empty() {
                 discover_progress().insert(key.clone(), (done, total));
@@ -1709,6 +1711,14 @@ pub async fn ensure_discover_pages_for_catalog(
     Ok(has_more)
 }
 
+/// TMDB Discover pages needed to fill `catalog_page`, plus one of slack for
+/// what filters discard (language lock, blocked genres).
+fn discover_pages_needed(catalog_page: i32, per_page: i32) -> i32 {
+    let items = (catalog_page.max(1) as i64) * (per_page.max(1) as i64);
+    let pages = ((items + TMDB_LIST_PAGE_SIZE as i64 - 1) / TMDB_LIST_PAGE_SIZE as i64) as i32;
+    (pages + 1).clamp(1, TMDB_DISCOVER_MAX_PAGES)
+}
+
 pub async fn ensure_shelf_pages_for_catalog(
     ctx: &IngestContext,
     shelf: &str,
@@ -1719,10 +1729,8 @@ pub async fn ensure_shelf_pages_for_catalog(
     if ctx.config.tmdb_key().is_empty() {
         return Ok(false);
     }
-    // Don't compete with a full catalog sync.
-    if ctx.syncing.load(std::sync::atomic::Ordering::Relaxed) {
-        return Ok(shelf_has_more_remote(ctx, shelf, kind).await.unwrap_or(false));
-    }
+    // Runs during a catalog sync too (shared TMDB rate limit), see
+    // ensure_discover_pages_for_catalog.
 
     let needed = {
         let items = (catalog_page.max(1) as i64) * (per_page.max(1) as i64);
@@ -1925,6 +1933,9 @@ async fn ensure_shelf_media_pages(
     Ok(())
 }
 
+/// Returns the page's ids and TMDB's full page count; callers apply their own
+/// page limit (shelves stop at `TMDB_LIST_MAX_PAGES`, Discover scrolling at
+/// `TMDB_DISCOVER_MAX_PAGES`).
 async fn fetch_list_page_ids(
     ctx: &IngestContext,
     path: &str,
@@ -1953,7 +1964,7 @@ async fn fetch_list_page_ids(
         let total = page_data
             .total_pages
             .unwrap_or(1)
-            .clamp(1, TMDB_LIST_MAX_PAGES);
+            .max(1);
         Ok((ids, total))
     } else {
         let page_data: Page<MovieListItem> = get_json(ctx, &url).await?;
@@ -1966,7 +1977,7 @@ async fn fetch_list_page_ids(
         let total = page_data
             .total_pages
             .unwrap_or(1)
-            .clamp(1, TMDB_LIST_MAX_PAGES);
+            .max(1);
         Ok((ids, total))
     }
 }
@@ -2621,6 +2632,7 @@ fn crew_job(member: &TmdbCrew) -> Option<String> {
 }
 
 pub(crate) struct CreditPerson {
+    pub tmdb_person_id: Option<i32>,
     pub name: String,
     pub character: Option<String>,
     pub job: Option<String>,
@@ -2641,8 +2653,8 @@ pub(crate) async fn replace_credit_people(
     for person in people {
         sqlx::query(
             r#"
-            INSERT INTO title_people (title_id, name, character, job, department, profile_path, sort_order)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            INSERT INTO title_people (title_id, name, character, job, department, profile_path, sort_order, tmdb_person_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             "#,
         )
         .bind(title_id)
@@ -2652,6 +2664,7 @@ pub(crate) async fn replace_credit_people(
         .bind(person.department)
         .bind(&person.profile_path)
         .bind(person.sort_order)
+        .bind(person.tmdb_person_id)
         .execute(&ctx.pool)
         .await?;
     }
@@ -2664,6 +2677,7 @@ async fn replace_people(ctx: &IngestContext, title_id: Uuid, credits: Option<&Tm
     for member in credits.cast.as_deref().unwrap_or(&[]).iter().take(12) {
         let Some(name) = member.name.as_deref().filter(|n| !n.is_empty()) else { continue };
         people.push(CreditPerson {
+            tmdb_person_id: member.id,
             name: name.to_string(),
             character: cast_character(member),
             job: None,
@@ -2683,6 +2697,7 @@ async fn replace_people(ctx: &IngestContext, title_id: Uuid, credits: Option<&Tm
         }
         let Some(name) = member.name.as_deref().filter(|n| !n.is_empty()) else { continue };
         people.push(CreditPerson {
+            tmdb_person_id: member.id,
             name: name.to_string(),
             character: None,
             job: Some(job),
@@ -3250,6 +3265,18 @@ mod discover_tests {
         assert!(newest.contains("sort_by=first_air_date.desc"), "{newest}");
         assert!(newest.contains("first_air_date.lte="), "unreleased titles stay out: {newest}");
         assert!(!DiscoverFilter::default().is_active());
+        // No filter (a Rating / Year / Title sort): still a valid Discover query.
+        let plain = DiscoverFilter { order: DiscoverOrder::Rating, ..Default::default() }.path("movie", None).unwrap();
+        assert!(plain.starts_with("/discover/movie?sort_by=vote_average.desc"), "{plain}");
+    }
+
+    #[test]
+    fn discover_scrolls_past_the_old_30_page_stop() {
+        // Page 1 of 24: two TMDB pages of 20, plus one of slack.
+        assert_eq!(discover_pages_needed(1, 24), 3);
+        // Page 30 of 24 = 720 titles = 36 TMDB pages (+1); it used to stop at 30.
+        assert_eq!(discover_pages_needed(30, 24), 37);
+        assert_eq!(discover_pages_needed(10_000, 24), TMDB_DISCOVER_MAX_PAGES);
     }
 }
 

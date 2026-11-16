@@ -22,6 +22,9 @@ import '../widgets/title_meta.dart';
 import '../widgets/episode_alerts.dart';
 import '../widgets/tv_chrome.dart';
 
+/// Whether the home rows have scrolled under the header (darker header bar).
+final ValueNotifier<bool> _homeScrolled = ValueNotifier(false);
+
 class HomeScreen extends ConsumerWidget {
   const HomeScreen({super.key});
 
@@ -56,18 +59,23 @@ class HomeScreen extends ConsumerWidget {
         overlapHeader: true,
         root: true,
         headerFocus: TvHeaderFocus.forKind(kind),
-        header: DecoratedBox(
-          decoration: const BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topCenter,
-              end: Alignment.bottomCenter,
-              colors: [
-                Color(0xB30E0E12),
-                Color(0x660E0E12),
-                Color(0x000E0E12),
-              ],
-              stops: [0.0, 0.7, 1.0],
+        // Light over the hero; once rows scroll under the tabs, a near-solid
+        // bar so posters don't show through the tab labels.
+        header: ValueListenableBuilder<bool>(
+          valueListenable: _homeScrolled,
+          builder: (context, scrolled, child) => AnimatedContainer(
+            duration: const Duration(milliseconds: 180),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: scrolled
+                    ? const [Color(0xFA0E0E12), Color(0xF00E0E12), Color(0x000E0E12)]
+                    : const [Color(0xB30E0E12), Color(0x660E0E12), Color(0x000E0E12)],
+                stops: scrolled ? const [0.0, 0.8, 1.0] : const [0.0, 0.7, 1.0],
+              ),
             ),
+            child: child,
           ),
           child: SafeArea(
             bottom: false,
@@ -184,9 +192,15 @@ class _HomeBody extends ConsumerStatefulWidget {
 class _HomeBodyState extends ConsumerState<_HomeBody> {
   final ScrollController _scroll = ScrollController();
 
+  void _trackScrolled() {
+    _homeScrolled.value = _scroll.hasClients && _scroll.offset > 120;
+  }
+
   @override
   void initState() {
     super.initState();
+    _scroll.addListener(_trackScrolled);
+    _homeScrolled.value = false;
     TvHomeScroll.toTop = _toTop;
     TvHomeScroll.toBanner = _toBanner;
     if (isAndroidTv) {
@@ -252,6 +266,9 @@ class _HomeBodyState extends ConsumerState<_HomeBody> {
   Widget build(BuildContext context) {
     final kind = widget.kind;
     final feed = widget.feed;
+    final nowInHd = kind == 'MOVIE'
+        ? ref.watch(nowInHdProvider).valueOrNull ?? const <TitleItem>[]
+        : const <TitleItem>[];
     final list = ListView(
       controller: _scroll,
       cacheExtent: isAndroidTv ? 280 : 800,
@@ -273,6 +290,8 @@ class _HomeBodyState extends ConsumerState<_HomeBody> {
         _HomeRow(title: 'Trending', sort: 'TRENDING', items: feed.trending, kind: kind, railIndex: 1),
         _HomeRow(title: 'Popular', sort: 'POPULARITY', items: feed.popular, kind: kind, railIndex: 2),
         _HomeRow(title: 'Last added', sort: 'DATE_ADDED', items: feed.recent, kind: kind, railIndex: 3),
+        // Movies only (empty for series): new releases that now have an HD copy.
+        _HomeRow(title: 'Now in HD', sort: 'NOW_IN_HD', items: nowInHd, kind: kind, railIndex: 4),
       ],
     );
     return ClippedOverlay(child: list);

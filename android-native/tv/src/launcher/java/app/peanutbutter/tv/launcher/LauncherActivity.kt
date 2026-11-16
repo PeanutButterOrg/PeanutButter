@@ -376,7 +376,8 @@ class LauncherActivity : FragmentActivity() {
         loadJob = lifecycleScope.launch {
             try {
                 val results = listOf("MOVIE", "SERIES").map { kind -> kind to async { app.api.homeFeed(kind) } }
-                results.forEach { (kind, feed) -> feeds[kind] = feed.await() }
+                // Keep a "Now in HD" row already shown until its own request answers.
+                results.forEach { (kind, feed) -> feeds[kind] = feed.await().copy(nowInHd = feeds[kind]?.nowInHd.orEmpty()) }
                 offline = false
                 // Every row's posters, so switching tabs never shows empty cards.
                 Posters.preload(
@@ -393,6 +394,17 @@ class LauncherActivity : FragmentActivity() {
             checked = true
             render()
             refreshStatus()
+            // "Now in HD" after the other rows are on screen, so a slow answer
+            // never holds them back.
+            if (!offline) {
+                val hd = app.api.nowInHd()
+                feeds["MOVIE"]?.let { movies ->
+                    if (movies.nowInHd != hd) {
+                        feeds["MOVIE"] = movies.copy(nowInHd = hd)
+                        render()
+                    }
+                }
+            }
         }
     }
 
@@ -420,6 +432,8 @@ class LauncherActivity : FragmentActivity() {
                     ?.let { sections += Section.Posters(getString(R.string.row_trending_movies), it, "TRENDING", "MOVIE") }
                 series?.trending?.takeIf { it.isNotEmpty() }
                     ?.let { sections += Section.Posters(getString(R.string.row_trending_series), it, "TRENDING", "SERIES") }
+                movies?.nowInHd?.takeIf { it.isNotEmpty() }
+                    ?.let { sections += Section.Posters(getString(R.string.now_in_hd), it, "NOW_IN_HD", "MOVIE") }
             }
             Tab.MOVIES, Tab.SERIES -> {
                 val kind = if (tab == Tab.MOVIES) "MOVIE" else "SERIES"
@@ -432,6 +446,7 @@ class LauncherActivity : FragmentActivity() {
                     if (feed.trending.isNotEmpty()) sections += Section.Posters(getString(R.string.row_trending), feed.trending, "TRENDING", kind)
                     if (feed.popular.isNotEmpty()) sections += Section.Posters(getString(R.string.row_popular), feed.popular, "POPULARITY", kind)
                     if (feed.recent.isNotEmpty()) sections += Section.Posters(getString(R.string.row_recent), feed.recent, "DATE_ADDED", kind)
+                    if (feed.nowInHd.isNotEmpty()) sections += Section.Posters(getString(R.string.now_in_hd), feed.nowInHd, "NOW_IN_HD", kind)
                 }
             }
         }
@@ -445,7 +460,14 @@ class LauncherActivity : FragmentActivity() {
         val left = ((item.durationMs - item.positionMs) / 60_000).toInt()
         val kindLabel = getString(if (item.kind == "SERIES") R.string.kind_series else R.string.kind_movie)
         // One short line: year · length · rating · genre (whatever the title has).
-        val runtime = item.runtimeMinutes?.takeIf { it > 0 }?.let { m -> if (m >= 60) "${m / 60}h ${m % 60}m" else "${m}m" }
+        // Same as the title page: "1h", not "1h 0m".
+        val runtime = item.runtimeMinutes?.takeIf { it > 0 }?.let { m ->
+            when {
+                m < 60 -> "${m}m"
+                m % 60 == 0 -> "${m / 60}h"
+                else -> "${m / 60}h ${m % 60}m"
+            }
+        }
         val rating = (item.tmdbVoteAverage ?: item.imdbRating)?.takeIf { it > 0 }?.let { "★ %.1f".format(java.util.Locale.US, it) }
         val meta = listOfNotNull(item.year?.toString(), runtime, rating, item.genres.firstOrNull()).joinToString("  ·  ")
         return HeroCarousel.Slide(

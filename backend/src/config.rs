@@ -85,8 +85,11 @@ impl LiveSettings {
             && g.jackett_api_key.as_deref().is_some_and(|s| !s.trim().is_empty())
     }
 
+    /// "2160p" | "1080p" | "720p". A 480p saved before sources became HD-only
+    /// reads as 720p.
     pub fn streaming_resolution(&self) -> String {
-        self.inner.read().expect("settings lock").streaming_resolution.clone()
+        let r = self.inner.read().expect("settings lock").streaming_resolution.clone();
+        if r == "480p" { "720p".into() } else { r }
     }
 
     /// Comma-separated ISO 639-1 codes. Empty string = all languages.

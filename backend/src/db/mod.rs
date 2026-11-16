@@ -46,6 +46,9 @@ const EMBEDDED_MIGRATION_033: &str = include_str!("migrations/033_shelf_items.sq
 const EMBEDDED_MIGRATION_034: &str = include_str!("migrations/034_addon_catalog_items.sql");
 const EMBEDDED_MIGRATION_035: &str = include_str!("migrations/035_episode_follows.sql");
 const EMBEDDED_MIGRATION_036: &str = include_str!("migrations/036_text_locale.sql");
+const EMBEDDED_MIGRATION_037: &str = include_str!("migrations/037_title_quality.sql");
+const EMBEDDED_MIGRATION_038: &str = include_str!("migrations/038_title_quality_attempts.sql");
+const EMBEDDED_MIGRATION_039: &str = include_str!("migrations/039_title_people_tmdb_id.sql");
 
 /// Pool for GraphQL / playback — fail fast so sync never starves clients.
 pub async fn connect_api(database_url: &str) -> Result<PgPool> {
@@ -123,6 +126,9 @@ pub async fn run_migrations(pool: &PgPool, extra_dir: Option<&Path>) -> Result<(
     apply_one(pool, "034_addon_catalog_items", EMBEDDED_MIGRATION_034).await?;
     apply_one(pool, "035_episode_follows", EMBEDDED_MIGRATION_035).await?;
     apply_one(pool, "036_text_locale", EMBEDDED_MIGRATION_036).await?;
+    apply_one(pool, "037_title_quality", EMBEDDED_MIGRATION_037).await?;
+    apply_one(pool, "038_title_quality_attempts", EMBEDDED_MIGRATION_038).await?;
+    apply_one(pool, "039_title_people_tmdb_id", EMBEDDED_MIGRATION_039).await?;
 
     if let Some(dir) = extra_dir {
         if dir.is_dir() {
@@ -176,6 +182,9 @@ pub async fn run_migrations(pool: &PgPool, extra_dir: Option<&Path>) -> Result<(
                     || version == "034_addon_catalog_items"
                     || version == "035_episode_follows"
                     || version == "036_text_locale"
+                    || version == "037_title_quality"
+                    || version == "038_title_quality_attempts"
+                    || version == "039_title_people_tmdb_id"
                 {
                     continue;
                 }
@@ -529,6 +538,26 @@ pub async fn all_genre_names(pool: &PgPool) -> Result<Vec<String>> {
     let rows: Vec<(String,)> = sqlx::query_as("SELECT name FROM genres ORDER BY name")
         .fetch_all(pool)
         .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(n,)| n)
+        .filter(|n| !crate::content_filter::is_blocked_genre(n))
+        .collect())
+}
+
+/// Genres that titles of this kind ("movie" / "series" / "anime") actually
+/// have, so the movie filter doesn't offer TV-only genres such as
+/// "Action & Adventure".
+pub async fn genre_names_for_kind(pool: &PgPool, kind: &str) -> Result<Vec<String>> {
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "SELECT DISTINCT g.name FROM genres g \
+         JOIN title_genres tg ON tg.genre_id = g.id \
+         JOIN titles t ON t.id = tg.title_id \
+         WHERE t.kind = $1 ORDER BY g.name",
+    )
+    .bind(kind)
+    .fetch_all(pool)
+    .await?;
     Ok(rows
         .into_iter()
         .map(|(n,)| n)

@@ -71,6 +71,8 @@ query GetCatalog(
       year
       posterUrl
       bestQuality
+      # The score badge, as on home rows and search (one batched lookup).
+      ratings { tmdbVoteAverage imdbRating rtScore anilistScore }
       userState {
         favorite
         watched
@@ -305,6 +307,13 @@ fragment HomeTitle on Title {
 const String GET_GENRES = r'''
 query GetGenres {
   genres
+}
+''';
+
+/// Genres titles of one kind actually have (servers from 0.3.23).
+const String GET_GENRES_FOR_KIND = r'''
+query GetGenresForKind($kind: TitleKind) {
+  genres(kind: $kind)
 }
 ''';
 

@@ -47,6 +47,36 @@ impl SourceQuery {
     }
 }
 
+/// What to search for: the catalog's clean title, year and IMDb id when the
+/// title is known, with the original title and `query` as alternative names
+/// (releases may use either). Falls back to `query` / `year` alone.
+pub async fn target_for_title(
+    pool: &sqlx::PgPool,
+    title_id: Option<uuid::Uuid>,
+    query: &str,
+    year: Option<i32>,
+) -> crate::jackett::SearchTarget {
+    let mut target = crate::jackett::SearchTarget { title: query.to_string(), year, ..Default::default() };
+    let Some(id) = title_id else { return target };
+    let Ok(Some(meta)) = crate::db::title_stream_meta(pool, id).await else { return target };
+    // Catalog title is the canonical English/UI name torrents usually use.
+    if !meta.title.trim().is_empty() {
+        target.title = meta.title;
+    }
+    target.year = meta.year.or(year);
+    target.imdb_id = meta.imdb_id.filter(|s| !s.trim().is_empty());
+    for alt in [meta.original_title, Some(query.to_string())].into_iter().flatten() {
+        let alt = alt.trim().to_string();
+        if !alt.is_empty()
+            && !alt.eq_ignore_ascii_case(&target.title)
+            && !target.alt_titles.iter().any(|a| a.eq_ignore_ascii_case(&alt))
+        {
+            target.alt_titles.push(alt);
+        }
+    }
+    target
+}
+
 /// One place results come from.
 pub trait SourceProvider: Send + Sync {
     /// Shown in logs and on results ("Jackett", "Torrentio", …).

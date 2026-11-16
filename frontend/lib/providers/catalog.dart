@@ -363,6 +363,7 @@ void invalidatePlaybackProgress(
   UserState Function(UserState)? patch,
 }) {
   ref.invalidate(homeFeedProvider('MOVIE'));
+  ref.invalidate(nowInHdProvider);
   ref.invalidate(homeFeedProvider('SERIES'));
   ref.invalidate(homeFeedProvider('ANIME'));
   ref.invalidate(catalogProvider);
@@ -392,6 +393,32 @@ class HomeFeed {
   final List<TitleItem> recent;
   final List<TitleItem> continueWatching;
 }
+
+/// The "Now in HD" row: new movies that now have an HD copy (movies home
+/// only). Its own provider, so the home shelves show as soon as they arrive
+/// while this loads, and a server too old to know the sort leaves the row
+/// empty instead of failing the whole home screen.
+final nowInHdProvider = FutureProvider<List<TitleItem>>((ref) async {
+  ref.watch(graphQLClientProvider);
+  ref.watch(catalogEpochProvider);
+  final client = ref.read(graphQLClientProvider);
+  try {
+    final result = await client
+        .query(
+          QueryOptions(
+            document: gql(GET_CATALOG),
+            variables: const {'kind': 'MOVIE', 'sort': 'NOW_IN_HD', 'page': 1, 'perPage': 18},
+            fetchPolicy: FetchPolicy.noCache,
+          ),
+        )
+        .timeout(const Duration(seconds: 15));
+    if (result.hasException) return const [];
+    final items = (result.data?['catalog']?['items'] as List?) ?? const [];
+    return items.map((e) => TitleItem.fromJson(e as Map<String, dynamic>)).toList();
+  } catch (_) {
+    return const [];
+  }
+});
 
 final homeFeedProvider = FutureProvider.family<HomeFeed, String>((ref, kind) async {
   ref.watch(graphQLClientProvider);
@@ -550,11 +577,25 @@ final streamingServicesProvider =
   ];
 });
 
-final genresProvider = FutureProvider<List<String>>((ref) async {
+/// Genres for the filter. With a kind ('MOVIE', 'SERIES'), only the genres
+/// those titles have, so movies don't list TV-only genres; an older server
+/// that doesn't take a kind gets the full list.
+final genresProvider = FutureProvider.family<List<String>, String?>((ref, kind) async {
   final client = ref.watch(graphQLClientProvider);
-  final result = await client.query(
-    QueryOptions(document: gql(GET_GENRES), fetchPolicy: FetchPolicy.cacheFirst),
+  var result = await client.query(
+    kind == null
+        ? QueryOptions(document: gql(GET_GENRES), fetchPolicy: FetchPolicy.cacheFirst)
+        : QueryOptions(
+            document: gql(GET_GENRES_FOR_KIND),
+            variables: {'kind': kind},
+            fetchPolicy: FetchPolicy.cacheFirst,
+          ),
   );
+  if (result.hasException && kind != null) {
+    result = await client.query(
+      QueryOptions(document: gql(GET_GENRES), fetchPolicy: FetchPolicy.cacheFirst),
+    );
+  }
   if (result.hasException) return const [];
   const blocked = {
     'sex',
@@ -910,6 +951,7 @@ Future<void> refreshCatalogData(WidgetRef ref) async {
     ref.read(catalogEpochProvider.notifier).state = ref.read(catalogEpochProvider) + 1;
     ref.invalidate(serverInfoProvider);
     ref.invalidate(homeFeedProvider('MOVIE'));
+    ref.invalidate(nowInHdProvider);
     ref.invalidate(homeFeedProvider('SERIES'));
     ref.invalidate(homeFeedProvider('ANIME'));
     ref.invalidate(favoritesFeedProvider);

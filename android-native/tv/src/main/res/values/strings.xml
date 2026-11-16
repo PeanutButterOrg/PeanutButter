@@ -15,12 +15,12 @@
     <string name="episodes_completed">%1$d of %2$d completed</string>
     <string name="episodes_progress">%1$d of %2$d completed · %3$d in progress</string>
     <string name="episode_code">S%1$02dE%2$02d</string>
-    <string name="cast_crew">Cast &amp; Crew</string>
+    <string name="cast_crew">Cast &amp; crew</string>
     <string name="trailer">Trailer</string>
     <string name="skip_intro">Skip Intro</string>
     <string name="play_next">Play Next</string>
     <string name="play_next_countdown">Play Next · %1$ds</string>
-    <string name="sources_subtitle">Pick a torrent for %1$s</string>
+    <string name="sources_subtitle">Pick a stream for %1$s</string>
     <string name="refresh_sources">Refresh from Jackett</string>
     <string name="refreshing_sources">Refreshing live results…</string>
     <string name="looking_up_sources">Looking up sources…</string>
@@ -42,6 +42,7 @@
     <string name="trending">Trending</string>
     <string name="popular">Popular</string>
     <string name="last_added">Last added</string>
+    <string name="now_in_hd">Now in HD</string>
     <string name="continue_watching">Continue watching</string>
     <string name="see_all">See all</string>
     <string name="details">Details</string>
@@ -172,7 +173,7 @@
     <string name="update_none">PeanutButter is up to date.</string>
     <string name="update_install_failed">Update failed: %1$s</string>
     <string name="update_signature_conflict">This update is signed with the new release key. Uninstall PeanutButter once, then install the new APK manually. Later updates will install normally.</string>
-    <string name="finding_sources">Finding sources…\nPress Back to cancel</string>
+    <string name="finding_sources">Finding streams…\nPress Back to cancel</string>
     <string name="audio_button">Audio</string>
     <string name="audio_title">Audio track</string>
 </resources>
