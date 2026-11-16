@@ -112,13 +112,16 @@ async fn get(pool: &PgPool, title_id: Uuid) -> Result<Option<QualityRow>> {
 
 /// Movies due a check: favourites and titles being watched (any device), and
 /// movies released in the last six months. Without a good copy they're
-/// rechecked every 4 hours, with one weekly. Never-checked titles first.
+/// rechecked every 4 hours, with one weekly. A check where no source answered
+/// also waits 4 hours, so movies that keep failing can't fill every batch.
+/// Never-tried titles first, then the longest since the last try.
 async fn due(pool: &PgPool, limit: i64) -> Result<Vec<Uuid>> {
     Ok(sqlx::query_scalar(
         r#"
         SELECT t.id
         FROM titles t
         LEFT JOIN title_quality q ON q.title_id = t.id
+        LEFT JOIN title_quality_attempts a ON a.title_id = t.id
         WHERE t.kind = 'movie'
           AND t.imdb_id IS NOT NULL AND t.imdb_id <> ''
           AND (t.released_at IS NULL OR t.released_at <= CURRENT_DATE)
@@ -135,7 +138,8 @@ async fn due(pool: &PgPool, limit: i64) -> Result<Vec<Uuid>> {
                 OR (q.status <> 'ready' AND q.checked_at < now() - INTERVAL '4 hours')
                 OR (q.status = 'ready' AND q.checked_at < now() - INTERVAL '7 days')
           )
-        ORDER BY q.checked_at ASC NULLS FIRST, t.released_at DESC NULLS LAST
+          AND (a.attempted_at IS NULL OR a.attempted_at < now() - INTERVAL '4 hours')
+        ORDER BY GREATEST(q.checked_at, a.attempted_at) ASC NULLS FIRST, t.released_at DESC NULLS LAST
         LIMIT $1
         "#,
     )
@@ -144,9 +148,33 @@ async fn due(pool: &PgPool, limit: i64) -> Result<Vec<Uuid>> {
     .await?)
 }
 
+/// Notes a check that gave no verdict, so `due` waits before retrying it.
+async fn record_attempt(pool: &PgPool, title_id: Uuid) -> Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO title_quality_attempts (title_id, attempted_at) VALUES ($1, now())
+        ON CONFLICT (title_id) DO UPDATE SET attempted_at = now()
+        "#,
+    )
+    .bind(title_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 /// One movie: search every source the way the apps do and save the verdict.
-/// Returns None when no source answered (nothing saved).
+/// Returns None when no source answered: the last verdict is kept and only
+/// the attempt time is saved.
 pub async fn check_title(ctx: &IngestContext, title_id: Uuid) -> Result<Option<Verdict>> {
+    let v = search_verdict(ctx, title_id).await?;
+    match v {
+        Some(v) => record(&ctx.pool, title_id, v).await?,
+        None => record_attempt(&ctx.pool, title_id).await?,
+    }
+    Ok(v)
+}
+
+async fn search_verdict(ctx: &IngestContext, title_id: Uuid) -> Result<Option<Verdict>> {
     let target = crate::sources::target_for_title(&ctx.pool, Some(title_id), "", None).await;
     if target.title.trim().is_empty() {
         return Ok(None);
@@ -176,9 +204,7 @@ pub async fn check_title(ctx: &IngestContext, title_id: Uuid) -> Result<Option<V
         crate::sources::check_links(&ctx.http, crate::sources::merge(lists)).await,
     );
     let ranked = crate::sources::rank::rank(merged, &crate::sources::prefs(&query));
-    let v = verdict(&ranked);
-    record(&ctx.pool, title_id, v).await?;
-    Ok(Some(v))
+    Ok(Some(verdict(&ranked)))
 }
 
 /// The background check (every 30 minutes). Skipped when no source is set up.
@@ -305,6 +331,10 @@ mod tests {
         assert_eq!(get(&pool, new_movie).await.unwrap().unwrap().good_since, Some(since));
         // Just checked: not due again.
         assert!(!due(&pool, 100).await.unwrap().contains(&new_movie));
+        // A failed check isn't retried straight away and keeps no verdict.
+        record_attempt(&pool, fav).await.unwrap();
+        assert!(!due(&pool, 100).await.unwrap().contains(&fav));
+        assert!(get(&pool, fav).await.unwrap().is_none());
         sqlx::query("DELETE FROM titles WHERE id = ANY($1)")
             .bind(vec![fav, new_movie, old_movie])
             .execute(&pool)

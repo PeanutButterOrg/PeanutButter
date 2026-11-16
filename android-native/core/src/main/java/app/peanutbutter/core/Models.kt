@@ -233,7 +233,10 @@ data class HomeFeed(
     val popular: List<TitleItem>,
     val recent: List<TitleItem>,
     val continueWatching: List<TitleItem>,
-    /** "Now in HD": new movies that now have an HD copy. Movies only. */
+    /**
+     * "Now in HD": new movies that now have an HD copy. Movies only. Not part
+     * of the home feed request: filled in from [ApiClient.nowInHd] later.
+     */
     val nowInHd: List<TitleItem> = emptyList(),
 )
 

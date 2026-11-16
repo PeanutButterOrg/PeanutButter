@@ -279,6 +279,29 @@ class MainFragment : RowsSupportFragment() {
         return items.isEmpty()
     }
 
+    /**
+     * Fills in the "Now in HD" shelf once its own request answers, without
+     * rebuilding the shelves already on screen. Movies home only.
+     */
+    fun updateNowInHd(kind: String, items: List<TitleItem>) {
+        if (!::rowsAdapter.isInitialized || kind != this.kind) return
+        for (i in 0 until rowsAdapter.size()) {
+            val row = rowsAdapter[i] as? ListRow ?: continue
+            val header = row.headerItem as? ShelfHeaderItem ?: continue
+            if (header.sort != "NOW_IN_HD") continue
+            if (items.isEmpty()) {
+                rowsAdapter.remove(row)
+            } else {
+                (row.adapter as? ArrayObjectAdapter)?.setItems(items.take(18), titleDiff)
+            }
+            return
+        }
+        if (items.isEmpty()) return
+        val list = ArrayObjectAdapter(itemSelector)
+        items.take(18).forEach { list.add(it) }
+        rowsAdapter.add(ListRow(ShelfHeaderItem(NOW_IN_HD_ROW_ID, getString(R.string.now_in_hd), kind, "NOW_IN_HD"), list))
+    }
+
     private val titleDiff = object : androidx.leanback.widget.DiffCallback<TitleItem>() {
         override fun areItemsTheSame(oldItem: TitleItem, newItem: TitleItem) = oldItem.id == newItem.id
         override fun areContentsTheSame(oldItem: TitleItem, newItem: TitleItem) = oldItem == newItem
@@ -312,5 +335,7 @@ class MainFragment : RowsSupportFragment() {
 
     companion object {
         const val HERO_ROW_ID = 0L
+        /** Shelf ids from bindFeed count up from 2; this one is added later. */
+        private const val NOW_IN_HD_ROW_ID = Long.MAX_VALUE
     }
 }

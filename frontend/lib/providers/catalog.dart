@@ -363,6 +363,7 @@ void invalidatePlaybackProgress(
   UserState Function(UserState)? patch,
 }) {
   ref.invalidate(homeFeedProvider('MOVIE'));
+  ref.invalidate(nowInHdProvider);
   ref.invalidate(homeFeedProvider('SERIES'));
   ref.invalidate(homeFeedProvider('ANIME'));
   ref.invalidate(catalogProvider);
@@ -385,21 +386,22 @@ class HomeFeed {
     required this.popular,
     required this.recent,
     this.continueWatching = const [],
-    this.nowInHd = const [],
   });
 
   final List<TitleItem> trending;
   final List<TitleItem> popular;
   final List<TitleItem> recent;
   final List<TitleItem> continueWatching;
-  /// "Now in HD": new movies that now have an HD copy. Movies only.
-  final List<TitleItem> nowInHd;
 }
 
-/// The "Now in HD" row: new movies that now have an HD copy. Its own request,
-/// so a server too old to know the sort leaves the row empty instead of
-/// failing the whole home screen.
-Future<List<TitleItem>> _nowInHd(GraphQLClient client) async {
+/// The "Now in HD" row: new movies that now have an HD copy (movies home
+/// only). Its own provider, so the home shelves show as soon as they arrive
+/// while this loads, and a server too old to know the sort leaves the row
+/// empty instead of failing the whole home screen.
+final nowInHdProvider = FutureProvider<List<TitleItem>>((ref) async {
+  ref.watch(graphQLClientProvider);
+  ref.watch(catalogEpochProvider);
+  final client = ref.read(graphQLClientProvider);
   try {
     final result = await client
         .query(
@@ -416,7 +418,7 @@ Future<List<TitleItem>> _nowInHd(GraphQLClient client) async {
   } catch (_) {
     return const [];
   }
-}
+});
 
 final homeFeedProvider = FutureProvider.family<HomeFeed, String>((ref, kind) async {
   ref.watch(graphQLClientProvider);
@@ -444,7 +446,6 @@ final homeFeedProvider = FutureProvider.family<HomeFeed, String>((ref, kind) asy
     popular: row('popular'),
     recent: row('recent'),
     continueWatching: row('continueWatching'),
-    nowInHd: kind == 'MOVIE' ? await _nowInHd(client) : const [],
   );
   if (!isAndroidTv) {
     unawaited(ArtCache.prefetch(feed.trending.take(8), banner: true));
@@ -950,6 +951,7 @@ Future<void> refreshCatalogData(WidgetRef ref) async {
     ref.read(catalogEpochProvider.notifier).state = ref.read(catalogEpochProvider) + 1;
     ref.invalidate(serverInfoProvider);
     ref.invalidate(homeFeedProvider('MOVIE'));
+    ref.invalidate(nowInHdProvider);
     ref.invalidate(homeFeedProvider('SERIES'));
     ref.invalidate(homeFeedProvider('ANIME'));
     ref.invalidate(favoritesFeedProvider);

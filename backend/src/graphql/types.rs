@@ -356,6 +356,9 @@ pub struct Person {
     pub job: Option<String>,
     pub department: String,
     pub profile_url: Option<String>,
+    /// Who this credit is at TMDB; credits are joined into one card by it.
+    #[graphql(skip)]
+    pub tmdb_person_id: Option<i32>,
 }
 
 impl Person {
@@ -367,6 +370,22 @@ impl Person {
             job: row.job,
             department: row.department,
             profile_url: profile_url(public_url, &row.profile_path),
+            tmdb_person_id: row.tmdb_person_id,
+        }
+    }
+
+    /// Whether two credits are the same person. TMDB's person id decides;
+    /// different people can share a name. Credits saved before the id was
+    /// kept only join when the name and the photo both match.
+    fn same_person(&self, other: &Person) -> bool {
+        match (self.tmdb_person_id, other.tmdb_person_id) {
+            (Some(a), Some(b)) => a == b,
+            (None, None) => {
+                self.profile_url.is_some()
+                    && self.profile_url == other.profile_url
+                    && self.name.trim().eq_ignore_ascii_case(other.name.trim())
+            }
+            _ => false,
         }
     }
 }
@@ -374,11 +393,11 @@ impl Person {
 /// One card per person: TMDB lists someone once per job ("David Ayer ·
 /// Director", "David Ayer · Producer"), and the apps showed every row. The
 /// first row keeps its place; later jobs join its job ("Director, Producer").
+/// Rows are matched by TMDB person id (see `Person::same_person`).
 pub fn merge_people(people: Vec<Person>) -> Vec<Person> {
     let mut out: Vec<Person> = Vec::with_capacity(people.len());
     for p in people {
-        let key = p.name.trim().to_lowercase();
-        match out.iter_mut().find(|q| q.name.trim().to_lowercase() == key) {
+        match out.iter_mut().find(|q| q.same_person(&p)) {
             Some(first) => {
                 if let Some(job) = p.job.filter(|j| !j.trim().is_empty()) {
                     match &mut first.job {
@@ -642,7 +661,7 @@ impl Title {
         let state = ctx.data::<AppState>()?;
         let rows: Vec<TitlePersonRow> = sqlx::query_as(
             r#"
-            SELECT id, title_id, name, character, job, department, profile_path, sort_order
+            SELECT id, title_id, name, character, job, department, profile_path, sort_order, tmdb_person_id
             FROM title_people
             WHERE title_id = $1
             ORDER BY department ASC, sort_order ASC
@@ -929,7 +948,7 @@ pub struct MediaSegments {
 mod people_tests {
     use super::*;
 
-    fn person(name: &str, character: Option<&str>, job: Option<&str>) -> Person {
+    fn person(tmdb_id: i32, name: &str, character: Option<&str>, job: Option<&str>) -> Person {
         Person {
             id: Uuid::new_v4(),
             name: name.into(),
@@ -937,21 +956,48 @@ mod people_tests {
             job: job.map(Into::into),
             department: String::new(),
             profile_url: None,
+            tmdb_person_id: Some(tmdb_id),
         }
     }
 
     #[test]
     fn one_card_per_person_with_their_jobs() {
         let merged = merge_people(vec![
-            person("Brad Pitt", Some("James Belmont"), None),
-            person("David Ayer", None, Some("Director")),
-            person("Olivia Hamilton", None, Some("Producer")),
-            person("David Ayer", None, Some("Producer")),
-            person("David Ayer", None, Some("Producer")),
+            person(287, "Brad Pitt", Some("James Belmont"), None),
+            person(19769, "David Ayer", None, Some("Director")),
+            person(5, "Olivia Hamilton", None, Some("Producer")),
+            person(19769, "David Ayer", None, Some("Producer")),
+            person(19769, "David Ayer", None, Some("Producer")),
         ]);
         let names: Vec<&str> = merged.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(names, ["Brad Pitt", "David Ayer", "Olivia Hamilton"]);
         assert_eq!(merged[1].job.as_deref(), Some("Director, Producer"));
         assert_eq!(merged[0].character.as_deref(), Some("James Belmont"));
+    }
+
+    #[test]
+    fn people_who_share_a_name_keep_their_own_cards() {
+        let mut a = person(1, "Chris Smith", None, Some("Director"));
+        a.profile_url = Some("a.jpg".into());
+        let mut b = person(2, "Chris Smith", None, Some("Producer"));
+        b.profile_url = Some("b.jpg".into());
+        let merged = merge_people(vec![a, b]);
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0].job.as_deref(), Some("Director"));
+        assert_eq!(merged[1].job.as_deref(), Some("Producer"));
+    }
+
+    #[test]
+    fn credits_saved_without_an_id_join_only_on_name_and_photo() {
+        let legacy = |job: &str, photo: Option<&str>| Person {
+            tmdb_person_id: None,
+            profile_url: photo.map(Into::into),
+            ..person(0, "David Ayer", None, Some(job))
+        };
+        let merged = merge_people(vec![legacy("Director", Some("p.jpg")), legacy("Producer", Some("p.jpg"))]);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].job.as_deref(), Some("Director, Producer"));
+        let merged = merge_people(vec![legacy("Director", None), legacy("Producer", None)]);
+        assert_eq!(merged.len(), 2);
     }
 }

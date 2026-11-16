@@ -32,6 +32,7 @@ class MainActivity : FragmentActivity() {
     private var refreshOnResume = false
     private val feedCache = LinkedHashMap<String, HomeFeed>()
     private var loadJob: Job? = null
+    private var hdJob: Job? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -246,7 +247,7 @@ class MainActivity : FragmentActivity() {
         loadJob?.cancel()
         loadJob = lifecycleScope.launch {
             try {
-                val feed = app.api.homeFeed(kind)
+                val feed = withCachedNowInHd(kind, app.api.homeFeed(kind))
                 feedCache[kind] = feed
                 // Ignore stale responses if the user switched tabs mid-flight.
                 if (kind != selectedKind) return@launch
@@ -261,6 +262,7 @@ class MainActivity : FragmentActivity() {
                 } else {
                     fragment?.bindFeed(kind, feed, jumpToHero = jumpToHero)
                 }
+                loadNowInHd(kind)
                 // Warm the other kind so Movie ↔ Series is instant next time.
                 prefetchOtherKind(kind)
             } catch (e: Exception) {
@@ -285,7 +287,7 @@ class MainActivity : FragmentActivity() {
             try {
                 // The player's last save may still be on its way.
                 app.awaitWrites()
-                val feed = app.api.homeFeed(kind)
+                val feed = withCachedNowInHd(kind, app.api.homeFeed(kind))
                 feedCache[kind] = feed
                 if (kind != selectedKind) return@launch
                 val fragment = browseFragment() ?: return@launch
@@ -307,7 +309,27 @@ class MainActivity : FragmentActivity() {
         val app = application.asTv()
         lifecycleScope.launch {
             runCatching { app.api.homeFeed(other) }
-                .onSuccess { feedCache[other] = it }
+                .onSuccess { feedCache[other] = withCachedNowInHd(other, it) }
+            if (other == "MOVIE") {
+                val hd = app.api.nowInHd()
+                feedCache[other]?.let { feedCache[other] = it.copy(nowInHd = hd) }
+            }
+        }
+    }
+
+    /** A fresh home feed keeps the "Now in HD" row already loaded until its own request answers. */
+    private fun withCachedNowInHd(kind: String, feed: HomeFeed): HomeFeed =
+        feed.copy(nowInHd = feedCache[kind]?.nowInHd.orEmpty())
+
+    /** "Now in HD" after the shelves are on screen, so a slow answer never holds them back. */
+    private fun loadNowInHd(kind: String) {
+        if (kind != "MOVIE") return
+        val app = application.asTv()
+        hdJob?.cancel()
+        hdJob = lifecycleScope.launch {
+            val hd = app.api.nowInHd()
+            feedCache[kind]?.let { feedCache[kind] = it.copy(nowInHd = hd) }
+            if (kind == selectedKind) browseFragment()?.updateNowInHd(kind, hd)
         }
     }
 

@@ -561,6 +561,7 @@ struct TvRating {
 
 #[derive(Debug, Deserialize)]
 struct TmdbCast {
+    id: Option<i32>,
     name: Option<String>,
     character: Option<String>,
     #[serde(default)]
@@ -576,6 +577,7 @@ struct TmdbRole {
 
 #[derive(Debug, Deserialize)]
 struct TmdbCrew {
+    id: Option<i32>,
     name: Option<String>,
     job: Option<String>,
     #[serde(default)]
@@ -1931,6 +1933,9 @@ async fn ensure_shelf_media_pages(
     Ok(())
 }
 
+/// Returns the page's ids and TMDB's full page count; callers apply their own
+/// page limit (shelves stop at `TMDB_LIST_MAX_PAGES`, Discover scrolling at
+/// `TMDB_DISCOVER_MAX_PAGES`).
 async fn fetch_list_page_ids(
     ctx: &IngestContext,
     path: &str,
@@ -1959,7 +1964,7 @@ async fn fetch_list_page_ids(
         let total = page_data
             .total_pages
             .unwrap_or(1)
-            .clamp(1, TMDB_LIST_MAX_PAGES);
+            .max(1);
         Ok((ids, total))
     } else {
         let page_data: Page<MovieListItem> = get_json(ctx, &url).await?;
@@ -1972,7 +1977,7 @@ async fn fetch_list_page_ids(
         let total = page_data
             .total_pages
             .unwrap_or(1)
-            .clamp(1, TMDB_LIST_MAX_PAGES);
+            .max(1);
         Ok((ids, total))
     }
 }
@@ -2627,6 +2632,7 @@ fn crew_job(member: &TmdbCrew) -> Option<String> {
 }
 
 pub(crate) struct CreditPerson {
+    pub tmdb_person_id: Option<i32>,
     pub name: String,
     pub character: Option<String>,
     pub job: Option<String>,
@@ -2647,8 +2653,8 @@ pub(crate) async fn replace_credit_people(
     for person in people {
         sqlx::query(
             r#"
-            INSERT INTO title_people (title_id, name, character, job, department, profile_path, sort_order)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            INSERT INTO title_people (title_id, name, character, job, department, profile_path, sort_order, tmdb_person_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             "#,
         )
         .bind(title_id)
@@ -2658,6 +2664,7 @@ pub(crate) async fn replace_credit_people(
         .bind(person.department)
         .bind(&person.profile_path)
         .bind(person.sort_order)
+        .bind(person.tmdb_person_id)
         .execute(&ctx.pool)
         .await?;
     }
@@ -2670,6 +2677,7 @@ async fn replace_people(ctx: &IngestContext, title_id: Uuid, credits: Option<&Tm
     for member in credits.cast.as_deref().unwrap_or(&[]).iter().take(12) {
         let Some(name) = member.name.as_deref().filter(|n| !n.is_empty()) else { continue };
         people.push(CreditPerson {
+            tmdb_person_id: member.id,
             name: name.to_string(),
             character: cast_character(member),
             job: None,
@@ -2689,6 +2697,7 @@ async fn replace_people(ctx: &IngestContext, title_id: Uuid, credits: Option<&Tm
         }
         let Some(name) = member.name.as_deref().filter(|n| !n.is_empty()) else { continue };
         people.push(CreditPerson {
+            tmdb_person_id: member.id,
             name: name.to_string(),
             character: None,
             job: Some(job),

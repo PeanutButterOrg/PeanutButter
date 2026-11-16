@@ -376,7 +376,8 @@ class LauncherActivity : FragmentActivity() {
         loadJob = lifecycleScope.launch {
             try {
                 val results = listOf("MOVIE", "SERIES").map { kind -> kind to async { app.api.homeFeed(kind) } }
-                results.forEach { (kind, feed) -> feeds[kind] = feed.await() }
+                // Keep a "Now in HD" row already shown until its own request answers.
+                results.forEach { (kind, feed) -> feeds[kind] = feed.await().copy(nowInHd = feeds[kind]?.nowInHd.orEmpty()) }
                 offline = false
                 // Every row's posters, so switching tabs never shows empty cards.
                 Posters.preload(
@@ -393,6 +394,17 @@ class LauncherActivity : FragmentActivity() {
             checked = true
             render()
             refreshStatus()
+            // "Now in HD" after the other rows are on screen, so a slow answer
+            // never holds them back.
+            if (!offline) {
+                val hd = app.api.nowInHd()
+                feeds["MOVIE"]?.let { movies ->
+                    if (movies.nowInHd != hd) {
+                        feeds["MOVIE"] = movies.copy(nowInHd = hd)
+                        render()
+                    }
+                }
+            }
         }
     }
 

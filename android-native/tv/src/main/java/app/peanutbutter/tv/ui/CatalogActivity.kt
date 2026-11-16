@@ -222,6 +222,7 @@ class CatalogActivity : androidx.fragment.app.FragmentActivity() {
             "TRENDING" to R.string.trending,
             "POPULARITY" to R.string.popular,
             "DATE_ADDED" to R.string.last_added,
+            "NOW_IN_HD" to R.string.now_in_hd,
             "CONTINUE_WATCHING" to R.string.continue_watching,
             "YEAR" to R.string.sort_year,
             "RATING" to R.string.sort_rating,
