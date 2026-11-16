@@ -155,6 +155,12 @@ class DetailsActivity : FragmentActivity() {
         title.isVisible = true
         PbGlide.clear(logo)
 
+        // The chips' scroll view: HorizontalScrollView makes itself focusable,
+        // so Up from Play landed on it with no highlight and focus seemed to vanish.
+        (chips.parent as? View)?.apply {
+            isFocusable = false
+            isFocusableInTouchMode = false
+        }
         chips.removeAllViews()
         var first = true
         fun addPiece(block: () -> Unit) {

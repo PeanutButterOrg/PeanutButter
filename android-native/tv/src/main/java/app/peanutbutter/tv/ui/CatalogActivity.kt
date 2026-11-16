@@ -93,7 +93,16 @@ class CatalogActivity : androidx.fragment.app.FragmentActivity() {
             "ANIME" -> getString(R.string.heading_anime)
             else -> getString(R.string.heading_titles)
         }
-        return "$sortLabel $kindLabel"
+        // Sorts that aren't a list name read as a phrase ("Top rated series",
+        // "Movies by year"), not "Rating series" / "Year movies".
+        val kindTitle = kindLabel.replaceFirstChar { it.titlecase(java.util.Locale.US) }
+        return when (sort) {
+            "RATING" -> "Top rated $kindLabel"
+            "YEAR" -> "$kindTitle by year"
+            "TITLE" -> "$kindTitle A–Z"
+            "ROTTEN_TOMATOES" -> "$kindTitle by Rotten Tomatoes"
+            else -> "$sortLabel $kindLabel"
+        }
     }
 
     private fun pickSort(current: String, kind: String?) {
