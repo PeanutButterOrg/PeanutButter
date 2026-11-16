@@ -203,20 +203,6 @@ class ApiClient(
         )
     }
 
-    /**
-     * The "Now in HD" row (movies only). Its own request, made after the home
-     * feed has been shown, so a slow answer never holds the other shelves
-     * back, and a server too old to know the sort just leaves the row empty.
-     */
-    suspend fun nowInHd(): List<TitleItem> =
-        try {
-            catalog(kind = "MOVIE", sort = "NOW_IN_HD", perPage = 18).items
-        } catch (e: CancellationException) {
-            throw e
-        } catch (_: Exception) {
-            emptyList()
-        }
-
     suspend fun title(id: String): TitleItem = withContext(Dispatchers.IO) {
         val data = gql(Gql.TITLE, mapOf("id" to id))
         parseTitle(data.getAsJsonObject("title"))

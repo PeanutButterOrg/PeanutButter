@@ -18,7 +18,6 @@ mod search;
 mod stream;
 mod subtitles;
 mod providers;
-mod quality;
 mod sources;
 mod server_update;
 mod torrent_links;

@@ -82,7 +82,6 @@ class CatalogActivity : androidx.fragment.app.FragmentActivity() {
     private fun heading(sort: String, kind: String?): String {
         val sortLabel = SORTS.firstOrNull { it.first == sort }?.second?.let { getString(it) } ?: getString(R.string.see_all)
         if (sort == "CONTINUE_WATCHING" && kind == null) return sortLabel
-        if (sort == "NOW_IN_HD") return getString(R.string.now_in_hd)
         val kindLabel = when (kind) {
             "MOVIE" -> getString(R.string.heading_movies)
             "SERIES" -> getString(R.string.heading_series)
@@ -222,7 +221,6 @@ class CatalogActivity : androidx.fragment.app.FragmentActivity() {
             "TRENDING" to R.string.trending,
             "POPULARITY" to R.string.popular,
             "DATE_ADDED" to R.string.last_added,
-            "NOW_IN_HD" to R.string.now_in_hd,
             "CONTINUE_WATCHING" to R.string.continue_watching,
             "YEAR" to R.string.sort_year,
             "RATING" to R.string.sort_rating,

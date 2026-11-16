@@ -376,8 +376,7 @@ class LauncherActivity : FragmentActivity() {
         loadJob = lifecycleScope.launch {
             try {
                 val results = listOf("MOVIE", "SERIES").map { kind -> kind to async { app.api.homeFeed(kind) } }
-                // Keep a "Now in HD" row already shown until its own request answers.
-                results.forEach { (kind, feed) -> feeds[kind] = feed.await().copy(nowInHd = feeds[kind]?.nowInHd.orEmpty()) }
+                results.forEach { (kind, feed) -> feeds[kind] = feed.await() }
                 offline = false
                 // Every row's posters, so switching tabs never shows empty cards.
                 Posters.preload(
@@ -394,17 +393,6 @@ class LauncherActivity : FragmentActivity() {
             checked = true
             render()
             refreshStatus()
-            // "Now in HD" after the other rows are on screen, so a slow answer
-            // never holds them back.
-            if (!offline) {
-                val hd = app.api.nowInHd()
-                feeds["MOVIE"]?.let { movies ->
-                    if (movies.nowInHd != hd) {
-                        feeds["MOVIE"] = movies.copy(nowInHd = hd)
-                        render()
-                    }
-                }
-            }
         }
     }
 
@@ -432,8 +420,6 @@ class LauncherActivity : FragmentActivity() {
                     ?.let { sections += Section.Posters(getString(R.string.row_trending_movies), it, "TRENDING", "MOVIE") }
                 series?.trending?.takeIf { it.isNotEmpty() }
                     ?.let { sections += Section.Posters(getString(R.string.row_trending_series), it, "TRENDING", "SERIES") }
-                movies?.nowInHd?.takeIf { it.isNotEmpty() }
-                    ?.let { sections += Section.Posters(getString(R.string.now_in_hd), it, "NOW_IN_HD", "MOVIE") }
             }
             Tab.MOVIES, Tab.SERIES -> {
                 val kind = if (tab == Tab.MOVIES) "MOVIE" else "SERIES"
@@ -446,7 +432,6 @@ class LauncherActivity : FragmentActivity() {
                     if (feed.trending.isNotEmpty()) sections += Section.Posters(getString(R.string.row_trending), feed.trending, "TRENDING", kind)
                     if (feed.popular.isNotEmpty()) sections += Section.Posters(getString(R.string.row_popular), feed.popular, "POPULARITY", kind)
                     if (feed.recent.isNotEmpty()) sections += Section.Posters(getString(R.string.row_recent), feed.recent, "DATE_ADDED", kind)
-                    if (feed.nowInHd.isNotEmpty()) sections += Section.Posters(getString(R.string.now_in_hd), feed.nowInHd, "NOW_IN_HD", kind)
                 }
             }
         }
