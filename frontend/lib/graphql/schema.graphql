@@ -24,6 +24,7 @@ enum SortField {
   CONTINUE_WATCHING
   FAVORITES
   WATCHED
+  NOW_IN_HD
 }
 
 enum SortDir {

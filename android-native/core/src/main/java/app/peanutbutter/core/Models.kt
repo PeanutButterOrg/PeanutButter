@@ -233,6 +233,8 @@ data class HomeFeed(
     val popular: List<TitleItem>,
     val recent: List<TitleItem>,
     val continueWatching: List<TitleItem>,
+    /** "Now in HD": new movies that now have an HD copy. Movies only. */
+    val nowInHd: List<TitleItem> = emptyList(),
 )
 
 /** A catalog add-on list a title is on ("Netflix"), tagged on Trending cards. */

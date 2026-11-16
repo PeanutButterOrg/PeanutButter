@@ -385,12 +385,37 @@ class HomeFeed {
     required this.popular,
     required this.recent,
     this.continueWatching = const [],
+    this.nowInHd = const [],
   });
 
   final List<TitleItem> trending;
   final List<TitleItem> popular;
   final List<TitleItem> recent;
   final List<TitleItem> continueWatching;
+  /// "Now in HD": new movies that now have an HD copy. Movies only.
+  final List<TitleItem> nowInHd;
+}
+
+/// The "Now in HD" row: new movies that now have an HD copy. Its own request,
+/// so a server too old to know the sort leaves the row empty instead of
+/// failing the whole home screen.
+Future<List<TitleItem>> _nowInHd(GraphQLClient client) async {
+  try {
+    final result = await client
+        .query(
+          QueryOptions(
+            document: gql(GET_CATALOG),
+            variables: const {'kind': 'MOVIE', 'sort': 'NOW_IN_HD', 'page': 1, 'perPage': 18},
+            fetchPolicy: FetchPolicy.noCache,
+          ),
+        )
+        .timeout(const Duration(seconds: 15));
+    if (result.hasException) return const [];
+    final items = (result.data?['catalog']?['items'] as List?) ?? const [];
+    return items.map((e) => TitleItem.fromJson(e as Map<String, dynamic>)).toList();
+  } catch (_) {
+    return const [];
+  }
 }
 
 final homeFeedProvider = FutureProvider.family<HomeFeed, String>((ref, kind) async {
@@ -419,6 +444,7 @@ final homeFeedProvider = FutureProvider.family<HomeFeed, String>((ref, kind) asy
     popular: row('popular'),
     recent: row('recent'),
     continueWatching: row('continueWatching'),
+    nowInHd: kind == 'MOVIE' ? await _nowInHd(client) : const [],
   );
   if (!isAndroidTv) {
     unawaited(ArtCache.prefetch(feed.trending.take(8), banner: true));

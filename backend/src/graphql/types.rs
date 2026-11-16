@@ -72,6 +72,9 @@ pub enum SortField {
     ContinueWatching,
     Favorites,
     Watched,
+    /// Movies from the last six months that now have an HD copy, newest
+    /// arrival first (the apps' "Now in HD" row and its See all).
+    NowInHd,
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq, Debug)]
@@ -665,6 +668,7 @@ pub struct HomeFeed {
     pub recent: Vec<Title>,
     pub continue_watching: Vec<Title>,
 }
+
 
 #[derive(SimpleObject, Clone, Debug)]
 pub struct SyncStatus {

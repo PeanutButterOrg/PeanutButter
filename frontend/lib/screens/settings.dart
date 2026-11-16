@@ -162,8 +162,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     trailing: AppMenuButton<String>(
                       hint: 'Quality',
                       value: settings.defaultQuality,
+                      // HD only: the server never offers anything below 720p.
                       entries: const [
-                        AppMenuEntry(value: '480p', label: '480p'),
                         AppMenuEntry(value: '720p', label: '720p'),
                         AppMenuEntry(value: '1080p', label: '1080p'),
                         AppMenuEntry(value: '2160p', label: '4K'),

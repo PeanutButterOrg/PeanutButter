@@ -273,6 +273,8 @@ class _HomeBodyState extends ConsumerState<_HomeBody> {
         _HomeRow(title: 'Trending', sort: 'TRENDING', items: feed.trending, kind: kind, railIndex: 1),
         _HomeRow(title: 'Popular', sort: 'POPULARITY', items: feed.popular, kind: kind, railIndex: 2),
         _HomeRow(title: 'Last added', sort: 'DATE_ADDED', items: feed.recent, kind: kind, railIndex: 3),
+        // Movies only (empty for series): new releases that now have an HD copy.
+        _HomeRow(title: 'Now in HD', sort: 'NOW_IN_HD', items: feed.nowInHd, kind: kind, railIndex: 4),
       ],
     );
     return ClippedOverlay(child: list);

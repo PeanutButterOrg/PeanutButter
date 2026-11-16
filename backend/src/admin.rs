@@ -1118,7 +1118,7 @@ async fn save_jackett(state: &HttpState, form: &AdminForm) -> Result<String, App
     let resolution = form
         .streaming_resolution
         .as_deref()
-        .filter(|s| matches!(*s, "2160p" | "1080p" | "720p" | "480p"));
+        .filter(|s| matches!(*s, "2160p" | "1080p" | "720p"));
     let langs = crate::config::normalize_language_list(&form.preferred_language_codes().join(","));
     crate::db::save_settings(
         &state.app.pool,
@@ -1327,7 +1327,8 @@ async fn dashboard(
         ));
     }
 
-    let res_opts = ["2160p", "1080p", "720p", "480p"]
+    // HD only: sources below 720p are never offered (sources::rank).
+    let res_opts = ["2160p", "1080p", "720p"]
         .into_iter()
         .map(|r| {
             let sel = if r == resolution { " selected" } else { "" };

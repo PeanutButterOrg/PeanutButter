@@ -223,6 +223,8 @@ class MainFragment : RowsSupportFragment() {
         addShelf(getString(R.string.trending), feed.trending, "TRENDING")
         addShelf(getString(R.string.popular), feed.popular, "POPULARITY")
         addShelf(getString(R.string.last_added), feed.recent, "DATE_ADDED")
+        // Movies only (empty for series): new releases that now have an HD copy.
+        addShelf(getString(R.string.now_in_hd), feed.nowInHd, "NOW_IN_HD")
 
         when {
             restoreFocus -> {

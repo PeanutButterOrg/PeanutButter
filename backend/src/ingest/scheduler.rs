@@ -66,6 +66,23 @@ pub async fn start(ctx: IngestContext) -> Result<JobScheduler> {
         .await
         .map_err(|e| crate::error::AppError::Internal(format!("add follows job: {e}")))?;
 
+    // Which favourites and new movies have an HD copy yet (quality.rs).
+    let quality = ctx.clone();
+    sched
+        .add(
+            Job::new_async("0 5,35 * * * *", move |_uuid, _lock| {
+                let quality = quality.clone();
+                Box::pin(async move {
+                    if let Err(e) = crate::quality::run(&quality).await {
+                        error!(error = %e, "release quality check failed");
+                    }
+                })
+            })
+            .map_err(|e| crate::error::AppError::Internal(format!("quality cron: {e}")))?,
+        )
+        .await
+        .map_err(|e| crate::error::AppError::Internal(format!("add quality job: {e}")))?;
+
     sched
         .start()
         .await

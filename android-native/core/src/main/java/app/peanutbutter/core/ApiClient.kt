@@ -200,6 +200,13 @@ class ApiClient(
             popular = parseTitles(feed.getAsJsonArray("popular")),
             recent = parseTitles(feed.getAsJsonArray("recent")),
             continueWatching = parseTitles(feed.getAsJsonArray("continueWatching")),
+            // Its own request: a server too old to know the sort leaves the
+            // row empty instead of failing the whole home screen.
+            nowInHd = if (kind == "MOVIE") {
+                runCatching { catalog(kind = "MOVIE", sort = "NOW_IN_HD", perPage = 18).items }.getOrDefault(emptyList())
+            } else {
+                emptyList()
+            },
         )
     }
 

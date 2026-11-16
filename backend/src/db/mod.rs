@@ -46,6 +46,7 @@ const EMBEDDED_MIGRATION_033: &str = include_str!("migrations/033_shelf_items.sq
 const EMBEDDED_MIGRATION_034: &str = include_str!("migrations/034_addon_catalog_items.sql");
 const EMBEDDED_MIGRATION_035: &str = include_str!("migrations/035_episode_follows.sql");
 const EMBEDDED_MIGRATION_036: &str = include_str!("migrations/036_text_locale.sql");
+const EMBEDDED_MIGRATION_037: &str = include_str!("migrations/037_title_quality.sql");
 
 /// Pool for GraphQL / playback — fail fast so sync never starves clients.
 pub async fn connect_api(database_url: &str) -> Result<PgPool> {
@@ -123,6 +124,7 @@ pub async fn run_migrations(pool: &PgPool, extra_dir: Option<&Path>) -> Result<(
     apply_one(pool, "034_addon_catalog_items", EMBEDDED_MIGRATION_034).await?;
     apply_one(pool, "035_episode_follows", EMBEDDED_MIGRATION_035).await?;
     apply_one(pool, "036_text_locale", EMBEDDED_MIGRATION_036).await?;
+    apply_one(pool, "037_title_quality", EMBEDDED_MIGRATION_037).await?;
 
     if let Some(dir) = extra_dir {
         if dir.is_dir() {
@@ -176,6 +178,7 @@ pub async fn run_migrations(pool: &PgPool, extra_dir: Option<&Path>) -> Result<(
                     || version == "034_addon_catalog_items"
                     || version == "035_episode_follows"
                     || version == "036_text_locale"
+                    || version == "037_title_quality"
                 {
                     continue;
                 }

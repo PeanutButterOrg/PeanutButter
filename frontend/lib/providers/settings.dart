@@ -144,7 +144,12 @@ class SettingsNotifier extends StateNotifier<SettingsState> {
       serverUrl: serverUrl,
       apiToken: apiToken,
       themeMode: theme == 'light' ? ThemeMode.light : ThemeMode.dark,
-      defaultQuality: _prefs.getString(_kQuality) ?? '1080p',
+      // 480p went away when sources became HD only.
+      defaultQuality: switch (_prefs.getString(_kQuality)) {
+        null => '1080p',
+        '480p' => '720p',
+        final q => q,
+      },
       preferredLanguages: _prefs.getStringList(_kLangs) ?? const ['en'],
       // Always start on the loading gate; bootstrap decides home / pairing / unreachable.
       booting: true,

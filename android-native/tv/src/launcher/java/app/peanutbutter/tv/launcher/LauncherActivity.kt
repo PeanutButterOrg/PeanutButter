@@ -420,6 +420,8 @@ class LauncherActivity : FragmentActivity() {
                     ?.let { sections += Section.Posters(getString(R.string.row_trending_movies), it, "TRENDING", "MOVIE") }
                 series?.trending?.takeIf { it.isNotEmpty() }
                     ?.let { sections += Section.Posters(getString(R.string.row_trending_series), it, "TRENDING", "SERIES") }
+                movies?.nowInHd?.takeIf { it.isNotEmpty() }
+                    ?.let { sections += Section.Posters(getString(R.string.now_in_hd), it, "NOW_IN_HD", "MOVIE") }
             }
             Tab.MOVIES, Tab.SERIES -> {
                 val kind = if (tab == Tab.MOVIES) "MOVIE" else "SERIES"
@@ -432,6 +434,7 @@ class LauncherActivity : FragmentActivity() {
                     if (feed.trending.isNotEmpty()) sections += Section.Posters(getString(R.string.row_trending), feed.trending, "TRENDING", kind)
                     if (feed.popular.isNotEmpty()) sections += Section.Posters(getString(R.string.row_popular), feed.popular, "POPULARITY", kind)
                     if (feed.recent.isNotEmpty()) sections += Section.Posters(getString(R.string.row_recent), feed.recent, "DATE_ADDED", kind)
+                    if (feed.nowInHd.isNotEmpty()) sections += Section.Posters(getString(R.string.now_in_hd), feed.nowInHd, "NOW_IN_HD", kind)
                 }
             }
         }
