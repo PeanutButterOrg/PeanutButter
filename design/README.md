@@ -24,6 +24,7 @@ Desktop sizes are logical pixels for a 1440 × 900 window. TV sizes are dp/sp fo
 - **Peanut amber** (`primary`) marks the one main action on a screen: Play, Save. Active chips use it too.
 - **Blue** (`focus`) is keyboard and remote focus everywhere, and links. A focused element gets a 3 px blue ring; on TV it also grows to 1.06×.
 - **Green, yellow and red** only ever mean status (healthy, weak, error), never decoration.
+- **Posters and the hero show the star score** (★ 8.6 IMDb), as the apps do today. Stream quality (4K, 1080p) appears only in **Choose a stream**, where you pick a copy.
 - **Space Grotesk** for names and headings, **Inter** for everything else. Both are bundled with the apps.
 - **Desktop hover = TV focus.** A hover preview on desktop is the focused state on TV, so nothing depends on a mouse.
 - **No live blur** on TV: gradients are drawn, not blurred, so cheap TV sticks stay smooth.
