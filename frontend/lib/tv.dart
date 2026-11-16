@@ -44,23 +44,32 @@ class TvFocusReveal extends InheritedWidget {
 }
 
 class TvHeaderFocus {
+  static final FocusNode home = FocusNode(debugLabel: 'header-home');
   static final FocusNode movies = FocusNode(debugLabel: 'header-movies');
   static final FocusNode series = FocusNode(debugLabel: 'header-series');
   static final FocusNode anime = FocusNode(debugLabel: 'header-anime');
   static final FocusNode favourites = FocusNode(debugLabel: 'header-favourites');
   static final FocusNode watched = FocusNode(debugLabel: 'header-watched');
+  static final FocusNode explore = FocusNode(debugLabel: 'header-explore');
   static final FocusNode search = FocusNode(debugLabel: 'header-search-btn');
   static final FocusNode settings = FocusNode(debugLabel: 'header-settings');
   static final FocusNode catalogSort = FocusNode(debugLabel: 'header-catalog-sort');
   static final FocusNode bannerDetails = FocusNode(debugLabel: 'banner-details');
+  // Same label as Play, so the home focus policy treats the three hero buttons as one row.
+  static final FocusNode bannerList = FocusNode(debugLabel: 'banner-details');
+  static final FocusNode bannerInfo = FocusNode(debugLabel: 'banner-details');
+
+  /// Play · My List · More info on the home hero.
+  static List<FocusNode> get bannerButtons => [bannerDetails, bannerList, bannerInfo];
 
   static List<FocusNode> get homeBar =>
-      [movies, series, favourites, watched, search, settings];
+      [home, movies, series, favourites, explore, search, settings];
 
   static FocusNode forKind(String kind) {
     return switch (kind) {
       'SERIES' => series,
-      _ => movies,
+      'MOVIE' => movies,
+      _ => home,
     };
   }
 

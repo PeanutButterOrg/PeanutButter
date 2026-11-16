@@ -212,7 +212,10 @@ GoRouter _buildRouter(SettingsState Function() readSettings) {
         path: '/title/:id',
         pageBuilder: (context, state) => pageFor(
           state,
-          DetailScreen(titleId: state.pathParameters['id']!),
+          DetailScreen(
+            titleId: state.pathParameters['id']!,
+            autoPlay: state.uri.queryParameters['play'] == '1',
+          ),
         ),
       ),
       GoRoute(

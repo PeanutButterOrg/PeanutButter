@@ -34,6 +34,9 @@ int catalogPageAfter({
 
 final selectedKindProvider = StateProvider<String>((ref) => 'MOVIE');
 
+/// The home section in the top bar: 'HOME' (movies and series), 'MOVIE' or 'SERIES'.
+final homeSectionProvider = StateProvider<String>((ref) => 'HOME');
+
 final catalogEpochProvider = StateProvider<int>((ref) => 0);
 
 final refreshBusyProvider = StateProvider<bool>((ref) => false);

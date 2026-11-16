@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../models.dart';
+import '../design/tokens.g.dart';
 import '../theme.dart';
 
 /// Shows the best available rating (RT, IMDb, TMDB/TVMaze, or AniList).
@@ -46,7 +47,7 @@ class ScoreChip extends StatelessWidget {
       return Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const Icon(Icons.star_rounded, size: 15, color: Color(0xFFFFC107)),
+          const Icon(Icons.star_rounded, size: 15, color: PbColors.primary),
           const SizedBox(width: 3),
           Text(
             score.label,
@@ -79,7 +80,7 @@ class ScoreChip extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.star_rounded, size: compact ? 13 : 16, color: const Color(0xFFFFC107)),
+          Icon(Icons.star_rounded, size: compact ? 13 : 16, color: PbColors.primary),
           SizedBox(width: compact ? 3 : 5),
           Text(
             score.label,

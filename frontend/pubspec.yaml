@@ -50,6 +50,7 @@ flutter:
   uses-material-design: true
   assets:
     # OFL licences for the bundled fonts, shown under Settings › Licences.
+    - assets/app_icon.svg
     - assets/fonts/Inter-OFL.txt
     - assets/fonts/SpaceGrotesk-OFL.txt
   # Bundled so the look is the same on every platform, online or offline.

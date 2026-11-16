@@ -26,9 +26,11 @@ import '../window_layout.dart';
 import '../youtube_stream.dart';
 
 class DetailScreen extends ConsumerWidget {
-  const DetailScreen({super.key, required this.titleId});
+  const DetailScreen({super.key, required this.titleId, this.autoPlay = false});
 
   final String titleId;
+  /// Start playing once the page is up (Play on the home hero).
+  final bool autoPlay;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -46,22 +48,24 @@ class DetailScreen extends ConsumerWidget {
             body: const Center(child: Text('Title not found')),
           );
         }
-        return _DetailBody(item: item);
+        return _DetailBody(item: item, autoPlay: autoPlay);
       },
     );
   }
 }
 
 class _DetailBody extends ConsumerStatefulWidget {
-  const _DetailBody({required this.item});
+  const _DetailBody({required this.item, this.autoPlay = false});
 
   final TitleItem item;
+  final bool autoPlay;
 
   @override
   ConsumerState<_DetailBody> createState() => _DetailBodyState();
 }
 
 class _DetailBodyState extends ConsumerState<_DetailBody> {
+  bool _autoPlayed = false;
   final FocusNode _play = FocusNode(debugLabel: 'detail-play');
   final FocusNode _watched = FocusNode(debugLabel: 'detail-watched');
   final FocusNode _favorite = FocusNode(debugLabel: 'detail-favorite');
@@ -456,6 +460,42 @@ class _DetailBodyState extends ConsumerState<_DetailBody> {
       );
     }
 
+    void streamNow() {
+      if (item.kind == 'MOVIE') {
+        // Resume → last magnet; first Play → torrent picker.
+        playStream(
+          preferResume: resume,
+          fromBeginning: !resume,
+        );
+        return;
+      }
+      final target = seriesPlayTarget();
+      if (target != null) {
+        playEpisode(target.season, target.episode);
+        return;
+      }
+      // Last resort — still pass S01E01 so Skip Intro can resolve.
+      playStream(
+        season: 1,
+        episode: 1,
+        preferResume: resume,
+        fromBeginning: !resume,
+      );
+    }
+
+    // Play from the home hero (/title/<id>?play=1): press Play once, as soon as it's here.
+    if (widget.autoPlay && !_autoPlayed && (playTarget != null || canStream)) {
+      _autoPlayed = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        if (playTarget != null) {
+          playFile(playTarget, startMs: resume ? effectiveResumeMs : 0);
+        } else {
+          streamNow();
+        }
+      });
+    }
+
     return TvNavHost(
       strategies: [TvNavDetailStrategy()],
       child: PopScope(
@@ -501,28 +541,7 @@ class _DetailBodyState extends ConsumerState<_DetailBody> {
                           }
                         }
                       },
-                      onStream: () {
-                        if (item.kind == 'MOVIE') {
-                          // Resume → last magnet; first Play → torrent picker.
-                          playStream(
-                            preferResume: resume,
-                            fromBeginning: !resume,
-                          );
-                          return;
-                        }
-                        final target = seriesPlayTarget();
-                        if (target != null) {
-                          playEpisode(target.season, target.episode);
-                          return;
-                        }
-                        // Last resort — still pass S01E01 so Skip Intro can resolve.
-                        playStream(
-                          season: 1,
-                          episode: 1,
-                          preferResume: resume,
-                          fromBeginning: !resume,
-                        );
-                      },
+                      onStream: streamNow,
                       onHeroFocus: _pinTop,
                       onToggleWatched: () {
                         unawaited(_toggleWatched());
