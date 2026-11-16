@@ -65,14 +65,16 @@ def dart(t: dict) -> str:
         lines.append(f"  /// {s['note']}")
         lines.append(
             f"  static const TextStyle {name} = TextStyle(fontFamily: {fam}, fontSize: {s['desktop']}, "
-            f"fontWeight: FontWeight.w{s['weight']}, height: {s['line']}, letterSpacing: {s['tracking']});"
+            f"fontWeight: FontWeight.w{s['weight']}, fontVariations: [FontVariation('wght', {s['weight']})], "
+            f"height: {s['line']}, letterSpacing: {s['tracking']});"
         )
     lines += ["}", "", "/// TV type scale, for the same names on a 10-foot screen.", "abstract final class PbTypeTv {"]
     for name, s in t["type"].items():
         fam = "PbFonts." + s["font"]
         lines.append(
             f"  static const TextStyle {name} = TextStyle(fontFamily: {fam}, fontSize: {s['tv']}, "
-            f"fontWeight: FontWeight.w{s['weight']}, height: {s['line']}, letterSpacing: {s['tracking']});"
+            f"fontWeight: FontWeight.w{s['weight']}, fontVariations: [FontVariation('wght', {s['weight']})], "
+            f"height: {s['line']}, letterSpacing: {s['tracking']});"
         )
     lines += ["}", "", "abstract final class PbSpace {"]
     for name, v in t["space"].items():

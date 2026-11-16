@@ -37,6 +37,12 @@ import 'widgets/update_prompt.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // The bundled fonts' licences (SIL OFL), listed with the other packages.
+  LicenseRegistry.addLicense(() async* {
+    for (final (family, file) in const [('Inter', 'Inter'), ('Space Grotesk', 'SpaceGrotesk')]) {
+      yield LicenseEntryWithLineBreaks([family], await rootBundle.loadString('assets/fonts/$file-OFL.txt'));
+    }
+  });
   // Android TV UX lives in the native Leanback app — Flutter is phone/desktop.
   DeviceProfile.refresh();
   debugPrint('PeanutButter main() start Uri.base=${Uri.base}');

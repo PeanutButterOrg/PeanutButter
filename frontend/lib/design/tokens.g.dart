@@ -52,33 +52,33 @@ abstract final class PbFonts {
 /// Desktop type scale (logical pixels).
 abstract final class PbType {
   /// Title name on the hero and title page
-  static const TextStyle hero = TextStyle(fontFamily: PbFonts.display, fontSize: 52, fontWeight: FontWeight.w700, height: 1.0, letterSpacing: -0.5);
+  static const TextStyle hero = TextStyle(fontFamily: PbFonts.display, fontSize: 52, fontWeight: FontWeight.w700, fontVariations: [FontVariation('wght', 700)], height: 1.0, letterSpacing: -0.5);
   /// Page titles (My List, Explore, Settings)
-  static const TextStyle h1 = TextStyle(fontFamily: PbFonts.display, fontSize: 34, fontWeight: FontWeight.w700, height: 1.1, letterSpacing: -0.3);
+  static const TextStyle h1 = TextStyle(fontFamily: PbFonts.display, fontSize: 34, fontWeight: FontWeight.w700, fontVariations: [FontVariation('wght', 700)], height: 1.1, letterSpacing: -0.3);
   /// Row and section headings
-  static const TextStyle h2 = TextStyle(fontFamily: PbFonts.display, fontSize: 22, fontWeight: FontWeight.w600, height: 1.2, letterSpacing: 0);
+  static const TextStyle h2 = TextStyle(fontFamily: PbFonts.display, fontSize: 22, fontWeight: FontWeight.w600, fontVariations: [FontVariation('wght', 600)], height: 1.2, letterSpacing: 0);
   /// Card titles, list items
-  static const TextStyle title = TextStyle(fontFamily: PbFonts.body, fontSize: 16, fontWeight: FontWeight.w600, height: 1.3, letterSpacing: 0);
+  static const TextStyle title = TextStyle(fontFamily: PbFonts.body, fontSize: 16, fontWeight: FontWeight.w600, fontVariations: [FontVariation('wght', 600)], height: 1.3, letterSpacing: 0);
   /// Synopsis, descriptions
-  static const TextStyle body = TextStyle(fontFamily: PbFonts.body, fontSize: 14, fontWeight: FontWeight.w400, height: 1.5, letterSpacing: 0);
+  static const TextStyle body = TextStyle(fontFamily: PbFonts.body, fontSize: 14, fontWeight: FontWeight.w400, fontVariations: [FontVariation('wght', 400)], height: 1.5, letterSpacing: 0);
   /// Year, runtime, rating line
-  static const TextStyle meta = TextStyle(fontFamily: PbFonts.body, fontSize: 13, fontWeight: FontWeight.w500, height: 1.35, letterSpacing: 0);
+  static const TextStyle meta = TextStyle(fontFamily: PbFonts.body, fontSize: 13, fontWeight: FontWeight.w500, fontVariations: [FontVariation('wght', 500)], height: 1.35, letterSpacing: 0);
   /// Uppercase eyebrows and badges
-  static const TextStyle label = TextStyle(fontFamily: PbFonts.body, fontSize: 11, fontWeight: FontWeight.w700, height: 1.2, letterSpacing: 0.8);
+  static const TextStyle label = TextStyle(fontFamily: PbFonts.body, fontSize: 11, fontWeight: FontWeight.w700, fontVariations: [FontVariation('wght', 700)], height: 1.2, letterSpacing: 0.8);
   /// Buttons and chips
-  static const TextStyle button = TextStyle(fontFamily: PbFonts.body, fontSize: 14, fontWeight: FontWeight.w600, height: 1.0, letterSpacing: 0);
+  static const TextStyle button = TextStyle(fontFamily: PbFonts.body, fontSize: 14, fontWeight: FontWeight.w600, fontVariations: [FontVariation('wght', 600)], height: 1.0, letterSpacing: 0);
 }
 
 /// TV type scale, for the same names on a 10-foot screen.
 abstract final class PbTypeTv {
-  static const TextStyle hero = TextStyle(fontFamily: PbFonts.display, fontSize: 44, fontWeight: FontWeight.w700, height: 1.0, letterSpacing: -0.5);
-  static const TextStyle h1 = TextStyle(fontFamily: PbFonts.display, fontSize: 32, fontWeight: FontWeight.w700, height: 1.1, letterSpacing: -0.3);
-  static const TextStyle h2 = TextStyle(fontFamily: PbFonts.display, fontSize: 24, fontWeight: FontWeight.w600, height: 1.2, letterSpacing: 0);
-  static const TextStyle title = TextStyle(fontFamily: PbFonts.body, fontSize: 18, fontWeight: FontWeight.w600, height: 1.3, letterSpacing: 0);
-  static const TextStyle body = TextStyle(fontFamily: PbFonts.body, fontSize: 16, fontWeight: FontWeight.w400, height: 1.5, letterSpacing: 0);
-  static const TextStyle meta = TextStyle(fontFamily: PbFonts.body, fontSize: 15, fontWeight: FontWeight.w500, height: 1.35, letterSpacing: 0);
-  static const TextStyle label = TextStyle(fontFamily: PbFonts.body, fontSize: 12, fontWeight: FontWeight.w700, height: 1.2, letterSpacing: 0.8);
-  static const TextStyle button = TextStyle(fontFamily: PbFonts.body, fontSize: 16, fontWeight: FontWeight.w600, height: 1.0, letterSpacing: 0);
+  static const TextStyle hero = TextStyle(fontFamily: PbFonts.display, fontSize: 44, fontWeight: FontWeight.w700, fontVariations: [FontVariation('wght', 700)], height: 1.0, letterSpacing: -0.5);
+  static const TextStyle h1 = TextStyle(fontFamily: PbFonts.display, fontSize: 32, fontWeight: FontWeight.w700, fontVariations: [FontVariation('wght', 700)], height: 1.1, letterSpacing: -0.3);
+  static const TextStyle h2 = TextStyle(fontFamily: PbFonts.display, fontSize: 24, fontWeight: FontWeight.w600, fontVariations: [FontVariation('wght', 600)], height: 1.2, letterSpacing: 0);
+  static const TextStyle title = TextStyle(fontFamily: PbFonts.body, fontSize: 18, fontWeight: FontWeight.w600, fontVariations: [FontVariation('wght', 600)], height: 1.3, letterSpacing: 0);
+  static const TextStyle body = TextStyle(fontFamily: PbFonts.body, fontSize: 16, fontWeight: FontWeight.w400, fontVariations: [FontVariation('wght', 400)], height: 1.5, letterSpacing: 0);
+  static const TextStyle meta = TextStyle(fontFamily: PbFonts.body, fontSize: 15, fontWeight: FontWeight.w500, fontVariations: [FontVariation('wght', 500)], height: 1.35, letterSpacing: 0);
+  static const TextStyle label = TextStyle(fontFamily: PbFonts.body, fontSize: 12, fontWeight: FontWeight.w700, fontVariations: [FontVariation('wght', 700)], height: 1.2, letterSpacing: 0.8);
+  static const TextStyle button = TextStyle(fontFamily: PbFonts.body, fontSize: 16, fontWeight: FontWeight.w600, fontVariations: [FontVariation('wght', 600)], height: 1.0, letterSpacing: 0);
 }
 
 abstract final class PbSpace {
