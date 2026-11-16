@@ -51,7 +51,8 @@ impl Query {
             None => None,
         };
         // A service filter shows that service's lists, not TMDB's shelves.
-        if !personal && service_names.is_none() {
+        // Availability ranks your own files, which TMDB can't add to.
+        if !personal && service_names.is_none() && sort != SortField::Availability {
             let shelf = match sort {
                 SortField::Trending => Some("trending"),
                 SortField::Popularity => Some("popular"),
@@ -1338,19 +1339,22 @@ async fn fill_catalog_page(
         rating_min: filter.rating_min,
         order,
     };
-    let filtered = discover.is_active();
-    let shelf = shelf.filter(|_| !filtered);
-    if !filtered && shelf.is_none() {
+    // Filters, or a sort with no TMDB shelf of its own (Rating, Year, Title,
+    // …), go through Discover; plain Trending / Popular / Fresh use their
+    // shelf. Before, the second case fetched nothing and only ever showed
+    // titles already stored.
+    let shelf = shelf.filter(|_| !discover.is_active());
+    if kind == Some("anime") && shelf.is_none() {
+        // Anime has no Discover list of its own (stored as TMDB series).
         return false;
     }
     // Enough rows to fill this page, plus the next so scrolling doesn't wait.
     let wanted = (i64::from(page) + 1) * i64::from(per_page);
     let mut depth = page;
     loop {
-        let more = if filtered {
-            tmdb::ensure_discover_pages_for_catalog(&ingest, kind, &discover, depth, per_page).await
-        } else {
-            tmdb::ensure_shelf_pages_for_catalog(&ingest, shelf.unwrap_or_default(), kind, depth, per_page).await
+        let more = match shelf {
+            Some(shelf) => tmdb::ensure_shelf_pages_for_catalog(&ingest, shelf, kind, depth, per_page).await,
+            None => tmdb::ensure_discover_pages_for_catalog(&ingest, kind, &discover, depth, per_page).await,
         };
         let more = match more {
             Ok(more) => more,
@@ -1359,7 +1363,7 @@ async fn fill_catalog_page(
                 return false;
             }
         };
-        if !more || ingest.syncing.load(std::sync::atomic::Ordering::Relaxed) {
+        if !more {
             return more;
         }
         let mut count = sqlx::QueryBuilder::new(
