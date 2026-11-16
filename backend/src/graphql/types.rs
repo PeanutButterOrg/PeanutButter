@@ -371,6 +371,38 @@ impl Person {
     }
 }
 
+/// One card per person: TMDB lists someone once per job ("David Ayer ·
+/// Director", "David Ayer · Producer"), and the apps showed every row. The
+/// first row keeps its place; later jobs join its job ("Director, Producer").
+pub fn merge_people(people: Vec<Person>) -> Vec<Person> {
+    let mut out: Vec<Person> = Vec::with_capacity(people.len());
+    for p in people {
+        let key = p.name.trim().to_lowercase();
+        match out.iter_mut().find(|q| q.name.trim().to_lowercase() == key) {
+            Some(first) => {
+                if let Some(job) = p.job.filter(|j| !j.trim().is_empty()) {
+                    match &mut first.job {
+                        Some(jobs) if !jobs.split(", ").any(|j| j.eq_ignore_ascii_case(&job)) => {
+                            jobs.push_str(", ");
+                            jobs.push_str(&job);
+                        }
+                        Some(_) => {}
+                        None => first.job = Some(job),
+                    }
+                }
+                if first.character.is_none() {
+                    first.character = p.character;
+                }
+                if first.profile_url.is_none() {
+                    first.profile_url = p.profile_url;
+                }
+            }
+            None => out.push(p),
+        }
+    }
+    out
+}
+
 #[derive(SimpleObject, Clone, Debug)]
 pub struct UserState {
     pub favorite: bool,
@@ -620,10 +652,9 @@ impl Title {
         .fetch_all(&state.pool)
         .await
         .map_err(AppError::Database)?;
-        Ok(rows
-            .into_iter()
-            .map(|r| Person::from_row(r, &state.config.public_url))
-            .collect())
+        Ok(merge_people(
+            rows.into_iter().map(|r| Person::from_row(r, &state.config.public_url)).collect(),
+        ))
     }
 
     async fn user_state(&self, ctx: &Context<'_>) -> async_graphql::Result<Option<UserState>> {
@@ -892,4 +923,35 @@ pub struct MediaSegment {
 pub struct MediaSegments {
     pub tmdb_id: Option<i32>,
     pub segments: Vec<MediaSegment>,
+}
+
+#[cfg(test)]
+mod people_tests {
+    use super::*;
+
+    fn person(name: &str, character: Option<&str>, job: Option<&str>) -> Person {
+        Person {
+            id: Uuid::new_v4(),
+            name: name.into(),
+            character: character.map(Into::into),
+            job: job.map(Into::into),
+            department: String::new(),
+            profile_url: None,
+        }
+    }
+
+    #[test]
+    fn one_card_per_person_with_their_jobs() {
+        let merged = merge_people(vec![
+            person("Brad Pitt", Some("James Belmont"), None),
+            person("David Ayer", None, Some("Director")),
+            person("Olivia Hamilton", None, Some("Producer")),
+            person("David Ayer", None, Some("Producer")),
+            person("David Ayer", None, Some("Producer")),
+        ]);
+        let names: Vec<&str> = merged.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["Brad Pitt", "David Ayer", "Olivia Hamilton"]);
+        assert_eq!(merged[1].job.as_deref(), Some("Director, Producer"));
+        assert_eq!(merged[0].character.as_deref(), Some("James Belmont"));
+    }
 }
