@@ -1,17 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Mirrored from Flutter AppTheme / PtTheme -->
-    <color name="pb_seed">#FF5B9FFF</color>
-    <color name="pb_accent">#FF5B9FFF</color>
-    <color name="pb_canvas">#FF0E0E12</color>
-    <color name="pb_panel">#FF1A1A22</color>
-    <color name="pb_field">#FF121218</color>
-    <color name="pb_muted">#FF9A9AA8</color>
+    <!-- Older names still used across layouts and code; each now points at a
+         design token (pb_tokens.xml, generated from design/tokens.json). New
+         work uses @color/pbt_* directly. -->
+    <color name="pb_seed">@color/pbt_focus</color>
+    <color name="pb_accent">@color/pbt_focus</color>
+    <color name="pb_canvas">@color/pbt_ground</color>
+    <color name="pb_panel">@color/pbt_surface</color>
+    <color name="pb_field">@color/pbt_surface_raised</color>
+    <color name="pb_muted">@color/pbt_text_muted</color>
     <color name="pb_white">#FFFFFFFF</color>
     <color name="pb_white54">#8AFFFFFF</color>
-    <color name="pb_rt">#FFFA320A</color>
-    <color name="pb_completed">#FF7CFFB2</color>
+    <color name="pb_rt">@color/pbt_rt</color>
+    <color name="pb_completed">@color/pbt_good</color>
     <color name="pb_state_liked">#EBFFFFFF</color>
-    <color name="pb_hairline">#22FFFFFF</color>
-    <color name="pb_error">#FFFF6B6B</color>
+    <color name="pb_hairline">@color/pbt_line</color>
+    <color name="pb_error">@color/pbt_bad</color>
 </resources>

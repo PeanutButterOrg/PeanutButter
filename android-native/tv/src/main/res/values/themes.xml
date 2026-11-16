@@ -5,6 +5,8 @@
         <item name="android:colorAccent">@color/pb_seed</item>
         <item name="android:windowBackground">@color/pb_canvas</item>
         <item name="android:windowFullscreen">true</item>
+        <!-- Bundled Inter everywhere (Android 8+; older TVs keep the system font). -->
+        <item name="android:fontFamily">@font/inter</item>
         <item name="defaultSearchColor">@color/pb_seed</item>
         <item name="overlayDimMaskColor">@android:color/transparent</item>
         <item name="defaultBrandColor">@color/pb_canvas</item>
