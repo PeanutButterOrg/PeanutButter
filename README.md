@@ -6,6 +6,8 @@
 [![Backend & Docker](https://github.com/PeanutButterOrg/PeanutButter/actions/workflows/backend-docker.yml/badge.svg)](https://github.com/PeanutButterOrg/PeanutButter/actions/workflows/backend-docker.yml)
 [![Latest release](https://img.shields.io/github/v/release/PeanutButterOrg/PeanutButter)](https://github.com/PeanutButterOrg/PeanutButter/releases/latest)
 
+<p align="center"><img src="docs/screenshots/tv-home.webp" alt="PeanutButter on Android TV: the home screen" width="85%"></p>
+
 | | |
 |---|---|
 | 📺 **Android TV** | A native app built for the remote, or swap your whole TV Home screen for the **PeanutButter Launcher** |
@@ -36,6 +38,56 @@
 - Pair a TV or computer with a **6-digit code** from the console. The app can find the server on your network by itself.
 - Apps update themselves from your server, and every update is signature-checked
 - The server can update itself from the console, backing up the database first
+
+## A look around
+
+All screenshots are from real builds, with a catalog synced from TMDB. Click one to see it full size.
+
+### 📺 Android TV app
+
+Built for the remote: everything works with the arrow keys and OK.
+
+<table>
+  <tr>
+    <td width="33%" valign="top"><a href="docs/screenshots/tv-home.webp"><img src="docs/screenshots/tv-home.webp" alt="Home: trending hero, then your rows"></a><br><sub>Home: trending hero, then your rows</sub></td>
+    <td width="33%" valign="top"><a href="docs/screenshots/tv-home-rows.webp"><img src="docs/screenshots/tv-home-rows.webp" alt="Continue watching with progress bars"></a><br><sub>Continue watching with progress bars</sub></td>
+    <td width="33%" valign="top"><a href="docs/screenshots/tv-title.webp"><img src="docs/screenshots/tv-title.webp" alt="Title page: scores, Play, Watched, Favourite"></a><br><sub>Title page: scores, Play, Watched, Favourite</sub></td>
+  </tr>
+  <tr>
+    <td width="33%" valign="top"><a href="docs/screenshots/tv-episodes.webp"><img src="docs/screenshots/tv-episodes.webp" alt="Series: seasons and episodes"></a><br><sub>Series: seasons and episodes</sub></td>
+    <td width="33%" valign="top"><a href="docs/screenshots/tv-see-all.webp"><img src="docs/screenshots/tv-see-all.webp" alt="See all, with sort and filters"></a><br><sub>See all, with sort and filters</sub></td>
+    <td width="33%" valign="top"><a href="docs/screenshots/tv-search.webp"><img src="docs/screenshots/tv-search.webp" alt="Typo-tolerant search"></a><br><sub>Typo-tolerant search</sub></td>
+  </tr>
+</table>
+
+### 🏠 Android TV Launcher
+
+The same app as your TV's whole Home screen: clock, Home / Movies / Series, quick TV controls and your other apps ([what it is](android-native/tv/src/launcher/README.md)).
+
+<table>
+  <tr>
+    <td width="33%" valign="top"><a href="docs/screenshots/launcher-home.webp"><img src="docs/screenshots/launcher-home.webp" alt="Home: movies and series together"></a><br><sub>Home: movies and series together</sub></td>
+    <td width="33%" valign="top"><a href="docs/screenshots/launcher-movies.webp"><img src="docs/screenshots/launcher-movies.webp" alt="Movies tab"></a><br><sub>Movies tab</sub></td>
+    <td width="33%" valign="top"><a href="docs/screenshots/launcher-apps.webp"><img src="docs/screenshots/launcher-apps.webp" alt="Choose and order your apps"></a><br><sub>Choose and order your apps</sub></td>
+  </tr>
+</table>
+
+### 💻 Desktop: Windows, macOS, Linux
+
+The same screens on every computer, with full keyboard and mouse control.
+
+<table>
+  <tr>
+    <td width="33%" valign="top"><a href="docs/screenshots/desktop-home.webp"><img src="docs/screenshots/desktop-home.webp" alt="Home"></a><br><sub>Home</sub></td>
+    <td width="33%" valign="top"><a href="docs/screenshots/desktop-rows.webp"><img src="docs/screenshots/desktop-rows.webp" alt="Trending, Popular, Last added"></a><br><sub>Trending, Popular, Last added</sub></td>
+    <td width="33%" valign="top"><a href="docs/screenshots/desktop-title.webp"><img src="docs/screenshots/desktop-title.webp" alt="Title page with cast"></a><br><sub>Title page with cast</sub></td>
+  </tr>
+  <tr>
+    <td width="33%" valign="top"><a href="docs/screenshots/desktop-episodes.webp"><img src="docs/screenshots/desktop-episodes.webp" alt="Episodes"></a><br><sub>Episodes</sub></td>
+    <td width="33%" valign="top"><a href="docs/screenshots/desktop-see-all.webp"><img src="docs/screenshots/desktop-see-all.webp" alt="See all with year, rating and genre filters"></a><br><sub>See all with year, rating and genre filters</sub></td>
+    <td width="33%" valign="top"><a href="docs/screenshots/desktop-search.webp"><img src="docs/screenshots/desktop-search.webp" alt="Search"></a><br><sub>Search</sub></td>
+  </tr>
+</table>
 
 ---
 
@@ -79,13 +131,22 @@ On CasaOS / ZimaOS, use `docker-compose.casaos.yml`. For every option, see the *
 
 **2. Open the console** at `http://YOUR_SERVER:3001/`.
 - Sign in. If you didn't set `ADMIN_PASSWORD`, the generated password is printed in the server log: `docker compose -f docker-compose.server.yml logs api`.
-- Add a TMDB key (free) so the catalog fills up.
+- Under **Settings**, add a TMDB key (free) so the catalog fills up. The **Sync** tab shows it filling.
 - Optionally, set up Jackett or Stremio add-ons under **Streaming**.
+
+<table>
+  <tr>
+    <td width="33%" valign="top"><a href="docs/screenshots/console-sign-in.webp"><img src="docs/screenshots/console-sign-in.webp" alt="Sign in with the admin password"></a><br><sub>Sign in with the admin password</sub></td>
+    <td width="33%" valign="top"><a href="docs/screenshots/console-settings.webp"><img src="docs/screenshots/console-settings.webp" alt="Settings: updates and API keys"></a><br><sub>Settings: updates and API keys</sub></td>
+    <td width="33%" valign="top"><a href="docs/screenshots/console-devices.webp"><img src="docs/screenshots/console-devices.webp" alt="Devices: one 6-digit code each (blurred here)"></a><br><sub>Devices: one 6-digit code each (blurred here)</sub></td>
+  </tr>
+</table>
 
 **3. Install an app and pair it.**
 - Download it from the [latest release](https://github.com/PeanutButterOrg/PeanutButter/releases/latest).
-- Create a device code under **Devices** in the console.
-- Type the 6-digit code in the app.
+- In the console, open **Devices**, type a name (say "Living room TV") and choose **New code**.
+- Open the app. It finds the server on your network by itself (or type its address), then enter the 6-digit code. The code is good for 15 minutes; after that, choose **New code** again.
+- That's it: the app now shows your catalog and updates itself from your server.
 
 | Platform | Download | Player |
 |---|---|---|
