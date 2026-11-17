@@ -282,7 +282,7 @@ class _CatalogScreenState extends ConsumerState<CatalogScreen> {
             sliver: SliverToBoxAdapter(
               child: LayoutBuilder(
                 builder: (context, box) {
-                  const height = 360.0;
+                  const height = 440.0;
                   final card = FeatureCard(item: items.first, eyebrow: '#1 in $heading', height: height);
                   if (box.maxWidth < 1000) return card;
                   return SizedBox(

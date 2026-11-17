@@ -15,11 +15,12 @@ import 'title_meta.dart';
 /// A featured title, big: art, eyebrow, name, Play / My List / More info.
 /// Search's top result and the #1 on See all pages.
 class FeatureCard extends ConsumerStatefulWidget {
-  const FeatureCard({super.key, required this.item, required this.eyebrow, this.height = 360});
+  const FeatureCard({super.key, required this.item, required this.eyebrow, this.height});
 
   final TitleItem item;
   final String eyebrow;
-  final double height;
+  /// Fixed height; null scales with the width so the artwork shows well.
+  final double? height;
 
   @override
   ConsumerState<FeatureCard> createState() => _FeatureCardState();
@@ -51,17 +52,28 @@ class _FeatureCardState extends ConsumerState<FeatureCard> {
   Widget build(BuildContext context) {
     final item = widget.item;
     final listed = _listed ?? item.userState?.favorite == true;
+    return LayoutBuilder(
+      builder: (context, box) {
+        final height = widget.height ?? (box.maxWidth * 0.42).clamp(400.0, 620.0);
+        return _card(item, listed, height);
+      },
+    );
+  }
+
+  Widget _card(TitleItem item, bool listed, double height) {
     return ClipRRect(
       borderRadius: BorderRadius.circular(PbRadius.panel + 4),
       child: SizedBox(
-        height: widget.height,
+        height: height,
         child: Stack(
           fit: StackFit.expand,
           children: [
             const ColoredBox(color: PbColors.surface),
             CachedArt(
               url: bestBannerUrl(backdropUrl: item.backdropUrl, thumbUrl: item.thumbUrl, posterUrl: item.posterUrl),
-              memCacheWidth: 1400,
+              memCacheWidth: 1920,
+              // Faces and titles sit high in backdrops.
+              alignment: const Alignment(0, -0.3),
             ),
             const DecoratedBox(
               decoration: BoxDecoration(
