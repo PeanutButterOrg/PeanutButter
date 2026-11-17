@@ -27,19 +27,6 @@ class SettingsScreen extends ConsumerStatefulWidget {
 }
 
 class _SettingsScreenState extends ConsumerState<SettingsScreen> {
-  /// One key per section, so the header tabs can jump to it.
-  final Map<String, GlobalKey> _sectionKeys = {
-    for (final t in _sectionTitles) t: GlobalKey(debugLabel: 'settings-$t'),
-  };
-
-  static const _sectionTitles = ['Playback', 'Library & sources', 'Subtitles', 'This device', 'About'];
-
-  void _jumpTo(String title) {
-    final ctx = _sectionKeys[title]?.currentContext;
-    if (ctx != null) {
-      Scrollable.ensureVisible(ctx, duration: PbMotion.slow, curve: Curves.easeOutCubic, alignment: 0.02);
-    }
-  }
 
   final _opensubKey = TextEditingController();
   final _wyzieKey = TextEditingController();
@@ -162,14 +149,11 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             children: [
               _Header(
                 serverUrl: settings.serverUrl,
-                sections: _sectionTitles,
-                onSection: _jumpTo,
                 onBack: isAndroidTv ? null : () => Navigator.of(context).maybePop(),
               ),
               const SizedBox(height: 28),
 
               _Section(
-                key: _sectionKeys['Playback'],
                 icon: Icons.play_circle_outline_rounded,
                 title: 'Playback',
                 description: 'How videos look on this device.',
@@ -212,7 +196,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               ),
 
               _Section(
-                key: _sectionKeys['Library & sources'],
                 icon: Icons.video_library_outlined,
                 title: 'Library & sources',
                 description: 'Shared by every device paired with this server.',
@@ -274,7 +257,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               ),
 
               _Section(
-                key: _sectionKeys['Subtitles'],
                 icon: Icons.closed_caption_outlined,
                 title: 'Subtitles',
                 description: 'Search and download captions while you watch.',
@@ -346,7 +328,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               ),
 
               _Section(
-                key: _sectionKeys['This device'],
                 icon: Icons.devices_other_rounded,
                 title: 'This device',
                 description: 'Storage on this computer.',
@@ -377,7 +358,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               ),
 
               _Section(
-                key: _sectionKeys['About'],
                 icon: Icons.info_outline_rounded,
                 title: 'About',
                 children: [
@@ -416,17 +396,13 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 }
 
 class _Header extends StatelessWidget {
-  const _Header({
-    required this.serverUrl,
-    required this.sections,
-    required this.onSection,
-    this.onBack,
-  });
+  const _Header({required this.serverUrl, this.onBack});
 
   final String serverUrl;
-  final List<String> sections;
-  final ValueChanged<String> onSection;
   final VoidCallback? onBack;
+
+  /// Back arrow width plus its gap: the line under the title starts after it.
+  static const double _backRoom = 24 + 14;
 
   @override
   Widget build(BuildContext context) {
@@ -436,42 +412,24 @@ class _Header extends StatelessWidget {
         Row(
           children: [
             if (onBack != null) ...[
+              // No padding, so the arrow lines up with the section titles below.
               TvFocus(
                 child: IconButton(
                   tooltip: 'Back',
                   onPressed: onBack,
-                  icon: const Icon(Icons.arrow_back_rounded, color: PbColors.text),
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                  style: IconButton.styleFrom(tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+                  icon: const Icon(Icons.arrow_back_rounded, size: 24, color: PbColors.text),
                 ),
               ),
-              const SizedBox(width: 6),
+              const SizedBox(width: 14),
             ],
             Text('Settings', style: PbType.h1.copyWith(color: PbColors.text)),
-            const SizedBox(width: 28),
-            // Jump to a section (the design's tabs).
-            Expanded(
-              child: SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: Row(
-                  children: [
-                    for (final t in sections)
-                      TvFocus(
-                        child: TextButton(
-                          onPressed: () => onSection(t),
-                          style: TextButton.styleFrom(
-                            foregroundColor: PbColors.textMuted,
-                            padding: const EdgeInsets.symmetric(horizontal: 12),
-                          ),
-                          child: Text(t),
-                        ),
-                      ),
-                  ],
-                ),
-              ),
-            ),
           ],
         ),
         Padding(
-          padding: EdgeInsets.only(left: onBack != null ? 54 : 0, top: 2),
+          padding: EdgeInsets.only(left: onBack != null ? _backRoom : 0, top: 2),
           child: Text(
             serverUrl.isEmpty ? 'Not paired with a server' : 'Connected to $serverUrl',
             maxLines: 1,
@@ -488,7 +446,6 @@ class _Header extends StatelessWidget {
 /// the left, a card of rows on the right (stacked on narrow windows).
 class _Section extends StatelessWidget {
   const _Section({
-    super.key,
     required this.icon,
     required this.title,
     required this.children,
