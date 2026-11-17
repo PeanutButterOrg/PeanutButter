@@ -10,7 +10,6 @@ import android.view.View
 import android.view.ViewGroup
 import android.graphics.Rect
 import android.widget.HorizontalScrollView
-import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
@@ -140,18 +139,20 @@ class DetailsActivity : FragmentActivity() {
         val play = findViewById<View>(R.id.btn_play)
         val playLabel = findViewById<TextView>(R.id.btn_play_label)
         val fromStart = findViewById<TextView>(R.id.btn_from_start)
-        val watchedBtn = findViewById<ImageButton>(R.id.btn_watched)
-        val favBtn = findViewById<ImageButton>(R.id.btn_favorite)
+        val watchedBtn = findViewById<View>(R.id.btn_watched)
+        val favBtn = findViewById<View>(R.id.btn_favorite)
 
         val isSeries = t.kind.equals("SERIES", true) ||
             t.kind.equals("TV", true) ||
             t.kind.equals("ANIME", true)
 
-        eyebrow.text = when {
+        val kindLabel = when {
             isSeries && t.kind.equals("ANIME", true) -> "Anime"
-            isSeries -> getString(R.string.series)
-            else -> getString(R.string.movies)
+            isSeries -> "Series"
+            else -> "Movie"
         }
+        eyebrow.text = listOfNotNull(kindLabel, t.year?.toString()).joinToString(" · ")
+        bindCredits(t)
         title.text = t.displayTitle
         synopsis.text = t.synopsis.orEmpty()
         synopsis.isVisible = !t.synopsis.isNullOrBlank()
@@ -178,8 +179,11 @@ class DetailsActivity : FragmentActivity() {
         }
         t.displayScore?.let { score ->
             addPiece {
-                val label = if (score.rtScore == null) "★ ${score.label} ${score.source}"
-                else "${score.label} ${score.source}"
+                val label = android.text.SpannableStringBuilder()
+                if (score.rtScore == null) {
+                    label.append("★ ", android.text.style.ForegroundColorSpan(getColor(R.color.pbt_primary)), 0)
+                }
+                label.append("${score.label} ${score.source}")
                 addChip(chips, label, pill = false)
             }
         }
@@ -421,14 +425,14 @@ class DetailsActivity : FragmentActivity() {
         }
         val accent = when {
             complete -> R.color.pb_completed
-            containsResume || started > 0 -> R.color.pb_seed
+            containsResume || started > 0 -> R.color.pbt_primary
             else -> R.color.pb_muted
         }
         meta.setTextColor(ContextCompat.getColor(this, accent))
         title.setTextColor(
             ContextCompat.getColor(
                 this,
-                if (containsResume && !complete) R.color.pb_seed else R.color.pb_white,
+                if (containsResume && !complete) R.color.pbt_primary else R.color.pb_white,
             ),
         )
         check.isVisible = complete
@@ -436,7 +440,7 @@ class DetailsActivity : FragmentActivity() {
             progress.isVisible = true
             progress.progress = (fraction * 1000).toInt().coerceIn(20, 1000)
             progress.progressTintList = ColorStateList.valueOf(
-                ContextCompat.getColor(this, if (complete) R.color.pb_completed else R.color.pb_seed),
+                ContextCompat.getColor(this, if (complete) R.color.pb_completed else R.color.pbt_primary),
             )
         } else {
             progress.isVisible = false
@@ -468,11 +472,11 @@ class DetailsActivity : FragmentActivity() {
                 )
             }
             started -> {
-                name.setTextColor(ContextCompat.getColor(this, R.color.pb_seed))
+                name.setTextColor(ContextCompat.getColor(this, R.color.pbt_primary))
                 progress.isVisible = true
                 progress.progress = (ep.watchProgress * 100).toInt().coerceIn(2, 100)
                 progress.progressTintList = ColorStateList.valueOf(
-                    ContextCompat.getColor(this, R.color.pb_seed),
+                    ContextCompat.getColor(this, R.color.pbt_primary),
                 )
             }
             else -> {
@@ -515,7 +519,7 @@ class DetailsActivity : FragmentActivity() {
         )
     }
 
-    private fun addChip(parent: LinearLayout, text: String, pill: Boolean) {
+    private fun addChip(parent: LinearLayout, text: CharSequence, pill: Boolean) {
         parent.addView(
             TextView(this).apply {
                 this.text = text
@@ -534,12 +538,37 @@ class DetailsActivity : FragmentActivity() {
     }
 
     private fun updateWatchedFav(t: TitleItem) {
-        findViewById<ImageButton>(R.id.btn_watched).setImageResource(
+        findViewById<ImageView>(R.id.btn_watched_icon).setImageResource(
             if (t.watched) R.drawable.ic_check else R.drawable.ic_check_outline,
         )
-        findViewById<ImageButton>(R.id.btn_favorite).setImageResource(
-            if (t.favorite) R.drawable.ic_favorite else R.drawable.ic_favorite_border,
+        findViewById<TextView>(R.id.btn_watched_label).setText(
+            if (t.watched) R.string.watched_done else R.string.mark_watched,
         )
+        // My List is the favourite, as on the home hero.
+        findViewById<ImageView>(R.id.btn_favorite_icon).setImageResource(
+            if (t.favorite) R.drawable.ic_check else R.drawable.ic_add,
+        )
+    }
+
+    /** "Cast: …", "Director: …", "Writers: …" under the hero (same as desktop). */
+    private fun bindCredits(t: TitleItem) {
+        val view = findViewById<TextView>(R.id.credits)
+        fun names(max: Int, test: (app.peanutbutter.core.Person) -> Boolean) =
+            t.people.filter(test).map { it.name }.distinct().take(max)
+        val cast = names(5) { it.department.equals("acting", true) || it.department.equals("cast", true) || it.character != null }
+        val directors = names(2) { it.job.equals("director", true) }
+        val writers = names(3) {
+            it.department.equals("writing", true) || it.job.equals("writer", true) || it.job.equals("screenplay", true)
+        }
+        val out = android.text.SpannableStringBuilder()
+        for ((label, list) in listOf("Cast" to cast, "Director" to directors, "Writers" to writers)) {
+            if (list.isEmpty()) continue
+            if (out.isNotEmpty()) out.append("\n")
+            out.append("$label: ", android.text.style.ForegroundColorSpan(getColor(R.color.pbt_text_faint)), 0)
+            out.append(list.joinToString(", "), android.text.style.ForegroundColorSpan(getColor(R.color.pbt_text)), 0)
+        }
+        view.text = out
+        view.isVisible = out.isNotEmpty()
     }
 
     private fun toggleWatched() {
@@ -564,7 +593,7 @@ class DetailsActivity : FragmentActivity() {
 
     /** Series only: "Notify me" of new episodes. Hidden on servers without it. */
     private fun bindFollow(t: TitleItem, isSeries: Boolean) {
-        val btn = findViewById<ImageButton>(R.id.btn_follow)
+        val btn = findViewById<View>(R.id.btn_follow)
         btn.isVisible = false
         if (!isSeries) return
         lifecycleScope.launch {
@@ -577,9 +606,10 @@ class DetailsActivity : FragmentActivity() {
     }
 
     private fun showFollow() {
-        findViewById<ImageButton>(R.id.btn_follow).setImageResource(
+        findViewById<ImageView>(R.id.btn_follow_icon).setImageResource(
             if (following) R.drawable.ic_notifications else R.drawable.ic_notifications_none,
         )
+        findViewById<TextView>(R.id.btn_follow_label).setText(if (following) R.string.following else R.string.follow)
     }
 
     private fun toggleFollow(titleId: String) {

@@ -186,4 +186,8 @@
     <string name="recently_added">Recently added</string>
     <string name="time_left_min">%1$d min left</string>
     <string name="time_left_hm">%1$dh %2$dm left</string>
+    <string name="mark_watched">Mark watched</string>
+    <string name="follow">Follow</string>
+    <string name="following">Following</string>
+    <string name="watched_done">Watched</string>
 </resources>
