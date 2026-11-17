@@ -300,10 +300,11 @@ class HomeContent(
                         id = R.id.launcher_poster_rank
                         setTextAppearance(R.style.TextAppearance_Pb_Hero)
                         setTextColor(0xFF4A4E5A.toInt())
-                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 120f)
+                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 104f)
                         includeFontPadding = false
                         gravity = Gravity.BOTTOM or Gravity.END
-                    }, LinearLayout.LayoutParams(dp(64), dp(cardH)).apply { marginEnd = -dp(14) })
+                    // Its own room and a small gap: never covered by the poster.
+                    }, LinearLayout.LayoutParams(dp(80), dp(cardH)).apply { marginEnd = dp(6) })
                 }
                 addView(column)
                 setOnFocusChangeListener { _, focused ->
@@ -371,7 +372,10 @@ class HomeContent(
                 v.findViewById(R.id.launcher_poster_image),
                 if (wide) item.backdropUrl ?: item.posterUrl else item.posterUrl ?: item.backdropUrl,
             )
-            v.findViewById<TextView>(R.id.launcher_poster_rank)?.text = (position + 1).toString()
+            v.findViewById<TextView>(R.id.launcher_poster_rank)?.apply {
+                text = (position + 1).toString()
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, if (position >= 9) 82f else 104f)
+            }
             v.findViewById<TextView>(R.id.launcher_wide_title)?.text = item.displayTitle
             v.findViewById<TextView>(R.id.launcher_wide_left)?.text = app.peanutbutter.core.HomeSections.timeLeft(item)
             v.findViewById<TextView>(R.id.launcher_poster_score)?.apply {

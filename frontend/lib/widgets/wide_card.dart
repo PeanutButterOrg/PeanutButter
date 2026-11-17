@@ -162,7 +162,7 @@ class _WideCardState extends State<WideCard> {
   }
 }
 
-/// Top 10: a big outlined rank number tucked behind the poster.
+/// Top 10: a big outlined rank number just left of the poster, never covered by it.
 class Top10Tile extends StatelessWidget {
   const Top10Tile({
     super.key,
@@ -175,40 +175,46 @@ class Top10Tile extends StatelessWidget {
   final Widget child;
   final double posterWidth;
 
-  /// Width the number adds before the poster.
-  static double numberWidth(double posterWidth) => posterWidth * 0.4;
+  /// Width the number adds before the poster, gap included.
+  static double numberWidth(double posterWidth) => posterWidth * 0.62 - _overlap(posterWidth);
+
+  static double _overlap(double posterWidth) => -posterWidth * 0.04;
 
   @override
   Widget build(BuildContext context) {
     final height = posterWidth * 1.5;
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.end,
-      children: [
-        SizedBox(
-          width: numberWidth(posterWidth),
-          height: height,
-          child: OverflowBox(
-            alignment: Alignment.bottomRight,
-            maxWidth: double.infinity,
-            child: Transform.translate(
-              offset: Offset(posterWidth * 0.16, height * 0.06),
-              child: Text(
-                '$rank',
-                style: PbType.hero.copyWith(
-                  fontSize: height * 0.72,
-                  height: 1,
-                  letterSpacing: -height * 0.04,
-                  foreground: Paint()
-                    ..style = PaintingStyle.stroke
-                    ..strokeWidth = 2.5
-                    ..color = const Color(0xFF4A4E5A),
-                ),
+    final box = posterWidth * 0.62;
+    // "10" is two digits: a little smaller so it fits the same room.
+    final size = height * (rank >= 10 ? 0.46 : 0.58);
+    return SizedBox(
+      width: box + posterWidth - _overlap(posterWidth),
+      height: height,
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          Positioned(
+            left: 0,
+            bottom: -height * 0.015,
+            width: box,
+            child: Text(
+              '$rank',
+              textAlign: TextAlign.right,
+              maxLines: 1,
+              softWrap: false,
+              style: PbType.hero.copyWith(
+                fontSize: size,
+                height: 1,
+                letterSpacing: rank >= 10 ? -size * 0.08 : 0,
+                foreground: Paint()
+                  ..style = PaintingStyle.stroke
+                  ..strokeWidth = 2.5
+                  ..color = const Color(0xFF5A5F6C),
               ),
             ),
           ),
-        ),
-        SizedBox(width: posterWidth, height: height, child: child),
-      ],
+          Positioned(right: 0, top: 0, bottom: 0, width: posterWidth, child: child),
+        ],
+      ),
     );
   }
 }

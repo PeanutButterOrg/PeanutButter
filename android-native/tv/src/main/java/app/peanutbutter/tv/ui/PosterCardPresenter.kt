@@ -44,7 +44,8 @@ class PosterCardPresenter(
         val title = UserStateEdits.apply(loaded)
         val root = viewHolder.view
         UserStateEdits.track(root, loaded, ::bindUserState)
-        val rankRoom = if (ranked != null) rankWidth(root) else 0
+        // Top 10: the number gets its own room plus a small gap, never under the poster.
+        val rankRoom = if (ranked != null) rankWidth(root) + dp(root, 6) else 0
         val lp = root.layoutParams
         if (lp is ViewGroup.MarginLayoutParams) {
             lp.width = cardWidth(root) + rankRoom
@@ -56,8 +57,14 @@ class PosterCardPresenter(
         root.findViewById<TextView>(R.id.rank)?.let { rank ->
             rank.isVisible = ranked != null
             rank.text = ranked?.rank?.toString().orEmpty()
-            rank.translationX = dp(root, 8).toFloat()
-            rank.translationY = dp(root, 14).toFloat()
+            rank.textSize = if ((ranked?.rank ?: 0) >= 10) 92f else 118f
+            (rank.layoutParams as? FrameLayout.LayoutParams)?.let {
+                it.width = rankWidth(root)
+                rank.layoutParams = it
+            }
+            rank.gravity = android.view.Gravity.END or android.view.Gravity.BOTTOM
+            rank.translationX = 0f
+            rank.translationY = dp(root, 6).toFloat()
         }
         root.findViewById<View>(R.id.card_body)?.let { body ->
             (body.layoutParams as? FrameLayout.LayoutParams)?.let {
@@ -198,7 +205,7 @@ class PosterCardPresenter(
     }
 
     /** Room the Top 10 rank takes before the poster. */
-    private fun rankWidth(host: android.view.View): Int = dp(host, 60)
+    private fun rankWidth(host: android.view.View): Int = dp(host, 94)
 
     private fun cardWidth(host: android.view.View): Int =
         if (widthPx > 0) widthPx else dp(host, CARD_W)
