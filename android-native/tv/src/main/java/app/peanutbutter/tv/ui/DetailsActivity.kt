@@ -775,12 +775,11 @@ class DetailsActivity : FragmentActivity() {
                 SourcesDialog.show(
                     supportFragmentManager,
                     // The episode the user chose, even when the search used the release's number.
-                    if (season != null && episode != null) {
-                        String.format(java.util.Locale.US, "%s S%02dE%02d", t.displayTitle, season, episode)
-                    } else {
-                        query
-                    },
+                    t.displayTitle,
                     sources,
+                    subtitle = if (season != null && episode != null) "Season $season · Episode $episode"
+                    else if (t.kind.equals("MOVIE", true)) "Movie" else "Series",
+                    posterUrl = t.posterUrl,
                     onRefresh = {
                         StreamQuality.rankSources(
                             api.streamingSearch(

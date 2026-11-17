@@ -1508,8 +1508,11 @@ class _TorrentTileState extends State<_TorrentTile> {
       if (tags.codec.isNotEmpty) tags.codec,
       if (tags.audio.isNotEmpty) tags.audio,
     ].join(' · ');
+    final code = source.language.trim().toLowerCase();
+    // Nothing when the release doesn't say ("unknown", "und", empty).
+    final known = code.isNotEmpty && !const {'unknown', 'und', 'all'}.contains(code);
     final origin = [
-      if (languageDisplayName(source.language).isNotEmpty) languageDisplayName(source.language),
+      if (known) languageDisplayName(source.language),
       source.providers.length > 1 ? source.providers.join(' + ') : _torrentSourceLabel(source),
     ].join(' · ');
     return TvFocus(

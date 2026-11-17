@@ -191,4 +191,10 @@
     <string name="following">Following</string>
     <string name="watched_done">Watched</string>
     <string name="more_like_this">More like this</string>
+    <string name="best">Best</string>
+    <string name="sources_note">Ranked for you: your quality first, then the healthiest swarm, your languages and a sensible size.</string>
+    <string name="sources_note_direct">Direct links play straight from the add-on, with no torrent.</string>
+    <string name="tab_torrents">Torrents  %1$d</string>
+    <string name="tab_direct">Direct links  %1$d</string>
+    <string name="direct_link">Direct link</string>
 </resources>
