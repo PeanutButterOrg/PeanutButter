@@ -8,4 +8,8 @@
     <item name="launcher_poster_progress" type="id" />
     <item name="launcher_poster_service" type="id" />
     <item name="launcher_poster_state" type="id" />
+    <item name="launcher_poster_score" type="id" />
+    <item name="launcher_poster_rank" type="id" />
+    <item name="launcher_wide_title" type="id" />
+    <item name="launcher_wide_left" type="id" />
 </resources>

@@ -25,7 +25,13 @@ sealed class Section {
     data class Hero(val slides: List<HeroCarousel.Slide>) : Section()
     object Apps : Section()
     /** [sort] / [kind] open the full grid ("See all"), like the TV app's shelves. */
-    data class Posters(val title: String, val items: List<TitleItem>, val sort: String, val kind: String?) : Section()
+    data class Posters(
+        val title: String,
+        val items: List<TitleItem>,
+        val sort: String,
+        val kind: String?,
+        val style: app.peanutbutter.core.ShelfStyle = app.peanutbutter.core.ShelfStyle.POSTER,
+    ) : Section()
 }
 
 /**
@@ -136,9 +142,8 @@ class HomeContent(
             addView(TextView(context).apply {
                 id = R.id.launcher_row_title
                 text = title
-                setTextColor(ContextCompat.getColor(context, R.color.pb_white))
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 19f)
-                setTypeface(typeface, android.graphics.Typeface.BOLD)
+                setTextAppearance(R.style.TextAppearance_Pb_H2)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f)
                 setPadding(dp(48), 0, dp(48), dp(4))
             })
             addView(list, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
@@ -160,9 +165,18 @@ class HomeContent(
         private var items: List<TitleItem> = emptyList()
         private var section: Section.Posters? = null
 
+        private var style = app.peanutbutter.core.ShelfStyle.POSTER
+
         fun submit(s: Section.Posters) {
             section = s
             val newItems = s.items
+            if (s.style != style) {
+                // A recycled row can come back as another kind of shelf: rebuild its cards.
+                style = s.style
+                items = newItems
+                notifyDataSetChanged()
+                return
+            }
             if (newItems == items) return
             if (newItems.map { it.id } == items.map { it.id }) {
                 // Same titles: rebind only the ones whose state changed (watched, favourite, progress).
@@ -177,10 +191,18 @@ class HomeContent(
 
         // Last card: "See all".
         override fun getItemCount() = if (items.isEmpty()) 0 else items.size + 1
-        override fun getItemViewType(position: Int) = if (position < items.size) 0 else 1
+        override fun getItemViewType(position: Int) = when {
+            position >= items.size -> 1
+            style == app.peanutbutter.core.ShelfStyle.TOP10 -> 2
+            style == app.peanutbutter.core.ShelfStyle.WIDE -> 3
+            else -> 0
+        }
 
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
             if (viewType == 1) return seeAllHolder()
+            val wide = viewType == 3
+            val cardW = if (wide) WIDE_W else POSTER_W
+            val cardH = if (wide) WIDE_H else POSTER_H
             val image = ImageView(context).apply {
                 id = R.id.launcher_poster_image
                 scaleType = ImageView.ScaleType.CENTER_CROP
@@ -205,23 +227,66 @@ class HomeContent(
                 background = ContextCompat.getDrawable(context, R.drawable.launcher_chip_bg)
                 setPadding(dp(7), 0, dp(7), 0)
             }
+            // Top-left: the star score, as on every poster in every app.
+            val score = TextView(context).apply {
+                id = R.id.launcher_poster_score
+                background = ContextCompat.getDrawable(context, R.drawable.launcher_chip_bg)
+                gravity = Gravity.CENTER
+                setPadding(dp(7), 0, dp(7), 0)
+                setTextAppearance(R.style.TextAppearance_Pb_Label)
+                setTextColor(ContextCompat.getColor(context, R.color.pbt_text))
+            }
+            val topRight = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                addView(state, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(22)))
+                addView(service, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(22)).apply { marginStart = dp(4) })
+            }
+            // Wide (Continue watching): name and time left on the still.
+            val wideText = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                background = ContextCompat.getDrawable(context, R.drawable.wide_card_scrim)
+                setPadding(dp(12), dp(24), dp(12), dp(18))
+                isVisible = wide
+                addView(TextView(context).apply {
+                    id = R.id.launcher_wide_title
+                    setTextAppearance(R.style.TextAppearance_Pb_Title)
+                    maxLines = 1
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                })
+                addView(TextView(context).apply {
+                    id = R.id.launcher_wide_left
+                    setTextAppearance(R.style.TextAppearance_Pb_Meta)
+                    setTextColor(ContextCompat.getColor(context, R.color.pbt_text_muted))
+                })
+            }
             val card = FrameLayout(context).apply {
                 background = ContextCompat.getDrawable(context, R.drawable.launcher_app_bg)
+                foreground = ContextCompat.getDrawable(context, R.drawable.launcher_card_ring)
                 Motion.round(this, 16f)
                 addView(image, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-                addView(service, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(22), Gravity.TOP or Gravity.START).apply {
-                    setMargins(dp(8), dp(8), 0, 0)
-                })
-                addView(state, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(22), Gravity.TOP or Gravity.END).apply {
+                addView(wideText, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM))
+                if (!wide) {
+                    addView(score, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(22), Gravity.TOP or Gravity.START).apply {
+                        setMargins(dp(8), dp(8), 0, 0)
+                    })
+                }
+                addView(topRight, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(22), Gravity.TOP or Gravity.END).apply {
                     setMargins(0, dp(8), dp(8), 0)
                 })
                 addView(bar, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(4), Gravity.BOTTOM).apply {
-                    setMargins(dp(10), 0, dp(10), dp(10))
+                    if (wide) setMargins(0, 0, 0, 0) else setMargins(dp(10), 0, dp(10), dp(10))
                 })
             }
             val name = Motion.nameLabel(context).apply { id = R.id.launcher_poster_label }
-            val root = LinearLayout(context).apply {
+            val column = LinearLayout(context).apply {
                 orientation = LinearLayout.VERTICAL
+                clipChildren = false
+                clipToPadding = false
+                addView(card, LinearLayout.LayoutParams(dp(cardW), dp(cardH)))
+                addView(name, LinearLayout.LayoutParams(dp(cardW), ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(4) })
+            }
+            val root = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
                 // Let the lifted card grow past this item's padding (else its top is cut square).
                 clipChildren = false
                 clipToPadding = false
@@ -229,11 +294,22 @@ class HomeContent(
                 isFocusableInTouchMode = true
                 layoutParams = RecyclerView.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
                 setPadding(dp(8), dp(12), dp(8), dp(4))
-                addView(card, LinearLayout.LayoutParams(dp(POSTER_W), dp(POSTER_H)))
-                addView(name, LinearLayout.LayoutParams(dp(POSTER_W), ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(4) })
+                if (viewType == 2) {
+                    // Top 10: the outlined rank tucked behind the poster.
+                    addView(app.peanutbutter.tv.ui.OutlineTextView(context).apply {
+                        id = R.id.launcher_poster_rank
+                        setTextAppearance(R.style.TextAppearance_Pb_Hero)
+                        setTextColor(0xFF4A4E5A.toInt())
+                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 120f)
+                        includeFontPadding = false
+                        gravity = Gravity.BOTTOM or Gravity.END
+                    }, LinearLayout.LayoutParams(dp(64), dp(cardH)).apply { marginEnd = -dp(14) })
+                }
+                addView(column)
                 setOnFocusChangeListener { _, focused ->
-                    Motion.liftNow(card, focused, 1.08f)
-                    Motion.nameUnder(card, name, focused, 1.08f)
+                    card.isSelected = focused
+                    Motion.liftNow(card, focused, if (wide) 1.05f else 1.08f)
+                    if (!wide) Motion.nameUnder(card, name, focused, 1.08f)
                 }
             }
             return object : RecyclerView.ViewHolder(root) {}
@@ -290,7 +366,26 @@ class HomeContent(
             if (position >= items.size) return
             val item = items[position]
             val v = holder.itemView
-            Posters.load(v.findViewById(R.id.launcher_poster_image), item.posterUrl ?: item.backdropUrl)
+            val wide = style == app.peanutbutter.core.ShelfStyle.WIDE
+            Posters.load(
+                v.findViewById(R.id.launcher_poster_image),
+                if (wide) item.backdropUrl ?: item.posterUrl else item.posterUrl ?: item.backdropUrl,
+            )
+            v.findViewById<TextView>(R.id.launcher_poster_rank)?.text = (position + 1).toString()
+            v.findViewById<TextView>(R.id.launcher_wide_title)?.text = item.displayTitle
+            v.findViewById<TextView>(R.id.launcher_wide_left)?.text = app.peanutbutter.core.HomeSections.timeLeft(item)
+            v.findViewById<TextView>(R.id.launcher_poster_score)?.apply {
+                val s = item.displayScore
+                isVisible = s != null
+                if (s != null) {
+                    text = android.text.SpannableStringBuilder().apply {
+                        if (s.rtScore == null) {
+                            append("★ ", android.text.style.ForegroundColorSpan(ContextCompat.getColor(context, R.color.pbt_primary)), 0)
+                        }
+                        append(s.label)
+                    }
+                }
+            }
             v.findViewById<ProgressBar>(R.id.launcher_poster_progress).apply {
                 // Same rule as the TV app's cards; watched titles get the tick instead.
                 val pct = progressPercentOf(item)
@@ -379,5 +474,7 @@ class HomeContent(
         const val SEE_ALL_W = 104
         const val POSTER_W = 128
         const val POSTER_H = 192
+        const val WIDE_W = 268
+        const val WIDE_H = 151
     }
 }
