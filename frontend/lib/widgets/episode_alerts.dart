@@ -102,11 +102,15 @@ class _FollowButtonState extends ConsumerState<FollowButton> {
     if (server == null && _optimistic == null) return const SizedBox.shrink();
     final following = _optimistic ?? server ?? false;
     return Padding(
-      padding: const EdgeInsets.only(left: 8),
-      child: IconButton.filledTonal(
-        tooltip: following ? 'Stop new episode alerts' : 'Notify me of new episodes',
-        onPressed: () => _toggle(following),
-        icon: Icon(following ? Icons.notifications_active : Icons.notifications_none),
+      padding: const EdgeInsets.only(left: 10),
+      child: Tooltip(
+        message: following ? 'Stop new episode alerts' : 'Tell me when a new episode is out',
+        child: OutlinedButton.icon(
+          onPressed: () => _toggle(following),
+          style: OutlinedButton.styleFrom(minimumSize: const Size(0, 40)),
+          icon: Icon(following ? Icons.notifications_active_rounded : Icons.notifications_none_rounded),
+          label: Text(following ? 'Following' : 'Follow'),
+        ),
       ),
     );
   }
