@@ -39,6 +39,8 @@ class WideCard extends StatefulWidget {
 class _WideCardState extends State<WideCard> {
   late final FocusNode _focus = widget.focusNode ?? FocusNode(debugLabel: 'poster');
   bool _hover = false;
+  /// Focus from the keyboard or remote (not a mouse click): show the ring.
+  bool _ring = false;
 
   @override
   void dispose() {
@@ -62,7 +64,7 @@ class _WideCardState extends State<WideCard> {
   Widget build(BuildContext context) {
     final item = widget.item;
     final tv = isAndroidTv;
-    final focused = _focus.hasFocus;
+    final focused = _focus.hasFocus && (tv || _ring);
     final progress = titleProgress(item);
     return TvFocus(
       child: FocusableActionDetector(
@@ -70,6 +72,7 @@ class _WideCardState extends State<WideCard> {
         mouseCursor: SystemMouseCursors.click,
         onFocusChange: _onFocus,
         onShowHoverHighlight: (v) => setState(() => _hover = v),
+        onShowFocusHighlight: (v) => setState(() => _ring = v),
         shortcuts: const {
           SingleActivator(LogicalKeyboardKey.enter): ActivateIntent(),
           SingleActivator(LogicalKeyboardKey.select): ActivateIntent(),

@@ -144,7 +144,8 @@ class _TabState extends State<_Tab> {
         focusNode: widget.focusNode,
         mouseCursor: SystemMouseCursors.click,
         onShowHoverHighlight: (v) => setState(() => _hover = v),
-        onFocusChange: (v) => setState(() => _focus = v),
+        // Ring only for keyboard / remote focus, not after a mouse click.
+        onShowFocusHighlight: (v) => setState(() => _focus = v),
         actions: {
           ActivateIntent: CallbackAction<ActivateIntent>(onInvoke: (_) {
             widget.onPressed();

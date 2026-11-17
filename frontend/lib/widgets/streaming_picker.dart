@@ -1522,7 +1522,10 @@ class _TorrentTileState extends State<_TorrentTile> {
         child: InkWell(
           autofocus: widget.autofocus,
           borderRadius: radius,
-          onFocusChange: (v) => setState(() => _focused = v),
+          // Ring only for keyboard / remote focus, not after a mouse click.
+          onFocusChange: (v) => setState(
+            () => _focused = v && (isAndroidTv || FocusManager.instance.highlightMode == FocusHighlightMode.traditional),
+          ),
           onTap: _pick,
           child: AnimatedContainer(
             duration: PbMotion.fast,

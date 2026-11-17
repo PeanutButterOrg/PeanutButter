@@ -26,6 +26,8 @@ class _PosterCardState extends ConsumerState<PosterCard> {
   late final FocusNode _focus;
   late final bool _ownsFocus;
   bool _hover = false;
+  /// Focus from the keyboard or remote (not a mouse click): show the ring.
+  bool _ring = false;
 
   @override
   void initState() {
@@ -59,13 +61,13 @@ class _PosterCardState extends ConsumerState<PosterCard> {
   Widget build(BuildContext context) {
     final item = widget.item;
     final tv = isAndroidTv;
-    final highlighted = _focus.hasFocus;
+    final highlighted = _focus.hasFocus && (tv || _ring);
     final lifted = highlighted || _hover;
     return TvFocus(
       child: FocusableActionDetector(
         focusNode: _focus,
         mouseCursor: SystemMouseCursors.click,
-        onShowFocusHighlight: (_) {},
+        onShowFocusHighlight: (v) => setState(() => _ring = v),
         onShowHoverHighlight: (v) => setState(() => _hover = v),
         onFocusChange: _onFocus,
         shortcuts: const {
