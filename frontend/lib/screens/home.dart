@@ -732,6 +732,7 @@ class _HomeRowState extends State<_HomeRow> {
             children: [
               Padding(
                 padding: EdgeInsets.only(left: gutter, right: gutter - 12),
+                // "See all" centred on the row's name.
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.center,
                   children: [
@@ -835,7 +836,7 @@ class _SeeAllButtonState extends State<_SeeAllButton> {
           minimumSize: const Size(56, 36),
           foregroundColor: PbColors.textMuted,
           textStyle: (isAndroidTv ? PbTypeTv.meta : PbType.meta).copyWith(fontWeight: FontWeight.w600),
-          tapTargetSize: MaterialTapTargetSize.padded,
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
         ),
         child: const Text('See all'),
       ),

@@ -1,6 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:graphql_flutter/graphql_flutter.dart';
+
+import '../design/tokens.g.dart';
+import '../graphql/queries.dart';
+import '../models.dart';
+import '../providers/settings.dart';
+import '../widgets/cached_art.dart';
+import '../widgets/title_meta.dart';
+import '../window_layout.dart';
 
 import '../friendly_error.dart';
 import '../providers/catalog.dart';
@@ -45,7 +54,8 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      ref.read(searchProvider.notifier).setKind(ref.read(selectedKindProvider));
+      // Desktop / web searches movies and series together; the chips narrow it.
+      ref.read(searchProvider.notifier).setKind(isAndroidTv ? ref.read(selectedKindProvider) : null);
       if (isAndroidTv) {
         // Focus the search field chrome (Select opens the keyboard).
         _fieldKey.currentState?.focusChrome();
@@ -243,12 +253,31 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
 
     if (!tv) {
       return Scaffold(
-        body: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            homeHeader,
-            Expanded(child: body),
-          ],
+        backgroundColor: PbColors.ground,
+        body: SafeArea(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _SearchBar(
+                controller: _controller,
+                query: search.query,
+                onChanged: (v) => ref.read(searchProvider.notifier).onQueryChanged(v),
+                onClear: () {
+                  _controller.clear();
+                  ref.read(searchProvider.notifier).onQueryChanged('');
+                },
+              ),
+              Expanded(
+                child: Stack(
+                  children: [
+                    Positioned.fill(child: _desktopBody(search)),
+                    if (search.loading && search.results.isEmpty)
+                      const Positioned.fill(child: Center(child: CircularProgressIndicator())),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
       );
     }
@@ -270,6 +299,101 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
           body: body,
         ),
       ),
+    );
+  }
+
+  void _pick(String picked) {
+    _controller.text = picked;
+    _controller.selection = TextSelection.collapsed(offset: picked.length);
+    ref.read(searchProvider.notifier).onQueryChanged(picked);
+  }
+
+  /// Desktop / web: recent and trending before typing; then the results page.
+  Widget _desktopBody(SearchState search) {
+    final q = search.query.trim();
+    if (q.isEmpty) return _SearchStart(recent: search.recent, onPick: _pick);
+    if (search.error != null && search.results.isEmpty) {
+      return EmptyState(
+        message: friendlyError(search.error!),
+        onRefresh: () async => ref.read(searchProvider.notifier).onQueryChanged(_controller.text),
+        showSettings: true,
+      );
+    }
+    if (search.results.isEmpty && !search.loading) {
+      return const EmptyState(
+        icon: Icons.search_off_rounded,
+        title: 'No matches',
+        message: 'Nothing matches that name. Try another title.',
+      );
+    }
+    final results = search.results;
+    final movies = results.where((t) => t.kind == 'MOVIE').length;
+    final series = results.length - movies;
+    final more = search.hasNextPage ? '+' : '';
+    final counts = [
+      '${results.length}$more result${results.length == 1 ? '' : 's'}',
+      [if (movies > 0) '$movies movie${movies == 1 ? '' : 's'}', if (series > 0) '$series series'].join(', '),
+    ].where((e) => e.isNotEmpty).join('  ·  ');
+    final rest = results.skip(1).toList();
+    return PosterGrid(
+      items: rest,
+      sidePadding: PbSpace.gutterDesktop,
+      loadingMore: search.loadingMore,
+      onEndReached: () => ref.read(searchProvider.notifier).loadMore(),
+      headerSlivers: [
+        SliverPadding(
+          padding: const EdgeInsets.fromLTRB(PbSpace.gutterDesktop, 20, PbSpace.gutterDesktop, 0),
+          sliver: SliverToBoxAdapter(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text.rich(
+                  TextSpan(
+                    text: 'Results for ',
+                    children: [
+                      TextSpan(text: '\u201c$q\u201d', style: const TextStyle(color: PbColors.primary)),
+                    ],
+                  ),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: PbType.hero.copyWith(fontSize: 44, color: PbColors.text, height: 1.05),
+                ),
+                const SizedBox(height: 6),
+                Text(counts, style: PbType.meta.copyWith(fontSize: 14, color: PbColors.textMuted)),
+                const SizedBox(height: 14),
+                Wrap(
+                  spacing: 8,
+                  children: [
+                    for (final (label, kind) in const [('All', null), ('Movies', 'MOVIE'), ('Series', 'SERIES')])
+                      ChoiceChip(
+                        label: Text(label),
+                        selected: search.kind == kind,
+                        onSelected: (_) => ref.read(searchProvider.notifier).setKind(kind),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 20),
+                _TopResult(item: results.first),
+                if (rest.isNotEmpty) ...[
+                  const SizedBox(height: 28),
+                  Text.rich(
+                    TextSpan(
+                      text: 'Titles',
+                      children: [
+                        TextSpan(
+                          text: '  ${rest.length}$more',
+                          style: PbType.meta.copyWith(color: PbColors.textMuted),
+                        ),
+                      ],
+                    ),
+                    style: PbType.h2.copyWith(color: PbColors.text),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
+      ],
     );
   }
 
@@ -368,6 +492,307 @@ class _IdleSearch extends StatelessWidget {
                 ],
               ),
             ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+
+/// The search field: a rounded bar under the back arrow (desktop / web).
+class _SearchBar extends StatelessWidget {
+  const _SearchBar({
+    required this.controller,
+    required this.query,
+    required this.onChanged,
+    required this.onClear,
+  });
+
+  final TextEditingController controller;
+  final String query;
+  final ValueChanged<String> onChanged;
+  final VoidCallback onClear;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(PbSpace.gutterDesktop - 8, 14, PbSpace.gutterDesktop, 4),
+      child: Row(
+        children: [
+          IconButton(
+            tooltip: 'Back',
+            onPressed: () => context.pop(),
+            icon: const Icon(Icons.arrow_back_rounded, color: PbColors.text),
+          ),
+          const SizedBox(width: 8),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 760),
+            child: SizedBox(
+              width: MediaQuery.sizeOf(context).width * 0.6,
+              child: TextField(
+                controller: controller,
+                autofocus: true,
+                onChanged: onChanged,
+                onSubmitted: onChanged,
+                textInputAction: TextInputAction.search,
+                style: PbType.body.copyWith(fontSize: 16, color: PbColors.text),
+                decoration: InputDecoration(
+                  hintText: 'Movies and series',
+                  isDense: true,
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+                  prefixIcon: const Icon(Icons.search_rounded, color: PbColors.textMuted),
+                  suffixIcon: query.isEmpty
+                      ? null
+                      : IconButton(
+                          tooltip: 'Clear',
+                          onPressed: onClear,
+                          icon: const Icon(Icons.close_rounded, color: PbColors.textMuted),
+                        ),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(PbRadius.pill),
+                    borderSide: const BorderSide(color: PbColors.line),
+                  ),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(PbRadius.pill),
+                    borderSide: const BorderSide(color: PbColors.line),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(PbRadius.pill),
+                    borderSide: const BorderSide(color: PbColors.primary, width: 1.5),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Before typing: recent searches, then what's trending, ranked.
+class _SearchStart extends ConsumerWidget {
+  const _SearchStart({required this.recent, required this.onPick});
+
+  final List<String> recent;
+  final ValueChanged<String> onPick;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final movies = ref.watch(homeFeedProvider('MOVIE')).valueOrNull?.trending ?? const <TitleItem>[];
+    final series = ref.watch(homeFeedProvider('SERIES')).valueOrNull?.trending ?? const <TitleItem>[];
+    final trending = <TitleItem>[];
+    for (var i = 0; trending.length < 8 && (i < movies.length || i < series.length); i++) {
+      if (i < movies.length) trending.add(movies[i]);
+      if (i < series.length && trending.length < 8) trending.add(series[i]);
+    }
+    Widget label(String text) => Padding(
+          padding: const EdgeInsets.only(bottom: 12),
+          child: Text(
+            text.toUpperCase(),
+            style: PbType.label.copyWith(color: PbColors.textMuted, letterSpacing: 1.2),
+          ),
+        );
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(PbSpace.gutterDesktop, 20, PbSpace.gutterDesktop, 48),
+      children: [
+        if (recent.isNotEmpty) ...[
+          label('Recent searches'),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final q in recent)
+                ActionChip(
+                  avatar: const Icon(Icons.history_rounded, size: 16, color: PbColors.textMuted),
+                  label: Text(q),
+                  onPressed: () => onPick(q),
+                ),
+            ],
+          ),
+          const SizedBox(height: 28),
+        ],
+        if (trending.isNotEmpty) ...[
+          label('Trending now'),
+          for (var i = 0; i < trending.length; i++) _TrendingRow(rank: i + 1, item: trending[i]),
+        ],
+      ],
+    );
+  }
+}
+
+class _TrendingRow extends StatelessWidget {
+  const _TrendingRow({required this.rank, required this.item});
+
+  final int rank;
+  final TitleItem item;
+
+  @override
+  Widget build(BuildContext context) {
+    final score = item.displayScore;
+    final meta = [
+      if (item.year != null) '${item.year}',
+      item.kind == 'MOVIE' ? 'Movie' : 'Series',
+    ].join(' · ');
+    return InkWell(
+      borderRadius: BorderRadius.circular(PbRadius.card),
+      onTap: () => context.push('/title/${item.id}'),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 6),
+        child: Row(
+          children: [
+            SizedBox(
+              width: 36,
+              child: Text(
+                '$rank',
+                textAlign: TextAlign.center,
+                style: PbType.h1.copyWith(
+                  fontSize: 30,
+                  foreground: Paint()
+                    ..style = PaintingStyle.stroke
+                    ..strokeWidth = 1.5
+                    ..color = PbColors.textMuted,
+                ),
+              ),
+            ),
+            const SizedBox(width: 10),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(6),
+              child: SizedBox(width: 44, height: 64, child: CachedArt(url: item.posterUrl, memCacheWidth: 120)),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(item.title, maxLines: 1, overflow: TextOverflow.ellipsis,
+                      style: PbType.title.copyWith(fontSize: 15, color: PbColors.text)),
+                  const SizedBox(height: 2),
+                  Text.rich(
+                    TextSpan(
+                      text: meta,
+                      children: [
+                        if (score != null && score.rtScore == null) ...[
+                          const TextSpan(text: '   '),
+                          const TextSpan(text: '★ ', style: TextStyle(color: PbColors.primary)),
+                          TextSpan(text: score.label),
+                        ],
+                      ],
+                    ),
+                    style: PbType.meta.copyWith(color: PbColors.textMuted),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// The best match, big: art, name, Play / My List / More info.
+class _TopResult extends ConsumerStatefulWidget {
+  const _TopResult({required this.item});
+
+  final TitleItem item;
+
+  @override
+  ConsumerState<_TopResult> createState() => _TopResultState();
+}
+
+class _TopResultState extends ConsumerState<_TopResult> {
+  bool? _listed;
+
+  Future<void> _toggleList() async {
+    final next = !(_listed ?? widget.item.userState?.favorite == true);
+    setState(() => _listed = next);
+    try {
+      await ref.read(graphQLClientProvider).mutate(
+            MutationOptions(document: gql(SET_FAVORITE), variables: {'titleId': widget.item.id, 'favorite': next}),
+          );
+      ref.invalidate(favoritesFeedProvider);
+    } catch (_) {
+      if (mounted) setState(() => _listed = !next);
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant _TopResult oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.item.id != widget.item.id) _listed = null;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final item = widget.item;
+    final listed = _listed ?? item.userState?.favorite == true;
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(PbRadius.panel + 4),
+      child: SizedBox(
+        height: 360,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            const ColoredBox(color: PbColors.surface),
+            CachedArt(
+              url: bestBannerUrl(backdropUrl: item.backdropUrl, thumbUrl: item.thumbUrl, posterUrl: item.posterUrl),
+              memCacheWidth: 1400,
+            ),
+            const DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [Color(0xF50E0E12), Color(0xB30E0E12), Color(0x000E0E12)],
+                  stops: [0, 0.4, 0.75],
+                ),
+              ),
+            ),
+            Positioned(
+              left: 28,
+              bottom: 28,
+              width: 520,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('TOP RESULT', style: PbType.label.copyWith(color: PbColors.primary, letterSpacing: 1.1)),
+                  const SizedBox(height: 6),
+                  Text(item.title, maxLines: 2, overflow: TextOverflow.ellipsis,
+                      style: PbType.h1.copyWith(color: PbColors.text, fontSize: 36, height: 1.05)),
+                  const SizedBox(height: 10),
+                  TitleMetaRow(item: item, maxGenres: 2),
+                  if ((item.synopsis ?? '').isNotEmpty) ...[
+                    const SizedBox(height: 10),
+                    Text(item.synopsis!, maxLines: 2, overflow: TextOverflow.ellipsis,
+                        style: PbType.body.copyWith(color: const Color(0xFFD6DAE3), height: 1.45)),
+                  ],
+                  const SizedBox(height: 16),
+                  Wrap(
+                    spacing: 10,
+                    children: [
+                      FilledButton.icon(
+                        onPressed: () => context.push('/title/${item.id}?play=1'),
+                        style: FilledButton.styleFrom(minimumSize: const Size(0, 40)),
+                        icon: const Icon(Icons.play_arrow_rounded),
+                        label: const Text('Play'),
+                      ),
+                      OutlinedButton.icon(
+                        onPressed: _toggleList,
+                        style: OutlinedButton.styleFrom(minimumSize: const Size(0, 40)),
+                        icon: Icon(listed ? Icons.check_rounded : Icons.add_rounded),
+                        label: const Text('My List'),
+                      ),
+                      OutlinedButton.icon(
+                        onPressed: () => context.push('/title/${item.id}'),
+                        style: OutlinedButton.styleFrom(minimumSize: const Size(0, 40)),
+                        icon: const Icon(Icons.info_outline_rounded),
+                        label: const Text('More info'),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
           ],
         ),
       ),
