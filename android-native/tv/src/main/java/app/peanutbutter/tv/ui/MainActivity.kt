@@ -4,11 +4,9 @@ import android.content.Intent
 import android.os.Bundle
 import android.view.KeyEvent
 import android.view.View
-import android.widget.ImageButton
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
-import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -16,18 +14,21 @@ import androidx.core.view.isVisible
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.lifecycleScope
 import app.peanutbutter.core.HomeFeed
+import app.peanutbutter.core.HomeSections
 import app.peanutbutter.tv.R
 import app.peanutbutter.tv.asTv
 import app.peanutbutter.tv.update.checkForTvUpdate
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 
 /**
- * Home host — fixed KindSwitch overlay (Flutter Scaffold.header);
- * FeaturedBanner + shelves scroll underneath in [MainFragment].
+ * Home host — fixed top bar overlay (Home · Movies · Series · My List · Explore);
+ * hero + shelves scroll underneath in [MainFragment].
  */
 class MainActivity : FragmentActivity() {
-    private var selectedKind: String = "MOVIE"
+    /** HOME, MOVIE or SERIES. */
+    private var selectedKind: String = HomeSections.HOME
     /** Skip the first onResume (onCreate already loads); soft-refresh CW after player. */
     private var refreshOnResume = false
     private val feedCache = LinkedHashMap<String, HomeFeed>()
@@ -47,7 +48,7 @@ class MainActivity : FragmentActivity() {
                 .replace(R.id.main_browse_fragment, MainFragment())
                 .commitNow()
         } else {
-            selectedKind = savedInstanceState.getString(STATE_KIND, "MOVIE")
+            selectedKind = savedInstanceState.getString(STATE_KIND, HomeSections.HOME)
         }
 
         wireHeader()
@@ -76,8 +77,7 @@ class MainActivity : FragmentActivity() {
     private fun onHomeBack() {
         if (!focusIsInHeader()) {
             browseFragment()?.scrollToTop()
-            val tab = if (selectedKind == "SERIES") R.id.kind_series else R.id.kind_movies
-            findViewById<View>(tab).requestFocus()
+            findViewById<View>(tabFor(selectedKind)).requestFocus()
             return
         }
         confirmExit()
@@ -104,19 +104,26 @@ class MainActivity : FragmentActivity() {
         )
     }
 
-    private fun wireHeader() {
-        val movies = findViewById<TextView>(R.id.kind_movies)
-        val series = findViewById<TextView>(R.id.kind_series)
-        styleKind(movies, series, selectedKind)
+    private fun tabFor(section: String) = when (section) {
+        "MOVIE" -> R.id.kind_movies
+        "SERIES" -> R.id.kind_series
+        else -> R.id.tab_home
+    }
 
-        fun select(kind: String) {
-            if (kind == selectedKind) return
-            selectedKind = kind
-            styleKind(movies, series, kind)
+    private fun wireHeader() {
+        findViewById<TextView>(R.id.brand).text = android.text.SpannableStringBuilder("Peanut").apply {
+            append("Butter", android.text.style.ForegroundColorSpan(getColor(R.color.pbt_focus)), 0)
+        }
+        styleSections(selectedKind)
+
+        fun select(section: String) {
+            if (section == selectedKind) return
+            selectedKind = section
+            styleSections(section)
             // Instant swap from cache when available — no empty/placeholder flash.
-            val cached = feedCache[kind]
+            val cached = layoutFromCache(section)
             if (cached != null) {
-                browseFragment()?.bindFeed(kind, cached, jumpToHero = true, keepVisible = true)
+                browseFragment()?.bindLayout(section, cached, jumpToHero = true, keepVisible = true)
                 // Refresh quietly in the background — CW only, no second full rebuild.
                 loadHome(showOverlay = false, jumpToHero = false, fromCache = true)
             } else {
@@ -124,58 +131,45 @@ class MainActivity : FragmentActivity() {
             }
         }
 
-        movies.setOnClickListener { select("MOVIE") }
-        series.setOnClickListener { select("SERIES") }
-        movies.setOnKeyListener(activateKey { select("MOVIE") })
-        series.setOnKeyListener(activateKey { select("SERIES") })
-
         fun open(intent: Intent) {
             browseFragment()?.captureBrowseFocus()
             startActivity(intent)
         }
 
-        val fav = findViewById<ImageButton>(R.id.btn_favourites)
-        val watched = findViewById<ImageButton>(R.id.btn_watched)
-        val search = findViewById<ImageButton>(R.id.btn_search)
-        val settings = findViewById<ImageButton>(R.id.btn_settings)
+        fun library(mode: String) = Intent(this, LibraryActivity::class.java)
+            .putExtra(LibraryActivity.EXTRA_MODE, mode)
 
-        fav.setOnClickListener {
-            open(
-                Intent(this, LibraryActivity::class.java)
-                    .putExtra(LibraryActivity.EXTRA_MODE, LibraryActivity.MODE_FAVOURITES),
-            )
+        val actions = mapOf<Int, () -> Unit>(
+            R.id.tab_home to { select(HomeSections.HOME) },
+            R.id.kind_movies to { select("MOVIE") },
+            R.id.kind_series to { select("SERIES") },
+            R.id.tab_mylist to { open(library(LibraryActivity.MODE_FAVOURITES)) },
+            R.id.tab_explore to {
+                open(
+                    Intent(this, CatalogActivity::class.java)
+                        .putExtra(CatalogActivity.EXTRA_TITLE, getString(R.string.explore))
+                        .putExtra(CatalogActivity.EXTRA_SORT, "POPULARITY"),
+                )
+            },
+            R.id.btn_search to { open(Intent(this, SearchActivity::class.java)) },
+            // The device square: Watched and Settings today, profiles later.
+            R.id.btn_settings to {
+                showRoundListDialog(
+                    activity = this,
+                    title = getString(R.string.this_device),
+                    options = listOf(getString(R.string.watched), getString(R.string.settings)),
+                ) { pick ->
+                    if (pick == 0) open(library(LibraryActivity.MODE_WATCHED))
+                    else open(Intent(this, SettingsActivity::class.java))
+                }
+            },
+        )
+        for ((id, action) in actions) {
+            val v = findViewById<View>(id)
+            v.setOnClickListener { action() }
+            // TV D-pad: ensure Select fires even if click delivery is flaky
+            v.setOnKeyListener(activateKey(action))
         }
-        watched.setOnClickListener {
-            open(
-                Intent(this, LibraryActivity::class.java)
-                    .putExtra(LibraryActivity.EXTRA_MODE, LibraryActivity.MODE_WATCHED),
-            )
-        }
-        search.setOnClickListener {
-            open(Intent(this, SearchActivity::class.java))
-        }
-        settings.setOnClickListener {
-            open(Intent(this, SettingsActivity::class.java))
-        }
-        // TV D-pad: ensure Select fires even if click delivery is flaky
-        fav.setOnKeyListener(activateKey {
-            open(
-                Intent(this, LibraryActivity::class.java)
-                    .putExtra(LibraryActivity.EXTRA_MODE, LibraryActivity.MODE_FAVOURITES),
-            )
-        })
-        watched.setOnKeyListener(activateKey {
-            open(
-                Intent(this, LibraryActivity::class.java)
-                    .putExtra(LibraryActivity.EXTRA_MODE, LibraryActivity.MODE_WATCHED),
-            )
-        })
-        search.setOnKeyListener(activateKey {
-            open(Intent(this, SearchActivity::class.java))
-        })
-        settings.setOnKeyListener(activateKey {
-            open(Intent(this, SettingsActivity::class.java))
-        })
 
         findViewById<View>(R.id.home_header).bringToFront()
         // Keep header above Leanback scroll content; never scroll with rows
@@ -200,13 +194,43 @@ class MainActivity : FragmentActivity() {
         )
     }
 
-    private fun styleKind(movies: TextView, series: TextView, selected: String) {
-        val seed = ContextCompat.getColor(this, R.color.pb_seed)
-        val muted = ContextCompat.getColor(this, R.color.pb_muted)
-        movies.setTextColor(if (selected == "MOVIE") seed else muted)
-        movies.setTypeface(null, if (selected == "MOVIE") android.graphics.Typeface.BOLD else android.graphics.Typeface.NORMAL)
-        series.setTextColor(if (selected == "SERIES") seed else muted)
-        series.setTypeface(null, if (selected == "SERIES") android.graphics.Typeface.BOLD else android.graphics.Typeface.NORMAL)
+    /** Selected section: white with the amber underline; the rest muted. */
+    private fun styleSections(selected: String) {
+        val on = getColor(R.color.pbt_text)
+        val off = getColor(R.color.pbt_text_muted)
+        for (id in listOf(R.id.tab_home, R.id.kind_movies, R.id.kind_series, R.id.tab_mylist, R.id.tab_explore)) {
+            val tab = findViewById<TextView>(id)
+            val active = id == tabFor(selected)
+            tab.setTextColor(if (active) on else off)
+            tab.setCompoundDrawablesRelativeWithIntrinsicBounds(
+                0, 0, 0, if (active) R.drawable.tab_underline else R.drawable.tab_underline_off,
+            )
+        }
+    }
+
+    /** The section's layout from cached feeds, or null if a feed it needs isn't in yet. */
+    private fun layoutFromCache(section: String): app.peanutbutter.core.HomeLayout? {
+        val movies = feedCache["MOVIE"]
+        val series = feedCache["SERIES"]
+        return when (section) {
+            "MOVIE" -> movies?.let { HomeSections.build(section, it, null) }
+            "SERIES" -> series?.let { HomeSections.build(section, null, it) }
+            else -> if (movies != null && series != null) HomeSections.build(section, movies, series) else null
+        }
+    }
+
+    /** Feeds a section needs: Home shows movies and series. */
+    private fun kindsFor(section: String) =
+        if (section == HomeSections.HOME) listOf("MOVIE", "SERIES") else listOf(section)
+
+    private suspend fun fetchFeeds(section: String): app.peanutbutter.core.HomeLayout {
+        val app = application.asTv()
+        val feeds = kotlinx.coroutines.coroutineScope {
+            kindsFor(section).map { kind -> kind to async { app.api.homeFeed(kind) } }
+                .associate { (kind, job) -> kind to job.await() }
+        }
+        feedCache.putAll(feeds)
+        return HomeSections.build(section, feeds["MOVIE"], feeds["SERIES"])
     }
 
     private fun activateKey(action: () -> Unit) = View.OnKeyListener { _, keyCode, event ->
@@ -240,29 +264,30 @@ class MainActivity : FragmentActivity() {
         jumpToHero: Boolean,
         fromCache: Boolean = false,
     ) {
-        val app = application.asTv()
-        val kind = selectedKind
+        val section = selectedKind
         if (showOverlay) setLoading(true)
         loadJob?.cancel()
         loadJob = lifecycleScope.launch {
             try {
-                val feed = app.api.homeFeed(kind)
-                feedCache[kind] = feed
-                // Ignore stale responses if the user switched tabs mid-flight.
-                if (kind != selectedKind) return@launch
+                val layout = fetchFeeds(section)
+                // Ignore stale responses if the user switched sections mid-flight.
+                if (section != selectedKind) return@launch
                 val fragment = browseFragment()
+                val cw = layout.shelves.firstOrNull { it.sort == "CONTINUE_WATCHING" }?.items.orEmpty()
                 if (fromCache) {
                     // Already painted from cache — update CW only (no wipe / blink).
-                    val ok = fragment?.updateContinueWatching(feed.continueWatching) == true
-                    if (!ok && feed.continueWatching.isNotEmpty()) {
+                    val ok = fragment?.updateContinueWatching(cw) == true
+                    if (!ok && cw.isNotEmpty()) {
                         fragment?.captureBrowseFocus()
-                        fragment?.bindFeed(kind, feed, restoreFocus = true)
+                        fragment?.bindLayout(section, layout, restoreFocus = true)
                     }
                 } else {
-                    fragment?.bindFeed(kind, feed, jumpToHero = jumpToHero)
+                    fragment?.bindLayout(section, layout, jumpToHero = jumpToHero)
                 }
-                // Warm the other kind so Movie ↔ Series is instant next time.
-                prefetchOtherKind(kind)
+                // Warm the other feed so switching sections is instant next time.
+                prefetchMissing()
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
                 android.util.Log.e("MainActivity", "loadHome failed", e)
                 if (showOverlay && !fromCache) {
@@ -273,41 +298,42 @@ class MainActivity : FragmentActivity() {
                     ).show()
                 }
             } finally {
-                if (kind == selectedKind) setLoading(false)
+                if (section == selectedKind) setLoading(false)
             }
         }
     }
 
     private fun softRefreshContinueWatching() {
-        val app = application.asTv()
-        val kind = selectedKind
+        val section = selectedKind
         lifecycleScope.launch {
             try {
                 // The player's last save may still be on its way.
-                app.awaitWrites()
-                val feed = app.api.homeFeed(kind)
-                feedCache[kind] = feed
-                if (kind != selectedKind) return@launch
+                application.asTv().awaitWrites()
+                val layout = fetchFeeds(section)
+                if (section != selectedKind) return@launch
                 val fragment = browseFragment() ?: return@launch
-                val updated = fragment.updateContinueWatching(feed.continueWatching)
-                if (!updated && feed.continueWatching.isNotEmpty()) {
+                val cw = layout.shelves.firstOrNull { it.sort == "CONTINUE_WATCHING" }?.items.orEmpty()
+                val updated = fragment.updateContinueWatching(cw)
+                if (!updated && cw.isNotEmpty()) {
                     // CW shelf appeared for the first time — rebuild but restore focus.
                     fragment.captureBrowseFocus()
-                    fragment.bindFeed(kind, feed, restoreFocus = true)
+                    fragment.bindLayout(section, layout, restoreFocus = true)
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
                 android.util.Log.w("MainActivity", "softRefresh failed", e)
             }
         }
     }
 
-    private fun prefetchOtherKind(current: String) {
-        val other = if (current == "MOVIE") "SERIES" else "MOVIE"
-        if (feedCache.containsKey(other)) return
+    private fun prefetchMissing() {
         val app = application.asTv()
-        lifecycleScope.launch {
-            runCatching { app.api.homeFeed(other) }
-                .onSuccess { feedCache[other] = it }
+        for (kind in listOf("MOVIE", "SERIES")) {
+            if (feedCache.containsKey(kind)) continue
+            lifecycleScope.launch {
+                runCatching { app.api.homeFeed(kind) }.onSuccess { feedCache[kind] = it }
+            }
         }
     }
 

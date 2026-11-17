@@ -32,9 +32,7 @@
         android:layout_weight="1"
         android:ellipsize="end"
         android:maxLines="1"
-        android:textColor="@color/pb_white"
-        android:textSize="20sp"
-        android:textStyle="bold" />
+        android:textAppearance="@style/TextAppearance.Pb.H2" />
 
     <TextView
         android:id="@+id/shelf_see_all"
@@ -48,6 +46,6 @@
         android:minWidth="64dp"
         android:paddingHorizontal="14dp"
         android:text="@string/see_all"
-        android:textColor="@color/pb_seed"
-        android:textSize="14sp" />
+        android:textAppearance="@style/TextAppearance.Pb.Meta"
+        android:textColor="@color/pbt_text_muted" />
 </LinearLayout>

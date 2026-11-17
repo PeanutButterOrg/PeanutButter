@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Continue watching: 16:9 still, name, time left, amber bar. Desktop: WideCard. -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="284dp"
+    android:layout_height="159dp"
+    android:clipChildren="false"
+    android:clipToPadding="false"
+    android:focusable="true"
+    android:focusableInTouchMode="true"
+    android:paddingEnd="16dp">
+
+    <FrameLayout
+        android:id="@+id/card_body"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:duplicateParentState="true">
+
+        <FrameLayout
+            android:id="@+id/poster_frame"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@drawable/poster_card_bg"
+            android:duplicateParentState="true"
+            android:foreground="@drawable/poster_focus_ring">
+
+            <ImageView
+                android:id="@+id/still"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:contentDescription="@null"
+                android:scaleType="centerCrop" />
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:background="@drawable/wide_card_scrim" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_gravity="bottom"
+                android:orientation="vertical"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp"
+                android:paddingBottom="14dp">
+
+                <TextView
+                    android:id="@+id/title"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:ellipsize="end"
+                    android:maxLines="1"
+                    android:textAppearance="@style/TextAppearance.Pb.Title" />
+
+                <TextView
+                    android:id="@+id/time_left"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:maxLines="1"
+                    android:textAppearance="@style/TextAppearance.Pb.Meta"
+                    android:textColor="@color/pbt_text_muted" />
+            </LinearLayout>
+
+            <FrameLayout
+                android:id="@+id/progress"
+                android:layout_width="match_parent"
+                android:layout_height="4dp"
+                android:layout_gravity="bottom"
+                android:background="#2EFFFFFF">
+
+                <View
+                    android:id="@+id/progress_fill"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:background="@drawable/wide_progress_fill" />
+            </FrameLayout>
+        </FrameLayout>
+    </FrameLayout>
+</FrameLayout>

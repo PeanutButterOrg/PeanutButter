@@ -5,6 +5,8 @@ import android.os.Bundle
 import android.view.View
 import android.view.ViewGroup
 import androidx.leanback.app.RowsSupportFragment
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
 import androidx.leanback.widget.ArrayObjectAdapter
 import androidx.leanback.widget.ClassPresenterSelector
 import androidx.leanback.widget.FocusHighlight
@@ -15,10 +17,14 @@ import androidx.leanback.widget.ListRowPresenter
 import androidx.leanback.widget.OnItemViewClickedListener
 import androidx.leanback.widget.Presenter
 import androidx.leanback.widget.PresenterSelector
-import app.peanutbutter.core.HomeFeed
+import app.peanutbutter.core.HomeLayout
+import app.peanutbutter.core.RankedTitle
+import app.peanutbutter.core.ShelfStyle
+import app.peanutbutter.core.WideTitle
 import app.peanutbutter.core.SeeAllItem
 import app.peanutbutter.core.TitleItem
 import app.peanutbutter.tv.R
+import app.peanutbutter.tv.asTv
 
 /**
  * Flutter home body: FeaturedBanner + shelves.
@@ -87,11 +93,18 @@ class MainFragment : RowsSupportFragment() {
         }
 
         itemSelector = ClassPresenterSelector().apply {
-            addClassPresenter(TitleItem::class.java, PosterCardPresenter())
+            val posters = PosterCardPresenter()
+            addClassPresenter(TitleItem::class.java, posters)
+            addClassPresenter(RankedTitle::class.java, posters)
+            addClassPresenter(WideTitle::class.java, WideCardPresenter())
             addClassPresenter(SeeAllItem::class.java, SeeAllTextPresenter())
             addClassPresenter(
                 HeroCarousel::class.java,
-                HeroBannerPresenter { openDetails(it) },
+                HeroBannerPresenter(
+                    onDetails = { openDetails(it) },
+                    onPlay = { openDetails(it, play = true) },
+                    onSetList = { item, on, done -> setOnList(item, on, done) },
+                ),
             )
         }
 
@@ -126,6 +139,8 @@ class MainFragment : RowsSupportFragment() {
         onItemViewClickedListener = OnItemViewClickedListener { _, item, _, _ ->
             when (item) {
                 is TitleItem -> openDetails(item)
+                is RankedTitle -> openDetails(item.item)
+                is WideTitle -> openDetails(item.item)
                 is HeroCarousel -> item.current()?.let { openDetails(it) }
                 is SeeAllItem -> openCatalog(item)
             }
@@ -179,19 +194,20 @@ class MainFragment : RowsSupportFragment() {
     }
 
     /**
+     * @param section HOME, MOVIE or SERIES (see [app.peanutbutter.core.HomeSections])
      * @param restoreFocus restore previously captured cell after a rebuild
-     * @param jumpToHero when true (kind switch), select hero without scroll animation
+     * @param jumpToHero when true (section switch), select hero without scroll animation
      */
-    fun bindFeed(
-        kind: String,
-        feed: HomeFeed,
+    fun bindLayout(
+        section: String,
+        layout: HomeLayout,
         restoreFocus: Boolean = false,
         jumpToHero: Boolean = false,
-        /** Cached Movie↔Series swap — keep grid visible so the hero doesn't fade thrice. */
+        /** Cached section swap — keep grid visible so the hero doesn't fade thrice. */
         keepVisible: Boolean = false,
     ) {
         if (!::rowsAdapter.isInitialized) return
-        this.kind = kind
+        this.kind = section
         val grid = verticalGridView
         if (!keepVisible) {
             // Hide shelves during cold rebuild so stale posters never flash under the new hero.
@@ -200,29 +216,26 @@ class MainFragment : RowsSupportFragment() {
         rowsAdapter.clear()
         var id = 2L
 
-        val heroItems = feed.trending.take(8)
-        if (heroItems.isNotEmpty()) {
+        if (layout.hero.isNotEmpty()) {
             val heroList = ArrayObjectAdapter(itemSelector)
-            heroList.add(HeroCarousel(heroItems))
+            heroList.add(HeroCarousel(layout.hero, layout.eyebrows))
             rowsAdapter.add(ListRow(HeaderItem(HERO_ROW_ID, ""), heroList))
         }
 
-        fun addShelf(label: String, items: List<TitleItem>, sort: String, allKinds: Boolean = false) {
-            if (items.isEmpty()) return
+        for (shelf in layout.shelves) {
+            if (shelf.items.isEmpty()) continue
             val list = ArrayObjectAdapter(itemSelector)
-            items.take(18).forEach { list.add(it) }
-            rowsAdapter.add(
-                ListRow(
-                    ShelfHeaderItem(id++, label, if (allKinds) null else kind, sort),
-                    list,
-                ),
-            )
+            shelf.items.take(18).forEachIndexed { i, item ->
+                list.add(
+                    when (shelf.style) {
+                        ShelfStyle.TOP10 -> RankedTitle(i + 1, item)
+                        ShelfStyle.WIDE -> WideTitle(item)
+                        ShelfStyle.POSTER -> item
+                    },
+                )
+            }
+            rowsAdapter.add(ListRow(ShelfHeaderItem(id++, shelf.title, shelf.kind, shelf.sort), list))
         }
-
-        addShelf(getString(R.string.continue_watching), feed.continueWatching, "CONTINUE_WATCHING", allKinds = true)
-        addShelf(getString(R.string.trending), feed.trending, "TRENDING")
-        addShelf(getString(R.string.popular), feed.popular, "POPULARITY")
-        addShelf(getString(R.string.last_added), feed.recent, "DATE_ADDED")
 
         when {
             restoreFocus -> {
@@ -270,16 +283,16 @@ class MainFragment : RowsSupportFragment() {
             val list = row.adapter as? ArrayObjectAdapter ?: return false
             // Diff instead of clear + add: re-adding every card made the whole
             // home screen blink on each return from Details.
-            list.setItems(items.take(18), titleDiff)
+            list.setItems(items.take(18).map { WideTitle(it) }, wideDiff)
             return true
         }
         // Shelf missing (was empty) — caller should full-bind if items is non-empty.
         return items.isEmpty()
     }
 
-    private val titleDiff = object : androidx.leanback.widget.DiffCallback<TitleItem>() {
-        override fun areItemsTheSame(oldItem: TitleItem, newItem: TitleItem) = oldItem.id == newItem.id
-        override fun areContentsTheSame(oldItem: TitleItem, newItem: TitleItem) = oldItem == newItem
+    private val wideDiff = object : androidx.leanback.widget.DiffCallback<WideTitle>() {
+        override fun areItemsTheSame(oldItem: WideTitle, newItem: WideTitle) = oldItem.item.id == newItem.item.id
+        override fun areContentsTheSame(oldItem: WideTitle, newItem: WideTitle) = oldItem == newItem
     }
 
     private fun revealBrowse() {
@@ -289,13 +302,24 @@ class MainFragment : RowsSupportFragment() {
         grid.animate().alpha(1f).setDuration(160L).start()
     }
 
-    private fun openDetails(item: TitleItem) {
+    private fun openDetails(item: TitleItem, play: Boolean = false) {
         captureBrowseFocus()
         startActivity(
             Intent(requireContext(), DetailsActivity::class.java)
                 .putExtra(DetailsActivity.EXTRA_ID, item.id)
-                .putExtra(DetailsActivity.EXTRA_TITLE, item.displayTitle),
+                .putExtra(DetailsActivity.EXTRA_TITLE, item.displayTitle)
+                .putExtra(DetailsActivity.EXTRA_AUTOPLAY, play),
         )
+    }
+
+    /** My List from the hero: the favourite, as on the title page. */
+    private fun setOnList(item: TitleItem, on: Boolean, done: (Boolean) -> Unit) {
+        val app = requireActivity().application.asTv()
+        viewLifecycleOwner.lifecycleScope.launch {
+            val ok = runCatching { app.api.setFavorite(item.id, on) }.isSuccess
+            if (ok) UserStateEdits.setFavorite(item.id, on)
+            done(ok)
+        }
     }
 
     private fun openCatalog(item: SeeAllItem) {

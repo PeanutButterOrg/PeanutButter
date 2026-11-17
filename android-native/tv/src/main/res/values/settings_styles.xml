@@ -79,6 +79,7 @@
 
     <style name="SettingsButtonPrimary" parent="SettingsButtonGhost">
         <item name="android:background">@drawable/bg_button_primary</item>
+        <item name="android:textColor">@color/pbt_on_primary</item>
         <item name="android:minWidth">120dp</item>
     </style>
 </resources>

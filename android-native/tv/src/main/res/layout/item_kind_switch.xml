@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Flutter home header: KindSwitch + Favourites/Watched/Search/Settings -->
+<!-- Top bar, same on every app: logo, Home · Movies · Series · My List · Explore,
+     search and the device square (profile switcher later). design/tokens.json -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/kind_switch_root"
     android:layout_width="match_parent"
@@ -8,50 +9,52 @@
     android:clipChildren="false"
     android:clipToPadding="false"
     android:gravity="center_vertical"
-    android:minHeight="72dp"
+    android:minHeight="@dimen/pbt_size_top_bar_height_tv"
     android:orientation="horizontal"
-    android:paddingStart="20dp"
-    android:paddingTop="16dp"
-    android:paddingEnd="16dp"
+    android:paddingStart="@dimen/pbt_space_gutter_tv"
+    android:paddingTop="12dp"
+    android:paddingEnd="@dimen/pbt_space_gutter_tv"
     android:paddingBottom="12dp">
 
-    <TextView
-        android:id="@+id/kind_movies"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:background="@drawable/kind_tab_bg"
-        android:clipToPadding="false"
-        android:focusable="true"
-        android:focusableInTouchMode="true"
-        android:gravity="center"
-        android:includeFontPadding="false"
-        android:minHeight="44dp"
-        android:minWidth="72dp"
-        android:paddingHorizontal="16dp"
-        android:paddingVertical="10dp"
-        android:text="@string/movies"
-        android:textColor="@color/pb_seed"
-        android:textSize="16sp"
-        android:textStyle="bold" />
+    <ImageView
+        android:layout_width="30dp"
+        android:layout_height="30dp"
+        android:contentDescription="@null"
+        android:src="@mipmap/ic_launcher" />
 
     <TextView
-        android:id="@+id/kind_series"
+        android:id="@+id/brand"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_marginStart="10dp"
-        android:background="@drawable/kind_tab_bg"
-        android:clipToPadding="false"
-        android:focusable="true"
-        android:focusableInTouchMode="true"
-        android:gravity="center"
-        android:includeFontPadding="false"
-        android:minHeight="44dp"
-        android:minWidth="72dp"
-        android:paddingHorizontal="16dp"
-        android:paddingVertical="10dp"
-        android:text="@string/series"
-        android:textColor="@color/pb_muted"
-        android:textSize="16sp" />
+        android:layout_marginEnd="28dp"
+        android:textAppearance="@style/TextAppearance.Pb.H2"
+        android:textSize="22sp" />
+
+    <TextView
+        android:id="@+id/tab_home"
+        style="@style/PbTopTab"
+        android:text="@string/home" />
+
+    <TextView
+        android:id="@+id/kind_movies"
+        style="@style/PbTopTab"
+        android:text="@string/movies" />
+
+    <TextView
+        android:id="@+id/kind_series"
+        style="@style/PbTopTab"
+        android:text="@string/series" />
+
+    <TextView
+        android:id="@+id/tab_mylist"
+        style="@style/PbTopTab"
+        android:text="@string/my_list" />
+
+    <TextView
+        android:id="@+id/tab_explore"
+        style="@style/PbTopTab"
+        android:text="@string/explore" />
 
     <View
         android:layout_width="0dp"
@@ -59,53 +62,29 @@
         android:layout_weight="1" />
 
     <ImageButton
-        android:id="@+id/btn_favourites"
-        android:layout_width="44dp"
-        android:layout_height="44dp"
-        android:background="@drawable/header_icon_bg"
-        android:contentDescription="@string/favourites"
-        android:focusable="true"
-        android:focusableInTouchMode="true"
-        android:padding="10dp"
-        android:src="@drawable/ic_favorite"
-        android:tint="@color/pb_white" />
-
-    <ImageButton
-        android:id="@+id/btn_watched"
-        android:layout_width="44dp"
-        android:layout_height="44dp"
-        android:layout_marginStart="4dp"
-        android:background="@drawable/header_icon_bg"
-        android:contentDescription="@string/watched"
-        android:focusable="true"
-        android:focusableInTouchMode="true"
-        android:padding="10dp"
-        android:src="@drawable/ic_watched"
-        android:tint="@color/pb_white" />
-
-    <ImageButton
         android:id="@+id/btn_search"
-        android:layout_width="44dp"
-        android:layout_height="44dp"
-        android:layout_marginStart="4dp"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
         android:background="@drawable/header_icon_bg"
         android:contentDescription="@string/search"
         android:focusable="true"
         android:focusableInTouchMode="true"
-        android:padding="10dp"
+        android:padding="11dp"
+        android:scaleType="fitCenter"
         android:src="@drawable/ic_search"
-        android:tint="@color/pb_white" />
+        android:tint="@color/pbt_text" />
 
     <ImageButton
         android:id="@+id/btn_settings"
-        android:layout_width="44dp"
-        android:layout_height="44dp"
-        android:layout_marginStart="4dp"
-        android:background="@drawable/header_icon_bg"
-        android:contentDescription="@string/settings"
+        android:layout_width="40dp"
+        android:layout_height="40dp"
+        android:layout_marginStart="12dp"
+        android:background="@drawable/device_square"
+        android:contentDescription="@string/this_device"
         android:focusable="true"
         android:focusableInTouchMode="true"
-        android:padding="10dp"
-        android:src="@drawable/ic_settings"
-        android:tint="@color/pb_white" />
+        android:padding="8dp"
+        android:scaleType="fitCenter"
+        android:src="@drawable/ic_person"
+        android:tint="@color/pbt_on_primary" />
 </LinearLayout>

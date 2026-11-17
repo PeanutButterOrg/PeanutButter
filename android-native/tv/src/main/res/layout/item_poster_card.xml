@@ -14,19 +14,33 @@
 
     <!-- Everything that grows on focus. Leanback animates the root view's own
          scale (back to 1.0 with zoom "none"), so ours lives on this child. -->
+    <!-- Top 10 only: the outlined rank tucked behind the poster. -->
+    <app.peanutbutter.tv.ui.OutlineTextView
+        android:id="@+id/rank"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|start"
+        android:includeFontPadding="false"
+        android:textAppearance="@style/TextAppearance.Pb.Hero"
+        android:textColor="#FF4A4E5A"
+        android:textSize="150sp"
+        android:visibility="gone" />
+
     <FrameLayout
         android:id="@+id/card_body"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:clipChildren="false"
-        android:clipToPadding="false">
+        android:clipToPadding="false"
+        android:duplicateParentState="true">
 
     <FrameLayout
         android:id="@+id/poster_frame"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:background="@drawable/poster_card_bg"
->
+        android:duplicateParentState="true"
+        android:foreground="@drawable/poster_focus_ring">
 
         <ImageView
             android:id="@+id/poster"
@@ -36,6 +50,7 @@
             android:scaleType="centerCrop" />
 
         <View
+            android:id="@+id/poster_scrim"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
             android:background="@drawable/poster_scrim" />
@@ -60,7 +75,8 @@
                 android:layout_width="13dp"
                 android:layout_height="13dp"
                 android:contentDescription="@null"
-                android:src="@drawable/ic_star" />
+                android:src="@drawable/ic_star"
+                android:tint="@color/pbt_primary" />
 
             <TextView
                 android:id="@+id/score_value"
@@ -138,6 +154,7 @@
         </LinearLayout>
 
         <LinearLayout
+            android:id="@+id/name_block"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_gravity="bottom"

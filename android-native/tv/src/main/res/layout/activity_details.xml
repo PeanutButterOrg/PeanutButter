@@ -140,7 +140,7 @@
                                 android:layout_height="22dp"
                                 android:contentDescription="@null"
                                 android:src="@drawable/ic_play_arrow"
-                                android:tint="@color/pb_white" />
+                                android:tint="@color/pbt_on_primary" />
 
                             <TextView
                                 android:id="@+id/btn_play_label"
@@ -148,7 +148,7 @@
                                 android:layout_height="wrap_content"
                                 android:layout_marginStart="6dp"
                                 android:text="@string/play"
-                                android:textColor="@color/pb_white"
+                                android:textColor="@color/pbt_on_primary"
                                 android:textSize="15sp"
                                 android:textStyle="bold" />
                         </LinearLayout>

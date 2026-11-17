@@ -95,7 +95,15 @@ class DetailsActivity : FragmentActivity() {
                 Toast.makeText(this@DetailsActivity, e.message, Toast.LENGTH_LONG).show()
             } finally {
                 setBusy(false)
-                if (loadedOk) findViewById<View>(R.id.btn_play).requestFocus()
+                if (loadedOk) {
+                    val play = findViewById<View>(R.id.btn_play)
+                    play.requestFocus()
+                    // Play on the home hero: press Play once the page is up (not on rotate/recreate).
+                    if (savedInstanceState == null && intent.getBooleanExtra(EXTRA_AUTOPLAY, false) && play.isVisible) {
+                        intent.removeExtra(EXTRA_AUTOPLAY)
+                        play.post { play.performClick() }
+                    }
+                }
             }
         }
     }
@@ -881,6 +889,7 @@ class DetailsActivity : FragmentActivity() {
         private const val TAG = "DetailsActivity"
         const val EXTRA_ID = "title_id"
         const val EXTRA_TITLE = "title_name"
+        const val EXTRA_AUTOPLAY = "autoplay"
     }
 }
 

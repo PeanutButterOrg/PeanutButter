@@ -28,10 +28,10 @@
         android:background="@drawable/hero_scrim_bottom" />
 
     <LinearLayout
-        android:layout_width="560dp"
+        android:layout_width="600dp"
         android:layout_height="wrap_content"
         android:layout_gravity="bottom|start"
-        android:layout_marginStart="@dimen/shelf_inset"
+        android:layout_marginStart="@dimen/pbt_space_gutter_tv"
         android:layout_marginBottom="28dp"
         android:orientation="vertical">
 
@@ -41,9 +41,9 @@
             android:layout_height="wrap_content"
             android:letterSpacing="0.1"
             android:text="@string/trending_now"
-            android:textColor="@color/pb_white54"
-            android:textSize="13sp"
-            android:textStyle="bold" />
+            android:textAllCaps="true"
+            android:textAppearance="@style/TextAppearance.Pb.Label"
+            android:textColor="@color/pbt_primary" />
 
         <ImageView
             android:id="@+id/hero_logo"
@@ -61,11 +61,9 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
             android:ellipsize="end"
-            android:lineSpacingMultiplier="1.05"
+            android:lineSpacingMultiplier="0.98"
             android:maxLines="2"
-            android:textColor="@color/pb_white"
-            android:textSize="34sp"
-            android:textStyle="bold" />
+            android:textAppearance="@style/TextAppearance.Pb.Hero" />
 
         <TextView
             android:id="@+id/hero_meta"
@@ -74,50 +72,120 @@
             android:layout_marginTop="12dp"
             android:ellipsize="end"
             android:maxLines="1"
-            android:textColor="@color/pb_white54"
-            android:textSize="14sp" />
+            android:textAppearance="@style/TextAppearance.Pb.Meta"
+            android:textColor="@color/pbt_text_muted" />
 
         <TextView
             android:id="@+id/hero_synopsis"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
+            android:layout_marginTop="10dp"
             android:ellipsize="end"
-            android:lineSpacingMultiplier="1.4"
+            android:lineSpacingMultiplier="1.35"
             android:maxLines="2"
-            android:textColor="@color/pb_white54"
-            android:textSize="15sp" />
+            android:textAppearance="@style/TextAppearance.Pb.Body"
+            android:textColor="#FFD6DAE3" />
 
-        <!-- Flutter FilledButton.icon Details (min 120×48, play icon) -->
+        <!-- Play (amber) · My List · More info: same as desktop. -->
         <LinearLayout
-            android:id="@+id/hero_details"
             android:layout_width="wrap_content"
-            android:layout_height="48dp"
-            android:layout_marginTop="12dp"
-            android:background="@drawable/bg_button_primary"
-            android:clickable="true"
-            android:focusable="true"
-            android:focusableInTouchMode="true"
-            android:gravity="center_vertical"
-            android:minWidth="120dp"
-            android:orientation="horizontal"
-            android:paddingHorizontal="20dp">
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:clipChildren="false"
+            android:clipToPadding="false"
+            android:orientation="horizontal">
 
-            <ImageView
-                android:layout_width="22dp"
-                android:layout_height="22dp"
-                android:contentDescription="@null"
-                android:src="@drawable/ic_play_arrow"
-                android:tint="@color/pb_white" />
-
-            <TextView
+            <LinearLayout
+                android:id="@+id/hero_details"
                 android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="6dp"
-                android:text="@string/details"
-                android:textColor="@color/pb_white"
-                android:textSize="15sp"
-                android:textStyle="bold" />
+                android:layout_height="@dimen/pbt_size_button_height_tv"
+                android:background="@drawable/bg_button_primary"
+                android:clickable="true"
+                android:focusable="true"
+                android:focusableInTouchMode="true"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:paddingStart="18dp"
+                android:paddingEnd="22dp">
+
+                <ImageView
+                    android:id="@+id/hero_details_icon"
+                    android:layout_width="22dp"
+                    android:layout_height="22dp"
+                    android:contentDescription="@null"
+                    android:src="@drawable/ic_play_arrow"
+                    android:tint="@color/pbt_on_primary" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:text="@string/play"
+                    android:textAppearance="@style/TextAppearance.Pb.Button"
+                    android:textColor="@color/pbt_on_primary" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/hero_mylist"
+                android:layout_width="wrap_content"
+                android:layout_height="@dimen/pbt_size_button_height_tv"
+            android:layout_marginStart="12dp"
+                android:background="@drawable/bg_button_ghost"
+                android:clickable="true"
+                android:focusable="true"
+                android:focusableInTouchMode="true"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:paddingStart="18dp"
+                android:paddingEnd="22dp">
+
+                <ImageView
+                    android:id="@+id/hero_mylist_icon"
+                    android:layout_width="22dp"
+                    android:layout_height="22dp"
+                    android:contentDescription="@null"
+                    android:src="@drawable/ic_add"
+                    android:tint="@color/pbt_text" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:text="@string/my_list"
+                    android:textAppearance="@style/TextAppearance.Pb.Button"
+                    android:textColor="@color/pbt_text" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/hero_info"
+                android:layout_width="wrap_content"
+                android:layout_height="@dimen/pbt_size_button_height_tv"
+            android:layout_marginStart="12dp"
+                android:background="@drawable/bg_button_ghost"
+                android:clickable="true"
+                android:focusable="true"
+                android:focusableInTouchMode="true"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:paddingStart="18dp"
+                android:paddingEnd="22dp">
+
+                <ImageView
+                    android:id="@+id/hero_info_icon"
+                    android:layout_width="22dp"
+                    android:layout_height="22dp"
+                    android:contentDescription="@null"
+                    android:src="@drawable/ic_info"
+                    android:tint="@color/pbt_text" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:text="@string/more_info"
+                    android:textAppearance="@style/TextAppearance.Pb.Button"
+                    android:textColor="@color/pbt_text" />
+            </LinearLayout>
         </LinearLayout>
     </LinearLayout>
 </FrameLayout>

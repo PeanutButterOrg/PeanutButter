@@ -16,11 +16,22 @@ import app.peanutbutter.tv.PbGlide
 import app.peanutbutter.tv.R
 import com.bumptech.glide.Glide
 
-class HeroCarousel(val items: List<TitleItem>) {
+class HeroCarousel(
+    val items: List<TitleItem>,
+    /** One line per slide, e.g. "#1 trending · Movie". */
+    val eyebrows: List<String> = emptyList(),
+) {
     @Volatile
     var index: Int = 0
 
+    /** My List taps not yet in the feed (title id -> on the list). */
+    val listed = HashMap<String, Boolean>()
+
     fun current(): TitleItem? = items.getOrNull(index % items.size.coerceAtLeast(1))
+
+    fun eyebrow(): String? = eyebrows.getOrNull(index % items.size.coerceAtLeast(1))
+
+    fun onList(item: TitleItem): Boolean = listed[item.id] ?: item.favorite
 }
 
 /**
@@ -30,6 +41,10 @@ class HeroCarousel(val items: List<TitleItem>) {
  */
 class HeroBannerPresenter(
     private val onDetails: (TitleItem) -> Unit,
+    /** Play: open the title and start it. */
+    private val onPlay: (TitleItem) -> Unit = onDetails,
+    /** My List: set the favourite; the callback reports whether it worked. */
+    private val onSetList: (TitleItem, Boolean, (Boolean) -> Unit) -> Unit = { _, _, done -> done(false) },
 ) : Presenter() {
     override fun onCreateViewHolder(parent: ViewGroup): ViewHolder {
         val view = LayoutInflater.from(parent.context)
@@ -48,6 +63,8 @@ class HeroBannerPresenter(
         if (model.items.isEmpty()) return
         vh.model = model
         vh.onDetails = onDetails
+        vh.onPlay = onPlay
+        vh.onSetList = onSetList
         vh.bindCurrent(animate = false)
         vh.wireControls()
         vh.startAutoScroll()
@@ -63,6 +80,8 @@ class HeroBannerPresenter(
     private class HeroVH(view: View) : ViewHolder(view) {
         var model: HeroCarousel? = null
         var onDetails: ((TitleItem) -> Unit)? = null
+        var onPlay: ((TitleItem) -> Unit)? = null
+        var onSetList: ((TitleItem, Boolean, (Boolean) -> Unit) -> Unit)? = null
         private val handler = Handler(Looper.getMainLooper())
         private var rotate: Runnable? = null
 
@@ -86,40 +105,47 @@ class HeroBannerPresenter(
                         carousel.index = (carousel.index + 1) % carousel.items.size
                         bindCurrent(animate = true)
                     }
-                    handler.postDelayed(this, 5_000L)
+                    handler.postDelayed(this, ROTATE_MS)
                 }
             }
             rotate = tick
-            handler.postDelayed(tick, 5_000L)
+            handler.postDelayed(tick, ROTATE_MS)
         }
 
         fun wireControls() {
-            val details = view.findViewById<View>(R.id.hero_details)
-            details.setOnClickListener {
-                model?.current()?.let { onDetails?.invoke(it) }
-            }
-            details.setOnKeyListener { _, keyCode, event ->
-                if (event.action != KeyEvent.ACTION_DOWN) return@setOnKeyListener false
-                val m = model ?: return@setOnKeyListener false
-                if (m.items.size < 2) return@setOnKeyListener false
-                when (keyCode) {
-                    KeyEvent.KEYCODE_DPAD_LEFT -> {
-                        m.index = (m.index - 1 + m.items.size) % m.items.size
-                        bindCurrent(animate = true)
-                        startAutoScroll()
-                        true
+            val play = view.findViewById<View>(R.id.hero_details)
+            val list = view.findViewById<View>(R.id.hero_mylist)
+            val info = view.findViewById<View>(R.id.hero_info)
+            play.setOnClickListener { model?.current()?.let { onPlay?.invoke(it) } }
+            info.setOnClickListener { model?.current()?.let { onDetails?.invoke(it) } }
+            list.setOnClickListener {
+                val m = model ?: return@setOnClickListener
+                val item = m.current() ?: return@setOnClickListener
+                val next = !m.onList(item)
+                m.listed[item.id] = next
+                bindListButton()
+                onSetList?.invoke(item, next) { ok ->
+                    if (!ok) {
+                        m.listed[item.id] = !next
+                        bindListButton()
                     }
-                    KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                        m.index = (m.index + 1) % m.items.size
-                        bindCurrent(animate = true)
-                        startAutoScroll()
-                        true
-                    }
-                    else -> false
                 }
             }
-            details.isFocusable = true
-            details.isFocusableInTouchMode = true
+            // Moving between the buttons gives the slide a fresh 8 s before it turns.
+            for (button in listOf(play, list, info)) {
+                button.isFocusable = true
+                button.isFocusableInTouchMode = true
+                button.setOnFocusChangeListener { _, has -> if (has) startAutoScroll() }
+            }
+            play.nextFocusLeftId = play.id
+            info.nextFocusRightId = info.id
+        }
+
+        fun bindListButton() {
+            val item = model?.current() ?: return
+            val on = model?.onList(item) == true
+            view.findViewById<ImageView>(R.id.hero_mylist_icon)
+                .setImageResource(if (on) R.drawable.ic_check else R.drawable.ic_add)
         }
 
         fun bindCurrent(animate: Boolean) {
@@ -132,28 +158,15 @@ class HeroBannerPresenter(
             val eyebrow = view.findViewById<TextView>(R.id.hero_eyebrow)
 
             val apply = {
-                eyebrow.text = view.context.getString(R.string.trending_now)
+                eyebrow.text = model?.eyebrow() ?: view.context.getString(R.string.trending_now)
+                bindListButton()
                 titleView.text = title.displayTitle
                 // Always show plain app typography — never movie/series logo art.
                 logo.isVisible = false
                 titleView.isVisible = true
                 PbGlide.clear(logo)
 
-                meta.text = buildString {
-                    title.year?.let { append(it) }
-                    title.runtimeMinutes?.takeIf { it > 0 }?.let {
-                        if (isNotEmpty()) append("  ·  ")
-                        append("${it} min")
-                    }
-                    (title.imdbRating ?: title.tmdbVoteAverage)?.let {
-                        if (isNotEmpty()) append("  ·  ")
-                        append(String.format(java.util.Locale.US, "%.1f", it))
-                    }
-                    if (title.genres.isNotEmpty()) {
-                        if (isNotEmpty()) append("  ·  ")
-                        append(title.genres.take(3).joinToString(", "))
-                    }
-                }
+                meta.text = heroMeta(view.context, title)
                 synopsis.text = title.synopsis.orEmpty()
                 synopsis.isVisible = !title.synopsis.isNullOrBlank()
 
@@ -175,12 +188,40 @@ class HeroBannerPresenter(
     }
 
     companion object {
+        private const val ROTATE_MS = 8_000L
+
+        /** "★ 8.7 IMDb · 2014 · 2h 49m · Adventure, Sci-Fi" with an amber star. */
+        fun heroMeta(context: android.content.Context, title: TitleItem): CharSequence {
+            val out = android.text.SpannableStringBuilder()
+            val sep = "  ·  "
+            title.displayScore?.let { score ->
+                if (score.rtScore == null) {
+                    out.append("★", android.text.style.ForegroundColorSpan(context.getColor(R.color.pbt_primary)), 0)
+                    out.append(" ")
+                }
+                val start = out.length
+                out.append(score.label)
+                out.setSpan(android.text.style.ForegroundColorSpan(context.getColor(R.color.pbt_text)), start, out.length, 0)
+                out.append(" ").append(score.source)
+            }
+            fun add(piece: String) {
+                if (out.isNotEmpty()) out.append(sep)
+                out.append(piece)
+            }
+            title.year?.let { add(it.toString()) }
+            title.runtimeMinutes?.takeIf { it > 0 }?.let { m ->
+                add(if (m < 60) "${m}m" else if (m % 60 == 0) "${m / 60}h" else "${m / 60}h ${m % 60}m")
+            }
+            if (title.genres.isNotEmpty()) add(title.genres.take(2).joinToString(" · "))
+            return out
+        }
+
         /** Flutter HeroBannerFrame TV: ~58% viewport, clamp 460–620. */
         fun heroHeightPx(dm: DisplayMetrics): Int {
-            val h = (dm.heightPixels * 0.58f).toInt()
+            val h = (dm.heightPixels * 0.64f).toInt()
             return h.coerceIn(
                 (460 * dm.density).toInt(),
-                (620 * dm.density).toInt(),
+                (660 * dm.density).toInt(),
             )
         }
     }
