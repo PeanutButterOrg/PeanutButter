@@ -2115,6 +2115,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         title: next.catalogTitle,
         kind: next.kind,
         titleId: widget.titleId,
+        posterUrl: widget.posterUrl,
         season: next.season,
         // Search and pick the file by the release's own number.
         episode: next.fileEpisode ?? next.episode,

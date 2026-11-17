@@ -376,6 +376,7 @@ class _DetailBodyState extends ConsumerState<_DetailBody> {
         title: item.title,
         kind: item.kind,
         titleId: item.id,
+        posterUrl: item.posterUrl,
         season: season,
         episode: fileEpisode ?? episode,
         preferredLanguages: ref.read(serverInfoProvider).valueOrNull?.preferredLanguages ??

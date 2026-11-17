@@ -5,15 +5,18 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:graphql_flutter/graphql_flutter.dart';
 
 import '../content_languages.dart';
+import '../design/tokens.g.dart';
 import '../graphql/client.dart';
 import '../graphql/queries.dart';
 import '../friendly_error.dart';
 import '../local_torrent.dart';
 import '../models.dart';
 import '../providers/settings.dart';
+import '../release_tags.dart';
 import '../stream_resume_policy.dart';
 import '../theme.dart';
 import '../tv.dart';
+import 'cached_art.dart';
 import 'tv_chrome.dart';
 
 List<StreamSource> sourcesMatchingEpisode(
@@ -363,6 +366,7 @@ Future<StreamStart?> beginStreaming({
   required String title,
   required String kind,
   String? titleId,
+  String? posterUrl,
   int? season,
   int? episode,
   List<String>? preferredLanguages,
@@ -443,6 +447,7 @@ Future<StreamStart?> beginStreaming({
     title: title,
     kind: kind,
     titleId: titleId,
+    posterUrl: posterUrl,
     season: season,
     episode: episode,
     preferredLanguages: preferredLanguages,
@@ -458,6 +463,7 @@ Future<StreamStart?> showStreamingPicker({
   required String title,
   required String kind,
   String? titleId,
+  String? posterUrl,
   int? season,
   int? episode,
   List<String>? preferredLanguages,
@@ -484,6 +490,7 @@ Future<StreamStart?> showStreamingPicker({
             title: title,
             kind: kind,
             titleId: titleId,
+            posterUrl: posterUrl,
             season: season,
             episode: episode,
             preferredLanguages: preferredLanguages,
@@ -501,6 +508,7 @@ Future<StreamStart?> showStreamingPicker({
     title: title,
     kind: kind,
     titleId: titleId,
+    posterUrl: posterUrl,
     season: season,
     episode: episode,
     preferredLanguages: preferredLanguages,
@@ -515,6 +523,7 @@ Future<StreamStart?> _showStreamingPickerDialogs({
   required String title,
   required String kind,
   String? titleId,
+  String? posterUrl,
   int? season,
   int? episode,
   List<String>? preferredLanguages,
@@ -620,6 +629,9 @@ Future<StreamStart?> _showStreamingPickerDialogs({
     context: context,
     builder: (ctx) => _ResultsDialog(
       groups: groups,
+      title: title,
+      subtitle: _pickerSubtitle(kind, season, episode),
+      posterUrl: posterUrl,
       onRefresh: () => searchStreamingSourcesGrouped(
         resolution: _deviceQuality(context),
         client: client,
@@ -800,6 +812,7 @@ class _TvStreamingPickerPage extends StatefulWidget {
     required this.title,
     required this.kind,
     this.titleId,
+    this.posterUrl,
     this.season,
     this.episode,
     this.preferredLanguages,
@@ -812,6 +825,7 @@ class _TvStreamingPickerPage extends StatefulWidget {
   final String title;
   final String kind;
   final String? titleId;
+  final String? posterUrl;
   final int? season;
   final int? episode;
   final List<String>? preferredLanguages;
@@ -1005,6 +1019,9 @@ class _TvStreamingPickerPageState extends State<_TvStreamingPickerPage> {
             child: switch (_phase) {
               _phaseResults => _ResultsDialog(
                   groups: _groups,
+                  title: widget.title,
+                  subtitle: _pickerSubtitle(widget.kind, widget.season, widget.episode),
+                  posterUrl: widget.posterUrl,
                   onRefresh: () => searchStreamingSourcesGrouped(
                     resolution: _deviceQuality(context),
                     client: widget.client,
@@ -1111,11 +1128,18 @@ class _ResultsDialog extends StatefulWidget {
     required this.groups,
     required this.onRefresh,
     this.onSelected,
+    this.title = '',
+    this.subtitle = '',
+    this.posterUrl,
   });
 
   final List<StreamSourceGroup> groups;
   final Future<List<StreamSourceGroup>> Function() onRefresh;
   final Future<void> Function(StreamSource source)? onSelected;
+  /// Header: the title's name, a short line under it and its poster.
+  final String title;
+  final String subtitle;
+  final String? posterUrl;
 
   @override
   State<_ResultsDialog> createState() => _ResultsDialogState();
@@ -1125,6 +1149,8 @@ class _ResultsDialogState extends State<_ResultsDialog> {
   late List<StreamSourceGroup> _groups = List<StreamSourceGroup>.from(widget.groups);
   var _refreshing = false;
   String? _refreshError;
+  /// Torrents (false) or Direct links (true), when there are both.
+  var _direct = false;
 
   Future<void> _refresh() async {
     if (_refreshing) return;
@@ -1155,22 +1181,20 @@ class _ResultsDialogState extends State<_ResultsDialog> {
     }
   }
 
-  List<_ResultRow> _buildRows() {
+  int _count(bool direct) =>
+      _groups.fold(0, (n, g) => n + g.sources.where((s) => s.isHttp == direct).length);
+
+  List<_ResultRow> _buildRows(bool? direct) {
     final rows = <_ResultRow>[];
     var firstSource = true;
     for (final group in _groups) {
-      if (group.sources.isEmpty) continue;
+      final sources = direct == null ? group.sources : group.sources.where((s) => s.isHttp == direct).toList();
+      if (sources.isEmpty) continue;
       if (group.code != 'all') {
         rows.add(_ResultRow.heading(group.label));
       }
-      for (final src in group.sources) {
-        rows.add(
-          _ResultRow.source(
-            src,
-            best: firstSource,
-            autofocus: firstSource,
-          ),
-        );
+      for (final src in sources) {
+        rows.add(_ResultRow.source(src, best: firstSource, autofocus: firstSource));
         firstSource = false;
       }
     }
@@ -1179,61 +1203,90 @@ class _ResultsDialogState extends State<_ResultsDialog> {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final maxH = MediaQuery.sizeOf(context).height * 0.72;
-    final rows = _buildRows();
+    final maxH = MediaQuery.sizeOf(context).height * 0.82;
+    final torrents = _count(false);
+    final direct = _count(true);
+    final tabs = torrents > 0 && direct > 0;
+    final showDirect = tabs ? _direct : torrents == 0;
+    final rows = _buildRows(tabs ? showDirect : null);
     return FocusScope(
       autofocus: true,
-      child: AlertDialog(
-        backgroundColor: Theme.of(context).scaffoldBackgroundColor,
-        title: Row(
-          children: [
-            const Expanded(child: Text('Choose a stream')),
-            TvFocus(
-              child: IconButton(
-                tooltip: 'Refresh from Jackett',
-                onPressed: _refreshing ? null : _refresh,
-                icon: _refreshing
-                    ? const SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.refresh_rounded),
-              ),
+      child: Dialog(
+        backgroundColor: Colors.transparent,
+        insetPadding: const EdgeInsets.all(24),
+        child: Container(
+          width: 640,
+          constraints: BoxConstraints(maxHeight: maxH),
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(PbRadius.panel + 4),
+            border: Border.all(color: PbColors.line),
+            gradient: const LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [Color(0xFF1C1D25), PbColors.surface],
             ),
-          ],
-        ),
-        contentPadding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
-        content: SizedBox(
-          width: 560,
-          height: maxH,
+          ),
           child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              if (_refreshError != null) ...[
-                Text(
-                  _refreshError!,
-                  style: TextStyle(color: scheme.error, fontSize: 13, height: 1.3),
+              _PickerHeader(
+                title: widget.title,
+                subtitle: widget.subtitle,
+                posterUrl: widget.posterUrl,
+                refreshing: _refreshing,
+                onRefresh: _refresh,
+              ),
+              if (tabs) ...[
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Expanded(
+                      child: _PickerTab(
+                        label: 'Torrents',
+                        count: torrents,
+                        selected: !showDirect,
+                        onTap: () => setState(() => _direct = false),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: _PickerTab(
+                        label: 'Direct links',
+                        count: direct,
+                        selected: showDirect,
+                        onTap: () => setState(() => _direct = true),
+                      ),
+                    ),
+                  ],
                 ),
-                const SizedBox(height: 8),
               ],
-              Expanded(
+              const SizedBox(height: 10),
+              Text(
+                showDirect
+                    ? 'Direct links play straight from the add-on, with no torrent.'
+                    : 'Ranked for you: your quality first, then the healthiest swarm, your languages and a sensible size.',
+                style: PbType.meta.copyWith(fontSize: 12.5, color: PbColors.textFaint),
+              ),
+              if (_refreshError != null) ...[
+                const SizedBox(height: 8),
+                Text(_refreshError!, style: PbType.meta.copyWith(color: PbColors.bad)),
+              ],
+              const SizedBox(height: 10),
+              Flexible(
                 child: ListView.separated(
+                  shrinkWrap: true,
                   itemCount: rows.length,
                   separatorBuilder: (_, __) => const SizedBox(height: 8),
                   itemBuilder: (context, i) {
                     final row = rows[i];
                     if (row.heading != null) {
                       return Padding(
-                        padding: EdgeInsets.only(top: i == 0 ? 4 : 10, bottom: 2, left: 4),
+                        padding: EdgeInsets.only(top: i == 0 ? 0 : 8, left: 4),
                         child: Text(
-                          row.heading!,
-                          style: TextStyle(
-                            color: scheme.onSurfaceVariant,
-                            fontWeight: FontWeight.w700,
-                            fontSize: 13,
-                          ),
+                          row.heading!.toUpperCase(),
+                          style: PbType.label.copyWith(color: PbColors.textMuted, letterSpacing: 1),
                         ),
                       );
                     }
@@ -1254,6 +1307,112 @@ class _ResultsDialogState extends State<_ResultsDialog> {
   }
 }
 
+class _PickerHeader extends StatelessWidget {
+  const _PickerHeader({
+    required this.title,
+    required this.subtitle,
+    required this.posterUrl,
+    required this.refreshing,
+    required this.onRefresh,
+  });
+
+  final String title;
+  final String subtitle;
+  final String? posterUrl;
+  final bool refreshing;
+  final VoidCallback onRefresh;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        if (posterUrl != null && posterUrl!.isNotEmpty) ...[
+          ClipRRect(
+            borderRadius: BorderRadius.circular(8),
+            child: SizedBox(width: 54, height: 81, child: CachedArt(url: posterUrl, memCacheWidth: 160)),
+          ),
+          const SizedBox(width: 14),
+        ],
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'CHOOSE A STREAM',
+                style: PbType.label.copyWith(color: PbColors.primary, letterSpacing: 1.1),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                title.isEmpty ? 'Choose a stream' : title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: PbType.h1.copyWith(fontSize: 24, color: PbColors.text),
+              ),
+              if (subtitle.isNotEmpty)
+                Text(subtitle, style: PbType.meta.copyWith(color: PbColors.textMuted)),
+            ],
+          ),
+        ),
+        TvFocus(
+          child: IconButton(
+            tooltip: 'Search again',
+            onPressed: refreshing ? null : onRefresh,
+            icon: refreshing
+                ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
+                : const Icon(Icons.refresh_rounded, color: PbColors.textMuted),
+          ),
+        ),
+        TvFocus(
+          child: IconButton(
+            tooltip: 'Close',
+            onPressed: () => Navigator.maybePop(context),
+            icon: const Icon(Icons.close_rounded, color: PbColors.textMuted),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _PickerTab extends StatelessWidget {
+  const _PickerTab({required this.label, required this.count, required this.selected, required this.onTap});
+
+  final String label;
+  final int count;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final fg = selected ? PbColors.onPrimary : PbColors.textMuted;
+    return TvFocus(
+      child: Material(
+        color: selected ? PbColors.primary : Colors.transparent,
+        shape: StadiumBorder(side: BorderSide(color: selected ? Colors.transparent : PbColors.line)),
+        child: InkWell(
+          customBorder: const StadiumBorder(),
+          onTap: onTap,
+          child: SizedBox(
+            height: 36,
+            child: Center(
+              child: Text.rich(
+                TextSpan(
+                  text: label,
+                  children: [
+                    TextSpan(text: '  $count', style: TextStyle(color: fg.withValues(alpha: 0.75))),
+                  ],
+                ),
+                style: PbType.button.copyWith(color: fg),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _ResultRow {
   const _ResultRow._({this.heading, this.source, this.best = false, this.autofocus = false});
   factory _ResultRow.heading(String label) => _ResultRow._(heading: label);
@@ -1266,7 +1425,43 @@ class _ResultRow {
   final bool autofocus;
 }
 
-class _TorrentTile extends StatelessWidget {
+/// Signal bars for a swarm's health: 1–4 lit, green when healthy, amber when weak.
+int _healthBars(StreamSource s) => switch (s.health) {
+      'excellent' => 4,
+      'good' => 3,
+      'decent' => 2,
+      _ => 1,
+    };
+
+class _SignalBars extends StatelessWidget {
+  const _SignalBars({required this.lit});
+
+  final int lit;
+
+  @override
+  Widget build(BuildContext context) {
+    final on = lit >= 3 ? PbColors.good : PbColors.warn;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: [
+        for (var i = 0; i < 4; i++) ...[
+          if (i > 0) const SizedBox(width: 2),
+          Container(
+            width: 3,
+            height: 4.0 + i * 2.7,
+            decoration: BoxDecoration(
+              color: i < lit ? on : Colors.white.withValues(alpha: 0.18),
+              borderRadius: BorderRadius.circular(1),
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+class _TorrentTile extends StatefulWidget {
   const _TorrentTile({
     required this.source,
     required this.best,
@@ -1280,89 +1475,187 @@ class _TorrentTile extends StatelessWidget {
   final Future<void> Function(StreamSource source)? onSelected;
 
   @override
+  State<_TorrentTile> createState() => _TorrentTileState();
+}
+
+class _TorrentTileState extends State<_TorrentTile> {
+  var _focused = false;
+
+  void _pick() {
+    final cb = widget.onSelected;
+    if (cb != null) {
+      // Finish the KeyEvent first — starting GraphQL/setState in the
+      // same turn as ActivateIntent ANRs Android TV.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        unawaited(cb(widget.source));
+      });
+    } else {
+      Navigator.pop(context, widget.source);
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final radius = BorderRadius.circular(14);
+    final source = widget.source;
+    final best = widget.best;
+    final tags = ReleaseTags.parse(source.title);
+    final radius = BorderRadius.circular(12);
+    final status = source.isHttp
+        ? 'Direct link'
+        : '${_healthLabel(source.health)} · ${source.seeders} seeder${source.seeders == 1 ? '' : 's'}';
+    final spec = [
+      if (source.size.isNotEmpty && source.size != '?') source.size,
+      if (tags.codec.isNotEmpty) tags.codec,
+      if (tags.audio.isNotEmpty) tags.audio,
+    ].join(' · ');
+    final origin = [
+      if (languageDisplayName(source.language).isNotEmpty) languageDisplayName(source.language),
+      source.providers.length > 1 ? source.providers.join(' + ') : _torrentSourceLabel(source),
+    ].join(' · ');
     return TvFocus(
       child: Material(
-        color: best
-            ? AppTheme.seed.withValues(alpha: 0.12)
-            : scheme.surfaceContainerHighest.withValues(alpha: 0.45),
+        color: Colors.transparent,
         borderRadius: radius,
         child: InkWell(
-          autofocus: autofocus,
+          autofocus: widget.autofocus,
           borderRadius: radius,
-          onTap: () {
-            final cb = onSelected;
-            if (cb != null) {
-              // Finish the KeyEvent first — starting GraphQL/setState in the
-              // same turn as ActivateIntent ANRs Android TV.
-              WidgetsBinding.instance.addPostFrameCallback((_) {
-                unawaited(cb(source));
-              });
-            } else {
-              Navigator.pop(context, source);
-            }
-          },
-          child: Container(
-            padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+          onFocusChange: (v) => setState(() => _focused = v),
+          onTap: _pick,
+          child: AnimatedContainer(
+            duration: PbMotion.fast,
+            padding: const EdgeInsets.fromLTRB(10, 9, 10, 9),
             decoration: BoxDecoration(
               borderRadius: radius,
+              color: PbColors.surfaceRaised,
+              gradient: best
+                  ? const LinearGradient(
+                      colors: [Color(0x1FE2A456), PbColors.surfaceRaised],
+                      stops: [0, 0.6],
+                    )
+                  : null,
               border: Border.all(
-                color: best ? AppTheme.seed.withValues(alpha: 0.65) : scheme.outline.withValues(alpha: 0.22),
+                color: _focused
+                    ? PbColors.focus
+                    : best
+                        ? PbColors.primary
+                        : Colors.transparent,
+                width: _focused ? PbSize.focusRing : 1,
               ),
             ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+            child: Row(
               children: [
-                Row(
-                  children: [
-                    if (best)
-                      const Padding(
-                        padding: EdgeInsets.only(right: 8),
-                        child: _Tag(label: 'Best match', emphasized: true),
+                _QualityBox(tags: tags),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          if (source.isHttp)
+                            const Icon(Icons.link_rounded, size: 15, color: PbColors.textMuted)
+                          else
+                            _SignalBars(lit: _healthBars(source)),
+                          const SizedBox(width: 7),
+                          Flexible(
+                            child: Text(
+                              status,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: PbType.meta.copyWith(fontSize: 12.5, color: PbColors.textMuted),
+                            ),
+                          ),
+                          if (best) ...[
+                            const SizedBox(width: 8),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: PbColors.primary,
+                                borderRadius: BorderRadius.circular(5),
+                              ),
+                              child: Text(
+                                'Best',
+                                style: PbType.label.copyWith(fontSize: 10.5, color: PbColors.onPrimary),
+                              ),
+                            ),
+                          ],
+                        ],
                       ),
-                    _Tag(
-                      label: source.isHttp ? 'Direct link' : _healthLabel(source.health),
-                      emphasized: source.isHttp || source.seeders >= 20,
-                    ),
-                    const SizedBox(width: 8),
-                    Flexible(
-                      child: Align(
-                        alignment: Alignment.centerLeft,
-                        child: _Tag(label: _torrentSourceLabel(source)),
+                      const SizedBox(height: 3),
+                      if (spec.isNotEmpty)
+                        Text(spec, style: PbType.title.copyWith(fontSize: 14, color: PbColors.text)),
+                      Text(
+                        origin,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: PbType.meta.copyWith(fontSize: 12, color: PbColors.textFaint),
                       ),
-                    ),
-                    Icon(Icons.play_arrow_rounded, size: 22, color: best ? AppTheme.seed : scheme.onSurfaceVariant),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  source.title,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontWeight: FontWeight.w700, height: 1.25, fontSize: 15),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  [
-                    if (source.size.isNotEmpty && source.size != '?') source.size,
-                    if (source.isHttp)
-                      'Plays from the link, no torrent'
-                    else ...[
-                      '${source.seeders} seeders',
-                      if (source.peers > 0) '${source.peers} peers',
+                      Tooltip(
+                        message: source.title,
+                        child: Text(
+                          source.title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: PbType.meta.copyWith(fontSize: 11.5, color: PbColors.textFaint),
+                        ),
+                      ),
                     ],
-                    languageDisplayName(source.language),
-                    // Found by more than one source (merged on the server).
-                    if (source.providers.length > 1) source.providers.join(' + '),
-                  ].join('  ·  '),
-                  style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 13, height: 1.3),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Container(
+                  width: 34,
+                  height: 34,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: best ? PbColors.primary : Colors.white.withValues(alpha: 0.10),
+                  ),
+                  child: Icon(
+                    Icons.play_arrow_rounded,
+                    size: 20,
+                    color: best ? PbColors.onPrimary : PbColors.text,
+                  ),
                 ),
               ],
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// "4K / HDR", "1080 / BluRay": the copy's quality at a glance.
+class _QualityBox extends StatelessWidget {
+  const _QualityBox({required this.tags});
+
+  final ReleaseTags tags;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 52,
+      height: 48,
+      decoration: BoxDecoration(
+        color: PbColors.ground,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: PbColors.line),
+      ),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Text(
+            tags.resolution.isEmpty ? 'HD' : tags.resolution,
+            style: PbType.h2.copyWith(fontSize: 15, height: 1, color: PbColors.text),
+          ),
+          if (tags.source.isNotEmpty) ...[
+            const SizedBox(height: 3),
+            Text(
+              tags.source.toUpperCase(),
+              style: PbType.label.copyWith(fontSize: 8.5, color: PbColors.primary, letterSpacing: 0.6),
+            ),
+          ],
+        ],
       ),
     );
   }
@@ -1382,6 +1675,12 @@ String _torrentSourceLabel(StreamSource source) {
   return 'Unknown source';
 }
 
+/// "Season 2 · Episode 3" or "Movie" under the picker's title.
+String _pickerSubtitle(String kind, int? season, int? episode) {
+  if (season != null && episode != null) return 'Season $season · Episode $episode';
+  return kind.toUpperCase() == 'MOVIE' ? 'Movie' : 'Series';
+}
+
 class _Tag extends StatelessWidget {
   const _Tag({required this.label, this.emphasized = false});
   final String label;
@@ -1389,25 +1688,15 @@ class _Tag extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
       decoration: BoxDecoration(
-        color: emphasized
-            ? AppTheme.seed.withValues(alpha: 0.28)
-            : scheme.surfaceContainerHighest.withValues(alpha: 0.7),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(
-          color: emphasized ? AppTheme.seed : scheme.outline.withValues(alpha: 0.22),
-        ),
+        color: emphasized ? PbColors.primary : PbColors.surfaceRaised,
+        borderRadius: BorderRadius.circular(5),
       ),
       child: Text(
         label,
-        style: TextStyle(
-          fontSize: 11,
-          fontWeight: FontWeight.w700,
-          color: emphasized ? scheme.primary : scheme.onSurface,
-        ),
+        style: PbType.label.copyWith(fontSize: 10.5, color: emphasized ? PbColors.onPrimary : PbColors.text),
       ),
     );
   }
@@ -1549,3 +1838,12 @@ class _FilePickerDialog extends StatelessWidget {
     );
   }
 }
+
+/// The Choose a stream dialog on its own, for screenshot tests.
+@visibleForTesting
+Widget streamPickerForTest({
+  required List<StreamSourceGroup> groups,
+  String title = '',
+  String subtitle = '',
+}) =>
+    _ResultsDialog(groups: groups, onRefresh: () async => groups, title: title, subtitle: subtitle);
