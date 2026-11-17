@@ -707,7 +707,7 @@ class _HomeRowState extends State<_HomeRow> {
         return (width: w, extent: w + gap, height: w * 9 / 16 + 24);
       case _RowStyle.top10:
         final w = tv ? TvPosterDim.width : PbSize.posterWidthDesktop;
-        return (width: w, extent: w + Top10Tile.numberWidth(w) + gap, height: w * 1.5 + 24);
+        return (width: w, extent: w + Top10Tile.numberWidth(w) + gap * 0.6, height: w * 1.5 + 24 + Top10Tile.nameHeight);
       case _RowStyle.poster:
         final w = tv ? TvPosterDim.width : PbSize.posterWidthDesktop;
         return (width: w, extent: w + gap, height: w * 1.5 + 24);
@@ -778,12 +778,13 @@ class _HomeRowState extends State<_HomeRow> {
       _RowStyle.top10 => Top10Tile(
           rank: i + 1,
           posterWidth: width,
+          name: item.title,
           child: PosterCard(item: item, focusNode: node),
         ),
       _RowStyle.poster => SizedBox(width: width, child: PosterCard(item: item, focusNode: node)),
     };
     return Padding(
-      padding: EdgeInsets.only(right: gap),
+      padding: EdgeInsets.only(right: widget.spec.style == _RowStyle.top10 ? gap * 0.6 : gap),
       child: Align(alignment: Alignment.bottomLeft, child: card),
     );
   }

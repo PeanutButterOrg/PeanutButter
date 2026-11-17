@@ -165,57 +165,88 @@ class _WideCardState extends State<WideCard> {
   }
 }
 
-/// Top 10: a big outlined rank number just left of the poster, never covered by it.
+/// Top 10, as in the design: a big outlined rank number with the poster
+/// tucked over its right edge (most of the digit still shows), and the
+/// title's name under the poster.
 class Top10Tile extends StatelessWidget {
   const Top10Tile({
     super.key,
     required this.rank,
     required this.child,
     required this.posterWidth,
+    this.name = '',
   });
 
   final int rank;
   final Widget child;
   final double posterWidth;
+  final String name;
 
-  /// Width the number adds before the poster, gap included.
-  static double numberWidth(double posterWidth) => posterWidth * 0.62 - _overlap(posterWidth);
+  /// Room the number takes before the poster (after the overlap).
+  static double numberWidth(double posterWidth) => posterWidth * 0.8 - _overlap(posterWidth);
 
-  static double _overlap(double posterWidth) => -posterWidth * 0.04;
+  static double _overlap(double posterWidth) => posterWidth * 0.07;
+
+  /// Height under the poster for the name.
+  static const double nameHeight = 26;
 
   @override
   Widget build(BuildContext context) {
     final height = posterWidth * 1.5;
-    final box = posterWidth * 0.62;
-    // "10" is two digits: a little smaller so it fits the same room.
-    final size = height * (rank >= 10 ? 0.46 : 0.58);
+    final box = posterWidth * 0.8;
+    // "10" is two digits: smaller so it fits the same room.
+    final size = height * (rank >= 10 ? 0.68 : 0.82);
     return SizedBox(
       width: box + posterWidth - _overlap(posterWidth),
-      height: height,
+      height: height + nameHeight,
       child: Stack(
         clipBehavior: Clip.none,
         children: [
           Positioned(
             left: 0,
-            bottom: -height * 0.015,
+            top: 0,
+            height: height,
             width: box,
-            child: Text(
-              '$rank',
-              textAlign: TextAlign.right,
-              maxLines: 1,
-              softWrap: false,
-              style: PbType.hero.copyWith(
-                fontSize: size,
-                height: 1,
-                letterSpacing: rank >= 10 ? -size * 0.08 : 0,
-                foreground: Paint()
-                  ..style = PaintingStyle.stroke
-                  ..strokeWidth = 2.5
-                  ..color = const Color(0xFF5A5F6C),
+            child: Align(
+              alignment: Alignment.bottomRight,
+              // Tall, narrow digits like the design: our display font's are
+              // wide, so they're drawn narrower instead of smaller.
+              child: Transform.scale(
+                scaleX: 0.7,
+                scaleY: 1,
+                alignment: Alignment.bottomRight,
+                child: Text(
+                  '$rank',
+                  maxLines: 1,
+                  softWrap: false,
+                  overflow: TextOverflow.visible,
+                  style: PbType.hero.copyWith(
+                    fontSize: size,
+                    height: 0.9,
+                    letterSpacing: rank >= 10 ? -size * 0.06 : 0,
+                    foreground: Paint()
+                      ..style = PaintingStyle.stroke
+                      ..strokeWidth = 3
+                      ..color = const Color(0xFF6E7483),
+                  ),
+                ),
               ),
             ),
           ),
-          Positioned(right: 0, top: 0, bottom: 0, width: posterWidth, child: child),
+          Positioned(right: 0, top: 0, height: height, width: posterWidth, child: child),
+          Positioned(
+            right: 0,
+            bottom: 0,
+            width: posterWidth,
+            height: nameHeight - 6,
+            child: Text(
+              name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              textAlign: TextAlign.center,
+              style: PbType.meta.copyWith(color: PbColors.text, fontWeight: FontWeight.w500),
+            ),
+          ),
         ],
       ),
     );

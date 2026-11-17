@@ -1236,13 +1236,13 @@ fn apply_adult_block<'a>(qb: &mut sqlx::QueryBuilder<'a, sqlx::Postgres>) {
 }
 
 /// Hide titles that are not out yet (future release / first-air date or future year).
-/// Only titles with a score (TMDB, IMDb, Rotten Tomatoes or AniList): unrated
-/// ones are hidden from every browse list on every device. Rows stay in the
+/// Only titles with a TMDB id and a score (TMDB, IMDb, Rotten Tomatoes or
+/// AniList): the rest are hidden from every browse list on every device. Rows stay in the
 /// database, so a title shows up again once it gets a rating. Your own lists
 /// (Continue watching, My List, Watched) still show everything.
 fn apply_rated_only<'a>(qb: &mut sqlx::QueryBuilder<'a, sqlx::Postgres>) {
     qb.push(
-        " AND EXISTS (SELECT 1 FROM ratings rr WHERE rr.title_id = t.id AND (\
+        " AND t.tmdb_id IS NOT NULL AND EXISTS (SELECT 1 FROM ratings rr WHERE rr.title_id = t.id AND (\
             COALESCE(rr.tmdb_vote_average, 0) > 0 OR COALESCE(rr.imdb_rating, 0) > 0 \
             OR COALESCE(rr.rt_score, 0) > 0 OR COALESCE(rr.anilist_score, 0) > 0))",
     );
