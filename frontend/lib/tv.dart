@@ -63,7 +63,7 @@ class TvHeaderFocus {
   static List<FocusNode> get bannerButtons => [bannerDetails, bannerList, bannerInfo];
 
   static List<FocusNode> get homeBar =>
-      [home, movies, series, explore, search, settings];
+      [home, movies, series, explore, favourites, watched, search, settings];
 
   static FocusNode forKind(String kind) {
     return switch (kind) {

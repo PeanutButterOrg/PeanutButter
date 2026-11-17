@@ -60,6 +60,23 @@ class PbTopBar extends StatelessWidget {
               onPressed: () => context.push('/catalog'),
             ),
             const Spacer(),
+            // My List and Watched as buttons, as before the redesign.
+            TvFocus(
+              child: IconButton(
+                focusNode: TvHeaderFocus.favourites,
+                tooltip: 'My List',
+                onPressed: () => context.push('/favourites'),
+                icon: Icon(Icons.favorite_rounded, size: tv ? 28 : 24, color: PbColors.text),
+              ),
+            ),
+            TvFocus(
+              child: IconButton(
+                focusNode: TvHeaderFocus.watched,
+                tooltip: 'Watched',
+                onPressed: () => context.push('/watched'),
+                icon: Icon(Icons.video_library_rounded, size: tv ? 28 : 24, color: PbColors.text),
+              ),
+            ),
             TvFocus(
               child: IconButton(
                 focusNode: TvHeaderFocus.search,
@@ -187,38 +204,22 @@ class _TabState extends State<_Tab> {
   }
 }
 
-/// The device square: My List, Watched and Settings; the profile switcher later.
+/// The device square: opens Settings today; the profile switcher later.
 class _DeviceSquare extends StatelessWidget {
   const _DeviceSquare({this.focusNode});
 
   final FocusNode? focusNode;
-
-  Future<void> _open(BuildContext context) async {
-    final box = context.findRenderObject() as RenderBox?;
-    if (box == null) return;
-    final at = box.localToGlobal(Offset(0, box.size.height + 6));
-    final choice = await showMenu<String>(
-      context: context,
-      position: RelativeRect.fromLTRB(at.dx - 140, at.dy, at.dx + box.size.width, at.dy),
-      items: const [
-        PopupMenuItem(value: '/favourites', child: Text('My List')),
-        PopupMenuItem(value: '/watched', child: Text('Watched')),
-        PopupMenuItem(value: '/settings', child: Text('Settings')),
-      ],
-    );
-    if (choice != null && context.mounted) context.push(choice);
-  }
 
   @override
   Widget build(BuildContext context) {
     final size = isAndroidTv ? 36.0 : 32.0;
     return TvFocus(
       child: Tooltip(
-        message: 'This device',
+        message: 'Settings',
         child: InkWell(
           focusNode: focusNode,
           borderRadius: BorderRadius.circular(9),
-          onTap: () => _open(context),
+          onTap: () => context.push('/settings'),
           child: Container(
             width: size,
             height: size,

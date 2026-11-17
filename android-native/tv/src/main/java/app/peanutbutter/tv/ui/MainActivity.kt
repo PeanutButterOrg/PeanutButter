@@ -151,20 +151,10 @@ class MainActivity : FragmentActivity() {
                 )
             },
             R.id.btn_search to { open(Intent(this, SearchActivity::class.java)) },
-            // The device square: My List, Watched and Settings; profiles later.
-            R.id.btn_settings to {
-                showRoundListDialog(
-                    activity = this,
-                    title = getString(R.string.this_device),
-                    options = listOf(getString(R.string.my_list), getString(R.string.watched), getString(R.string.settings)),
-                ) { pick ->
-                    when (pick) {
-                        0 -> open(library(LibraryActivity.MODE_FAVOURITES))
-                        1 -> open(library(LibraryActivity.MODE_WATCHED))
-                        else -> open(Intent(this, SettingsActivity::class.java))
-                    }
-                }
-            },
+            R.id.btn_favourites to { open(library(LibraryActivity.MODE_FAVOURITES)) },
+            R.id.btn_watched to { open(library(LibraryActivity.MODE_WATCHED)) },
+            // The device square opens Settings; the profile switcher later.
+            R.id.btn_settings to { open(Intent(this, SettingsActivity::class.java)) },
         )
         for ((id, action) in actions) {
             val v = findViewById<View>(id)

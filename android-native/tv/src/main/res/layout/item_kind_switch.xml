@@ -56,7 +56,36 @@
         android:layout_height="1dp"
         android:layout_weight="1" />
 
+    <!-- My List and Watched as buttons, as before the redesign. -->
     <ImageButton
+        android:id="@+id/btn_favourites"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:background="@drawable/header_icon_bg"
+        android:contentDescription="@string/my_list"
+        android:focusable="true"
+        android:focusableInTouchMode="true"
+        android:padding="11dp"
+        android:scaleType="fitCenter"
+        android:src="@drawable/ic_favorite"
+        android:tint="@color/pbt_text" />
+
+    <ImageButton
+        android:id="@+id/btn_watched"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:layout_marginStart="4dp"
+        android:background="@drawable/header_icon_bg"
+        android:contentDescription="@string/watched"
+        android:focusable="true"
+        android:focusableInTouchMode="true"
+        android:padding="11dp"
+        android:scaleType="fitCenter"
+        android:src="@drawable/ic_watched"
+        android:tint="@color/pbt_text" />
+
+    <ImageButton
+        android:layout_marginStart="4dp"
         android:id="@+id/btn_search"
         android:layout_width="48dp"
         android:layout_height="48dp"
@@ -75,7 +104,7 @@
         android:layout_height="40dp"
         android:layout_marginStart="12dp"
         android:background="@drawable/device_square"
-        android:contentDescription="@string/this_device"
+        android:contentDescription="@string/settings"
         android:focusable="true"
         android:focusableInTouchMode="true"
         android:padding="8dp"
