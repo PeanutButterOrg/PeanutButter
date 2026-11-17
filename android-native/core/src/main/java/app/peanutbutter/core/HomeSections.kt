@@ -52,8 +52,8 @@ object HomeSections {
                 listOf(
                     HomeShelf("Continue watching", "CONTINUE_WATCHING", null,
                         interleave(m.continueWatching, s.continueWatching), ShelfStyle.WIDE),
-                    HomeShelf("Top 10 movies today", "TRENDING", "MOVIE", m.trending.take(10), ShelfStyle.TOP10),
-                    HomeShelf("Top 10 series today", "TRENDING", "SERIES", s.trending.take(10), ShelfStyle.TOP10),
+                    // One Top 10 for movies and series together, in trending order.
+                    HomeShelf("Top 10 today", "TRENDING", null, interleave(m.trending, s.trending).take(10), ShelfStyle.TOP10),
                     HomeShelf("Popular movies", "POPULARITY", "MOVIE", m.popular),
                     HomeShelf("Popular series", "POPULARITY", "SERIES", s.popular),
                     HomeShelf("Recently added", "DATE_ADDED", null, interleave(m.recent, s.recent)),

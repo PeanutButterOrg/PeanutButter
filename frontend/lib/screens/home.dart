@@ -84,10 +84,9 @@ _HomeContent _contentFor(String section, HomeFeed? movies, HomeFeed? series) {
     return _HomeContent(hero, eyebrows, [
       _RowSpec('Continue watching', 'CONTINUE_WATCHING',
           _interleave(m.continueWatching, s.continueWatching), style: _RowStyle.wide),
-      _RowSpec('Top 10 movies today', 'TRENDING', m.trending.take(10).toList(),
-          kind: 'MOVIE', style: _RowStyle.top10),
-      _RowSpec('Top 10 series today', 'TRENDING', s.trending.take(10).toList(),
-          kind: 'SERIES', style: _RowStyle.top10),
+      // One Top 10 for movies and series together, in trending order.
+      _RowSpec('Top 10 today', 'TRENDING', _interleave(m.trending, s.trending, take: 10),
+          style: _RowStyle.top10),
       _RowSpec('Popular movies', 'POPULARITY', m.popular, kind: 'MOVIE'),
       _RowSpec('Popular series', 'POPULARITY', s.popular, kind: 'SERIES'),
       _RowSpec('Recently added', 'DATE_ADDED', _interleave(m.recent, s.recent)),
