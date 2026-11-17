@@ -16,8 +16,12 @@ class PosterGrid extends StatefulWidget {
     this.onMoveUp,
     this.firstFocus,
     this.headerSlivers = const [],
+    this.footerSlivers = const [],
     this.sidePadding = 20,
   });
+
+  /// Shown under the grid (e.g. "That's everything in this category.").
+  final List<Widget> footerSlivers;
 
   /// Shown above the grid in the same scroll (search's title and top result).
   final List<Widget> headerSlivers;
@@ -138,6 +142,7 @@ class _PosterGridState extends State<PosterGrid> {
                   ),
                 ),
               ),
+              ...widget.footerSlivers,
               if (widget.loadingMore)
                 const SliverToBoxAdapter(
                   child: Padding(

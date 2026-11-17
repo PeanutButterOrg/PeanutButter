@@ -9,7 +9,10 @@ import '../providers/settings.dart';
 import '../theme.dart';
 import '../tv.dart';
 import '../tv_nav.dart';
+import '../design/tokens.g.dart';
 import '../widgets/empty_state.dart';
+import '../widgets/feature_card.dart';
+import '../widgets/poster_card.dart';
 import '../widgets/filter_bar.dart';
 import '../widgets/local_overlay.dart';
 import '../widgets/poster_grid.dart';
@@ -164,16 +167,42 @@ class _CatalogScreenState extends ConsumerState<CatalogScreen> {
 
     if (!isAndroidTv) {
       return Scaffold(
-        appBar: AppBar(
-          title: Text(heading),
-          actions: [
-            Padding(
-              padding: const EdgeInsets.only(right: 8),
-              child: actions(tv: false),
-            ),
-          ],
+        backgroundColor: PbColors.ground,
+        body: SafeArea(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(PbSpace.gutterDesktop - 8, 14, PbSpace.gutterDesktop, 8),
+                child: Row(
+                  children: [
+                    IconButton(
+                      tooltip: 'Back',
+                      // Opened straight from the address bar (web) there's nothing to go back to.
+            onPressed: () => context.canPop() ? context.pop() : context.go('/'),
+                      icon: const Icon(Icons.arrow_back_rounded, color: PbColors.text),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        heading,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: PbType.hero.copyWith(fontSize: 40, color: PbColors.text),
+                      ),
+                    ),
+                    filters(tv: false),
+                  ],
+                ),
+              ),
+              Expanded(
+                child: blocked
+                    ? grid
+                    : ClippedOverlay(child: _desktopBody(ref, catalog, omdb, tmdb, kind, filter, heading)),
+              ),
+            ],
+          ),
         ),
-        body: grid,
       );
     }
 
@@ -219,6 +248,75 @@ class _CatalogScreenState extends ConsumerState<CatalogScreen> {
           body: grid,
         ),
       ),
+    );
+  }
+
+  /// Desktop / web: the #1 featured with the next three beside it, then the grid.
+  Widget _desktopBody(
+    WidgetRef ref,
+    CatalogState catalog,
+    bool omdb,
+    bool tmdb,
+    String kind,
+    CatalogFilter filter,
+    String heading,
+  ) {
+    if (catalog.items.isEmpty || catalog.error != null && catalog.items.isEmpty) {
+      return _body(ref, catalog, omdb, tmdb, kind, filter);
+    }
+    final items = catalog.items;
+    // Your own lists stay a plain grid; browse lists get the featured top.
+    final personal = const {'CONTINUE_WATCHING', 'FAVORITES', 'WATCHED'}.contains(filter.sort);
+    final featured = !personal && items.length >= 4;
+    final done = !catalog.hasNextPage && !catalog.loadingMore && !catalog.loading;
+    return PosterGrid(
+      controller: _scroll,
+      items: featured ? items.skip(4).toList() : items,
+      sidePadding: PbSpace.gutterDesktop,
+      loadingMore: catalog.loadingMore,
+      onEndReached: () => ref.read(catalogProvider.notifier).loadMore(),
+      headerSlivers: [
+        if (featured)
+          SliverPadding(
+            padding: const EdgeInsets.fromLTRB(PbSpace.gutterDesktop, 8, PbSpace.gutterDesktop, 16),
+            sliver: SliverToBoxAdapter(
+              child: LayoutBuilder(
+                builder: (context, box) {
+                  const height = 360.0;
+                  final card = FeatureCard(item: items.first, eyebrow: '#1 in $heading', height: height);
+                  if (box.maxWidth < 1000) return card;
+                  return SizedBox(
+                    height: height,
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Expanded(flex: 5, child: card),
+                        for (final item in items.skip(1).take(3)) ...[
+                          const SizedBox(width: 14),
+                          Expanded(flex: 2, child: PosterCard(item: item)),
+                        ],
+                      ],
+                    ),
+                  );
+                },
+              ),
+            ),
+          ),
+      ],
+      footerSlivers: [
+        if (done)
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.only(top: 8, bottom: 24),
+              child: Center(
+                child: Text(
+                  "That's everything in this category.",
+                  style: PbType.meta.copyWith(color: PbColors.textMuted),
+                ),
+              ),
+            ),
+          ),
+      ],
     );
   }
 
