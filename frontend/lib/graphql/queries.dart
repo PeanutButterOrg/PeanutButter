@@ -194,10 +194,15 @@ query SearchTitles($query: String!, $kind: TitleKind, $page: Int, $perPage: Int)
       kind
       title
       originalTitle
+      synopsis
       year
+      runtimeMinutes
       posterUrl
+      backdropUrl
+      thumbUrl
       ratings {
         tmdbVoteAverage
+        tmdbVoteCount
         imdbRating
         anilistScore
         rtScore

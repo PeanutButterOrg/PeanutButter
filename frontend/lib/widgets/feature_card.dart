@@ -68,25 +68,46 @@ class _FeatureCardState extends ConsumerState<FeatureCard> {
         child: Stack(
           fit: StackFit.expand,
           children: [
-            const ColoredBox(color: PbColors.surface),
-            CachedArt(
-              url: bestBannerUrl(backdropUrl: item.backdropUrl, thumbUrl: item.thumbUrl, posterUrl: item.posterUrl),
-              memCacheWidth: 1920,
-              // Faces and titles sit high in backdrops.
-              alignment: const Alignment(0, -0.3),
-            ),
-            const DecoratedBox(
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  colors: [Color(0xF50E0E12), Color(0xB30E0E12), Color(0x000E0E12)],
-                  stops: [0, 0.4, 0.75],
-                ),
-              ),
+            const ColoredBox(color: PbColors.ground),
+            // The whole 16:9 backdrop on the right, never cropped; the text
+            // side fades into it.
+            LayoutBuilder(
+              builder: (context, box) {
+                final artW = (box.maxHeight * 16 / 9).clamp(0.0, box.maxWidth);
+                return Stack(
+                  children: [
+                    Positioned(
+                      right: 0,
+                      top: 0,
+                      bottom: 0,
+                      width: artW,
+                      child: CachedArt(
+                        url: bestBannerUrl(backdropUrl: item.backdropUrl, thumbUrl: item.thumbUrl, posterUrl: item.posterUrl),
+                        memCacheWidth: 1920,
+                      ),
+                    ),
+                    Positioned(
+                      right: artW - artW * 0.45,
+                      top: 0,
+                      bottom: 0,
+                      left: 0,
+                      child: const DecoratedBox(
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            colors: [PbColors.ground, PbColors.ground, Color(0x000E0E12)],
+                            stops: [0, 0.55, 1],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                );
+              },
             ),
             Positioned(
               left: 28,
               bottom: 28,
-              right: 28,
+              width: 560,
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
