@@ -324,6 +324,8 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
       );
     }
     final results = search.results;
+    // Still searching: nothing to show yet (the spinner sits on top).
+    if (results.isEmpty) return const SizedBox.shrink();
     final movies = results.where((t) => t.kind == 'MOVIE').length;
     final series = results.length - movies;
     final more = search.hasNextPage ? '+' : '';
