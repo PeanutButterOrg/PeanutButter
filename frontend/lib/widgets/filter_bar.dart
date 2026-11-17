@@ -152,7 +152,6 @@ const kSortOptions = <(String, String)>[
   ('RATING', 'Rating'),
   ('ROTTEN_TOMATOES', 'Rotten Tomatoes'),
   ('TITLE', 'Title'),
-  ('NOW_IN_HD', 'Now in HD'),
 ];
 
 /// Sort choices shown in picker menus (home “See all” already picks the rail).
@@ -174,7 +173,7 @@ String catalogHeading(CatalogFilter filter) {
       break;
     }
   }
-  if ((filter.sort == 'CONTINUE_WATCHING' && filter.kind == null) || filter.sort == 'NOW_IN_HD') {
+  if (filter.sort == 'CONTINUE_WATCHING' && filter.kind == null) {
     return sortLabel;
   }
   final kind = switch (filter.kind) {

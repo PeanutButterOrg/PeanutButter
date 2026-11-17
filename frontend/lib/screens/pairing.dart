@@ -229,7 +229,6 @@ class _PairingScreenState extends ConsumerState<PairingScreen> {
       ref.invalidate(serverInfoProvider);
       await notifier.markConnected();
       ref.invalidate(homeFeedProvider('MOVIE'));
-      ref.invalidate(nowInHdProvider);
       ref.invalidate(homeFeedProvider('SERIES'));
       ref.invalidate(homeFeedProvider('ANIME'));
     });

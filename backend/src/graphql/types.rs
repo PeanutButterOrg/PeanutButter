@@ -72,9 +72,6 @@ pub enum SortField {
     ContinueWatching,
     Favorites,
     Watched,
-    /// Movies from the last six months that now have an HD copy, newest
-    /// arrival first (the apps' "Now in HD" row and its See all).
-    NowInHd,
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq, Debug)]

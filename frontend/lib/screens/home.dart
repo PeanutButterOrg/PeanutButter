@@ -266,9 +266,6 @@ class _HomeBodyState extends ConsumerState<_HomeBody> {
   Widget build(BuildContext context) {
     final kind = widget.kind;
     final feed = widget.feed;
-    final nowInHd = kind == 'MOVIE'
-        ? ref.watch(nowInHdProvider).valueOrNull ?? const <TitleItem>[]
-        : const <TitleItem>[];
     final list = ListView(
       controller: _scroll,
       cacheExtent: isAndroidTv ? 280 : 800,
@@ -290,8 +287,6 @@ class _HomeBodyState extends ConsumerState<_HomeBody> {
         _HomeRow(title: 'Trending', sort: 'TRENDING', items: feed.trending, kind: kind, railIndex: 1),
         _HomeRow(title: 'Popular', sort: 'POPULARITY', items: feed.popular, kind: kind, railIndex: 2),
         _HomeRow(title: 'Last added', sort: 'DATE_ADDED', items: feed.recent, kind: kind, railIndex: 3),
-        // Movies only (empty for series): new releases that now have an HD copy.
-        _HomeRow(title: 'Now in HD', sort: 'NOW_IN_HD', items: nowInHd, kind: kind, railIndex: 4),
       ],
     );
     return ClippedOverlay(child: list);

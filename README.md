@@ -43,7 +43,7 @@ Run one small server at home, then browse and watch from your **TV, laptop or de
       <h4>🍿 Browse like a streaming app</h4>
       <ul>
         <li>Movies and series with posters, trailers, cast, and TMDB, IMDb and Rotten Tomatoes scores</li>
-        <li>Trending, Popular, Last added and <b>Now in HD</b> rows, tagged with the streaming services that carry each title</li>
+        <li>Trending, Popular and Last added rows, tagged with the streaming services that carry each title</li>
         <li>Fast, typo-tolerant search and filters for genre, year, rating and service that keep pulling new titles from TMDB as you scroll</li>
       </ul>
     </td>

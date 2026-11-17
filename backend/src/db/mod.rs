@@ -49,6 +49,7 @@ const EMBEDDED_MIGRATION_036: &str = include_str!("migrations/036_text_locale.sq
 const EMBEDDED_MIGRATION_037: &str = include_str!("migrations/037_title_quality.sql");
 const EMBEDDED_MIGRATION_038: &str = include_str!("migrations/038_title_quality_attempts.sql");
 const EMBEDDED_MIGRATION_039: &str = include_str!("migrations/039_title_people_tmdb_id.sql");
+const EMBEDDED_MIGRATION_040: &str = include_str!("migrations/040_drop_title_quality.sql");
 
 /// Pool for GraphQL / playback — fail fast so sync never starves clients.
 pub async fn connect_api(database_url: &str) -> Result<PgPool> {
@@ -129,6 +130,7 @@ pub async fn run_migrations(pool: &PgPool, extra_dir: Option<&Path>) -> Result<(
     apply_one(pool, "037_title_quality", EMBEDDED_MIGRATION_037).await?;
     apply_one(pool, "038_title_quality_attempts", EMBEDDED_MIGRATION_038).await?;
     apply_one(pool, "039_title_people_tmdb_id", EMBEDDED_MIGRATION_039).await?;
+    apply_one(pool, "040_drop_title_quality", EMBEDDED_MIGRATION_040).await?;
 
     if let Some(dir) = extra_dir {
         if dir.is_dir() {
@@ -185,6 +187,7 @@ pub async fn run_migrations(pool: &PgPool, extra_dir: Option<&Path>) -> Result<(
                     || version == "037_title_quality"
                     || version == "038_title_quality_attempts"
                     || version == "039_title_people_tmdb_id"
+                    || version == "040_drop_title_quality"
                 {
                     continue;
                 }
