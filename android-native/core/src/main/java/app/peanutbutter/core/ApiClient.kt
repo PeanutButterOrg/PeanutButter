@@ -208,6 +208,13 @@ class ApiClient(
         parseTitle(data.getAsJsonObject("title"))
     }
 
+    /** "More like this": TMDB's recommendations in the catalog. Empty on older servers. */
+    suspend fun similarTitles(id: String, limit: Int = 12): List<TitleItem> = withContext(Dispatchers.IO) {
+        runCatching {
+            parseTitles(gql(Gql.SIMILAR, mapOf("titleId" to id, "limit" to limit)).getAsJsonArray("similarTitles"))
+        }.getOrDefault(emptyList())
+    }
+
     suspend fun search(query: String, kind: String? = null): List<TitleItem> = withContext(Dispatchers.IO) {
         val vars = mutableMapOf<String, Any?>("q" to query)
         if (kind != null) vars["kind"] = kind

@@ -304,6 +304,13 @@ fragment HomeTitle on Title {
 }
 ''';
 
+/// "More like this" on a title page. Servers before 0.3.25 don't have it.
+final String SIMILAR_TITLES = r'''
+query SimilarTitles($titleId: UUID!, $limit: Int) {
+  similarTitles(titleId: $titleId, limit: $limit) { ...HomeTitle }
+}
+''' + GET_HOME_FEED.substring(GET_HOME_FEED.indexOf('fragment HomeTitle'));
+
 const String GET_GENRES = r'''
 query GetGenres {
   genres

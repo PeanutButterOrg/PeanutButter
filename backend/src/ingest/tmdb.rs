@@ -1711,6 +1711,88 @@ pub async fn ensure_discover_pages_for_catalog(
     Ok(has_more)
 }
 
+/// Most new titles "More like this" stores from TMDB per request, so a first
+/// visit stays quick; later visits find them in the catalog.
+const SIMILAR_MAX_NEW: usize = 8;
+
+/// "More like this": the catalog ids of what TMDB recommends for a title
+/// (its "similar" list when there are no recommendations), in TMDB's order.
+/// Recommended titles the catalog doesn't have yet are stored first, so the
+/// row always opens real title pages. Same filters as the rest of the catalog
+/// (adult, blocked genres, preferred languages) through the normal upsert.
+pub async fn similar_titles(ctx: &IngestContext, title_id: Uuid, limit: usize) -> Result<Vec<Uuid>> {
+    if ctx.config.tmdb_key().is_empty() {
+        return Ok(vec![]);
+    }
+    let row: Option<(Option<i32>, String)> =
+        sqlx::query_as("SELECT tmdb_id, kind FROM titles WHERE id = $1")
+            .bind(title_id)
+            .fetch_optional(&ctx.pool)
+            .await?;
+    let Some((Some(tmdb_id), kind)) = row else {
+        return Ok(vec![]);
+    };
+    let media = if kind == "movie" { "movie" } else { "tv" };
+    let mut ids = fetch_list_page_ids(ctx, &format!("/{media}/{tmdb_id}/recommendations"), false, 1)
+        .await?
+        .0;
+    if ids.is_empty() {
+        ids = fetch_list_page_ids(ctx, &format!("/{media}/{tmdb_id}/similar"), false, 1).await?.0;
+    }
+    ids.retain(|id| *id != tmdb_id);
+    if ids.is_empty() {
+        return Ok(vec![]);
+    }
+    let kinds: &[&str] = if media == "tv" { &["series", "anime"] } else { &["movie"] };
+    let lookup = |ids: Vec<i32>| {
+        let pool = ctx.pool.clone();
+        async move {
+            let rows: Vec<(Uuid, i32)> = sqlx::query_as(
+                "SELECT id, tmdb_id FROM titles WHERE tmdb_id = ANY($1) AND kind = ANY($2)",
+            )
+            .bind(&ids)
+            .bind(kinds)
+            .fetch_all(&pool)
+            .await?;
+            Ok::<_, AppError>(rows.into_iter().map(|(id, t)| (t, id)).collect::<std::collections::HashMap<i32, Uuid>>())
+        }
+    };
+    let mut known = lookup(ids.clone()).await?;
+    if known.len() < limit {
+        let upsert_kind = if media == "tv" { "series" } else { "movie" };
+        let missing: Vec<i32> = ids
+            .iter()
+            .copied()
+            .filter(|id| !known.contains_key(id))
+            .take(SIMILAR_MAX_NEW.min(limit - known.len()))
+            .collect();
+        stream::iter(missing)
+            .map(|id| {
+                let ctx = ctx.clone();
+                async move {
+                    match fetch_details(&ctx, id, upsert_kind).await {
+                        Ok(title_id) => {
+                            if let Err(e) = reindex(&ctx, title_id).await {
+                                debug!(tmdb_id = id, error = %e, "meili reindex skipped");
+                            }
+                        }
+                        Err(e) => debug!(tmdb_id = id, error = %e, "similar ingest skipped"),
+                    }
+                }
+            })
+            .buffer_unordered(TMDB_CONCURRENCY.min(6))
+            .collect::<Vec<_>>()
+            .await;
+        known = lookup(ids.clone()).await?;
+    }
+    Ok(ids
+        .iter()
+        .filter_map(|id| known.get(id).copied())
+        .filter(|id| *id != title_id)
+        .take(limit)
+        .collect())
+}
+
 /// TMDB Discover pages needed to fill `catalog_page`, plus one of slack for
 /// what filters discard (language lock, blocked genres).
 fn discover_pages_needed(catalog_page: i32, per_page: i32) -> i32 {

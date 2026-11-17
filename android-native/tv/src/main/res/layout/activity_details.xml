@@ -349,6 +349,41 @@
                 android:clipToPadding="false"
                 android:orientation="vertical"
                 android:visibility="gone" />
+
+            <!-- More like this (TMDB recommendations) -->
+            <TextView
+                android:id="@+id/similar_heading"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="@dimen/shelf_inset"
+                android:layout_marginTop="24dp"
+                android:layout_marginEnd="@dimen/shelf_inset"
+                android:text="@string/more_like_this"
+                android:textAppearance="@style/TextAppearance.Pb.H2"
+                android:visibility="gone" />
+
+            <HorizontalScrollView
+                android:id="@+id/similar_scroll"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:clipChildren="false"
+                android:clipToPadding="false"
+                android:overScrollMode="never"
+                android:paddingStart="@dimen/shelf_inset"
+                android:paddingTop="8dp"
+                android:paddingEnd="@dimen/shelf_inset"
+                android:paddingBottom="32dp"
+                android:scrollbars="none"
+                android:visibility="gone">
+
+                <LinearLayout
+                    android:id="@+id/similar_row"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:clipChildren="false"
+                    android:clipToPadding="false"
+                    android:orientation="horizontal" />
+            </HorizontalScrollView>
         </LinearLayout>
     </ScrollView>
 

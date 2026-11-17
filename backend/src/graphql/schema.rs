@@ -12,3 +12,18 @@ pub fn build_schema(state: AppState) -> AppSchema {
         .limit_depth(24)
         .finish()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The apps ask for "More like this" with exactly this shape.
+    #[test]
+    fn schema_has_more_like_this() {
+        let sdl = Schema::build(Query, Mutation, EmptySubscription).finish().sdl();
+        assert!(
+            sdl.contains("similarTitles(titleId: UUID!, limit: Int): [Title!]!"),
+            "similarTitles missing or changed in the schema"
+        );
+    }
+}

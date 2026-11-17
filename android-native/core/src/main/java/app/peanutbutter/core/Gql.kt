@@ -19,6 +19,19 @@ fragment T on Title {
 }
 """
 
+    /** "More like this" on a title page (server 0.3.25+). */
+    const val SIMILAR = """
+query SimilarTitles(${'$'}titleId: UUID!, ${'$'}limit: Int) {
+  similarTitles(titleId: ${'$'}titleId, limit: ${'$'}limit) {
+    id kind title originalTitle synopsis year runtimeMinutes
+    posterUrl backdropUrl logoUrl
+    ratings { tmdbVoteAverage imdbRating rtScore }
+    genres
+    userState { positionMs durationMs progressPercent watched favorite }
+  }
+}
+"""
+
     const val TITLE = """
 query GetTitle(${'$'}id: UUID!) {
   title(id: ${'$'}id) {

@@ -238,6 +238,7 @@ class DetailsActivity : FragmentActivity() {
         // Flutter order: cast → trailer → seasons (all visible, page scrolls)
         bindCastAndTrailer(t)
         bindSeasons(t, playableSeasons(t))
+        bindSimilar(t)
 
         // Size hero like Flutter HeroBannerFrame (~58% viewport, clamp 460–620)
         val hero = findViewById<View>(R.id.hero_frame)
@@ -492,6 +493,37 @@ class DetailsActivity : FragmentActivity() {
             val resumeHere = !ep.watched &&
                 (ep.positionMs > 2000 || (item?.episodeId == ep.id && item?.canResume == true))
             openSources(fromBeginning = !resumeHere)
+        }
+    }
+
+    /** "More like this": poster cards; each opens its own title page. */
+    private fun bindSimilar(t: TitleItem) {
+        val heading = findViewById<TextView>(R.id.similar_heading)
+        val scroll = findViewById<android.widget.HorizontalScrollView>(R.id.similar_scroll)
+        val row = findViewById<LinearLayout>(R.id.similar_row)
+        lifecycleScope.launch {
+            val items = application.asTv().api.similarTitles(t.id)
+            if (isFinishing || item?.id != t.id) return@launch
+            row.removeAllViews()
+            heading.isVisible = items.isNotEmpty()
+            scroll.isVisible = items.isNotEmpty()
+            val presenter = PosterCardPresenter()
+            for (similar in items) {
+                val holder = presenter.onCreateViewHolder(row)
+                presenter.onBindViewHolder(holder, similar)
+                holder.view.setOnClickListener {
+                    startActivity(
+                        android.content.Intent(this@DetailsActivity, DetailsActivity::class.java)
+                            .putExtra(EXTRA_ID, similar.id)
+                            .putExtra(EXTRA_TITLE, similar.displayTitle),
+                    )
+                }
+                holder.view.setOnFocusChangeListener { v, has ->
+                    PosterCardPresenter.applyCardFocus(v, has)
+                    if (has) scroll.smoothScrollTo((v.left - v.width).coerceAtLeast(0), 0)
+                }
+                row.addView(holder.view)
+            }
         }
     }
 

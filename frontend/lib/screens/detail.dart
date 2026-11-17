@@ -16,6 +16,7 @@ import '../providers/catalog.dart';
 import '../providers/settings.dart';
 import '../widgets/cached_art.dart';
 import '../widgets/hero_banner.dart';
+import '../widgets/poster_card.dart';
 import '../widgets/streaming_picker.dart';
 import '../widgets/title_meta.dart';
 import '../tv.dart';
@@ -576,13 +577,15 @@ class _DetailBodyState extends ConsumerState<_DetailBody> {
                     if (item.people.isNotEmpty) _Credits(people: item.people),
                     if (item.people.isNotEmpty) _CastRow(people: item.people),
                     if (item.playableTrailers.isNotEmpty) _TrailerRow(item: item),
-                    if (item.seasons.isNotEmpty)
+                    if (item.seasons.isNotEmpty) ...[
                       _SeasonList(
                         item: item,
                         files: files,
                         progressEpisodeId: resumeTarget?.episode.id ?? item.userState?.episodeId,
                         onPlayEpisode: playEpisode,
                       ),
+                    ],
+                    _MoreLikeThis(titleId: item.id),
                   ],
                 );
                 if (!isAndroidTv) return list;
@@ -1580,6 +1583,47 @@ class _SeasonListState extends State<_SeasonList> {
                 for (final e in eps)
                   if (e.id != next.id) _episodeTile(season, e),
               ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// "More like this": what TMDB recommends, as a poster row.
+class _MoreLikeThis extends ConsumerWidget {
+  const _MoreLikeThis({required this.titleId});
+
+  final String titleId;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final items = ref.watch(similarTitlesProvider(titleId)).valueOrNull ?? const <TitleItem>[];
+    if (items.isEmpty) return const SizedBox.shrink();
+    final tv = isAndroidTv;
+    final width = tv ? TvPosterDim.width : PbSize.posterWidthDesktop;
+    return Padding(
+      padding: const EdgeInsets.only(top: 24),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: EdgeInsets.symmetric(horizontal: _gutter),
+            child: _heading(context, 'More like this'),
+          ),
+          SizedBox(
+            height: width * 1.5 + 24,
+            child: ListView.builder(
+              scrollDirection: Axis.horizontal,
+              clipBehavior: Clip.none,
+              padding: EdgeInsets.symmetric(horizontal: _gutter, vertical: 12),
+              itemExtent: width + 14,
+              itemCount: items.length,
+              itemBuilder: (context, i) => Padding(
+                padding: const EdgeInsets.only(right: 14),
+                child: PosterCard(item: items[i]),
+              ),
             ),
           ),
         ],

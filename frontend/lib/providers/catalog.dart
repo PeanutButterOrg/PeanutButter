@@ -603,6 +603,28 @@ final genresProvider = FutureProvider.family<List<String>, String?>((ref, kind) 
 
 /// Auto-disposed so every title opened in a session isn't held forever, but
 /// kept for a few minutes after its page closes so going back stays instant.
+/// "More like this" for a title page; empty on servers without it or on any error.
+final similarTitlesProvider = FutureProvider.autoDispose.family<List<TitleItem>, String>((ref, id) async {
+  final client = ref.watch(graphQLClientProvider);
+  try {
+    final result = await client
+        .query(
+          QueryOptions(
+            document: gql(SIMILAR_TITLES),
+            variables: {'titleId': id, 'limit': 12},
+            fetchPolicy: FetchPolicy.noCache,
+          ),
+        )
+        // The server may store new titles from TMDB first: give it time.
+        .timeout(const Duration(seconds: 45));
+    if (result.hasException) return const [];
+    final items = result.data?['similarTitles'] as List? ?? const [];
+    return items.map((e) => TitleItem.fromJson(e as Map<String, dynamic>)).toList();
+  } catch (_) {
+    return const [];
+  }
+});
+
 final detailProvider = FutureProvider.autoDispose.family<TitleItem?, String>((ref, id) async {
   final link = ref.keepAlive();
   Timer? expiry;

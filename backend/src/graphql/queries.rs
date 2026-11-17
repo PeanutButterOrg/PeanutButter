@@ -219,6 +219,44 @@ impl Query {
         Ok(Some(Title::from_row(row, &state.config.public_url)))
     }
 
+    /// "More like this" for a title page: what TMDB recommends that is (or is
+    /// now) in the catalog, in TMDB's order. Empty without a TMDB key.
+    async fn similar_titles(
+        &self,
+        ctx: &Context<'_>,
+        title_id: Uuid,
+        limit: Option<i32>,
+    ) -> async_graphql::Result<Vec<Title>> {
+        let state = ctx.data::<AppState>()?;
+        let limit = limit.unwrap_or(12).clamp(1, 24) as usize;
+        let ingest = crate::ingest::IngestContext::from(state);
+        let ids = match crate::ingest::tmdb::similar_titles(&ingest, title_id, limit).await {
+            Ok(ids) => ids,
+            Err(e) => {
+                // A missing row is not worth failing the title page over.
+                tracing::warn!(title_id = %title_id, error = %e, "more like this failed");
+                return Ok(vec![]);
+            }
+        };
+        if ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let mut qb = sqlx::QueryBuilder::new("SELECT ");
+        qb.push(TITLE_COLUMNS);
+        qb.push(" FROM titles t WHERE t.id = ANY(");
+        qb.push_bind(ids.clone());
+        qb.push(")");
+        apply_adult_block(&mut qb);
+        apply_released_only(&mut qb);
+        let rows: Vec<TitleRow> = qb.build_query_as().fetch_all(&state.pool).await?;
+        let mut by_id: std::collections::HashMap<Uuid, TitleRow> =
+            rows.into_iter().map(|r| (r.id, r)).collect();
+        Ok(ids
+            .into_iter()
+            .filter_map(|id| by_id.remove(&id).map(|r| Title::from_row(r, &state.config.public_url)))
+            .collect())
+    }
+
     async fn search(
         &self,
         ctx: &Context<'_>,
