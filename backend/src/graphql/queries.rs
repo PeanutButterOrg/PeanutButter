@@ -94,6 +94,9 @@ impl Query {
         }
         qb.push(" WHERE 1=1");
         apply_filters(&mut qb, &filter);
+        if !(continue_watching || favorites || watched) {
+            apply_rated_only(&mut qb);
+        }
         if let Some(names) = &service_names {
             qb.push(" AND EXISTS (SELECT 1 FROM addon_catalog_items a WHERE ");
             push_service_match(&mut qb, names);
@@ -137,6 +140,9 @@ impl Query {
         }
         count_qb.push(" WHERE 1=1");
         apply_filters(&mut count_qb, &filter);
+        if !(continue_watching || favorites || watched) {
+            apply_rated_only(&mut count_qb);
+        }
         if let Some(names) = &service_names {
             count_qb.push(" AND EXISTS (SELECT 1 FROM addon_catalog_items a WHERE ");
             push_service_match(&mut count_qb, names);
@@ -248,6 +254,7 @@ impl Query {
         qb.push(")");
         apply_adult_block(&mut qb);
         apply_released_only(&mut qb);
+        apply_rated_only(&mut qb);
         let rows: Vec<TitleRow> = qb.build_query_as().fetch_all(&state.pool).await?;
         let mut by_id: std::collections::HashMap<Uuid, TitleRow> =
             rows.into_iter().map(|r| (r.id, r)).collect();
@@ -375,6 +382,7 @@ impl Query {
         qb.push(")");
         apply_adult_block(&mut qb);
         apply_released_only(&mut qb);
+        apply_rated_only(&mut qb);
         let rows: Vec<TitleRow> = qb.build_query_as().fetch_all(&state.pool).await?;
 
         let mut by_id: std::collections::HashMap<Uuid, TitleRow> =
@@ -1040,6 +1048,7 @@ async fn fetch_home_row(
     }
     apply_adult_block(&mut qb);
     apply_released_only(&mut qb);
+    apply_rated_only(&mut qb);
     apply_language_filter(&mut qb, langs);
     qb.push(" ORDER BY ");
     qb.push(order_sql(Some(kind), sort, SortDir::Desc));
@@ -1145,6 +1154,7 @@ async fn trending_with_addon_catalogs(
     qb.push(")");
     apply_adult_block(&mut qb);
     apply_released_only(&mut qb);
+    apply_rated_only(&mut qb);
     apply_language_filter(&mut qb, langs);
     let found: Vec<TitleRow> = qb.build_query_as().fetch_all(pool).await?;
     let mut by_id: std::collections::HashMap<Uuid, Title> = found
@@ -1226,6 +1236,18 @@ fn apply_adult_block<'a>(qb: &mut sqlx::QueryBuilder<'a, sqlx::Postgres>) {
 }
 
 /// Hide titles that are not out yet (future release / first-air date or future year).
+/// Only titles with a score (TMDB, IMDb, Rotten Tomatoes or AniList): unrated
+/// ones are hidden from every browse list on every device. Rows stay in the
+/// database, so a title shows up again once it gets a rating. Your own lists
+/// (Continue watching, My List, Watched) still show everything.
+fn apply_rated_only<'a>(qb: &mut sqlx::QueryBuilder<'a, sqlx::Postgres>) {
+    qb.push(
+        " AND EXISTS (SELECT 1 FROM ratings rr WHERE rr.title_id = t.id AND (\
+            COALESCE(rr.tmdb_vote_average, 0) > 0 OR COALESCE(rr.imdb_rating, 0) > 0 \
+            OR COALESCE(rr.rt_score, 0) > 0 OR COALESCE(rr.anilist_score, 0) > 0))",
+    );
+}
+
 fn apply_released_only<'a>(qb: &mut sqlx::QueryBuilder<'a, sqlx::Postgres>) {
     qb.push(
         " AND (t.released_at IS NULL OR t.released_at <= CURRENT_DATE) \
