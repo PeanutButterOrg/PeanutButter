@@ -143,7 +143,6 @@ class MainActivity : FragmentActivity() {
             R.id.tab_home to { select(HomeSections.HOME) },
             R.id.kind_movies to { select("MOVIE") },
             R.id.kind_series to { select("SERIES") },
-            R.id.tab_mylist to { open(library(LibraryActivity.MODE_FAVOURITES)) },
             R.id.tab_explore to {
                 open(
                     Intent(this, CatalogActivity::class.java)
@@ -152,15 +151,18 @@ class MainActivity : FragmentActivity() {
                 )
             },
             R.id.btn_search to { open(Intent(this, SearchActivity::class.java)) },
-            // The device square: Watched and Settings today, profiles later.
+            // The device square: My List, Watched and Settings; profiles later.
             R.id.btn_settings to {
                 showRoundListDialog(
                     activity = this,
                     title = getString(R.string.this_device),
-                    options = listOf(getString(R.string.watched), getString(R.string.settings)),
+                    options = listOf(getString(R.string.my_list), getString(R.string.watched), getString(R.string.settings)),
                 ) { pick ->
-                    if (pick == 0) open(library(LibraryActivity.MODE_WATCHED))
-                    else open(Intent(this, SettingsActivity::class.java))
+                    when (pick) {
+                        0 -> open(library(LibraryActivity.MODE_FAVOURITES))
+                        1 -> open(library(LibraryActivity.MODE_WATCHED))
+                        else -> open(Intent(this, SettingsActivity::class.java))
+                    }
                 }
             },
         )
@@ -198,7 +200,7 @@ class MainActivity : FragmentActivity() {
     private fun styleSections(selected: String) {
         val on = getColor(R.color.pbt_text)
         val off = getColor(R.color.pbt_text_muted)
-        for (id in listOf(R.id.tab_home, R.id.kind_movies, R.id.kind_series, R.id.tab_mylist, R.id.tab_explore)) {
+        for (id in listOf(R.id.tab_home, R.id.kind_movies, R.id.kind_series, R.id.tab_explore)) {
             val tab = findViewById<TextView>(id)
             val active = id == tabFor(selected)
             tab.setTextColor(if (active) on else off)

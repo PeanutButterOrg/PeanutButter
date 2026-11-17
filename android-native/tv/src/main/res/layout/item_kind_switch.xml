@@ -47,11 +47,6 @@
         android:text="@string/series" />
 
     <TextView
-        android:id="@+id/tab_mylist"
-        style="@style/PbTopTab"
-        android:text="@string/my_list" />
-
-    <TextView
         android:id="@+id/tab_explore"
         style="@style/PbTopTab"
         android:text="@string/explore" />

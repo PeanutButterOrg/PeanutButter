@@ -54,12 +54,6 @@ class PbTopBar extends StatelessWidget {
               onPressed: () => onSection(HomeSection.series),
             ),
             _Tab(
-              label: 'My List',
-              selected: false,
-              focusNode: TvHeaderFocus.favourites,
-              onPressed: () => context.push('/favourites'),
-            ),
-            _Tab(
               label: 'Explore',
               selected: false,
               focusNode: TvHeaderFocus.explore,
@@ -193,7 +187,7 @@ class _TabState extends State<_Tab> {
   }
 }
 
-/// The device square: Watched and Settings today; the profile switcher later.
+/// The device square: My List, Watched and Settings; the profile switcher later.
 class _DeviceSquare extends StatelessWidget {
   const _DeviceSquare({this.focusNode});
 
@@ -207,6 +201,7 @@ class _DeviceSquare extends StatelessWidget {
       context: context,
       position: RelativeRect.fromLTRB(at.dx - 140, at.dy, at.dx + box.size.width, at.dy),
       items: const [
+        PopupMenuItem(value: '/favourites', child: Text('My List')),
         PopupMenuItem(value: '/watched', child: Text('Watched')),
         PopupMenuItem(value: '/settings', child: Text('Settings')),
       ],
