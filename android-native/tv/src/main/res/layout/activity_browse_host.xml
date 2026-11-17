@@ -29,8 +29,7 @@
                 android:layout_weight="1"
                 android:ellipsize="end"
                 android:maxLines="1"
-                android:textColor="@color/pb_white"
-                android:textSize="18sp"
+                android:textAppearance="@style/TextAppearance.Pb.H1"
                 android:textStyle="bold" />
 
             <TextView
@@ -38,7 +37,7 @@
                 android:layout_width="wrap_content"
                 android:layout_height="32dp"
                 android:layout_marginStart="8dp"
-                android:background="@drawable/kind_tab_bg"
+                android:background="@drawable/choice_chip"
                 android:ellipsize="end"
                 android:focusable="true"
                 android:focusableInTouchMode="true"
@@ -54,7 +53,7 @@
                 android:layout_width="wrap_content"
                 android:layout_height="32dp"
                 android:layout_marginStart="6dp"
-                android:background="@drawable/kind_tab_bg"
+                android:background="@drawable/choice_chip"
                 android:focusable="true"
                 android:focusableInTouchMode="true"
                 android:gravity="center"
@@ -68,7 +67,7 @@
                 android:layout_width="wrap_content"
                 android:layout_height="32dp"
                 android:layout_marginStart="6dp"
-                android:background="@drawable/kind_tab_bg"
+                android:background="@drawable/choice_chip"
                 android:focusable="true"
                 android:focusableInTouchMode="true"
                 android:gravity="center"
@@ -82,7 +81,7 @@
                 android:layout_width="wrap_content"
                 android:layout_height="32dp"
                 android:layout_marginStart="6dp"
-                android:background="@drawable/kind_tab_bg"
+                android:background="@drawable/choice_chip"
                 android:focusable="true"
                 android:focusableInTouchMode="true"
                 android:gravity="center"
@@ -97,7 +96,7 @@
                 android:layout_width="wrap_content"
                 android:layout_height="32dp"
                 android:layout_marginStart="6dp"
-                android:background="@drawable/kind_tab_bg"
+                android:background="@drawable/choice_chip"
                 android:focusable="true"
                 android:focusableInTouchMode="true"
                 android:gravity="center"
@@ -137,7 +136,7 @@
         android:layout_height="4dp"
         android:layout_gravity="bottom"
         android:indeterminate="true"
-        android:indeterminateTint="@color/pb_seed"
+        android:indeterminateTint="@color/pbt_primary"
         android:visibility="gone" />
 
     <FrameLayout
@@ -160,7 +159,7 @@
                 android:layout_width="40dp"
                 android:layout_height="40dp"
                 android:indeterminate="true"
-                android:indeterminateTint="@color/pb_seed" />
+                android:indeterminateTint="@color/pbt_primary" />
 
             <TextView
                 android:id="@+id/loading_label"

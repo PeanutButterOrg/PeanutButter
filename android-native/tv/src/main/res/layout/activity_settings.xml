@@ -274,6 +274,6 @@
             android:layout_width="40dp"
             android:layout_height="40dp"
             android:layout_gravity="center"
-            android:indeterminateTint="@color/pb_seed" />
+            android:indeterminateTint="@color/pbt_primary" />
     </FrameLayout>
 </FrameLayout>

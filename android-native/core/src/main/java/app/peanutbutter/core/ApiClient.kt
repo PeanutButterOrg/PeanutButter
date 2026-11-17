@@ -795,6 +795,7 @@ class ApiClient(
             logoUrl = resolveMediaUrl(o.get("logoUrl")?.takeUnless { it.isJsonNull }?.asString),
             imdbRating = ratings?.get("imdbRating")?.takeUnless { it.isJsonNull }?.asDouble,
             tmdbVoteAverage = ratings?.get("tmdbVoteAverage")?.takeUnless { it.isJsonNull }?.asDouble,
+            tmdbVoteCount = ratings?.get("tmdbVoteCount")?.takeUnless { it.isJsonNull }?.asInt,
             rtScore = ratings?.get("rtScore")?.takeUnless { it.isJsonNull }?.asInt,
             genres = genres,
             positionMs = state?.numberLong("positionMs") ?: 0,

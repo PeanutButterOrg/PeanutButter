@@ -210,7 +210,7 @@ query GenresForKind(${'$'}kind: TitleKind) { genres(kind: ${'$'}kind) }
     const val SEARCH = """
 query Search(${'$'}q: String!, ${'$'}kind: TitleKind) {
   search(query: ${'$'}q, kind: ${'$'}kind) {
-    items { id kind title originalTitle year posterUrl backdropUrl synopsis ratings { imdbRating tmdbVoteAverage rtScore } genres
+    items { id kind title originalTitle year posterUrl backdropUrl synopsis ratings { imdbRating tmdbVoteAverage tmdbVoteCount rtScore } genres
       userState { positionMs durationMs progressPercent watched favorite } }
   }
 }

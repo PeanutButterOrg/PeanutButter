@@ -20,6 +20,8 @@ data class TitleItem(
     val logoUrl: String? = null,
     val imdbRating: Double? = null,
     val tmdbVoteAverage: Double? = null,
+    /** How many TMDB votes [tmdbVoteAverage] comes from (search ordering). */
+    val tmdbVoteCount: Int? = null,
     val rtScore: Int? = null,
     val genres: List<String> = emptyList(),
     val positionMs: Long = 0,

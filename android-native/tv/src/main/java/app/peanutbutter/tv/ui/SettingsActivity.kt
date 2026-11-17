@@ -182,7 +182,7 @@ class SettingsActivity : FragmentActivity() {
                 setPadding(dp(18), dp(10), dp(18), dp(10))
                 isFocusable = true
                 isFocusableInTouchMode = true
-                background = ContextCompat.getDrawable(this@SettingsActivity, R.drawable.kind_tab_bg)
+                background = ContextCompat.getDrawable(this@SettingsActivity, R.drawable.choice_chip)
                 layoutParams = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.WRAP_CONTENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT,
@@ -203,7 +203,9 @@ class SettingsActivity : FragmentActivity() {
         for (i in 0 until container.childCount) {
             val chip = container.getChildAt(i) as? TextView ?: continue
             val on = isOn(chip.tag)
-            chip.setTextColor(ContextCompat.getColor(this, if (on) R.color.pb_seed else R.color.pb_muted))
+            // Chosen: amber chip with dark text (same as desktop).
+            chip.isSelected = on
+            chip.setTextColor(ContextCompat.getColor(this, if (on) R.color.pbt_on_primary else R.color.pbt_text))
             chip.setTypeface(null, if (on) Typeface.BOLD else Typeface.NORMAL)
         }
     }

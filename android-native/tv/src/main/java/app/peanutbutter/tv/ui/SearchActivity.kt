@@ -35,7 +35,8 @@ import kotlinx.coroutines.launch
 /** Flutter SearchScreen — KindSwitch + field + sort chips + poster grid. */
 class SearchActivity : FragmentActivity() {
     private var kind = "MOVIE"
-    private var sortKey = "TRENDING"
+    /** Best TMDB rating first by default, as on desktop. */
+    private var sortKey = "RATING"
     private var searchJob: Job? = null
     private var searchToken = 0
     private var gridFragment: SearchGridFragment? = null
@@ -65,7 +66,7 @@ class SearchActivity : FragmentActivity() {
         } else {
             gridFragment = supportFragmentManager.findFragmentById(R.id.results) as? SearchGridFragment
             kind = savedInstanceState.getString(STATE_KIND, "MOVIE")
-            sortKey = savedInstanceState.getString(STATE_SORT, "TRENDING")
+            sortKey = savedInstanceState.getString(STATE_SORT, "RATING")
         }
 
         styleKind()
@@ -178,12 +179,13 @@ class SearchActivity : FragmentActivity() {
     private fun styleKind() {
         val movies = findViewById<TextView>(R.id.kind_movies)
         val series = findViewById<TextView>(R.id.kind_series)
-        val seed = ContextCompat.getColor(this, R.color.pb_seed)
-        val muted = ContextCompat.getColor(this, R.color.pb_muted)
-        movies.setTextColor(if (kind == "MOVIE") seed else muted)
-        movies.setTypeface(null, if (kind == "MOVIE") android.graphics.Typeface.BOLD else android.graphics.Typeface.NORMAL)
-        series.setTextColor(if (kind == "SERIES") seed else muted)
-        series.setTypeface(null, if (kind == "SERIES") android.graphics.Typeface.BOLD else android.graphics.Typeface.NORMAL)
+        // Chosen kind: amber chip with dark text (same as desktop).
+        val on = ContextCompat.getColor(this, R.color.pbt_on_primary)
+        val off = ContextCompat.getColor(this, R.color.pbt_text)
+        movies.isSelected = kind == "MOVIE"
+        series.isSelected = kind == "SERIES"
+        movies.setTextColor(if (kind == "MOVIE") on else off)
+        series.setTextColor(if (kind == "SERIES") on else off)
     }
 
     private fun runSearch(q: String) {
@@ -220,7 +222,11 @@ class SearchActivity : FragmentActivity() {
     private fun applySortAndShow(items: List<TitleItem>) {
         val sorted = when (sortKey) {
             "YEAR" -> items.sortedByDescending { it.year ?: 0 }
-            "RATING" -> items.sortedByDescending { it.displayScore?.outOfTen ?: 0.0 }
+            // TMDB rating; a score from fewer than 50 votes ranks after well-known titles.
+            "RATING" -> items.sortedByDescending {
+                val r = it.tmdbVoteAverage ?: it.displayScore?.outOfTen ?: 0.0
+                if ((it.tmdbVoteCount ?: 0) >= 50) r else r - 10
+            }
             "TITLE" -> items.sortedBy { it.title.lowercase() }
             "POPULARITY" -> items.sortedByDescending { it.tmdbVoteAverage ?: it.imdbRating ?: 0.0 }
             "ROTTEN_TOMATOES" -> items.sortedByDescending { it.rtScore ?: 0 }

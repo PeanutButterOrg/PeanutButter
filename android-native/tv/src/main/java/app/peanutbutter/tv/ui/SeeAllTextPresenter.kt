@@ -27,7 +27,7 @@ class SeeAllTextPresenter : Presenter() {
             setPadding((14 * density).toInt(), 0, (14 * density).toInt(), 0)
             gravity = Gravity.CENTER
             text = parent.context.getString(R.string.see_all)
-            setTextColor(ContextCompat.getColor(parent.context, R.color.pb_seed))
+            setTextColor(ContextCompat.getColor(parent.context, R.color.pbt_text_muted))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
             background = ContextCompat.getDrawable(parent.context, R.drawable.see_all_focus_bg)
             isFocusable = false
