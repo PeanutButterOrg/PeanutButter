@@ -40,8 +40,9 @@ class AppMenuButton<T> extends StatelessWidget {
     return hint;
   }
 
-  /// Something other than the first ("Any …") entry is picked.
-  bool get _active => entries.isNotEmpty && value != null && value != entries.first.value;
+  /// A filter (compact) with something other than its first ("Any …") entry
+  /// picked; settings menus never light up.
+  bool get _active => compact && entries.isNotEmpty && value != null && value != entries.first.value;
 
   Future<void> _pick(BuildContext context) async {
     final picked = isAndroidTv ? await _dialog(context) : await _dropdown(context);
