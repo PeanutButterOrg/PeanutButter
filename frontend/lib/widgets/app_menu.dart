@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 
+import '../design/tokens.g.dart';
 import '../theme.dart';
+import '../tv.dart';
 import 'tv_chrome.dart';
 
 class AppMenuEntry<T> {
@@ -38,12 +40,70 @@ class AppMenuButton<T> extends StatelessWidget {
     return hint;
   }
 
+  /// Something other than the first ("Any …") entry is picked.
+  bool get _active => entries.isNotEmpty && value != null && value != entries.first.value;
+
   Future<void> _pick(BuildContext context) async {
-    final picked = await showDialog<T>(
+    final picked = isAndroidTv ? await _dialog(context) : await _dropdown(context);
+    if (picked != null) onSelected(picked);
+  }
+
+  /// Desktop / web: a list right under the button.
+  Future<T?> _dropdown(BuildContext context) {
+    final box = context.findRenderObject() as RenderBox?;
+    final overlay = Overlay.of(context).context.findRenderObject() as RenderBox?;
+    if (box == null || overlay == null) return _dialog(context);
+    final topLeft = box.localToGlobal(Offset(0, box.size.height + 6), ancestor: overlay);
+    return showMenu<T>(
+      context: context,
+      position: RelativeRect.fromLTRB(
+        topLeft.dx,
+        topLeft.dy,
+        overlay.size.width - topLeft.dx - box.size.width,
+        0,
+      ),
+      color: PbColors.surfaceRaised,
+      elevation: 12,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(PbRadius.card + 2),
+        side: const BorderSide(color: PbColors.line),
+      ),
+      constraints: BoxConstraints(
+        minWidth: box.size.width < 180 ? 180 : box.size.width,
+        maxHeight: MediaQuery.sizeOf(context).height * 0.5,
+      ),
+      items: [
+        for (final entry in entries)
+          PopupMenuItem<T>(
+            value: entry.value,
+            height: 40,
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    entry.label,
+                    style: PbType.body.copyWith(
+                      fontSize: 14,
+                      color: entry.value == value ? PbColors.primary : PbColors.text,
+                      fontWeight: entry.value == value ? FontWeight.w700 : FontWeight.w500,
+                    ),
+                  ),
+                ),
+                if (entry.value == value) const Icon(Icons.check_rounded, size: 18, color: PbColors.primary),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+
+  Future<T?> _dialog(BuildContext context) {
+    return showDialog<T>(
       context: context,
       builder: (ctx) {
         return AlertDialog(
-          title: Text(hint),
+          backgroundColor: PbColors.surface,
+          title: Text(hint, style: PbType.h2.copyWith(color: PbColors.text)),
           contentPadding: const EdgeInsets.fromLTRB(8, 12, 8, 16),
           content: SizedBox(
             width: 420,
@@ -58,9 +118,10 @@ class AppMenuButton<T> extends StatelessWidget {
                     ListTile(
                       autofocus: entry.value == value,
                       selected: entry.value == value,
+                      selectedColor: PbColors.primary,
                       title: Text(entry.label),
                       trailing: entry.value == value
-                          ? Icon(Icons.check_rounded, color: Theme.of(ctx).colorScheme.primary)
+                          ? const Icon(Icons.check_rounded, color: PbColors.primary)
                           : null,
                       onTap: () => Navigator.pop(ctx, entry.value),
                     ),
@@ -71,51 +132,50 @@ class AppMenuButton<T> extends StatelessWidget {
         );
       },
     );
-    if (picked != null) onSelected(picked);
   }
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
+    final active = _active;
+    final fg = active ? PbColors.primary : PbColors.text;
+    final radius = BorderRadius.circular(compact ? PbRadius.pill : 12);
     return TvFocus(
       child: Material(
-      color: scheme.surfaceContainerHighest.withValues(alpha: 0.55),
-      borderRadius: BorderRadius.circular(compact ? 20 : 12),
-      child: InkWell(
-        focusNode: focusNode,
-        borderRadius: BorderRadius.circular(compact ? 20 : 12),
-        onTap: () => _pick(context),
-        child: Container(
-          height: compact ? 40 : 48,
-          padding: EdgeInsets.fromLTRB(compact ? 10 : 12, 0, compact ? 4 : 8, 0),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(compact ? 20 : 12),
-            border: Border.all(color: scheme.outline.withValues(alpha: 0.22)),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (icon != null) ...[
-                Icon(icon, size: compact ? 15 : 16, color: scheme.onSurfaceVariant),
-                SizedBox(width: compact ? 6 : 8),
-              ],
-              ConstrainedBox(
-                constraints: BoxConstraints(maxWidth: compact ? 132 : 220),
-                child: Text(
-                  _label,
-                  overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    fontWeight: FontWeight.w600,
-                    fontSize: compact ? 13 : null,
+        color: active ? PbColors.primary.withValues(alpha: 0.12) : PbColors.surfaceRaised,
+        borderRadius: radius,
+        child: InkWell(
+          focusNode: focusNode,
+          borderRadius: radius,
+          hoverColor: Colors.white.withValues(alpha: 0.05),
+          onTap: () => _pick(context),
+          child: Container(
+            height: compact ? 40 : 48,
+            padding: EdgeInsets.fromLTRB(compact ? 14 : 14, 0, compact ? 10 : 10, 0),
+            decoration: BoxDecoration(
+              borderRadius: radius,
+              border: Border.all(color: active ? PbColors.primary.withValues(alpha: 0.6) : PbColors.line),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (icon != null) ...[
+                  Icon(icon, size: 16, color: active ? PbColors.primary : PbColors.textMuted),
+                  const SizedBox(width: 8),
+                ],
+                ConstrainedBox(
+                  constraints: BoxConstraints(maxWidth: compact ? 140 : 220),
+                  child: Text(
+                    _label,
+                    overflow: TextOverflow.ellipsis,
+                    style: PbType.button.copyWith(fontSize: 13.5, color: fg),
                   ),
                 ),
-              ),
-              const SizedBox(width: 4),
-              Icon(Icons.expand_more_rounded, size: compact ? 16 : 18, color: scheme.onSurfaceVariant),
-            ],
+                const SizedBox(width: 4),
+                Icon(Icons.keyboard_arrow_down_rounded, size: 18, color: active ? PbColors.primary : PbColors.textMuted),
+              ],
+            ),
           ),
         ),
-      ),
       ),
     );
   }

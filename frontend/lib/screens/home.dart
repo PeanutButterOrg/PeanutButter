@@ -67,6 +67,10 @@ List<TitleItem> _interleave(List<TitleItem> a, List<TitleItem> b, {int? take}) {
 
 String _kindLabel(String kind) => kind == 'SERIES' ? 'Series' : 'Movie';
 
+/// Only titles TMDB knows and has rated (servers before 0.3.25 send the rest too).
+List<TitleItem> _tmdbRated(List<TitleItem> items) =>
+    items.where((t) => (t.ratings?.tmdbVoteAverage ?? 0) > 0).toList();
+
 _HomeContent _contentFor(String section, HomeFeed? movies, HomeFeed? series) {
   const empty = HomeFeed(trending: [], popular: [], recent: []);
   final m = movies ?? empty;
@@ -82,14 +86,14 @@ _HomeContent _contentFor(String section, HomeFeed? movies, HomeFeed? series) {
             : '#${heroSeries.indexOf(item) + 1} trending · Series',
     ];
     return _HomeContent(hero, eyebrows, [
-      _RowSpec('Continue watching', 'CONTINUE_WATCHING',
-          _interleave(m.continueWatching, s.continueWatching), style: _RowStyle.wide),
       // One Top 10 for movies and series together, in trending order.
       _RowSpec('Top 10 today', 'TRENDING', _interleave(m.trending, s.trending, take: 10),
           style: _RowStyle.top10),
+      _RowSpec('Continue watching', 'CONTINUE_WATCHING',
+          _interleave(m.continueWatching, s.continueWatching), style: _RowStyle.wide),
       _RowSpec('Popular movies', 'POPULARITY', m.popular, kind: 'MOVIE'),
       _RowSpec('Popular series', 'POPULARITY', s.popular, kind: 'SERIES'),
-      _RowSpec('Recently added', 'DATE_ADDED', _interleave(m.recent, s.recent)),
+      _RowSpec('Recently added', 'DATE_ADDED', _tmdbRated(_interleave(m.recent, s.recent))),
     ]);
   }
   final feed = section == 'SERIES' ? s : m;
@@ -99,12 +103,18 @@ _HomeContent _contentFor(String section, HomeFeed? movies, HomeFeed? series) {
     hero,
     [for (var i = 0; i < hero.length; i++) '#${i + 1} trending · ${_kindLabel(section)}'],
     [
-      _RowSpec('Continue watching', 'CONTINUE_WATCHING', feed.continueWatching, style: _RowStyle.wide),
       _RowSpec('Top 10 $noun today', 'TRENDING', feed.trending.take(10).toList(),
           kind: section, style: _RowStyle.top10),
+      // The server sends one mixed list; this section shows only its own kind.
+      _RowSpec(
+        'Continue watching',
+        'CONTINUE_WATCHING',
+        feed.continueWatching.where((t) => (t.kind == 'MOVIE') == (section == 'MOVIE')).toList(),
+        style: _RowStyle.wide,
+      ),
       _RowSpec('Trending $noun', 'TRENDING', feed.trending.skip(10).toList(), kind: section),
       _RowSpec('Popular $noun', 'POPULARITY', feed.popular, kind: section),
-      _RowSpec('Recently added', 'DATE_ADDED', feed.recent, kind: section),
+      _RowSpec('Recently added', 'DATE_ADDED', _tmdbRated(feed.recent), kind: section),
     ],
   );
 }

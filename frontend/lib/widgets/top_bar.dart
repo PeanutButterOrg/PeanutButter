@@ -57,7 +57,7 @@ class PbTopBar extends StatelessWidget {
               label: 'Explore',
               selected: false,
               focusNode: TvHeaderFocus.explore,
-              onPressed: () => context.push('/catalog'),
+              onPressed: () => context.push('/explore'),
             ),
             const Spacer(),
             // My List and Watched as buttons, as before the redesign.

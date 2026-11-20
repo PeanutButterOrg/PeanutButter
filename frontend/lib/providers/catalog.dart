@@ -700,12 +700,18 @@ class SearchNotifier extends StateNotifier<SearchState> {
   Timer? _debounce;
   var _generation = 0;
 
+  /// Searching starts at this many characters, once typing pauses for [_pause].
+  static const minLength = 2;
+  static const _pause = Duration(milliseconds: 450);
+
+  static bool searchable(String query) => query.trim().length >= minLength;
+
   void onQueryChanged(String value) {
     _debounce?.cancel();
     final generation = ++_generation;
     state = state.copyWith(query: value);
     final trimmed = value.trim();
-    if (trimmed.isEmpty) {
+    if (trimmed.length < minLength) {
       state = SearchState(
         query: value,
         kind: state.kind,
@@ -720,7 +726,7 @@ class SearchNotifier extends StateNotifier<SearchState> {
     }
     // Old results go at once and the loader shows while the user pauses.
     state = state.copyWith(loading: true, results: const [], clearError: true);
-    _debounce = Timer(const Duration(milliseconds: 320), () {
+    _debounce = Timer(_pause, () {
       _run(trimmed, page: 1, replace: true, generation: generation);
     });
   }
@@ -728,7 +734,7 @@ class SearchNotifier extends StateNotifier<SearchState> {
   void setKind(String? kind) {
     state = state.copyWith(kind: kind, clearKind: kind == null);
     final q = state.query.trim();
-    if (q.isNotEmpty) {
+    if (searchable(q)) {
       _run(q, page: 1, replace: true);
     }
   }
@@ -743,7 +749,7 @@ class SearchNotifier extends StateNotifier<SearchState> {
       clearYearMax: facets.yearMax == null,
     );
     final q = state.query.trim();
-    if (q.isNotEmpty) {
+    if (searchable(q)) {
       _run(q, page: 1, replace: true);
     }
   }
@@ -758,7 +764,7 @@ class SearchNotifier extends StateNotifier<SearchState> {
 
   Future<void> loadMore() async {
     final q = state.query.trim();
-    if (!state.hasNextPage || state.loadingMore || state.loading || q.isEmpty) {
+    if (!state.hasNextPage || state.loadingMore || state.loading || !searchable(q)) {
       return;
     }
     await _run(q, page: state.page + 1, replace: false, generation: _generation);

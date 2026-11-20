@@ -50,13 +50,13 @@ object HomeSections {
                 hero,
                 eyebrows,
                 listOf(
-                    HomeShelf("Continue watching", "CONTINUE_WATCHING", null,
-                        interleave(m.continueWatching, s.continueWatching), ShelfStyle.WIDE),
                     // One Top 10 for movies and series together, in trending order.
                     HomeShelf("Top 10 today", "TRENDING", null, interleave(m.trending, s.trending).take(10), ShelfStyle.TOP10),
+                    HomeShelf("Continue watching", "CONTINUE_WATCHING", null,
+                        interleave(m.continueWatching, s.continueWatching), ShelfStyle.WIDE),
                     HomeShelf("Popular movies", "POPULARITY", "MOVIE", m.popular),
                     HomeShelf("Popular series", "POPULARITY", "SERIES", s.popular),
-                    HomeShelf("Recently added", "DATE_ADDED", null, interleave(m.recent, s.recent)),
+                    HomeShelf("Recently added", "DATE_ADDED", null, tmdbRated(interleave(m.recent, s.recent))),
                 ),
             )
         }
@@ -68,11 +68,13 @@ object HomeSections {
             hero,
             hero.indices.map { "#${it + 1} trending · $label" },
             listOf(
-                HomeShelf("Continue watching", "CONTINUE_WATCHING", null, feed.continueWatching, ShelfStyle.WIDE),
                 HomeShelf("Top 10 $noun today", "TRENDING", section, feed.trending.take(10), ShelfStyle.TOP10),
+                // The server sends one mixed list; this section shows only its own kind.
+                HomeShelf("Continue watching", "CONTINUE_WATCHING", null,
+                    feed.continueWatching.filter { (it.kind == "MOVIE") == (section == "MOVIE") }, ShelfStyle.WIDE),
                 HomeShelf("Trending $noun", "TRENDING", section, feed.trending.drop(10)),
                 HomeShelf("Popular $noun", "POPULARITY", section, feed.popular),
-                HomeShelf("Recently added", "DATE_ADDED", section, feed.recent),
+                HomeShelf("Recently added", "DATE_ADDED", section, tmdbRated(feed.recent)),
             ),
         )
     }
@@ -88,6 +90,9 @@ object HomeSections {
         val rest = minutes % 60
         return if (rest == 0) "${h}h left" else "${h}h ${rest}m left"
     }
+
+    /** Only titles TMDB knows and has rated (servers before 0.3.25 send the rest too). */
+    private fun tmdbRated(items: List<TitleItem>) = items.filter { (it.tmdbVoteAverage ?: 0.0) > 0 }
 
     private fun interleave(a: List<TitleItem>, b: List<TitleItem>): List<TitleItem> {
         val out = ArrayList<TitleItem>(a.size + b.size)

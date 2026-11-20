@@ -174,24 +174,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                       onSelected: (v) => ref.read(settingsProvider.notifier).setDefaultQuality(v),
                     ),
                   ),
-                  _SettingRow(
-                    icon: Icons.contrast_rounded,
-                    label: 'Theme',
-                    trailing: Wrap(
-                      spacing: 8,
-                      children: [
-                        for (final mode in const [
-                          (ThemeMode.dark, 'Dark'),
-                          (ThemeMode.light, 'Light'),
-                        ])
-                          AppFilterChip(
-                            label: mode.$2,
-                            selected: settings.themeMode == mode.$1,
-                            onSelected: (_) => ref.read(settingsProvider.notifier).setThemeMode(mode.$1),
-                          ),
-                      ],
-                    ),
-                  ),
                 ],
               ),
 
@@ -250,7 +232,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                       subtitle: server.syncing ? 'Syncing new titles…' : 'Movies, series and anime on the server',
                       trailing: Text(
                         '${server.totalTitles} titles',
-                        style: const TextStyle(color: Colors.white70, fontWeight: FontWeight.w600),
+                        style: const TextStyle(color: PbColors.textMuted, fontWeight: FontWeight.w600),
                       ),
                     ),
                 ],
@@ -311,7 +293,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                               ? const SizedBox.shrink()
                               : Text(
                                   _opensubMessage!,
-                                  style: const TextStyle(color: Colors.white70, fontSize: 13, height: 1.35),
+                                  style: const TextStyle(color: PbColors.textMuted, fontSize: 13, height: 1.35),
                                 ),
                         ),
                         const SizedBox(width: 12),
@@ -372,7 +354,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     subtitle: settings.serverUrl.isEmpty ? null : settings.serverUrl,
                     trailing: Text(
                       server?.version ?? '–',
-                      style: const TextStyle(color: Colors.white70, fontWeight: FontWeight.w600),
+                      style: const TextStyle(color: PbColors.textMuted, fontWeight: FontWeight.w600),
                     ),
                   ),
                 ],
@@ -577,20 +559,26 @@ class _StatusPill extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final color = ok ? const Color(0xFF7DD3A0) : Colors.white54;
+    final color = ok ? PbColors.good : PbColors.textFaint;
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.1),
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: color.withValues(alpha: 0.3)),
+        color: PbColors.surfaceRaised,
+        borderRadius: BorderRadius.circular(PbRadius.pill),
+        border: Border.all(color: PbColors.line),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Container(width: 6, height: 6, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
-          const SizedBox(width: 6),
-          Text(label, style: TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.w700)),
+          Container(width: 7, height: 7, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
+          const SizedBox(width: 8),
+          Text(
+            label,
+            style: PbType.meta.copyWith(
+              color: ok ? PbColors.text : PbColors.textMuted,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
         ],
       ),
     );
@@ -607,7 +595,7 @@ class _AppVersion extends StatelessWidget {
       builder: (context, snap) {
         final info = snap.data;
         final text = info == null ? '–' : '${info.version} (${info.buildNumber})';
-        return Text(text, style: const TextStyle(color: Colors.white70, fontWeight: FontWeight.w600));
+        return Text(text, style: const TextStyle(color: PbColors.textMuted, fontWeight: FontWeight.w600));
       },
     );
   }

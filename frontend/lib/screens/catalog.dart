@@ -10,6 +10,7 @@ import '../theme.dart';
 import '../tv.dart';
 import '../tv_nav.dart';
 import '../design/tokens.g.dart';
+import '../widgets/app_menu.dart';
 import '../widgets/empty_state.dart';
 import '../widgets/feature_card.dart';
 import '../widgets/poster_card.dart';
@@ -19,7 +20,10 @@ import '../widgets/poster_grid.dart';
 import '../widgets/tv_chrome.dart';
 
 class CatalogScreen extends ConsumerStatefulWidget {
-  const CatalogScreen({super.key});
+  const CatalogScreen({super.key, this.explore = false});
+
+  /// The Explore tab: movies and series together, trending first.
+  final bool explore;
 
   @override
   ConsumerState<CatalogScreen> createState() => _CatalogScreenState();
@@ -48,6 +52,23 @@ class _CatalogScreenState extends ConsumerState<CatalogScreen> {
     super.dispose();
   }
 
+  @override
+  void initState() {
+    super.initState();
+    if (widget.explore) {
+      // Start clean (See all may have left a kind or a rail behind).
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        const start = CatalogFilter(sort: 'TRENDING');
+        final now = ref.read(catalogFilterProvider);
+        if (now.kind != null || now.sort != 'TRENDING' || now.railLocked) {
+          ref.read(catalogProvider.notifier).clearForNewView();
+          ref.read(catalogFilterProvider.notifier).state = start;
+        }
+      });
+    }
+  }
+
   void _setFilter(CatalogFilter next) {
     ref.read(catalogFilterProvider.notifier).state = next;
   }
@@ -63,7 +84,7 @@ class _CatalogScreenState extends ConsumerState<CatalogScreen> {
     final tmdb = info?.tmdbConfigured ?? false;
     final blocked = kindBlockedByMissingKeys(kind, omdbConfigured: omdb, tmdbConfigured: tmdb);
 
-    final heading = catalogHeading(filter);
+    final heading = widget.explore ? 'Explore' : catalogHeading(filter);
     ref.listen(catalogFilterProvider, (prev, next) {
       if (_scroll.hasClients) {
         _scroll.jumpTo(0);
@@ -81,6 +102,23 @@ class _CatalogScreenState extends ConsumerState<CatalogScreen> {
       return Row(
         mainAxisSize: MainAxisSize.min,
         children: [
+          if (widget.explore && !tv) ...[
+            AppMenuButton<String>(
+              hint: 'Type',
+              icon: Icons.layers_outlined,
+              compact: true,
+              value: filter.kind ?? 'ALL',
+              entries: const [
+                AppMenuEntry(value: 'ALL', label: 'Movies & series'),
+                AppMenuEntry(value: 'MOVIE', label: 'Movies'),
+                AppMenuEntry(value: 'SERIES', label: 'Series'),
+              ],
+              onSelected: (v) => _setFilter(
+                v == 'ALL' ? filter.copyWith(clearKind: true) : filter.copyWith(kind: v),
+              ),
+            ),
+            const SizedBox(width: 8),
+          ],
           CatalogYearMenu(
             filter: filter,
             compact: true,
@@ -282,18 +320,24 @@ class _CatalogScreenState extends ConsumerState<CatalogScreen> {
             sliver: SliverToBoxAdapter(
               child: LayoutBuilder(
                 builder: (context, box) {
-                  const height = 440.0;
-                  final card = FeatureCard(item: items.first, eyebrow: '#1 in $heading', height: height);
-                  if (box.maxWidth < 1000) return card;
+                  final eyebrow = widget.explore ? '#1 trending' : '#1 in $heading';
+                  if (box.maxWidth < 1000) {
+                    return FeatureCard(item: items.first, eyebrow: eyebrow, height: 440);
+                  }
+                  // Posters at their own 2:3 shape; the featured card takes the
+                  // rest (about 16:9 at this height), so no art is cut or stretched.
+                  const gap = 14.0;
+                  final poster = ((box.maxWidth - 3 * gap) / 5.6).clamp(150.0, 320.0);
+                  final height = poster * 1.5;
                   return SizedBox(
                     height: height,
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        Expanded(flex: 5, child: card),
+                        Expanded(child: FeatureCard(item: items.first, eyebrow: eyebrow, height: height)),
                         for (final item in items.skip(1).take(3)) ...[
-                          const SizedBox(width: 14),
-                          Expanded(flex: 2, child: PosterCard(item: item)),
+                          const SizedBox(width: gap),
+                          SizedBox(width: poster, child: PosterCard(item: item)),
                         ],
                       ],
                     ),

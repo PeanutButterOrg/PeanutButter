@@ -197,6 +197,10 @@ GoRouter _buildRouter(SettingsState Function() readSettings) {
         pageBuilder: (context, state) => pageFor(state, const CatalogScreen()),
       ),
       GoRoute(
+        path: '/explore',
+        pageBuilder: (context, state) => pageFor(state, const CatalogScreen(explore: true)),
+      ),
+      GoRoute(
         path: '/search',
         pageBuilder: (context, state) => pageFor(state, const SearchScreen()),
       ),

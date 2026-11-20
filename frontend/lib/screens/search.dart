@@ -310,7 +310,9 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
   /// Desktop / web: recent and trending before typing; then the results page.
   Widget _desktopBody(SearchState search) {
     final q = search.query.trim();
-    if (q.isEmpty) return _SearchStart(recent: search.recent, onPick: _pick);
+    if (!SearchNotifier.searchable(q)) {
+      return _SearchStart(recent: search.recent, onPick: _pick);
+    }
     if (search.error != null && search.results.isEmpty) {
       return EmptyState(
         message: friendlyError(search.error!),
@@ -401,8 +403,7 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
   }
 
   Widget _body(SearchState search, String kind) {
-    final q = search.query.trim();
-    if (q.isEmpty) {
+    if (!SearchNotifier.searchable(search.query)) {
       return _IdleSearch(
         kind: kind,
         recent: search.recent,
