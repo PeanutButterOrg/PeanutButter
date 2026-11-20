@@ -16,11 +16,25 @@ class OutlineTextView @JvmOverloads constructor(
     private val ink = Rect()
 
     /**
-     * Top 10: draw the digits as tall as the view (their real ink, not the
-     * font's line box), sitting on its bottom edge and right-aligned; narrowed
-     * only when "10" would not fit the width. Same proportions as desktop.
+     * Top 10, as on Netflix: digits in their natural shape (never squeezed),
+     * [heightFraction] of the view's height, standing on its bottom edge, and
+     * with [tuckFraction] of each digit's width under the poster beside it. "10" is drawn smaller
+     * (same shape) when it would not fit.
      */
     var fitToBox = false
+        set(value) {
+            field = value
+            invalidate()
+        }
+
+    var heightFraction = 0.78f
+        set(value) {
+            field = value
+            invalidate()
+        }
+
+    /** Share of the digits' width that sits under the poster to their right. */
+    var tuckFraction = 0f
         set(value) {
             field = value
             invalidate()
@@ -37,17 +51,21 @@ class OutlineTextView @JvmOverloads constructor(
         val s = text?.toString().orEmpty()
         if (s.isEmpty() || width <= 0 || height <= 0) return
         paint.color = currentTextColor
-        val room = height - strokePx * 2
         paint.textSize = 100f
         paint.getTextBounds(s, 0, s.length, ink)
-        if (ink.height() <= 0) return
-        paint.textSize = 100f * room / ink.height()
+        if (ink.height() <= 0 || ink.width() <= 0) return
+        val byHeight = 100f * (height - strokePx * 2) * heightFraction / ink.height()
+        // Every single digit sized from the widest ("8"), so 1–9 stand equally tall.
+        val sizing = if (s.length == 1) "8" else s
+        val sizingInk = Rect().also { paint.getTextBounds(sizing, 0, sizing.length, it) }
+        val byWidth = 100f * (width - strokePx * 2) / (sizingInk.width() * (1f - tuckFraction))
+        paint.textSize = minOf(byHeight, byWidth)
         paint.getTextBounds(s, 0, s.length, ink)
-        val scaleX = minOf(1f, (width - strokePx * 2) / ink.width().coerceAtLeast(1))
-        canvas.save()
-        canvas.translate(width - strokePx, height - strokePx)
-        canvas.scale(scaleX, 1f)
-        canvas.drawText(s, -ink.right.toFloat(), -ink.bottom.toFloat(), paint)
-        canvas.restore()
+        canvas.drawText(
+            s,
+            width + ink.width() * tuckFraction - strokePx - ink.right,
+            height - strokePx - ink.bottom,
+            paint,
+        )
     }
 }

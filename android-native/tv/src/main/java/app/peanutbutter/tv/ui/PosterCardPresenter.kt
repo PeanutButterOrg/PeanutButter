@@ -58,7 +58,10 @@ class PosterCardPresenter(
             rank.isVisible = ranked != null
             rank.text = ranked?.rank?.toString().orEmpty()
             // As tall as the poster, standing on its bottom edge.
-            (rank as? OutlineTextView)?.fitToBox = true
+            (rank as? OutlineTextView)?.apply {
+                fitToBox = true
+                tuckFraction = 0.2f
+            }
             (rank.layoutParams as? FrameLayout.LayoutParams)?.let {
                 it.width = rankWidth(root)
                 it.height = FrameLayout.LayoutParams.MATCH_PARENT
@@ -206,7 +209,7 @@ class PosterCardPresenter(
     }
 
     /** Room the Top 10 rank takes before the poster. */
-    private fun rankWidth(host: android.view.View): Int = dp(host, 94)
+    private fun rankWidth(host: android.view.View): Int = dp(host, 90)
 
     private fun cardWidth(host: android.view.View): Int =
         if (widthPx > 0) widthPx else dp(host, CARD_W)

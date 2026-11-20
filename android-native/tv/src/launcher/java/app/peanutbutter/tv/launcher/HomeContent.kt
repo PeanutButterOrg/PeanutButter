@@ -300,13 +300,14 @@ class HomeContent(
                         id = R.id.launcher_poster_rank
                         // As tall as the poster, standing on its bottom edge.
                         fitToBox = true
+                        tuckFraction = 0.2f
                         setTextAppearance(R.style.TextAppearance_Pb_Hero)
                         setTextColor(0xFF4A4E5A.toInt())
                         setTextSize(TypedValue.COMPLEX_UNIT_SP, 104f)
                         includeFontPadding = false
                         gravity = Gravity.BOTTOM or Gravity.END
                     // Its own room and a small gap: never covered by the poster.
-                    }, LinearLayout.LayoutParams(dp(80), dp(cardH)).apply { marginEnd = dp(6) })
+                    }, LinearLayout.LayoutParams(dp(84), dp(cardH)).apply { marginEnd = dp(6) })
                 }
                 addView(column)
                 setOnFocusChangeListener { _, focused ->

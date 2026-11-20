@@ -198,9 +198,24 @@ class Top10Tile extends StatelessWidget {
     final height = posterWidth * 1.5;
     final box = posterWidth * 0.8;
     const stroke = 3.0;
-    // Digits as tall as the poster, standing on its bottom edge; narrowed
-    // only as much as "10" needs to fit its room (single digits keep their shape).
-    final fontSize = (height - stroke) / _digitHeight;
+    // As on Netflix: digits in their natural shape (never squeezed), most of
+    // the poster's height, standing on its bottom edge and tucked under the
+    // poster. "10" comes out smaller (same shape) so it fits the same room.
+    const tuckShare = 0.2;
+    TextStyle styleAt(double size) => PbType.hero.copyWith(
+          fontSize: size,
+          height: 1,
+          letterSpacing: rank >= 10 ? -size * 0.04 : 0,
+        );
+    final byHeight = (height - stroke) * 0.86 / _digitHeight;
+    final probe = TextPainter(
+      // Every single digit sized from the widest ("8"), so 1–9 stand equally tall.
+      text: TextSpan(text: rank >= 10 ? '$rank' : '8', style: styleAt(byHeight)),
+      textDirection: TextDirection.ltr,
+      maxLines: 1,
+    )..layout();
+    final visible = probe.width * (1 - tuckShare);
+    final fontSize = visible <= box ? byHeight : byHeight * box / visible;
     final style = PbType.hero.copyWith(
       fontSize: fontSize,
       height: 1,
@@ -216,7 +231,6 @@ class Top10Tile extends StatelessWidget {
       maxLines: 1,
     )..layout();
     final baseline = painter.computeDistanceToActualBaseline(TextBaseline.alphabetic);
-    final scaleX = (box / painter.width).clamp(0.0, 1.0);
     return SizedBox(
       width: box + posterWidth - _overlap(posterWidth),
       height: height + nameHeight,
@@ -224,15 +238,10 @@ class Top10Tile extends StatelessWidget {
         clipBehavior: Clip.none,
         children: [
           Positioned(
-            left: box - painter.width,
+            left: box + painter.width * tuckShare - painter.width,
             top: height - stroke / 2 - baseline,
             width: painter.width,
-            child: Transform.scale(
-              scaleX: scaleX,
-              scaleY: 1,
-              alignment: Alignment.centerRight,
-              child: Text('$rank', maxLines: 1, softWrap: false, style: style),
-            ),
+            child: Text('$rank', maxLines: 1, softWrap: false, style: style),
           ),
           Positioned(right: 0, top: 0, height: height, width: posterWidth, child: child),
           Positioned(
