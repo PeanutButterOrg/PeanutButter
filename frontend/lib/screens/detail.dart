@@ -1480,7 +1480,11 @@ class _SeasonListState extends State<_SeasonList> {
     final tv = isAndroidTv;
     final busy = _busyEpisodeId == e.id;
     final started = _started(e);
-    return _LabeledFocus(
+    // A rounded tile with a gap under it (no square divider), so the rounded
+    // hover / focus fits it.
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: _LabeledFocus(
       label: 'episode',
       allowHorizontal: false,
       onActivate: () => _playEpisode(season, e),
@@ -1490,9 +1494,6 @@ class _SeasonListState extends State<_SeasonList> {
         onTap: () => _playEpisode(season, e),
         child: Container(
           padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
-          decoration: const BoxDecoration(
-            border: Border(bottom: BorderSide(color: PbColors.line)),
-          ),
           child: Row(
             children: [
               _still(e, width: tv ? 150 : 160, radius: PbRadius.card - 2),
@@ -1541,6 +1542,7 @@ class _SeasonListState extends State<_SeasonList> {
             ],
           ),
         ),
+      ),
       ),
     );
   }

@@ -449,6 +449,8 @@ class DetailsActivity : FragmentActivity() {
     }
 
     private fun bindEpisodeCard(card: View, season: Season, ep: Episode) {
+        // Clip the still to the card's rounded corners, same as the focus ring.
+        card.findViewById<View>(R.id.episode_face).clipToOutline = true
         val still = card.findViewById<ImageView>(R.id.episode_still)
         val code = card.findViewById<TextView>(R.id.episode_code)
         val name = card.findViewById<TextView>(R.id.episode_name)
