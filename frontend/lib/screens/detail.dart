@@ -1575,8 +1575,9 @@ class _SeasonListState extends State<_SeasonList> {
           ],
           _heading(context, 'Episodes · ${season.name ?? 'Season ${season.seasonNumber}'}'),
           const SizedBox(height: 12),
+          // Full width, like the rows above it.
           ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 1040),
+            constraints: const BoxConstraints(maxWidth: double.infinity),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
