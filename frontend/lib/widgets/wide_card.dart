@@ -241,7 +241,15 @@ class Top10Tile extends StatelessWidget {
             left: box + painter.width * tuckShare - painter.width,
             top: height - stroke / 2 - baseline,
             width: painter.width,
-            child: Text('$rank', maxLines: 1, softWrap: false, style: style),
+            // Decorative and sized to the poster: drawn exactly as measured
+            // above, whatever the system text size.
+            child: Text(
+              '$rank',
+              maxLines: 1,
+              softWrap: false,
+              textScaler: TextScaler.noScaling,
+              style: style,
+            ),
           ),
           Positioned(right: 0, top: 0, height: height, width: posterWidth, child: child),
           Positioned(
