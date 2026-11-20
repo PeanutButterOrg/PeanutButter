@@ -255,6 +255,8 @@ impl Query {
         apply_adult_block(&mut qb);
         apply_released_only(&mut qb);
         apply_rated_only(&mut qb);
+        // Titles already in the catalog skip the import-time language check.
+        apply_language_filter(&mut qb, &state.config.live.preferred_language_codes());
         let rows: Vec<TitleRow> = qb.build_query_as().fetch_all(&state.pool).await?;
         let mut by_id: std::collections::HashMap<Uuid, TitleRow> =
             rows.into_iter().map(|r| (r.id, r)).collect();
@@ -1235,13 +1237,15 @@ fn apply_adult_block<'a>(qb: &mut sqlx::QueryBuilder<'a, sqlx::Postgres>) {
     );
 }
 
-/// Only titles with a TMDB id and a score (TMDB, IMDb, Rotten Tomatoes or
-/// AniList): the rest are hidden from every browse list on every device. Rows stay in the
+/// Only titles with a known id (TMDB, IMDb or AniList: OMDb-only servers have no
+/// TMDB ids) and a score (TMDB, IMDb, Rotten Tomatoes or AniList): the rest are
+/// hidden from every browse list on every device. Rows stay in the
 /// database, so a title shows up again once it gets a rating. Your own lists
 /// (Continue watching, My List, Watched) still show everything.
 fn apply_rated_only<'a>(qb: &mut sqlx::QueryBuilder<'a, sqlx::Postgres>) {
     qb.push(
-        " AND t.tmdb_id IS NOT NULL AND EXISTS (SELECT 1 FROM ratings rr WHERE rr.title_id = t.id AND (\
+        " AND (t.tmdb_id IS NOT NULL OR t.imdb_id IS NOT NULL OR t.anilist_id IS NOT NULL) \
+          AND EXISTS (SELECT 1 FROM ratings rr WHERE rr.title_id = t.id AND (\
             COALESCE(rr.tmdb_vote_average, 0) > 0 OR COALESCE(rr.imdb_rating, 0) > 0 \
             OR COALESCE(rr.rt_score, 0) > 0 OR COALESCE(rr.anilist_score, 0) > 0))",
     );

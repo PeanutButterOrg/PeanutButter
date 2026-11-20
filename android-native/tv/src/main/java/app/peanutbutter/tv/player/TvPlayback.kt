@@ -179,6 +179,8 @@ class TvPlayback(
     private var subSize = 1
     private var subBackground = "box"
 
+    override val canStyleSubtitles: Boolean get() = true
+
     override fun setSubtitleLook(size: Int, background: String) {
         subSize = size.coerceIn(0, SUB_SCALES.size - 1)
         subBackground = background

@@ -46,13 +46,17 @@ class SubtitlePicker(
             val langs = app.peanutbutter.core.ContentLanguages.subtitleLanguages(languages())
             val options = ArrayList<Pair<String, () -> Unit>>()
             // As on desktop: the look (size, background, delay) comes first.
-            options += activity.getString(R.string.subs_style) to { showStyle() }
+            // Only when this player can apply at least one of them (VLC: delay only).
+            val hasStyle = player()?.canStyleSubtitles == true || player()?.canDelaySubtitles == true
+            if (hasStyle) {
+                options += activity.getString(R.string.subs_style) to { showStyle() }
+            }
             options += activity.getString(R.string.subs_off) to { player()?.selectTextTrack(null) }
             tracks.forEach { (id, label) ->
                 options += label to { player()?.selectTextTrack(id) }
             }
             val current = player()?.selectedTextTrackId
-            val checked = 1 + if (current == null) 0 else tracks.indexOfFirst { it.first == current } + 1
+            val checked = (if (hasStyle) 1 else 0) + if (current == null) 0 else tracks.indexOfFirst { it.first == current } + 1
             val subsReady = info?.subtitlesConfigured == true ||
                 info?.opensubtitlesConfigured == true ||
                 info?.wyzieConfigured == true
@@ -139,10 +143,13 @@ class SubtitlePicker(
                 SubtitleLook.apply(activity, player())
             }
         }
-        list.addView(label(R.string.subs_size))
-        list.addView(row(sizeChips))
-        list.addView(label(R.string.subs_background))
-        list.addView(row(bgChips))
+        val canStyle = player()?.canStyleSubtitles == true
+        if (canStyle) {
+            list.addView(label(R.string.subs_size))
+            list.addView(row(sizeChips))
+            list.addView(label(R.string.subs_background))
+            list.addView(row(bgChips))
+        }
         if (player()?.canDelaySubtitles == true) {
             val value = TextView(activity).apply {
                 gravity = android.view.Gravity.CENTER
@@ -175,7 +182,7 @@ class SubtitlePicker(
         done.setOnClickListener { dialog.dismiss() }
         dialog.setOnShowListener {
             dialog.window?.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT))
-            sizeChips[SubtitleLook.size(activity)].requestFocus()
+            if (canStyle) sizeChips[SubtitleLook.size(activity)].requestFocus() else done.requestFocus()
         }
         dialog.show()
         dialog.window?.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT))

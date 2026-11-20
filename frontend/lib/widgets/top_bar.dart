@@ -27,46 +27,65 @@ class PbTopBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final tv = isAndroidTv;
+    // Phones and narrow windows: the logo shrinks to its icon and the tabs
+    // scroll sideways, so My List, Watched, Search and Settings stay on screen.
+    final narrow = !tv && MediaQuery.sizeOf(context).width < 760;
+    final tabs = <Widget>[
+      _Tab(
+        label: 'Home',
+        selected: section == HomeSection.home,
+        focusNode: TvHeaderFocus.home,
+        onPressed: () => onSection(HomeSection.home),
+      ),
+      _Tab(
+        label: 'Movies',
+        selected: section == HomeSection.movies,
+        focusNode: TvHeaderFocus.movies,
+        onPressed: () => onSection(HomeSection.movies),
+      ),
+      _Tab(
+        label: 'Series',
+        selected: section == HomeSection.series,
+        focusNode: TvHeaderFocus.series,
+        onPressed: () => onSection(HomeSection.series),
+      ),
+      _Tab(
+        label: 'Explore',
+        selected: false,
+        focusNode: TvHeaderFocus.explore,
+        onPressed: () => context.push('/explore'),
+      ),
+    ];
     return SizedBox(
       height: tv ? PbSize.topBarHeightTv : PbSize.topBarHeightDesktop,
       child: Padding(
-        padding: EdgeInsets.symmetric(horizontal: tv ? PbSpace.gutterTv : PbSpace.gutterDesktop),
+        padding: EdgeInsets.symmetric(
+          horizontal:
+              tv ? PbSpace.gutterTv : (narrow ? 12 : PbSpace.gutterDesktop),
+        ),
         child: Row(
           children: [
-            const PbLogo(),
-            SizedBox(width: tv ? 36 : 30),
-            _Tab(
-              label: 'Home',
-              selected: section == HomeSection.home,
-              focusNode: TvHeaderFocus.home,
-              onPressed: () => onSection(HomeSection.home),
-            ),
-            _Tab(
-              label: 'Movies',
-              selected: section == HomeSection.movies,
-              focusNode: TvHeaderFocus.movies,
-              onPressed: () => onSection(HomeSection.movies),
-            ),
-            _Tab(
-              label: 'Series',
-              selected: section == HomeSection.series,
-              focusNode: TvHeaderFocus.series,
-              onPressed: () => onSection(HomeSection.series),
-            ),
-            _Tab(
-              label: 'Explore',
-              selected: false,
-              focusNode: TvHeaderFocus.explore,
-              onPressed: () => context.push('/explore'),
-            ),
-            const Spacer(),
+            PbLogo(compact: narrow),
+            SizedBox(width: tv ? 36 : (narrow ? 10 : 30)),
+            if (narrow)
+              Expanded(
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(children: tabs),
+                ),
+              )
+            else ...[
+              ...tabs,
+              const Spacer(),
+            ],
             // My List and Watched as buttons, as before the redesign.
             TvFocus(
               child: IconButton(
                 focusNode: TvHeaderFocus.favourites,
                 tooltip: 'My List',
                 onPressed: () => context.push('/favourites'),
-                icon: Icon(Icons.favorite_rounded, size: tv ? 28 : 24, color: PbColors.text),
+                icon: Icon(Icons.favorite_rounded,
+                    size: tv ? 28 : 24, color: PbColors.text),
               ),
             ),
             TvFocus(
@@ -74,7 +93,8 @@ class PbTopBar extends StatelessWidget {
                 focusNode: TvHeaderFocus.watched,
                 tooltip: 'Watched',
                 onPressed: () => context.push('/watched'),
-                icon: Icon(Icons.video_library_rounded, size: tv ? 28 : 24, color: PbColors.text),
+                icon: Icon(Icons.video_library_rounded,
+                    size: tv ? 28 : 24, color: PbColors.text),
               ),
             ),
             TvFocus(
@@ -82,7 +102,8 @@ class PbTopBar extends StatelessWidget {
                 focusNode: TvHeaderFocus.search,
                 tooltip: 'Search',
                 onPressed: () => context.push('/search'),
-                icon: Icon(Icons.search_rounded, size: tv ? 28 : 24, color: PbColors.text),
+                icon: Icon(Icons.search_rounded,
+                    size: tv ? 28 : 24, color: PbColors.text),
               ),
             ),
             SizedBox(width: tv ? 12 : 8),
@@ -95,19 +116,24 @@ class PbTopBar extends StatelessWidget {
 }
 
 class PbLogo extends StatelessWidget {
-  const PbLogo({super.key});
+  const PbLogo({super.key, this.compact = false});
+
+  /// Icon only (narrow screens).
+  final bool compact;
 
   @override
   Widget build(BuildContext context) {
     final tv = isAndroidTv;
     final size = tv ? 32.0 : 30.0;
+    final icon = ClipRRect(
+      borderRadius: BorderRadius.circular(size * 0.24),
+      child: SvgPicture.asset('assets/app_icon.svg', width: size, height: size),
+    );
+    if (compact) return icon;
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        ClipRRect(
-          borderRadius: BorderRadius.circular(size * 0.24),
-          child: SvgPicture.asset('assets/app_icon.svg', width: size, height: size),
-        ),
+        icon,
         const SizedBox(width: 10),
         Text.rich(
           const TextSpan(
@@ -116,7 +142,10 @@ class PbLogo extends StatelessWidget {
               TextSpan(text: 'Butter', style: TextStyle(color: PbColors.brand)),
             ],
           ),
-          style: PbType.h2.copyWith(color: PbColors.text, fontSize: tv ? 22 : 21, letterSpacing: -0.2),
+          style: PbType.h2.copyWith(
+              color: PbColors.text,
+              fontSize: tv ? 22 : 21,
+              letterSpacing: -0.2),
         ),
       ],
     );
@@ -167,7 +196,8 @@ class _TabState extends State<_Tab> {
           onTap: widget.onPressed,
           child: AnimatedContainer(
             duration: PbMotion.fast,
-            padding: EdgeInsets.symmetric(horizontal: tv ? 14 : 10, vertical: 8),
+            padding:
+                EdgeInsets.symmetric(horizontal: tv ? 14 : 10, vertical: 8),
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(PbRadius.pill),
               border: Border.all(
@@ -231,7 +261,8 @@ class _DeviceSquare extends StatelessWidget {
                 colors: [Color(0xFFF0BC72), PbColors.primary],
               ),
             ),
-            child: Icon(Icons.person_rounded, size: size * 0.62, color: PbColors.onPrimary),
+            child: Icon(Icons.person_rounded,
+                size: size * 0.62, color: PbColors.onPrimary),
           ),
         ),
       ),

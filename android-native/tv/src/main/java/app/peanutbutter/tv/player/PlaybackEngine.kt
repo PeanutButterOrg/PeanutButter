@@ -67,6 +67,9 @@ interface PlaybackEngine {
 
     fun selectAudioTrack(id: String) {}
 
+    /** Whether [setSubtitleLook] changes how subtitles are drawn (VLC draws its own). */
+    val canStyleSubtitles: Boolean get() = false
+
     /** Subtitle size step (0–3) and background: "shadow", "outline" or "box". */
     fun setSubtitleLook(size: Int, background: String) {}
 
