@@ -190,12 +190,33 @@ class Top10Tile extends StatelessWidget {
   /// Height under the poster for the name.
   static const double nameHeight = 26;
 
+  /// Space Grotesk's digits stand 0.70 of the font size tall (its cap height).
+  static const double _digitHeight = 0.70;
+
   @override
   Widget build(BuildContext context) {
     final height = posterWidth * 1.5;
     final box = posterWidth * 0.8;
-    // "10" is two digits: smaller so it fits the same room.
-    final size = height * (rank >= 10 ? 0.68 : 0.82);
+    const stroke = 3.0;
+    // Digits as tall as the poster, standing on its bottom edge; narrowed
+    // only as much as "10" needs to fit its room (single digits keep their shape).
+    final fontSize = (height - stroke) / _digitHeight;
+    final style = PbType.hero.copyWith(
+      fontSize: fontSize,
+      height: 1,
+      letterSpacing: rank >= 10 ? -fontSize * 0.04 : 0,
+      foreground: Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = stroke
+        ..color = const Color(0xFF6E7483),
+    );
+    final painter = TextPainter(
+      text: TextSpan(text: '$rank', style: style),
+      textDirection: TextDirection.ltr,
+      maxLines: 1,
+    )..layout();
+    final baseline = painter.computeDistanceToActualBaseline(TextBaseline.alphabetic);
+    final scaleX = (box / painter.width).clamp(0.0, 1.0);
     return SizedBox(
       width: box + posterWidth - _overlap(posterWidth),
       height: height + nameHeight,
@@ -203,34 +224,14 @@ class Top10Tile extends StatelessWidget {
         clipBehavior: Clip.none,
         children: [
           Positioned(
-            left: 0,
-            top: 0,
-            height: height,
-            width: box,
-            child: Align(
-              alignment: Alignment.bottomRight,
-              // Tall, narrow digits like the design: our display font's are
-              // wide, so they're drawn narrower instead of smaller.
-              child: Transform.scale(
-                scaleX: 0.7,
-                scaleY: 1,
-                alignment: Alignment.bottomRight,
-                child: Text(
-                  '$rank',
-                  maxLines: 1,
-                  softWrap: false,
-                  overflow: TextOverflow.visible,
-                  style: PbType.hero.copyWith(
-                    fontSize: size,
-                    height: 0.9,
-                    letterSpacing: rank >= 10 ? -size * 0.06 : 0,
-                    foreground: Paint()
-                      ..style = PaintingStyle.stroke
-                      ..strokeWidth = 3
-                      ..color = const Color(0xFF6E7483),
-                  ),
-                ),
-              ),
+            left: box - painter.width,
+            top: height - stroke / 2 - baseline,
+            width: painter.width,
+            child: Transform.scale(
+              scaleX: scaleX,
+              scaleY: 1,
+              alignment: Alignment.centerRight,
+              child: Text('$rank', maxLines: 1, softWrap: false, style: style),
             ),
           ),
           Positioned(right: 0, top: 0, height: height, width: posterWidth, child: child),

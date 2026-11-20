@@ -57,14 +57,15 @@ class PosterCardPresenter(
         root.findViewById<TextView>(R.id.rank)?.let { rank ->
             rank.isVisible = ranked != null
             rank.text = ranked?.rank?.toString().orEmpty()
-            rank.textSize = if ((ranked?.rank ?: 0) >= 10) 92f else 118f
+            // As tall as the poster, standing on its bottom edge.
+            (rank as? OutlineTextView)?.fitToBox = true
             (rank.layoutParams as? FrameLayout.LayoutParams)?.let {
                 it.width = rankWidth(root)
+                it.height = FrameLayout.LayoutParams.MATCH_PARENT
                 rank.layoutParams = it
             }
-            rank.gravity = android.view.Gravity.END or android.view.Gravity.BOTTOM
             rank.translationX = 0f
-            rank.translationY = dp(root, 6).toFloat()
+            rank.translationY = 0f
         }
         root.findViewById<View>(R.id.card_body)?.let { body ->
             (body.layoutParams as? FrameLayout.LayoutParams)?.let {

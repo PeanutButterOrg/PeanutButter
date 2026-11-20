@@ -298,6 +298,8 @@ class HomeContent(
                     // Top 10: the outlined rank tucked behind the poster.
                     addView(app.peanutbutter.tv.ui.OutlineTextView(context).apply {
                         id = R.id.launcher_poster_rank
+                        // As tall as the poster, standing on its bottom edge.
+                        fitToBox = true
                         setTextAppearance(R.style.TextAppearance_Pb_Hero)
                         setTextColor(0xFF4A4E5A.toInt())
                         setTextSize(TypedValue.COMPLEX_UNIT_SP, 104f)
