@@ -1,15 +1,23 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Main action: peanut amber pill; blue ring when focused (design/tokens.json). -->
 <selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_pressed="true">
+        <shape android:shape="rectangle">
+            <solid android:color="@color/pbt_primary_pressed" />
+            <corners android:radius="@dimen/pbt_radius_pill" />
+        </shape>
+    </item>
     <item android:state_focused="true">
         <shape android:shape="rectangle">
-            <solid android:color="#FF7AAFFF" />
-            <corners android:radius="24dp" />
+            <solid android:color="@color/pbt_primary" />
+            <stroke android:width="@dimen/pbt_size_focus_ring" android:color="@color/pbt_focus" />
+            <corners android:radius="@dimen/pbt_radius_pill" />
         </shape>
     </item>
     <item>
         <shape android:shape="rectangle">
-            <solid android:color="@color/pb_seed" />
-            <corners android:radius="24dp" />
+            <solid android:color="@color/pbt_primary" />
+            <corners android:radius="@dimen/pbt_radius_pill" />
         </shape>
     </item>
 </selector>

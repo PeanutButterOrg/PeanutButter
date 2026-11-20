@@ -9,14 +9,21 @@ import '../providers/settings.dart';
 import '../theme.dart';
 import '../tv.dart';
 import '../tv_nav.dart';
+import '../design/tokens.g.dart';
+import '../widgets/app_menu.dart';
 import '../widgets/empty_state.dart';
+import '../widgets/feature_card.dart';
+import '../widgets/poster_card.dart';
 import '../widgets/filter_bar.dart';
 import '../widgets/local_overlay.dart';
 import '../widgets/poster_grid.dart';
 import '../widgets/tv_chrome.dart';
 
 class CatalogScreen extends ConsumerStatefulWidget {
-  const CatalogScreen({super.key});
+  const CatalogScreen({super.key, this.explore = false});
+
+  /// The Explore tab: movies and series together, trending first.
+  final bool explore;
 
   @override
   ConsumerState<CatalogScreen> createState() => _CatalogScreenState();
@@ -45,6 +52,23 @@ class _CatalogScreenState extends ConsumerState<CatalogScreen> {
     super.dispose();
   }
 
+  @override
+  void initState() {
+    super.initState();
+    if (widget.explore) {
+      // Start clean (See all may have left a kind or a rail behind).
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        const start = CatalogFilter(sort: 'TRENDING');
+        final now = ref.read(catalogFilterProvider);
+        if (now.kind != null || now.sort != 'TRENDING' || now.railLocked) {
+          ref.read(catalogProvider.notifier).clearForNewView();
+          ref.read(catalogFilterProvider.notifier).state = start;
+        }
+      });
+    }
+  }
+
   void _setFilter(CatalogFilter next) {
     ref.read(catalogFilterProvider.notifier).state = next;
   }
@@ -55,12 +79,15 @@ class _CatalogScreenState extends ConsumerState<CatalogScreen> {
     final filter = ref.watch(catalogFilterProvider);
     final selectedKind = ref.watch(selectedKindProvider);
     final kind = filter.kind ?? selectedKind;
-    final info = ref.watch(serverInfoProvider).maybeWhen(data: (v) => v, orElse: () => null);
+    final info = ref
+        .watch(serverInfoProvider)
+        .maybeWhen(data: (v) => v, orElse: () => null);
     final omdb = info?.omdbConfigured ?? false;
     final tmdb = info?.tmdbConfigured ?? false;
-    final blocked = kindBlockedByMissingKeys(kind, omdbConfigured: omdb, tmdbConfigured: tmdb);
+    final blocked = kindBlockedByMissingKeys(kind,
+        omdbConfigured: omdb, tmdbConfigured: tmdb);
 
-    final heading = catalogHeading(filter);
+    final heading = widget.explore ? 'Explore' : catalogHeading(filter);
     ref.listen(catalogFilterProvider, (prev, next) {
       if (_scroll.hasClients) {
         _scroll.jumpTo(0);
@@ -68,7 +95,8 @@ class _CatalogScreenState extends ConsumerState<CatalogScreen> {
     });
     final grid = blocked
         ? EmptyState(
-            message: emptyKindMessage(kind: kind, omdbConfigured: omdb, tmdbConfigured: tmdb),
+            message: emptyKindMessage(
+                kind: kind, omdbConfigured: omdb, tmdbConfigured: tmdb),
             onRefresh: () => refreshCatalogData(ref),
             showSettings: true,
           )
@@ -78,6 +106,25 @@ class _CatalogScreenState extends ConsumerState<CatalogScreen> {
       return Row(
         mainAxisSize: MainAxisSize.min,
         children: [
+          if (widget.explore && !tv) ...[
+            AppMenuButton<String>(
+              hint: 'Type',
+              icon: Icons.layers_outlined,
+              compact: true,
+              value: filter.kind ?? 'ALL',
+              entries: const [
+                AppMenuEntry(value: 'ALL', label: 'Movies & series'),
+                AppMenuEntry(value: 'MOVIE', label: 'Movies'),
+                AppMenuEntry(value: 'SERIES', label: 'Series'),
+              ],
+              onSelected: (v) => _setFilter(
+                v == 'ALL'
+                    ? filter.copyWith(clearKind: true)
+                    : filter.copyWith(kind: v),
+              ),
+            ),
+            const SizedBox(width: 8),
+          ],
           CatalogYearMenu(
             filter: filter,
             compact: true,
@@ -164,16 +211,50 @@ class _CatalogScreenState extends ConsumerState<CatalogScreen> {
 
     if (!isAndroidTv) {
       return Scaffold(
-        appBar: AppBar(
-          title: Text(heading),
-          actions: [
-            Padding(
-              padding: const EdgeInsets.only(right: 8),
-              child: actions(tv: false),
-            ),
-          ],
+        backgroundColor: PbColors.ground,
+        body: SafeArea(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(
+                    PbSpace.gutterDesktop - 8, 14, PbSpace.gutterDesktop, 8),
+                child: Row(
+                  children: [
+                    IconButton(
+                      tooltip: 'Back',
+                      // Opened straight from the address bar (web) there's nothing to go back to.
+                      onPressed: () =>
+                          context.canPop() ? context.pop() : context.go('/'),
+                      icon: const Icon(Icons.arrow_back_rounded,
+                          color: PbColors.text),
+                    ),
+                    const SizedBox(width: 8),
+                    // The page name on the left, its pickers top right.
+                    Expanded(
+                      child: Text(
+                        heading,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: PbType.hero
+                            .copyWith(fontSize: 40, color: PbColors.text),
+                      ),
+                    ),
+                    const SizedBox(width: 20),
+                    filters(tv: false),
+                  ],
+                ),
+              ),
+              Expanded(
+                child: blocked
+                    ? grid
+                    : ClippedOverlay(
+                        child: _desktopBody(
+                            ref, catalog, omdb, tmdb, kind, filter, heading)),
+              ),
+            ],
+          ),
         ),
-        body: grid,
       );
     }
 
@@ -192,7 +273,10 @@ class _CatalogScreenState extends ConsumerState<CatalogScreen> {
                   heading,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
+                  style: Theme.of(context)
+                      .textTheme
+                      .titleLarge
+                      ?.copyWith(fontWeight: FontWeight.w700),
                 ),
               ),
               actions(tv: true),
@@ -206,7 +290,15 @@ class _CatalogScreenState extends ConsumerState<CatalogScreen> {
       body: TvNavHost(
         strategies: [
           TvNavBarStrategy(
-            nodes: [_year, _rating, _genre, _favourites, _watched, _search, _settings],
+            nodes: [
+              _year,
+              _rating,
+              _genre,
+              _favourites,
+              _watched,
+              _search,
+              _settings
+            ],
             onMoveDown: () {
               // Drop into the first poster when leaving the filter bar.
             },
@@ -221,6 +313,104 @@ class _CatalogScreenState extends ConsumerState<CatalogScreen> {
       ),
     );
   }
+
+  /// Desktop / web: the #1 featured with the next three beside it, then the grid.
+  Widget _desktopBody(
+    WidgetRef ref,
+    CatalogState catalog,
+    bool omdb,
+    bool tmdb,
+    String kind,
+    CatalogFilter filter,
+    String heading,
+  ) {
+    if (catalog.items.isEmpty ||
+        catalog.error != null && catalog.items.isEmpty) {
+      return _body(ref, catalog, omdb, tmdb, kind, filter);
+    }
+    final items = catalog.items;
+    // Your own lists stay a plain grid; browse lists get the featured top.
+    final personal = const {'CONTINUE_WATCHING', 'FAVORITES', 'WATCHED'}
+        .contains(filter.sort);
+    final featured = !personal && items.length >= 4;
+    final done =
+        !catalog.hasNextPage && !catalog.loadingMore && !catalog.loading;
+    return LayoutBuilder(
+      builder: (context, page) {
+        // Wide enough for #2–#4 beside the featured card? Otherwise they stay in
+        // the grid (the header shows #1 only), so nothing goes missing.
+        final besides =
+            page.maxWidth - 2 * PbSpace.gutterDesktop >= _featureRowMinWidth;
+        return PosterGrid(
+          controller: _scroll,
+          items: featured ? items.skip(besides ? 4 : 1).toList() : items,
+          sidePadding: PbSpace.gutterDesktop,
+          loadingMore: catalog.loadingMore,
+          onEndReached: () => ref.read(catalogProvider.notifier).loadMore(),
+          headerSlivers: [
+            if (featured)
+              SliverPadding(
+                padding: const EdgeInsets.fromLTRB(
+                    PbSpace.gutterDesktop, 8, PbSpace.gutterDesktop, 16),
+                sliver: SliverToBoxAdapter(
+                  child: LayoutBuilder(
+                    builder: (context, box) {
+                      final eyebrow =
+                          widget.explore ? '#1 trending' : '#1 in $heading';
+                      if (!besides) {
+                        return FeatureCard(
+                            item: items.first, eyebrow: eyebrow, height: 440);
+                      }
+                      // Posters at their own 2:3 shape; the featured card takes the
+                      // rest (about 16:9 at this height), so no art is cut or stretched.
+                      const gap = 14.0;
+                      final poster =
+                          ((box.maxWidth - 3 * gap) / 5.6).clamp(150.0, 320.0);
+                      final height = poster * 1.5;
+                      return SizedBox(
+                        height: height,
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            Expanded(
+                                child: FeatureCard(
+                                    item: items.first,
+                                    eyebrow: eyebrow,
+                                    height: height)),
+                            for (final item in items.skip(1).take(3)) ...[
+                              const SizedBox(width: gap),
+                              SizedBox(
+                                  width: poster, child: PosterCard(item: item)),
+                            ],
+                          ],
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ),
+          ],
+          footerSlivers: [
+            if (done)
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.only(top: 8, bottom: 24),
+                  child: Center(
+                    child: Text(
+                      "That's everything in this category.",
+                      style: PbType.meta.copyWith(color: PbColors.textMuted),
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        );
+      },
+    );
+  }
+
+  /// Narrowest header row (inside the gutters) that fits #1 plus three posters.
+  static const double _featureRowMinWidth = 1000;
 
   Widget _body(
     WidgetRef ref,
@@ -244,7 +434,8 @@ class _CatalogScreenState extends ConsumerState<CatalogScreen> {
       return EmptyState(
         message: filter.sort == 'CONTINUE_WATCHING'
             ? 'Nothing in progress. Play a title, then it shows up here.'
-            : emptyKindMessage(kind: kind, omdbConfigured: omdb, tmdbConfigured: tmdb),
+            : emptyKindMessage(
+                kind: kind, omdbConfigured: omdb, tmdbConfigured: tmdb),
         onRefresh: () => refreshCatalogData(ref),
         showSettings: true,
       );

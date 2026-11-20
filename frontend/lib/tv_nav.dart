@@ -629,7 +629,10 @@ class TvNavHomeStrategy extends TvNavStrategy {
     final right = dir == TvNavDir.right;
     final horizontal = dir == TvNavDir.left || dir == TvNavDir.right;
 
-    if (label == 'banner-details' && horizontal) return true;
+    if (label == 'banner-details' && horizontal) {
+      TvHeaderFocus.step(TvHeaderFocus.bannerButtons, right ? 1 : -1);
+      return true;
+    }
     if (label == 'banner-details' && dir == TvNavDir.up) {
       TvHomeScroll.enterHeader?.call();
       return true;

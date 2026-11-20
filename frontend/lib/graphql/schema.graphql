@@ -48,6 +48,7 @@ type Query {
     perPage: Int
   ): TitleConnection!
   title(id: UUID, imdbId: String, tmdbId: Int): Title
+  similarTitles(titleId: UUID!, limit: Int): [Title!]!
   search(query: String!, kind: TitleKind, page: Int, perPage: Int): SearchResult!
   genres(kind: TitleKind): [String!]!
   serverInfo: ServerInfo!

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The search box: a rounded pill (desktop: same). -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <solid android:color="@color/pbt_surface_raised" />
+    <stroke android:width="1dp" android:color="@color/pbt_line" />
+    <corners android:radius="@dimen/pbt_radius_pill" />
+</shape>

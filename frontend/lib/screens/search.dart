@@ -2,12 +2,17 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../design/tokens.g.dart';
+
 import '../friendly_error.dart';
+import '../models.dart';
 import '../providers/catalog.dart';
 import '../theme.dart';
 import '../tv.dart';
 import '../tv_nav.dart';
+import '../widgets/app_menu.dart';
 import '../widgets/empty_state.dart';
+import '../widgets/feature_card.dart';
 import '../widgets/filter_bar.dart';
 import '../widgets/poster_grid.dart';
 import '../widgets/tv_chrome.dart';
@@ -45,7 +50,9 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      ref.read(searchProvider.notifier).setKind(ref.read(selectedKindProvider));
+      // Movies or Series: only the chosen kind is searched.
+      final kind = ref.read(selectedKindProvider);
+      ref.read(searchProvider.notifier).setKind(kind == 'SERIES' ? 'SERIES' : 'MOVIE');
       if (isAndroidTv) {
         // Focus the search field chrome (Select opens the keyboard).
         _fieldKey.currentState?.focusChrome();
@@ -207,7 +214,8 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
                     if (!tv)
                       IconButton(
                         tooltip: 'Back',
-                        onPressed: () => context.pop(),
+                        // Opened straight from the address bar (web) there's nothing to go back to.
+            onPressed: () => context.canPop() ? context.pop() : context.go('/'),
                         icon: const Icon(Icons.arrow_back_rounded),
                       ),
                     KindSwitch(
@@ -243,12 +251,33 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
 
     if (!tv) {
       return Scaffold(
-        body: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            homeHeader,
-            Expanded(child: body),
-          ],
+        backgroundColor: PbColors.ground,
+        body: SafeArea(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _SearchBar(
+                controller: _controller,
+                query: search.query,
+                kind: search.kind ?? 'MOVIE',
+                onKind: _setKind,
+                onChanged: (v) => ref.read(searchProvider.notifier).onQueryChanged(v),
+                onClear: () {
+                  _controller.clear();
+                  ref.read(searchProvider.notifier).onQueryChanged('');
+                },
+              ),
+              Expanded(
+                child: Stack(
+                  children: [
+                    Positioned.fill(child: _desktopBody(search)),
+                    if (search.loading && search.results.isEmpty)
+                      const Positioned.fill(child: Center(child: CircularProgressIndicator())),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
       );
     }
@@ -273,9 +302,109 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
     );
   }
 
-  Widget _body(SearchState search, String kind) {
+  void _pick(String picked) {
+    _controller.text = picked;
+    _controller.selection = TextSelection.collapsed(offset: picked.length);
+    ref.read(searchProvider.notifier).onQueryChanged(picked);
+  }
+
+  /// Desktop / web: recent and trending before typing; then the results page.
+  Widget _desktopBody(SearchState search) {
     final q = search.query.trim();
-    if (q.isEmpty) {
+    if (!SearchNotifier.searchable(q)) {
+      return _SearchStart(recent: search.recent, onPick: _pick);
+    }
+    if (search.error != null && search.results.isEmpty) {
+      return EmptyState(
+        message: friendlyError(search.error!),
+        onRefresh: () async => ref.read(searchProvider.notifier).onQueryChanged(_controller.text),
+        showSettings: true,
+      );
+    }
+    if (search.results.isEmpty && !search.loading) {
+      return const EmptyState(
+        icon: Icons.search_off_rounded,
+        title: 'No matches',
+        message: 'Nothing matches that name. Try another title.',
+      );
+    }
+    // Highest TMDB rating first (few-vote and unrated last); ties keep the server's order.
+    final order = {for (var i = 0; i < search.results.length; i++) search.results[i].id: i};
+    final results = [...search.results]
+      ..sort((a, b) {
+        final byRating = _ratingKey(b).compareTo(_ratingKey(a));
+        return byRating != 0 ? byRating : order[a.id]!.compareTo(order[b.id]!);
+      });
+    // Still searching: nothing to show yet (the spinner sits on top).
+    if (results.isEmpty) return const SizedBox.shrink();
+    final movies = results.where((t) => t.kind == 'MOVIE').length;
+    final series = results.length - movies;
+    final more = search.hasNextPage ? '+' : '';
+    final counts = [
+      '${results.length}$more result${results.length == 1 ? '' : 's'}',
+      [if (movies > 0) '$movies movie${movies == 1 ? '' : 's'}', if (series > 0) '$series series'].join(', '),
+    ].where((e) => e.isNotEmpty).join('  ·  ');
+    final rest = results.skip(1).toList();
+    return PosterGrid(
+      items: rest,
+      sidePadding: PbSpace.gutterDesktop,
+      loadingMore: search.loadingMore,
+      onEndReached: () => ref.read(searchProvider.notifier).loadMore(),
+      headerSlivers: [
+        SliverPadding(
+          padding: const EdgeInsets.fromLTRB(PbSpace.gutterDesktop, 20, PbSpace.gutterDesktop, 0),
+          sliver: SliverToBoxAdapter(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text.rich(
+                  TextSpan(
+                    text: 'Results for ',
+                    children: [
+                      TextSpan(text: '\u201c$q\u201d', style: const TextStyle(color: PbColors.primary)),
+                    ],
+                  ),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: PbType.hero.copyWith(fontSize: 44, color: PbColors.text, height: 1.05),
+                ),
+                const SizedBox(height: 6),
+                Text(counts, style: PbType.meta.copyWith(fontSize: 14, color: PbColors.textMuted)),
+                const SizedBox(height: 20),
+                FeatureCard(item: results.first, eyebrow: 'Top result'),
+                if (rest.isNotEmpty) ...[
+                  const SizedBox(height: 28),
+                  Text.rich(
+                    TextSpan(
+                      text: 'Titles',
+                      children: [
+                        TextSpan(
+                          text: '  ${rest.length}$more',
+                          style: PbType.meta.copyWith(color: PbColors.textMuted),
+                        ),
+                      ],
+                    ),
+                    style: PbType.h2.copyWith(color: PbColors.text),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// TMDB rating for ordering results. A score from a handful of votes
+  /// (a 10.0 from 3 people) ranks after well-known titles.
+  static double _ratingKey(TitleItem t) {
+    final r = t.ratings?.tmdbVoteAverage ?? 0;
+    final votes = t.ratings?.tmdbVoteCount ?? 0;
+    return votes >= 50 ? r : r - 10;
+  }
+
+  Widget _body(SearchState search, String kind) {
+    if (!SearchNotifier.searchable(search.query)) {
       return _IdleSearch(
         kind: kind,
         recent: search.recent,
@@ -371,6 +500,130 @@ class _IdleSearch extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+
+/// The search field: a rounded bar under the back arrow (desktop / web).
+class _SearchBar extends StatelessWidget {
+  const _SearchBar({
+    required this.controller,
+    required this.query,
+    required this.kind,
+    required this.onKind,
+    required this.onChanged,
+    required this.onClear,
+  });
+
+  final TextEditingController controller;
+  final String query;
+  /// MOVIE or SERIES: only this kind is searched.
+  final String kind;
+  final ValueChanged<String> onKind;
+  final ValueChanged<String> onChanged;
+  final VoidCallback onClear;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(PbSpace.gutterDesktop - 8, 14, PbSpace.gutterDesktop, 4),
+      child: Row(
+        children: [
+          IconButton(
+            tooltip: 'Back',
+            // Opened straight from the address bar (web) there's nothing to go back to.
+            onPressed: () => context.canPop() ? context.pop() : context.go('/'),
+            icon: const Icon(Icons.arrow_back_rounded, color: PbColors.text),
+          ),
+          const SizedBox(width: 8),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 760),
+            child: SizedBox(
+              width: MediaQuery.sizeOf(context).width * 0.6,
+              child: TextField(
+                controller: controller,
+                autofocus: true,
+                onChanged: onChanged,
+                onSubmitted: onChanged,
+                textInputAction: TextInputAction.search,
+                style: PbType.body.copyWith(fontSize: 16, color: PbColors.text),
+                decoration: InputDecoration(
+                  hintText: 'Search',
+                  isDense: true,
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+                  prefixIcon: const Icon(Icons.search_rounded, color: PbColors.textMuted),
+                  suffixIcon: query.isEmpty
+                      ? null
+                      : IconButton(
+                          tooltip: 'Clear',
+                          onPressed: onClear,
+                          icon: const Icon(Icons.close_rounded, color: PbColors.textMuted),
+                        ),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(PbRadius.pill),
+                    borderSide: const BorderSide(color: PbColors.line),
+                  ),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(PbRadius.pill),
+                    borderSide: const BorderSide(color: PbColors.line),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(PbRadius.pill),
+                    borderSide: const BorderSide(color: PbColors.primary, width: 1.5),
+                  ),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 14),
+          for (final (label, value) in const [('Movies', 'MOVIE'), ('Series', 'SERIES')]) ...[
+            AppFilterChip(
+              label: label,
+              selected: kind == value,
+              onSelected: (_) => onKind(value),
+            ),
+            const SizedBox(width: 4),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// Before typing: your recent searches (nothing else, to keep it calm).
+class _SearchStart extends StatelessWidget {
+  const _SearchStart({required this.recent, required this.onPick});
+
+  final List<String> recent;
+  final ValueChanged<String> onPick;
+
+  @override
+  Widget build(BuildContext context) {
+    if (recent.isEmpty) return const SizedBox.shrink();
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(PbSpace.gutterDesktop, 20, PbSpace.gutterDesktop, 48),
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(bottom: 12),
+          child: Text(
+            'RECENT SEARCHES',
+            style: PbType.label.copyWith(color: PbColors.textMuted, letterSpacing: 1.2),
+          ),
+        ),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            for (final q in recent)
+              ActionChip(
+                avatar: const Icon(Icons.history_rounded, size: 16, color: PbColors.textMuted),
+                label: Text(q),
+                onPressed: () => onPick(q),
+              ),
+          ],
+        ),
+      ],
     );
   }
 }

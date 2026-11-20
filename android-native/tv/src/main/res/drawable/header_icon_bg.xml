@@ -2,7 +2,8 @@
 <selector xmlns:android="http://schemas.android.com/apk/res/android">
     <item android:state_focused="true">
         <shape android:shape="oval">
-            <solid android:color="#335B9FFF" />
+            <solid android:color="#14FFFFFF" />
+            <stroke android:width="@dimen/pbt_size_focus_ring" android:color="@color/pbt_focus" />
         </shape>
     </item>
     <item>

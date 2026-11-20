@@ -14,6 +14,7 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
 import '../content_languages.dart';
+import '../design/tokens.g.dart';
 import '../graphql/client.dart';
 import '../graphql/queries.dart';
 import '../local_torrent.dart';
@@ -274,6 +275,16 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   /// position is still inside it, which brought Skip back for a few seconds.
   MediaSegment? _skippedSegment;
   int _durationMs = 0;
+
+  /// Opened part-way in: asked "Continue from … / Start over" once, paused.
+  bool _resumeAsked = false;
+  bool _askingResume = false;
+
+  /// Subtitle look (kept on this device) and delay (this video only).
+  int _subSize = 1;
+  String _subBg = 'box';
+  double _subDelay = 0;
+  static const _subSizes = [24.0, 32.0, 42.0, 54.0];
   int _lastSegmentFetchDuration = -1;
   bool _segmentsLoading = false;
   bool _segmentsFetched = false;
@@ -298,6 +309,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _loadSubtitleLook();
     // Prefer the non-Riverpod flag — writing StateProviders from initState
     // races go_router rebuilds on Android TV (red "UI error" screen).
     playbackSessionActive = true;
@@ -679,6 +691,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
 
   KeyEventResult _onFocusKey(FocusNode _, KeyEvent event) {
     if (event is! KeyDownEvent && event is! KeyRepeatEvent) return KeyEventResult.ignored;
+    // The resume card's buttons take the keys.
+    if (_askingResume) return KeyEventResult.ignored;
     // Child chrome controls handle their own ActivateIntent / arrows.
     if (_chromeControlFocused) return KeyEventResult.ignored;
     return _handlePlayerKey(event.logicalKey) ? KeyEventResult.handled : KeyEventResult.ignored;
@@ -2115,6 +2129,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         title: next.catalogTitle,
         kind: next.kind,
         titleId: widget.titleId,
+        posterUrl: widget.posterUrl,
         season: next.season,
         // Search and pick the file by the release's own number.
         episode: next.fileEpisode ?? next.episode,
@@ -2650,7 +2665,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
       // Brief settle so demuxer attaches before play() on progressive HTTP.
       await Future<void>.delayed(const Duration(milliseconds: 120));
       if (!mounted || _closing || _playerReleased) return;
-      await player.play();
+      // Waiting on "Continue from … / Start over": that answer starts it.
+      if (!_askingResume) await player.play();
       if (!mounted) return;
       setState(() {
         _streamOpened = true;
@@ -2851,11 +2867,18 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         );
       }
     }
-    await _player?.open(Media(url, httpHeaders: headers));
+    // Part-way in: hold on the first frame and ask, as in the design.
+    final ask = widget.startMs > 0 && !_resumeAsked && !isYoutube && _fileId != 'trailer';
+    await _player?.open(Media(url, httpHeaders: headers), play: !ask);
     if (widget.startMs > 0) {
       try {
         await _player!.stream.duration.firstWhere((d) => d.inMilliseconds > 0).timeout(const Duration(seconds: 20));
       } catch (_) {}
+      if (ask) {
+        _resumeAsked = true;
+        if (mounted) setState(() => _askingResume = true);
+        return;
+      }
       await _seekPlayback(Duration(milliseconds: widget.startMs), immediate: true, resume: true);
     }
   }
@@ -3404,6 +3427,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
           if (!_hasWindowControls) Positioned.fill(child: _touchLayer()),
           // In fullscreen the same controls live in media_kit's route (_videoControls).
           if (!_inFullscreen) ..._chromeOverlays(),
+          if (_askingResume) Positioned.fill(child: _resumeCard()),
         ],
       ),
             ),
@@ -3638,6 +3662,83 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     );
   }
 
+  /// The player's menus (audio, subtitles, picture): a dark rounded panel
+  /// with a title, small section labels and an amber tick on the pick.
+  Future<T?> _panelMenu<T>(BuildContext anchor, String title, List<PopupMenuEntry<T>> items) async {
+    final box = anchor.findRenderObject() as RenderBox?;
+    if (box == null || !anchor.mounted) return null;
+    final origin = box.localToGlobal(Offset.zero);
+    return showMenu<T>(
+      context: anchor,
+      color: PbColors.surface,
+      elevation: 16,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(PbRadius.panel),
+        side: const BorderSide(color: PbColors.line),
+      ),
+      constraints: BoxConstraints(
+        minWidth: 280,
+        maxWidth: 360,
+        maxHeight: MediaQuery.sizeOf(anchor).height * 0.72,
+      ),
+      menuPadding: const EdgeInsets.fromLTRB(4, 8, 4, 10),
+      position: RelativeRect.fromLTRB(
+        origin.dx,
+        origin.dy + box.size.height,
+        origin.dx + box.size.width,
+        origin.dy,
+      ),
+      items: [
+        PopupMenuItem<T>(
+          enabled: false,
+          height: 40,
+          child: Text(title, style: PbType.h2.copyWith(fontSize: 17, color: PbColors.text)),
+        ),
+        ...items,
+      ],
+    );
+  }
+
+  static PopupMenuEntry<T> _menuSection<T>(String label) => PopupMenuItem<T>(
+        enabled: false,
+        height: 30,
+        child: Text(
+          label.toUpperCase(),
+          style: PbType.meta.copyWith(
+            fontSize: 11,
+            letterSpacing: 1.2,
+            fontWeight: FontWeight.w700,
+            color: PbColors.textFaint,
+          ),
+        ),
+      );
+
+  static PopupMenuEntry<T> _menuOption<T>(T value, String label, {bool checked = false, bool enabled = true}) =>
+      PopupMenuItem<T>(
+        value: value,
+        enabled: enabled,
+        height: 42,
+        child: Row(
+          children: [
+            SizedBox(
+              width: 28,
+              child: checked ? const Icon(Icons.check_rounded, size: 18, color: PbColors.primary) : null,
+            ),
+            Expanded(
+              child: Text(
+                label,
+                overflow: TextOverflow.ellipsis,
+                style: PbType.body.copyWith(
+                  fontSize: 14.5,
+                  color: !enabled ? PbColors.textFaint : (checked ? PbColors.primary : PbColors.text),
+                  fontWeight: checked ? FontWeight.w700 : FontWeight.w500,
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+
   Widget _aspectMenu() {
     return Builder(
       builder: (context) => _RoundButton(
@@ -3646,32 +3747,15 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         icon: Icons.aspect_ratio,
         onPressed: () async {
           _bumpChrome();
-          final box = context.findRenderObject() as RenderBox?;
-          if (box == null) return;
-          final origin = box.localToGlobal(Offset.zero);
-          final fit = await showMenu<BoxFit>(
-            context: context,
-            color: PtTheme.panel,
-            position: RelativeRect.fromLTRB(
-              origin.dx,
-              origin.dy + box.size.height,
-              origin.dx + box.size.width,
-              origin.dy,
-            ),
-            items: [
-              for (final (value, label) in const [
-                (BoxFit.contain, 'Fit'),
-                (BoxFit.none, 'Original'),
-                (BoxFit.cover, 'Fill'),
-                (BoxFit.fill, 'Stretch'),
-              ])
-                CheckedPopupMenuItem<BoxFit>(
-                  value: value,
-                  checked: _videoFit == value,
-                  child: Text(label),
-                ),
-            ],
-          );
+          final fit = await _panelMenu<BoxFit>(context, 'Picture', [
+            for (final (value, label) in const [
+              (BoxFit.contain, 'Fit'),
+              (BoxFit.none, 'Original'),
+              (BoxFit.cover, 'Fill'),
+              (BoxFit.fill, 'Stretch'),
+            ])
+              _menuOption(value, label, checked: _videoFit == value),
+          ]);
           if (fit == null || !mounted) return;
           _bumpChrome();
           setState(() => _videoFit = fit);
@@ -3689,40 +3773,13 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
             icon: Icons.language,
             onPressed: () async {
               _bumpChrome();
-              final items = <PopupMenuEntry<String>>[];
-              if (_audioTracks.isEmpty) {
-                items.add(
-                  const PopupMenuItem<String>(
-                    enabled: false,
-                    value: 'none',
-                    child: Text('Audio tracks appear after playback starts'),
-                  ),
-                );
-              } else {
-                for (final track in _audioTracks) {
-                  items.add(
-                    CheckedPopupMenuItem<String>(
-                      value: track.id,
-                      checked: _activeAudioId == track.id,
-                      child: Text(_audioLabel(track)),
-                    ),
-                  );
-                }
-              }
-              final box = context.findRenderObject() as RenderBox?;
-              if (box == null || !context.mounted) return;
-              final origin = box.localToGlobal(Offset.zero);
-              final id = await showMenu<String>(
-                context: context,
-                color: PtTheme.panel,
-                position: RelativeRect.fromLTRB(
-                  origin.dx,
-                  origin.dy + box.size.height,
-                  origin.dx + box.size.width,
-                  origin.dy,
-                ),
-                items: items,
-              );
+              final id = await _panelMenu<String>(context, 'Audio', [
+                if (_audioTracks.isEmpty)
+                  _menuOption('none', 'Audio tracks appear after playback starts', enabled: false)
+                else
+                  for (final track in _audioTracks)
+                    _menuOption(track.id, _audioLabel(track), checked: _activeAudioId == track.id),
+              ]);
               if (id == null || !mounted) return;
               _bumpChrome();
               final match = _audioTracks.where((t) => t.id == id);
@@ -3754,15 +3811,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   /// preferred languages; Wyzie results reopen this same menu (no second popup).
   Future<void> _openSubtitleMenu(BuildContext buttonContext) async {
     _bumpChrome();
-    final box = buttonContext.findRenderObject() as RenderBox?;
-    if (box == null || !buttonContext.mounted) return;
-    final origin = box.localToGlobal(Offset.zero);
-    final position = RelativeRect.fromLTRB(
-      origin.dx,
-      origin.dy + box.size.height,
-      origin.dx + box.size.width,
-      origin.dy,
-    );
 
     // Loop so Wyzie search can refresh items in the same dropdown.
     while (mounted) {
@@ -3783,75 +3831,36 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
       ];
 
       final items = <PopupMenuEntry<String>>[
-        CheckedPopupMenuItem(
-          value: 'off',
-          checked: _activeSubId == null,
-          child: const Text('Off'),
-        ),
+        _MenuBox<String>(child: StatefulBuilder(builder: (context, refresh) => _subtitleStyleBox(refresh))),
+        _menuSection('Subtitle language'),
+        _menuOption('off', 'Off', checked: _activeSubId == null),
         for (final track in _fileSubtitleTracks)
-          CheckedPopupMenuItem(
-            value: 'emb:${track.id}',
-            checked: _activeSubId == 'emb:${track.id}',
-            child: Text(_embeddedSubLabel(track)),
-          ),
-        for (final sub in _subs)
-          CheckedPopupMenuItem(
-            value: sub.id,
-            checked: _activeSubId == sub.id,
-            child: Text(sub.label),
-          ),
+          _menuOption('emb:${track.id}', _embeddedSubLabel(track), checked: _activeSubId == 'emb:${track.id}'),
+        for (final sub in _subs) _menuOption(sub.id, sub.label, checked: _activeSubId == sub.id),
         if (_wyzieHits.isNotEmpty) ...[
-          const PopupMenuDivider(),
-          const PopupMenuItem(
-            enabled: false,
-            child: Text('Wyzie results', style: TextStyle(color: Colors.white54)),
-          ),
-          for (final hit in _wyzieHits)
-            PopupMenuItem(
-              value: 'wyzie_hit:${hit.id}',
-              child: Text(hit.label),
-            ),
+          const PopupMenuDivider(height: 12),
+          _menuSection('Wyzie results'),
+          for (final hit in _wyzieHits) _menuOption('wyzie_hit:${hit.id}', hit.label),
         ],
-        const PopupMenuDivider(),
-        const PopupMenuItem(
-          value: 'add_file',
-          child: Text('From storage…'),
-        ),
-        const PopupMenuItem(
-          value: 'add_url',
-          child: Text('From link…'),
-        ),
+        const PopupMenuDivider(height: 12),
+        _menuSection('Add subtitles'),
+        _menuOption('add_file', 'From storage…'),
+        _menuOption('add_url', 'From link…'),
         if (subsReady) ...[
-          const PopupMenuDivider(),
+          const PopupMenuDivider(height: 12),
+          _menuSection('Find online'),
           // One search per language (it used to be the first only).
           if (wyzieReady)
             for (final code in langs)
-              PopupMenuItem(
-                value: 'wyzie:$code',
-                child: Text(
-                  _subsLoading ? 'Searching Wyzie…' : 'Search Wyzie ($code)',
-                ),
-              ),
+              _menuOption('wyzie:$code', _subsLoading ? 'Searching Wyzie…' : 'Search Wyzie ($code)'),
           if (osReady)
-            for (final lang in osLangs)
-              PopupMenuItem(
-                value: 'download:${lang.code}',
-                child: Text('OpenSubtitles ${lang.label}'),
-              ),
+            for (final lang in osLangs) _menuOption('download:${lang.code}', 'OpenSubtitles ${lang.label}'),
         ] else
-          const PopupMenuItem(
-            value: 'settings',
-            child: Text('Add subtitle API key'),
-          ),
+          _menuOption('settings', 'Add subtitle API key'),
       ];
 
       if (!buttonContext.mounted) return;
-      final value = await showMenu<String>(
-        context: buttonContext,
-        color: PtTheme.panel,
-        position: position,
-        items: items,
-      );
+      final value = await _panelMenu<String>(buttonContext, 'Subtitles', items);
       if (value == null || !mounted) return;
       _bumpChrome();
 
@@ -4183,6 +4192,306 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     );
   }
 
+  Future<void> _answerResume({required bool fromStart}) async {
+    setState(() => _askingResume = false);
+    _bumpChrome();
+    if (fromStart) {
+      await _player?.play();
+    } else {
+      await _seekPlayback(Duration(milliseconds: widget.startMs), immediate: true, resume: true);
+    }
+  }
+
+  /// "Continue watching" over the paused first frame.
+  Widget _resumeCard() {
+    final at = Duration(milliseconds: widget.startMs);
+    final total = Duration(milliseconds: _durationMs);
+    final progress = _durationMs > 0 ? (widget.startMs / _durationMs).clamp(0.0, 1.0) : 0.0;
+    final tv = isAndroidTv;
+    return GestureDetector(
+      // Clicks around the card don't reach the video (no play / pause).
+      behavior: HitTestBehavior.opaque,
+      onTap: () {},
+      child: ColoredBox(
+        color: Colors.black.withValues(alpha: 0.45),
+        child: Center(
+          child: Container(
+            width: tv ? 560 : 480,
+            padding: const EdgeInsets.fromLTRB(24, 22, 24, 24),
+            decoration: BoxDecoration(
+              color: PbColors.surface,
+              borderRadius: BorderRadius.circular(PbRadius.panel),
+              border: Border.all(color: PbColors.line),
+              boxShadow: const [BoxShadow(color: Color(0x99000000), blurRadius: 40, offset: Offset(0, 16))],
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'CONTINUE WATCHING',
+                  style: PbType.meta.copyWith(
+                    fontSize: 11.5,
+                    letterSpacing: 1.4,
+                    fontWeight: FontWeight.w800,
+                    color: PbColors.primary,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  widget.title,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: PbType.h2.copyWith(fontSize: 22, color: PbColors.text),
+                ),
+                const SizedBox(height: 18),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(2),
+                  child: LinearProgressIndicator(
+                    value: progress,
+                    minHeight: 4,
+                    color: PbColors.primary,
+                    backgroundColor: Colors.white.withValues(alpha: 0.16),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Text(_fmtClock(at), style: PbType.meta.copyWith(color: PbColors.text, fontWeight: FontWeight.w700)),
+                    const Spacer(),
+                    if (_durationMs > 0)
+                      Text('-${_fmtClock(total - at)}', style: PbType.meta.copyWith(color: PbColors.textMuted)),
+                  ],
+                ),
+                const SizedBox(height: 18),
+                Row(
+                  children: [
+                    Expanded(
+                      flex: 3,
+                      child: TvFocus(
+                        child: FilledButton.icon(
+                          autofocus: true,
+                          onPressed: () => unawaited(_answerResume(fromStart: false)),
+                          style: FilledButton.styleFrom(
+                            backgroundColor: PbColors.primary,
+                            foregroundColor: PbColors.onPrimary,
+                            minimumSize: const Size(0, 46),
+                            shape: const StadiumBorder(),
+                          ),
+                          icon: const Icon(Icons.play_arrow_rounded),
+                          label: Text('Continue from ${_fmtClock(at)}', style: PbType.button),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      flex: 2,
+                      child: TvFocus(
+                        child: OutlinedButton.icon(
+                          onPressed: () => unawaited(_answerResume(fromStart: true)),
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: PbColors.text,
+                            side: const BorderSide(color: PbColors.line),
+                            minimumSize: const Size(0, 46),
+                            shape: const StadiumBorder(),
+                          ),
+                          icon: const Icon(Icons.replay_rounded, size: 20),
+                          label: const Text('Start over', style: PbType.button),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  SubtitleViewConfiguration _subtitleView(double bottom) {
+    const outline = [
+      Shadow(color: Colors.black, offset: Offset(-1.5, -1.5)),
+      Shadow(color: Colors.black, offset: Offset(1.5, -1.5)),
+      Shadow(color: Colors.black, offset: Offset(-1.5, 1.5)),
+      Shadow(color: Colors.black, offset: Offset(1.5, 1.5)),
+      Shadow(color: Colors.black, offset: Offset(0, 2)),
+      Shadow(color: Colors.black, offset: Offset(0, -2)),
+      Shadow(color: Colors.black, offset: Offset(2, 0)),
+      Shadow(color: Colors.black, offset: Offset(-2, 0)),
+    ];
+    return SubtitleViewConfiguration(
+      padding: EdgeInsets.fromLTRB(16, 0, 16, bottom),
+      style: TextStyle(
+        height: 1.4,
+        fontSize: _subSizes[_subSize],
+        color: Colors.white,
+        fontWeight: FontWeight.w600,
+        backgroundColor: _subBg == 'box' ? const Color(0xAA000000) : null,
+        shadows: switch (_subBg) {
+          'outline' => outline,
+          'shadow' => const [Shadow(color: Color(0xE6000000), blurRadius: 8, offset: Offset(0, 2))],
+          _ => null,
+        },
+      ),
+    );
+  }
+
+  void _loadSubtitleLook() {
+    try {
+      final p = ref.read(sharedPreferencesProvider);
+      _subSize = (p.getInt('playerSubSize') ?? 1).clamp(0, _subSizes.length - 1);
+      _subBg = p.getString('playerSubBg') ?? 'box';
+    } catch (_) {}
+  }
+
+  void _saveSubtitleLook() {
+    try {
+      final p = ref.read(sharedPreferencesProvider);
+      unawaited(p.setInt('playerSubSize', _subSize));
+      unawaited(p.setString('playerSubBg', _subBg));
+    } catch (_) {}
+  }
+
+  /// mpv shifts subtitles by this many seconds (not on web).
+  bool get _canDelaySubs => !kIsWeb && _player?.platform is NativePlayer;
+
+  void _setSubDelay(double seconds) {
+    _subDelay = (seconds * 10).round() / 10;
+    final native = _player?.platform;
+    if (native is NativePlayer) unawaited(_setMpv(native, 'sub-delay', _subDelay.toStringAsFixed(2)));
+    setState(() {});
+  }
+
+  /// Size, background and delay at the top of the Subtitles menu.
+  Widget _subtitleStyleBox(StateSetter refresh) {
+    Widget label(String text) => Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: Text(
+            text,
+            style: PbType.meta.copyWith(
+              fontSize: 11,
+              letterSpacing: 1.2,
+              fontWeight: FontWeight.w700,
+              color: PbColors.textFaint,
+            ),
+          ),
+        );
+    Widget segments<T>(List<(T, Widget)> options, T current, ValueChanged<T> pick) {
+      return Container(
+        height: 40,
+        padding: const EdgeInsets.all(3),
+        decoration: BoxDecoration(
+          color: PbColors.ground,
+          borderRadius: BorderRadius.circular(PbRadius.pill),
+          border: Border.all(color: PbColors.line),
+        ),
+        child: Row(
+          children: [
+            for (final (value, child) in options)
+              Expanded(
+                child: Material(
+                  color: value == current ? PbColors.primary : Colors.transparent,
+                  shape: const StadiumBorder(),
+                  child: InkWell(
+                    customBorder: const StadiumBorder(),
+                    onTap: () {
+                      pick(value);
+                      refresh(() {});
+                    },
+                    child: Center(
+                      child: DefaultTextStyle.merge(
+                        style: PbType.button.copyWith(
+                          fontSize: 13,
+                          color: value == current ? PbColors.onPrimary : PbColors.text,
+                        ),
+                        child: child,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      );
+    }
+
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 14),
+      decoration: BoxDecoration(
+        color: PbColors.surfaceRaised,
+        borderRadius: BorderRadius.circular(PbRadius.card + 2),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          label('SIZE'),
+          segments<int>(
+            [for (var i = 0; i < _subSizes.length; i++) (i, Text('A', style: TextStyle(fontSize: 11.0 + i * 3.5)))],
+            _subSize,
+            (v) => setState(() {
+              _subSize = v;
+              _saveSubtitleLook();
+            }),
+          ),
+          const SizedBox(height: 14),
+          label('BACKGROUND'),
+          segments<String>(
+            const [('shadow', Text('Shadow')), ('outline', Text('Outline')), ('box', Text('Box'))],
+            _subBg,
+            (v) => setState(() {
+              _subBg = v;
+              _saveSubtitleLook();
+            }),
+          ),
+          if (_canDelaySubs) ...[
+            const SizedBox(height: 14),
+            label('DELAY'),
+            Container(
+              height: 40,
+              decoration: BoxDecoration(
+                color: PbColors.ground,
+                borderRadius: BorderRadius.circular(PbRadius.pill),
+                border: Border.all(color: PbColors.line),
+              ),
+              child: Row(
+                children: [
+                  IconButton(
+                    tooltip: 'Earlier',
+                    iconSize: 18,
+                    onPressed: () {
+                      _setSubDelay(_subDelay - 0.1);
+                      refresh(() {});
+                    },
+                    icon: const Icon(Icons.remove_rounded, color: PbColors.text),
+                  ),
+                  Expanded(
+                    child: Text(
+                      '${_subDelay.toStringAsFixed(1)} s',
+                      textAlign: TextAlign.center,
+                      style: PbType.button.copyWith(fontSize: 13.5, color: PbColors.text),
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'Later',
+                    iconSize: 18,
+                    onPressed: () {
+                      _setSubDelay(_subDelay + 0.1);
+                      refresh(() {});
+                    },
+                    icon: const Icon(Icons.add_rounded, color: PbColors.text),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
   String _fmtClock(Duration d) {
     final h = d.inHours;
     final m = d.inMinutes.remainder(60);
@@ -4283,13 +4592,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   }
 
   /// Captions clear of the seek bar while the controls are up.
-  static const _subsLow = SubtitleViewConfiguration(
-    padding: EdgeInsets.fromLTRB(16, 0, 16, 28),
-  );
-  static const _subsAboveControls = SubtitleViewConfiguration(
-    padding: EdgeInsets.fromLTRB(16, 0, 16, 150),
-  );
-
   Widget _videoSurface() {
     final controller = _controller;
     if (controller == null) return const SizedBox.shrink();
@@ -4299,8 +4601,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
       fit: _videoFit,
       controls: _videoControls,
       wakelock: true,
-      subtitleViewConfiguration:
-          _showChrome && _showSeekControls ? _subsAboveControls : _subsLow,
+      subtitleViewConfiguration: _subtitleView(_showChrome && _showSeekControls ? 150 : 28),
       onEnterFullscreen: () async {
         if (mounted) setState(() => _inFullscreen = true);
         await _setNativeFullscreen(true);
@@ -4318,6 +4619,27 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     }
     return video;
   }
+}
+
+/// Any widget as a menu row (the subtitle style controls); never a choice.
+class _MenuBox<T> extends PopupMenuEntry<T> {
+  const _MenuBox({required this.child});
+
+  final Widget child;
+
+  @override
+  double get height => 200;
+
+  @override
+  bool represents(T? value) => false;
+
+  @override
+  State<_MenuBox<T>> createState() => _MenuBoxState<T>();
+}
+
+class _MenuBoxState<T> extends State<_MenuBox<T>> {
+  @override
+  Widget build(BuildContext context) => widget.child;
 }
 
 /// Round player button, same on every platform and the TV app: dark circle,

@@ -94,6 +94,9 @@ impl Query {
         }
         qb.push(" WHERE 1=1");
         apply_filters(&mut qb, &filter);
+        if !(continue_watching || favorites || watched) {
+            apply_rated_only(&mut qb);
+        }
         if let Some(names) = &service_names {
             qb.push(" AND EXISTS (SELECT 1 FROM addon_catalog_items a WHERE ");
             push_service_match(&mut qb, names);
@@ -137,6 +140,9 @@ impl Query {
         }
         count_qb.push(" WHERE 1=1");
         apply_filters(&mut count_qb, &filter);
+        if !(continue_watching || favorites || watched) {
+            apply_rated_only(&mut count_qb);
+        }
         if let Some(names) = &service_names {
             count_qb.push(" AND EXISTS (SELECT 1 FROM addon_catalog_items a WHERE ");
             push_service_match(&mut count_qb, names);
@@ -217,6 +223,47 @@ impl Query {
             }
         });
         Ok(Some(Title::from_row(row, &state.config.public_url)))
+    }
+
+    /// "More like this" for a title page: what TMDB recommends that is (or is
+    /// now) in the catalog, in TMDB's order. Empty without a TMDB key.
+    async fn similar_titles(
+        &self,
+        ctx: &Context<'_>,
+        title_id: Uuid,
+        limit: Option<i32>,
+    ) -> async_graphql::Result<Vec<Title>> {
+        let state = ctx.data::<AppState>()?;
+        let limit = limit.unwrap_or(12).clamp(1, 24) as usize;
+        let ingest = crate::ingest::IngestContext::from(state);
+        let ids = match crate::ingest::tmdb::similar_titles(&ingest, title_id, limit).await {
+            Ok(ids) => ids,
+            Err(e) => {
+                // A missing row is not worth failing the title page over.
+                tracing::warn!(title_id = %title_id, error = %e, "more like this failed");
+                return Ok(vec![]);
+            }
+        };
+        if ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let mut qb = sqlx::QueryBuilder::new("SELECT ");
+        qb.push(TITLE_COLUMNS);
+        qb.push(" FROM titles t WHERE t.id = ANY(");
+        qb.push_bind(ids.clone());
+        qb.push(")");
+        apply_adult_block(&mut qb);
+        apply_released_only(&mut qb);
+        apply_rated_only(&mut qb);
+        // Titles already in the catalog skip the import-time language check.
+        apply_language_filter(&mut qb, &state.config.live.preferred_language_codes());
+        let rows: Vec<TitleRow> = qb.build_query_as().fetch_all(&state.pool).await?;
+        let mut by_id: std::collections::HashMap<Uuid, TitleRow> =
+            rows.into_iter().map(|r| (r.id, r)).collect();
+        Ok(ids
+            .into_iter()
+            .filter_map(|id| by_id.remove(&id).map(|r| Title::from_row(r, &state.config.public_url)))
+            .collect())
     }
 
     async fn search(
@@ -337,6 +384,7 @@ impl Query {
         qb.push(")");
         apply_adult_block(&mut qb);
         apply_released_only(&mut qb);
+        apply_rated_only(&mut qb);
         let rows: Vec<TitleRow> = qb.build_query_as().fetch_all(&state.pool).await?;
 
         let mut by_id: std::collections::HashMap<Uuid, TitleRow> =
@@ -1002,6 +1050,7 @@ async fn fetch_home_row(
     }
     apply_adult_block(&mut qb);
     apply_released_only(&mut qb);
+    apply_rated_only(&mut qb);
     apply_language_filter(&mut qb, langs);
     qb.push(" ORDER BY ");
     qb.push(order_sql(Some(kind), sort, SortDir::Desc));
@@ -1107,6 +1156,7 @@ async fn trending_with_addon_catalogs(
     qb.push(")");
     apply_adult_block(&mut qb);
     apply_released_only(&mut qb);
+    apply_rated_only(&mut qb);
     apply_language_filter(&mut qb, langs);
     let found: Vec<TitleRow> = qb.build_query_as().fetch_all(pool).await?;
     let mut by_id: std::collections::HashMap<Uuid, Title> = found
@@ -1184,6 +1234,20 @@ fn apply_adult_block<'a>(qb: &mut sqlx::QueryBuilder<'a, sqlx::Postgres>) {
             upper(trim(COALESCE(t.content_rating, ''))) IN ('XXX','AO') \
             OR upper(COALESCE(t.content_rating, '')) LIKE '%XXX%'\
         )",
+    );
+}
+
+/// Only titles with a known id (TMDB, IMDb or AniList: OMDb-only servers have no
+/// TMDB ids) and a score (TMDB, IMDb, Rotten Tomatoes or AniList): the rest are
+/// hidden from every browse list on every device. Rows stay in the
+/// database, so a title shows up again once it gets a rating. Your own lists
+/// (Continue watching, My List, Watched) still show everything.
+fn apply_rated_only<'a>(qb: &mut sqlx::QueryBuilder<'a, sqlx::Postgres>) {
+    qb.push(
+        " AND (t.tmdb_id IS NOT NULL OR t.imdb_id IS NOT NULL OR t.anilist_id IS NOT NULL) \
+          AND EXISTS (SELECT 1 FROM ratings rr WHERE rr.title_id = t.id AND (\
+            COALESCE(rr.tmdb_vote_average, 0) > 0 OR COALESCE(rr.imdb_rating, 0) > 0 \
+            OR COALESCE(rr.rt_score, 0) > 0 OR COALESCE(rr.anilist_score, 0) > 0))",
     );
 }
 

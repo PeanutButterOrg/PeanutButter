@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Generated from design/tokens.json by scripts/gen-design-tokens.py. Do not edit. -->
+<resources>
+    <style name="TextAppearance.Pb.Hero" parent="android:TextAppearance">
+        <item name="android:fontFamily">@font/space_grotesk</item>
+        <item name="android:textSize">@dimen/pbt_type_hero</item>
+        <item name="android:textColor">@color/pbt_text</item>
+        <item name="android:letterSpacing">-0.011</item>
+        <item name="android:fontVariationSettings">\'wght\' 700</item>
+    </style>
+    <style name="TextAppearance.Pb.H1" parent="android:TextAppearance">
+        <item name="android:fontFamily">@font/space_grotesk</item>
+        <item name="android:textSize">@dimen/pbt_type_h1</item>
+        <item name="android:textColor">@color/pbt_text</item>
+        <item name="android:letterSpacing">-0.009</item>
+        <item name="android:fontVariationSettings">\'wght\' 700</item>
+    </style>
+    <style name="TextAppearance.Pb.H2" parent="android:TextAppearance">
+        <item name="android:fontFamily">@font/space_grotesk</item>
+        <item name="android:textSize">@dimen/pbt_type_h2</item>
+        <item name="android:textColor">@color/pbt_text</item>
+        <item name="android:fontVariationSettings">\'wght\' 600</item>
+    </style>
+    <style name="TextAppearance.Pb.Title" parent="android:TextAppearance">
+        <item name="android:fontFamily">@font/inter</item>
+        <item name="android:textSize">@dimen/pbt_type_title</item>
+        <item name="android:textColor">@color/pbt_text</item>
+        <item name="android:fontVariationSettings">\'wght\' 600</item>
+    </style>
+    <style name="TextAppearance.Pb.Body" parent="android:TextAppearance">
+        <item name="android:fontFamily">@font/inter</item>
+        <item name="android:textSize">@dimen/pbt_type_body</item>
+        <item name="android:textColor">@color/pbt_text</item>
+        <item name="android:fontVariationSettings">\'wght\' 400</item>
+    </style>
+    <style name="TextAppearance.Pb.Meta" parent="android:TextAppearance">
+        <item name="android:fontFamily">@font/inter</item>
+        <item name="android:textSize">@dimen/pbt_type_meta</item>
+        <item name="android:textColor">@color/pbt_text</item>
+        <item name="android:fontVariationSettings">\'wght\' 500</item>
+    </style>
+    <style name="TextAppearance.Pb.Label" parent="android:TextAppearance">
+        <item name="android:fontFamily">@font/inter</item>
+        <item name="android:textSize">@dimen/pbt_type_label</item>
+        <item name="android:textColor">@color/pbt_text</item>
+        <item name="android:letterSpacing">0.067</item>
+        <item name="android:fontVariationSettings">\'wght\' 700</item>
+    </style>
+    <style name="TextAppearance.Pb.Button" parent="android:TextAppearance">
+        <item name="android:fontFamily">@font/inter</item>
+        <item name="android:textSize">@dimen/pbt_type_button</item>
+        <item name="android:textColor">@color/pbt_text</item>
+        <item name="android:fontVariationSettings">\'wght\' 600</item>
+    </style>
+</resources>

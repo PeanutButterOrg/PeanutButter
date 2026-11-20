@@ -34,6 +34,9 @@ int catalogPageAfter({
 
 final selectedKindProvider = StateProvider<String>((ref) => 'MOVIE');
 
+/// The home section in the top bar: 'HOME' (movies and series), 'MOVIE' or 'SERIES'.
+final homeSectionProvider = StateProvider<String>((ref) => 'HOME');
+
 final catalogEpochProvider = StateProvider<int>((ref) => 0);
 
 final refreshBusyProvider = StateProvider<bool>((ref) => false);
@@ -600,6 +603,28 @@ final genresProvider = FutureProvider.family<List<String>, String?>((ref, kind) 
 
 /// Auto-disposed so every title opened in a session isn't held forever, but
 /// kept for a few minutes after its page closes so going back stays instant.
+/// "More like this" for a title page; empty on servers without it or on any error.
+final similarTitlesProvider = FutureProvider.autoDispose.family<List<TitleItem>, String>((ref, id) async {
+  final client = ref.watch(graphQLClientProvider);
+  try {
+    final result = await client
+        .query(
+          QueryOptions(
+            document: gql(SIMILAR_TITLES),
+            variables: {'titleId': id, 'limit': 12},
+            fetchPolicy: FetchPolicy.noCache,
+          ),
+        )
+        // The server may store new titles from TMDB first: give it time.
+        .timeout(const Duration(seconds: 45));
+    if (result.hasException) return const [];
+    final items = result.data?['similarTitles'] as List? ?? const [];
+    return items.map((e) => TitleItem.fromJson(e as Map<String, dynamic>)).toList();
+  } catch (_) {
+    return const [];
+  }
+});
+
 final detailProvider = FutureProvider.autoDispose.family<TitleItem?, String>((ref, id) async {
   final link = ref.keepAlive();
   Timer? expiry;
@@ -675,12 +700,18 @@ class SearchNotifier extends StateNotifier<SearchState> {
   Timer? _debounce;
   var _generation = 0;
 
+  /// Searching starts at this many characters, once typing pauses for [_pause].
+  static const minLength = 2;
+  static const _pause = Duration(milliseconds: 450);
+
+  static bool searchable(String query) => query.trim().length >= minLength;
+
   void onQueryChanged(String value) {
     _debounce?.cancel();
     final generation = ++_generation;
     state = state.copyWith(query: value);
     final trimmed = value.trim();
-    if (trimmed.isEmpty) {
+    if (trimmed.length < minLength) {
       state = SearchState(
         query: value,
         kind: state.kind,
@@ -695,7 +726,7 @@ class SearchNotifier extends StateNotifier<SearchState> {
     }
     // Old results go at once and the loader shows while the user pauses.
     state = state.copyWith(loading: true, results: const [], clearError: true);
-    _debounce = Timer(const Duration(milliseconds: 320), () {
+    _debounce = Timer(_pause, () {
       _run(trimmed, page: 1, replace: true, generation: generation);
     });
   }
@@ -703,7 +734,7 @@ class SearchNotifier extends StateNotifier<SearchState> {
   void setKind(String? kind) {
     state = state.copyWith(kind: kind, clearKind: kind == null);
     final q = state.query.trim();
-    if (q.isNotEmpty) {
+    if (searchable(q)) {
       _run(q, page: 1, replace: true);
     }
   }
@@ -718,7 +749,7 @@ class SearchNotifier extends StateNotifier<SearchState> {
       clearYearMax: facets.yearMax == null,
     );
     final q = state.query.trim();
-    if (q.isNotEmpty) {
+    if (searchable(q)) {
       _run(q, page: 1, replace: true);
     }
   }
@@ -733,7 +764,7 @@ class SearchNotifier extends StateNotifier<SearchState> {
 
   Future<void> loadMore() async {
     final q = state.query.trim();
-    if (!state.hasNextPage || state.loadingMore || state.loading || q.isEmpty) {
+    if (!state.hasNextPage || state.loadingMore || state.loading || !searchable(q)) {
       return;
     }
     await _run(q, page: state.page + 1, replace: false, generation: _generation);

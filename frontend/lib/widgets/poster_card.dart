@@ -4,9 +4,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:go_router/go_router.dart';
 
+import '../design/tokens.g.dart';
 import '../models.dart';
 import '../service_logos.dart';
-import '../theme.dart';
 import '../tv.dart';
 import 'cached_art.dart';
 import 'rt_badge.dart';
@@ -25,6 +25,9 @@ class PosterCard extends ConsumerStatefulWidget {
 class _PosterCardState extends ConsumerState<PosterCard> {
   late final FocusNode _focus;
   late final bool _ownsFocus;
+  bool _hover = false;
+  /// Focus from the keyboard or remote (not a mouse click): show the ring.
+  bool _ring = false;
 
   @override
   void initState() {
@@ -58,12 +61,14 @@ class _PosterCardState extends ConsumerState<PosterCard> {
   Widget build(BuildContext context) {
     final item = widget.item;
     final tv = isAndroidTv;
-    final highlighted = _focus.hasFocus;
+    final highlighted = _focus.hasFocus && (tv || _ring);
+    final lifted = highlighted || _hover;
     return TvFocus(
       child: FocusableActionDetector(
         focusNode: _focus,
         mouseCursor: SystemMouseCursors.click,
-        onShowFocusHighlight: (_) {},
+        onShowFocusHighlight: (v) => setState(() => _ring = v),
+        onShowHoverHighlight: (v) => setState(() => _hover = v),
         onFocusChange: _onFocus,
         shortcuts: const {
           SingleActivator(LogicalKeyboardKey.enter): ActivateIntent(),
@@ -87,19 +92,19 @@ class _PosterCardState extends ConsumerState<PosterCard> {
           onSecondaryTapDown: (d) => _menu(context, d.globalPosition),
           child: RepaintBoundary(
             child: AnimatedScale(
-              scale: highlighted ? (tv ? TvPosterDim.scale : 1.08) : 1,
+              scale: tv
+                  ? (highlighted ? PbSize.focusScaleTv : 1)
+                  : (lifted ? 1.04 : 1),
               alignment: Alignment.center,
               duration: Duration(milliseconds: tv ? 160 : 180),
               curve: Curves.easeOut,
               child: tv
                   ? DecoratedBox(
                       decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(12),
+                        borderRadius: BorderRadius.circular(PbRadius.card + 3),
                         border: Border.all(
-                          color: highlighted
-                              ? Colors.white.withValues(alpha: 0.92)
-                              : Colors.transparent,
-                          width: 3,
+                          color: highlighted ? PbColors.focus : Colors.transparent,
+                          width: PbSize.focusRing,
                         ),
                         boxShadow: highlighted
                             ? [
@@ -112,16 +117,21 @@ class _PosterCardState extends ConsumerState<PosterCard> {
                             : null,
                       ),
                       child: ClipRRect(
-                        borderRadius: BorderRadius.circular(10),
+                        borderRadius: BorderRadius.circular(PbRadius.card),
                         child: _posterFace(item, compact: true),
                       ),
                     )
                   : Material(
-                      elevation: highlighted ? 18 : 2,
+                      elevation: lifted ? 14 : 2,
                       shadowColor: Colors.black,
-                      color: Colors.transparent,
+                      color: PbColors.surface,
                       surfaceTintColor: Colors.transparent,
-                      borderRadius: BorderRadius.circular(12),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(PbRadius.card),
+                        side: highlighted
+                            ? const BorderSide(color: PbColors.focus, width: PbSize.focusRing)
+                            : BorderSide.none,
+                      ),
                       clipBehavior: Clip.antiAlias,
                       child: _posterFace(item, compact: false),
                     ),
@@ -133,19 +143,21 @@ class _PosterCardState extends ConsumerState<PosterCard> {
   }
 
   Widget _posterFace(TitleItem item, {required bool compact}) {
+    final hasArt = item.posterUrl != null && item.posterUrl!.isNotEmpty;
     return Stack(
       fit: StackFit.expand,
       children: [
         CachedArt(url: item.posterUrl, memCacheWidth: compact ? 280 : 420),
-        const DecoratedBox(
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topCenter,
-              end: Alignment.bottomCenter,
-              colors: [Color(0x66000000), Colors.transparent, Color(0xCC000000)],
+        if (!hasArt)
+          const DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [Colors.transparent, Color(0xCC000000)],
+              ),
             ),
           ),
-        ),
         Padding(
           padding: EdgeInsets.all(compact ? 6 : 8),
           child: Column(
@@ -153,10 +165,9 @@ class _PosterCardState extends ConsumerState<PosterCard> {
             children: [
               Row(
                 children: [
+                  // Star score only: stream quality belongs in Choose a stream.
                   RatingBadge(item: item),
                   const Spacer(),
-                  if (item.bestQuality != null && item.bestQuality!.isNotEmpty)
-                    _badge(item.bestQuality!, Colors.black87),
                   if (item.userState?.favorite == true ||
                       item.userState?.watched == true) ...[
                     const SizedBox(width: 4),
@@ -170,6 +181,7 @@ class _PosterCardState extends ConsumerState<PosterCard> {
                 ],
               ),
               const Spacer(),
+              if (!hasArt) ...[
               Text(
                 item.title,
                 maxLines: 2,
@@ -186,37 +198,24 @@ class _PosterCardState extends ConsumerState<PosterCard> {
                   '${item.year}',
                   style: TextStyle(color: Colors.white70, fontSize: compact ? 10 : 11),
                 ),
+              ],
             ],
           ),
         ),
-        if (_progressOf(item) > 0.02)
+        if (titleProgress(item) > 0.02)
           Positioned(
             left: 0,
             right: 0,
             bottom: 0,
             child: LinearProgressIndicator(
-              value: _progressOf(item),
+              value: titleProgress(item),
               minHeight: 3,
               backgroundColor: Colors.white24,
-              color: AppTheme.seed,
+              color: PbColors.primary,
             ),
           ),
       ],
     );
-  }
-
-  double _progressOf(TitleItem item) {
-    final state = item.userState;
-    if (state == null || state.watched) return 0;
-    // The server's figure covers the whole season for a series, not the episode
-    // playing. Keep a sliver so early progress still shows on the card.
-    if (state.progressPercent > 0) {
-      return state.progressPercent.clamp(0.02, 1.0);
-    }
-    if (state.positionMs < 2000) return 0;
-    final duration = state.durationMs ?? 0;
-    if (duration <= 0) return 0.08;
-    return (state.positionMs / duration).clamp(0.0, 1.0);
   }
 
   /// The service's logo in its colour; a short text mark when there's no logo.
@@ -305,17 +304,6 @@ class _PosterCardState extends ConsumerState<PosterCard> {
     );
   }
 
-  Widget _badge(String text, Color color) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-      decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(5)),
-      child: Text(
-        text,
-        style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
-      ),
-    );
-  }
-
   Future<void> _menu(BuildContext context, Offset pos) async {
     final selected = await showMenu<String>(
       context: context,
@@ -329,4 +317,19 @@ class _PosterCardState extends ConsumerState<PosterCard> {
       context.push('/edit/${widget.item.id}');
     }
   }
+}
+
+/// Resume progress (0–1) for a title's bar; 0 when there's nothing to resume.
+double titleProgress(TitleItem item) {
+  final state = item.userState;
+  if (state == null || state.watched) return 0;
+  // The server's figure covers the whole season for a series, not the episode
+  // playing. Keep a sliver so early progress still shows on the card.
+  if (state.progressPercent > 0) {
+    return state.progressPercent.clamp(0.02, 1.0);
+  }
+  if (state.positionMs < 2000) return 0;
+  final duration = state.durationMs ?? 0;
+  if (duration <= 0) return 0.08;
+  return (state.positionMs / duration).clamp(0.0, 1.0);
 }

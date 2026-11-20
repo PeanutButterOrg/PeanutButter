@@ -1,30 +1,25 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Secondary action: translucent pill; blue ring when focused. -->
 <selector xmlns:android="http://schemas.android.com/apk/res/android">
     <item android:state_pressed="true">
         <shape android:shape="rectangle">
-            <solid android:color="#55FFFFFF" />
-            <stroke
-                android:width="2dp"
-                android:color="@color/pb_seed" />
-            <corners android:radius="24dp" />
+            <solid android:color="#33FFFFFF" />
+            <stroke android:width="@dimen/pbt_size_focus_ring" android:color="@color/pbt_focus" />
+            <corners android:radius="@dimen/pbt_radius_pill" />
         </shape>
     </item>
     <item android:state_focused="true">
         <shape android:shape="rectangle">
-            <solid android:color="#44FFFFFF" />
-            <stroke
-                android:width="2dp"
-                android:color="@color/pb_seed" />
-            <corners android:radius="24dp" />
+            <solid android:color="#26FFFFFF" />
+            <stroke android:width="@dimen/pbt_size_focus_ring" android:color="@color/pbt_focus" />
+            <corners android:radius="@dimen/pbt_radius_pill" />
         </shape>
     </item>
     <item>
         <shape android:shape="rectangle">
-            <solid android:color="@android:color/transparent" />
-            <stroke
-                android:width="1dp"
-                android:color="#61FFFFFF" />
-            <corners android:radius="24dp" />
+            <solid android:color="#14FFFFFF" />
+            <stroke android:width="1dp" android:color="#2EFFFFFF" />
+            <corners android:radius="@dimen/pbt_radius_pill" />
         </shape>
     </item>
 </selector>

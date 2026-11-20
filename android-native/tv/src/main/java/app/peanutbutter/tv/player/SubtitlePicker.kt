@@ -32,6 +32,9 @@ class SubtitlePicker(
     private val season: () -> Int?,
     private val episode: () -> Int?,
     private val languages: () -> Set<String>,
+    /** This video's subtitle delay, kept by the player between menu opens. */
+    private val delayMs: () -> Long = { 0L },
+    private val setDelayMs: (Long) -> Unit = {},
 ) {
     fun show() {
         activity.lifecycleScope.launch {
@@ -42,12 +45,18 @@ class SubtitlePicker(
             val tracks = player()?.listTextTracks().orEmpty()
             val langs = app.peanutbutter.core.ContentLanguages.subtitleLanguages(languages())
             val options = ArrayList<Pair<String, () -> Unit>>()
+            // As on desktop: the look (size, background, delay) comes first.
+            // Only when this player can apply at least one of them (VLC: delay only).
+            val hasStyle = player()?.canStyleSubtitles == true || player()?.canDelaySubtitles == true
+            if (hasStyle) {
+                options += activity.getString(R.string.subs_style) to { showStyle() }
+            }
             options += activity.getString(R.string.subs_off) to { player()?.selectTextTrack(null) }
             tracks.forEach { (id, label) ->
                 options += label to { player()?.selectTextTrack(id) }
             }
             val current = player()?.selectedTextTrackId
-            val checked = if (current == null) 0 else tracks.indexOfFirst { it.first == current } + 1
+            val checked = (if (hasStyle) 1 else 0) + if (current == null) 0 else tracks.indexOfFirst { it.first == current } + 1
             val subsReady = info?.subtitlesConfigured == true ||
                 info?.opensubtitlesConfigured == true ||
                 info?.wyzieConfigured == true
@@ -72,6 +81,111 @@ class SubtitlePicker(
             options += activity.getString(R.string.subs_from_link) to { promptLink() }
             showList(activity.getString(R.string.subs_title), options, checked)
         }
+    }
+
+    /** Size, Background and Delay, each a row of chips in the app's panel. */
+    private fun showStyle() {
+        val view = android.view.LayoutInflater.from(activity).inflate(R.layout.dialog_list, null)
+        view.findViewById<TextView>(R.id.dialog_title).text = activity.getString(R.string.subs_style_title)
+        val list = view.findViewById<LinearLayout>(R.id.dialog_list)
+        val done = view.findViewById<TextView>(R.id.dialog_negative)
+        done.setText(R.string.done)
+        val density = activity.resources.displayMetrics.density
+        fun dp(v: Int) = (v * density).toInt()
+        fun label(text: Int) = TextView(activity).apply {
+            setText(text)
+            textSize = 12f
+            letterSpacing = 0.1f
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            setTextColor(activity.getColor(R.color.pbt_text_faint))
+            setPadding(0, dp(10), 0, dp(6))
+        }
+        fun chip(text: String, textSp: Float = 15f) = TextView(activity).apply {
+            this.text = text
+            textSize = textSp
+            gravity = android.view.Gravity.CENTER
+            isFocusable = true
+            isFocusableInTouchMode = true
+            setBackgroundResource(R.drawable.choice_chip)
+            minWidth = dp(64)
+            setPadding(dp(14), 0, dp(14), 0)
+        }
+        fun row(chips: List<TextView>): LinearLayout = LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            chips.forEachIndexed { i, c ->
+                addView(c, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(40)).apply {
+                    if (i > 0) marginStart = dp(8)
+                })
+            }
+        }
+        fun paint(chips: List<TextView>, picked: Int) = chips.forEachIndexed { i, c ->
+            c.isSelected = i == picked
+            c.setTextColor(activity.getColor(if (i == picked) R.color.pbt_on_primary else R.color.pbt_text))
+        }
+
+        val sizeChips = (0 until 4).map { chip("A", 13f + it * 3) }
+        val bgKeys = listOf("shadow", "outline", "box")
+        val bgChips = listOf(R.string.subs_bg_shadow, R.string.subs_bg_outline, R.string.subs_bg_box)
+            .map { chip(activity.getString(it)) }
+        paint(sizeChips, SubtitleLook.size(activity))
+        paint(bgChips, bgKeys.indexOf(SubtitleLook.background(activity)).coerceAtLeast(0))
+        sizeChips.forEachIndexed { i, c ->
+            c.setOnClickListener {
+                SubtitleLook.save(activity, size = i)
+                paint(sizeChips, i)
+                SubtitleLook.apply(activity, player())
+            }
+        }
+        bgChips.forEachIndexed { i, c ->
+            c.setOnClickListener {
+                SubtitleLook.save(activity, background = bgKeys[i])
+                paint(bgChips, i)
+                SubtitleLook.apply(activity, player())
+            }
+        }
+        val canStyle = player()?.canStyleSubtitles == true
+        if (canStyle) {
+            list.addView(label(R.string.subs_size))
+            list.addView(row(sizeChips))
+            list.addView(label(R.string.subs_background))
+            list.addView(row(bgChips))
+        }
+        if (player()?.canDelaySubtitles == true) {
+            val value = TextView(activity).apply {
+                gravity = android.view.Gravity.CENTER
+                textSize = 15f
+                setTextColor(activity.getColor(R.color.pbt_text))
+                minWidth = dp(96)
+            }
+            fun show() {
+                value.text = String.format(java.util.Locale.US, "%.1f s", delayMs() / 1000.0)
+            }
+            fun step(by: Long) {
+                val next = delayMs() + by
+                setDelayMs(next)
+                player()?.setSubtitleDelay(next)
+                show()
+            }
+            val minus = chip("−").apply { setOnClickListener { step(-100) } }
+            val plus = chip("+").apply { setOnClickListener { step(100) } }
+            show()
+            list.addView(label(R.string.subs_delay))
+            list.addView(LinearLayout(activity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = android.view.Gravity.CENTER_VERTICAL
+                addView(minus, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(40)))
+                addView(value, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(40)))
+                addView(plus, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(40)))
+            })
+        }
+        val dialog = AlertDialog.Builder(activity).setView(view).create()
+        done.setOnClickListener { dialog.dismiss() }
+        dialog.setOnShowListener {
+            dialog.window?.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT))
+            if (canStyle) sizeChips[SubtitleLook.size(activity)].requestFocus() else done.requestFocus()
+        }
+        dialog.show()
+        dialog.window?.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT))
     }
 
     private fun searchWyzie(language: String) {
@@ -255,5 +369,29 @@ class SubtitlePicker(
 
     private fun toast(message: String) {
         Toast.makeText(activity, message, Toast.LENGTH_SHORT).show()
+    }
+}
+
+/** Subtitle size and background, kept on this TV (desktop keeps its own). */
+object SubtitleLook {
+    private const val PREFS = "pb_player"
+
+    private fun prefs(context: android.content.Context) =
+        context.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE)
+
+    fun size(context: android.content.Context): Int = prefs(context).getInt("sub_size", 1).coerceIn(0, 3)
+
+    fun background(context: android.content.Context): String =
+        prefs(context).getString("sub_bg", "box") ?: "box"
+
+    fun save(context: android.content.Context, size: Int? = null, background: String? = null) {
+        prefs(context).edit().apply {
+            size?.let { putInt("sub_size", it) }
+            background?.let { putString("sub_bg", it) }
+        }.apply()
+    }
+
+    fun apply(context: android.content.Context, player: PlaybackEngine?) {
+        player?.setSubtitleLook(size(context), background(context))
     }
 }

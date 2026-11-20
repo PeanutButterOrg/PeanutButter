@@ -76,8 +76,12 @@ fun showRoundListDialog(
             isFocusableInTouchMode = true
             setBackgroundResource(R.drawable.bg_dialog_option)
             isSelected = i == checked
+            // The current pick: amber with a tick, as in the desktop menus.
             if (i == checked) {
+                setTextColor(activity.getColor(R.color.pbt_primary))
+                setTypeface(typeface, android.graphics.Typeface.BOLD)
                 setCompoundDrawablesRelativeWithIntrinsicBounds(0, 0, R.drawable.ic_check, 0)
+                compoundDrawableTintList = android.content.res.ColorStateList.valueOf(activity.getColor(R.color.pbt_primary))
             }
             setOnClickListener {
                 dialog.dismiss()

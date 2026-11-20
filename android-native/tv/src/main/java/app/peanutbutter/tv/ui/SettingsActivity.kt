@@ -137,13 +137,14 @@ class SettingsActivity : FragmentActivity() {
                         getString(R.string.subs_wyzie_hint) + " — paste to replace"
                 }
                 val jackett = findViewById<TextView>(R.id.jackett_status)
-                if (info.jackettConfigured) {
-                    jackett.text = getString(R.string.jackett_ok)
-                    jackett.setTextColor(ContextCompat.getColor(this@SettingsActivity, R.color.pb_completed))
-                } else {
-                    jackett.text = getString(R.string.jackett_missing)
-                    jackett.setTextColor(ContextCompat.getColor(this@SettingsActivity, R.color.pb_muted))
-                }
+                val ready = info.jackettConfigured
+                jackett.text = getString(if (ready) R.string.jackett_ok else R.string.jackett_missing)
+                jackett.setTextColor(
+                    ContextCompat.getColor(this@SettingsActivity, if (ready) R.color.pbt_text else R.color.pbt_text_muted),
+                )
+                jackett.compoundDrawablesRelative[0]?.mutate()?.setTint(
+                    ContextCompat.getColor(this@SettingsActivity, if (ready) R.color.pbt_good else R.color.pbt_text_faint),
+                )
             } catch (e: Exception) {
                 findViewById<TextView>(R.id.server_version).text = getString(R.string.error_generic)
                 Toast.makeText(this@SettingsActivity, e.message, Toast.LENGTH_LONG).show()
@@ -182,7 +183,7 @@ class SettingsActivity : FragmentActivity() {
                 setPadding(dp(18), dp(10), dp(18), dp(10))
                 isFocusable = true
                 isFocusableInTouchMode = true
-                background = ContextCompat.getDrawable(this@SettingsActivity, R.drawable.kind_tab_bg)
+                background = ContextCompat.getDrawable(this@SettingsActivity, R.drawable.choice_chip)
                 layoutParams = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.WRAP_CONTENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT,
@@ -203,7 +204,9 @@ class SettingsActivity : FragmentActivity() {
         for (i in 0 until container.childCount) {
             val chip = container.getChildAt(i) as? TextView ?: continue
             val on = isOn(chip.tag)
-            chip.setTextColor(ContextCompat.getColor(this, if (on) R.color.pb_seed else R.color.pb_muted))
+            // Chosen: amber chip with dark text (same as desktop).
+            chip.isSelected = on
+            chip.setTextColor(ContextCompat.getColor(this, if (on) R.color.pbt_on_primary else R.color.pbt_text))
             chip.setTypeface(null, if (on) Typeface.BOLD else Typeface.NORMAL)
         }
     }

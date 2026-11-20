@@ -43,6 +43,10 @@ class HeroCarousel(context: Context) : FrameLayout(context) {
         val progress: Int? = null,
         /** PeanutButter logo instead of artwork (connect / offline cards). */
         val appLogo: Boolean = false,
+        /** Title slides: Play starts it (the card then shows Play · More info). */
+        val onPlay: (() -> Unit)? = null,
+        /** Star score line start, e.g. "8.7 IMDb"; drawn with an amber star. */
+        val score: String? = null,
         val onClick: () -> Unit,
     )
 
@@ -60,14 +64,22 @@ class HeroCarousel(context: Context) : FrameLayout(context) {
         Motion.round(this, 24f)
         visibility = View.GONE
     }
-    private val kicker = text(14f, R.color.pb_seed, bold = true)
-    private val title = text(30f, R.color.pb_white, bold = true)
+    private val kicker = text(12f, R.color.pbt_primary, bold = false).apply {
+        setTextAppearance(R.style.TextAppearance_Pb_Label)
+        setTextColor(ContextCompat.getColor(context, R.color.pbt_primary))
+        letterSpacing = 0.1f
+        isAllCaps = true
+    }
+    private val title = text(40f, R.color.pb_white, bold = false).apply {
+        setTextAppearance(R.style.TextAppearance_Pb_Hero)
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 40f)
+    }
     private val titleLogo = ImageView(context).apply {
         scaleType = ImageView.ScaleType.FIT_START
         adjustViewBounds = false
         visibility = View.GONE
     }
-    private val subtitle = text(15f, R.color.pb_white, bold = false).apply { alpha = 0.85f }
+    private val subtitle = text(15f, R.color.pbt_text_muted, bold = false)
     private val description = text(14f, R.color.pb_muted, bold = false).apply {
         maxLines = 2
         setLineSpacing(0f, 1.15f)
@@ -76,6 +88,36 @@ class HeroCarousel(context: Context) : FrameLayout(context) {
         max = 100
         progressDrawable = ContextCompat.getDrawable(context, R.drawable.launcher_progress)
     }
+    // Play (amber) · More info, as on the TV app and desktop.
+    private val play = button(R.string.play, R.drawable.ic_play_arrow, primary = true)
+    private val info = button(R.string.more_info, R.drawable.ic_info, primary = false)
+    private val buttons = LinearLayout(context).apply {
+        orientation = LinearLayout.HORIZONTAL
+        clipChildren = false
+        clipToPadding = false
+        addView(play, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(48)))
+        addView(info, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(48)).apply { marginStart = dp(12) })
+    }
+
+    private fun button(label: Int, icon: Int, primary: Boolean) = LinearLayout(context).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        background = ContextCompat.getDrawable(context, if (primary) R.drawable.bg_button_primary else R.drawable.bg_button_ghost)
+        setPadding(dp(18), 0, dp(22), 0)
+        isFocusable = true
+        isFocusableInTouchMode = true
+        val tint = ContextCompat.getColor(context, if (primary) R.color.pbt_on_primary else R.color.pbt_text)
+        addView(ImageView(context).apply {
+            setImageResource(icon)
+            imageTintList = android.content.res.ColorStateList.valueOf(tint)
+        }, LinearLayout.LayoutParams(dp(22), dp(22)))
+        addView(TextView(context).apply {
+            setTextAppearance(R.style.TextAppearance_Pb_Button)
+            setTextColor(tint)
+            setText(label)
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginStart = dp(8) })
+    }
+
     private val textBlock = LinearLayout(context).apply {
         orientation = LinearLayout.VERTICAL
         addView(kicker)
@@ -84,6 +126,7 @@ class HeroCarousel(context: Context) : FrameLayout(context) {
         addView(subtitle, LinearLayout.LayoutParams(dp(520), ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(8) })
         addView(description, LinearLayout.LayoutParams(dp(480), ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(6) })
         addView(progress, LinearLayout.LayoutParams(dp(320), dp(4)).apply { topMargin = dp(14) })
+        addView(buttons, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(16) })
     }
     private val dots = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
 
@@ -120,13 +163,27 @@ class HeroCarousel(context: Context) : FrameLayout(context) {
         })
         Motion.lift(this, 1.02f)
         setOnClickListener { slides.getOrNull(index)?.onClick?.invoke() }
-        setOnKeyListener { _, keyCode, event ->
-            if (event.action != KeyEvent.ACTION_DOWN || slides.size < 2) return@setOnKeyListener false
-            when (keyCode) {
-                KeyEvent.KEYCODE_DPAD_LEFT -> { show(index - 1, animate = true); schedule(); true }
-                KeyEvent.KEYCODE_DPAD_RIGHT -> { show(index + 1, animate = true); schedule(); true }
-                else -> false
-            }
+        setOnKeyListener { _, keyCode, event -> flipKey(keyCode, event) }
+        play.setOnClickListener { slides.getOrNull(index)?.onPlay?.invoke() }
+        info.setOnClickListener { slides.getOrNull(index)?.onClick?.invoke() }
+        // ◀ on Play / ▶ on More info flip the slide; between them, focus moves.
+        play.setOnKeyListener { _, keyCode, event ->
+            keyCode == KeyEvent.KEYCODE_DPAD_LEFT && flipKey(keyCode, event)
+        }
+        info.setOnKeyListener { _, keyCode, event ->
+            keyCode == KeyEvent.KEYCODE_DPAD_RIGHT && flipKey(keyCode, event)
+        }
+        for (b in listOf(play, info)) {
+            b.setOnFocusChangeListener { _, has -> if (has) schedule() }
+        }
+    }
+
+    private fun flipKey(keyCode: Int, event: KeyEvent): Boolean {
+        if (event.action != KeyEvent.ACTION_DOWN || slides.size < 2) return false
+        return when (keyCode) {
+            KeyEvent.KEYCODE_DPAD_LEFT -> { show(index - 1, animate = true); schedule(); true }
+            KeyEvent.KEYCODE_DPAD_RIGHT -> { show(index + 1, animate = true); schedule(); true }
+            else -> false
         }
     }
 
@@ -176,10 +233,25 @@ class HeroCarousel(context: Context) : FrameLayout(context) {
             kicker.text = s.kicker
             title.text = s.title
             bindTitleLogo(s)
-            subtitle.text = s.subtitle
-            subtitle.isVisible = s.subtitle.isNotBlank()
+            subtitle.text = android.text.SpannableStringBuilder().apply {
+                s.score?.let { score ->
+                    append("★ ", android.text.style.ForegroundColorSpan(ContextCompat.getColor(context, R.color.pbt_primary)), 0)
+                    append(score, android.text.style.ForegroundColorSpan(ContextCompat.getColor(context, R.color.pbt_text)), 0)
+                    if (s.subtitle.isNotBlank()) append("  ·  ")
+                }
+                append(s.subtitle)
+            }
+            subtitle.isVisible = s.subtitle.isNotBlank() || s.score != null
+            // Title slides: the buttons take focus; info cards (connect, offline): the whole card.
+            val withButtons = s.onPlay != null
+            val hadFocus = hasFocus()
+            buttons.isVisible = withButtons
+            isFocusable = !withButtons
+            descendantFocusability = if (withButtons) FOCUS_AFTER_DESCENDANTS else FOCUS_BLOCK_DESCENDANTS
+            if (hadFocus && !hasFocus()) (if (withButtons) play else this).requestFocus()
             description.text = s.description
-            description.isVisible = s.description.isNotBlank()
+            // Like the kit: title cards keep to name, score line and buttons.
+            description.isVisible = s.description.isNotBlank() && s.onPlay == null
             progress.isVisible = s.progress != null
             progress.progress = s.progress ?: 0
             contentDescription = "${s.kicker}. ${s.title}. ${s.subtitle}"
@@ -189,6 +261,9 @@ class HeroCarousel(context: Context) : FrameLayout(context) {
             val dot = dots.getChildAt(d)
             val on = d == index
             dot.animate().alpha(if (on) 1f else 0.35f).setDuration(200).start()
+            dot.backgroundTintList = android.content.res.ColorStateList.valueOf(
+                ContextCompat.getColor(context, if (on) R.color.pbt_primary else R.color.pb_white),
+            )
             dot.layoutParams = (dot.layoutParams as LinearLayout.LayoutParams).apply { width = dp(if (on) 22 else 6) }
         }
     }

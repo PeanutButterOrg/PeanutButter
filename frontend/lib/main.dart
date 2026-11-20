@@ -37,6 +37,12 @@ import 'widgets/update_prompt.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // The bundled fonts' licences (SIL OFL), listed with the other packages.
+  LicenseRegistry.addLicense(() async* {
+    for (final (family, file) in const [('Inter', 'Inter'), ('Space Grotesk', 'SpaceGrotesk')]) {
+      yield LicenseEntryWithLineBreaks([family], await rootBundle.loadString('assets/fonts/$file-OFL.txt'));
+    }
+  });
   // Android TV UX lives in the native Leanback app — Flutter is phone/desktop.
   DeviceProfile.refresh();
   debugPrint('PeanutButter main() start Uri.base=${Uri.base}');
@@ -191,6 +197,10 @@ GoRouter _buildRouter(SettingsState Function() readSettings) {
         pageBuilder: (context, state) => pageFor(state, const CatalogScreen()),
       ),
       GoRoute(
+        path: '/explore',
+        pageBuilder: (context, state) => pageFor(state, const CatalogScreen(explore: true)),
+      ),
+      GoRoute(
         path: '/search',
         pageBuilder: (context, state) => pageFor(state, const SearchScreen()),
       ),
@@ -206,7 +216,10 @@ GoRouter _buildRouter(SettingsState Function() readSettings) {
         path: '/title/:id',
         pageBuilder: (context, state) => pageFor(
           state,
-          DetailScreen(titleId: state.pathParameters['id']!),
+          DetailScreen(
+            titleId: state.pathParameters['id']!,
+            autoPlay: state.uri.queryParameters['play'] == '1',
+          ),
         ),
       ),
       GoRoute(

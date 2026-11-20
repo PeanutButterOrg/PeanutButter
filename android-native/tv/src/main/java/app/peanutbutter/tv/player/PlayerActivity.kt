@@ -68,6 +68,11 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
     private var resumeMs: Long = 0
     /** Position the current media was opened at; a reopen before playback starts reuses it. */
     private var openStartMs: Long = 0
+    /** Opened part-way in: "Continue from … / Start over" asked once, before playing. */
+    private var resumeAsked = false
+    private var askingResume = false
+    /** This video's subtitle delay (Size and Background are kept in [SubtitleLook]). */
+    private var subDelayMs = 0L
     private var waitJob: Job? = null
     private var statusPollJob: Job? = null
     private var stopped = false
@@ -669,6 +674,8 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             TvPlayback(this, playbackListener())
         }
         player?.bindSubtitles(findViewById(R.id.subtitles))
+        SubtitleLook.apply(this, player)
+        if (subDelayMs != 0L) player?.setSubtitleDelay(subDelayMs)
         val frame = findViewById<androidx.media3.ui.AspectRatioFrameLayout>(R.id.video_frame)
         (player as? TvPlayback)?.attachFrame(frame)
         (player as? VlcPlayback)?.attachFrame(frame)
@@ -1007,6 +1014,12 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
 
     private fun attachAndPlay() {
         val url = pendingUrl?.takeIf { it.isNotBlank() } ?: return
+        if (askingResume) return
+        if (!resumeAsked && !mediaAttached && resumeMs > 2_000L) {
+            resumeAsked = true
+            askResume()
+            return
+        }
         if (mediaAttached) {
             if (surfaceReady) {
                 player?.attachSurface(findViewById(R.id.surface))
@@ -1974,6 +1987,59 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         )
     }
 
+    /** The desktop's card: Continue from (focused) or Start over, then it plays. */
+    private fun askResume() {
+        askingResume = true
+        val view = layoutInflater.inflate(R.layout.dialog_resume, null)
+        val at = resumeMs
+        val total = lastKnownDurationMs
+        view.findViewById<TextView>(R.id.resume_title).text = titleView?.text ?: intent.getStringExtra(EXTRA_TITLE).orEmpty()
+        view.findViewById<TextView>(R.id.resume_at).text = formatMs(at)
+        view.findViewById<TextView>(R.id.resume_left).apply {
+            text = if (total > at) "-" + formatMs(total - at) else ""
+        }
+        view.findViewById<android.widget.ProgressBar>(R.id.resume_progress).apply {
+            isVisible = total > at
+            if (total > 0) progress = ((at * 1000) / total).toInt().coerceIn(10, 1000)
+        }
+        val go = view.findViewById<TextView>(R.id.resume_continue)
+        val restart = view.findViewById<TextView>(R.id.resume_restart)
+        go.text = getString(R.string.resume_continue, formatMs(at))
+        val dialog = android.app.AlertDialog.Builder(this).setView(view).setCancelable(true).create()
+        var picked = false
+        fun answer(fromStart: Boolean) {
+            if (picked) return
+            picked = true
+            dialog.dismiss()
+            askingResume = false
+            if (fromStart) {
+                resumeMs = 0
+                openStartMs = 0
+                lastGoodPosMs = 0
+                if (localTorrent && lastKnownDurationMs > 0) {
+                    runCatching { TorrentClient.retargetPlayhead(0, lastKnownDurationMs) }
+                }
+                torrentStartedWithResume = false
+            }
+            attachAndPlay()
+        }
+        go.setOnClickListener { answer(fromStart = false) }
+        restart.setOnClickListener { answer(fromStart = true) }
+        // Back on the card: leave, like Back before anything plays.
+        dialog.setOnCancelListener {
+            if (!picked) {
+                askingResume = false
+                finish()
+            }
+        }
+        dialog.setOnShowListener {
+            dialog.window?.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT))
+            go.requestFocus()
+        }
+        dialog.show()
+        dialog.window?.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT))
+    }
+
     private fun openAspect() {
         showChrome()
         val options = listOf(
@@ -2023,6 +2089,8 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             season = { seasonNum },
             episode = { episodeNum },
             languages = { app.session.preferredLanguages },
+            delayMs = { subDelayMs },
+            setDelayMs = { subDelayMs = it },
         ).show()
     }
 

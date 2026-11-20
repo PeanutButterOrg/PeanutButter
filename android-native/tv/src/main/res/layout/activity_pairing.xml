@@ -138,7 +138,7 @@
                 android:background="@drawable/bg_button_primary"
                 android:text="@string/pair_connect"
                 android:textAllCaps="false"
-                android:textColor="@color/pb_white" />
+                android:textColor="@color/pbt_on_primary" />
 
             <!-- Rounded outline like the app's other secondary buttons. -->
             <Button

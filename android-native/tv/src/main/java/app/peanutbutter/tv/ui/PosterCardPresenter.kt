@@ -11,6 +11,7 @@ import android.widget.TextView
 import androidx.core.view.isVisible
 import androidx.leanback.widget.Presenter
 import app.peanutbutter.core.ServiceBadges
+import app.peanutbutter.core.RankedTitle
 import app.peanutbutter.core.TitleItem
 import app.peanutbutter.tv.PbGlide
 import app.peanutbutter.tv.R
@@ -37,17 +38,45 @@ class PosterCardPresenter(
     }
 
     override fun onBindViewHolder(viewHolder: ViewHolder, item: Any) {
-        val loaded = item as TitleItem
+        // Top 10 shelves pass a RankedTitle: same card, rank number before it.
+        val ranked = item as? RankedTitle
+        val loaded = ranked?.item ?: item as TitleItem
         val title = UserStateEdits.apply(loaded)
         val root = viewHolder.view
         UserStateEdits.track(root, loaded, ::bindUserState)
+        // Top 10: the number gets its own room plus a small gap, never under the poster.
+        val rankRoom = if (ranked != null) rankWidth(root) + dp(root, 6) else 0
         val lp = root.layoutParams
         if (lp is ViewGroup.MarginLayoutParams) {
-            lp.width = cardWidth(root)
+            lp.width = cardWidth(root) + rankRoom
             lp.height = cardHeight(root)
             root.layoutParams = lp
         } else {
-            root.layoutParams = ViewGroup.MarginLayoutParams(cardWidth(root), cardHeight(root))
+            root.layoutParams = ViewGroup.MarginLayoutParams(cardWidth(root) + rankRoom, cardHeight(root))
+        }
+        root.findViewById<TextView>(R.id.rank)?.let { rank ->
+            rank.isVisible = ranked != null
+            rank.text = ranked?.rank?.toString().orEmpty()
+            // As tall as the poster, standing on its bottom edge.
+            (rank as? OutlineTextView)?.apply {
+                fitToBox = true
+                tuckFraction = 0.2f
+            }
+            (rank.layoutParams as? FrameLayout.LayoutParams)?.let {
+                it.width = rankWidth(root)
+                it.height = FrameLayout.LayoutParams.MATCH_PARENT
+                rank.layoutParams = it
+            }
+            rank.translationX = 0f
+            rank.translationY = 0f
+        }
+        root.findViewById<View>(R.id.card_body)?.let { body ->
+            (body.layoutParams as? FrameLayout.LayoutParams)?.let {
+                if (it.marginStart != rankRoom) {
+                    it.marginStart = rankRoom
+                    body.layoutParams = it
+                }
+            }
         }
         // Don't reset scale while focused — rebind during scroll would flash zoom-out
         if (!root.hasFocus()) {
@@ -69,6 +98,10 @@ class PosterCardPresenter(
         val scoreStar = root.findViewById<ImageView>(R.id.score_star)
 
         titleView.text = title.displayTitle
+        // The poster art carries the name; show ours only when there's no art.
+        val hasArt = !title.posterUrl.isNullOrBlank()
+        root.findViewById<View>(R.id.name_block)?.isVisible = !hasArt
+        root.findViewById<View>(R.id.poster_scrim)?.isVisible = !hasArt
         // Flutter: year only under title (no rating / genres / runtime)
         metaView.text = title.year?.toString().orEmpty()
         metaView.isVisible = title.year != null
@@ -175,6 +208,9 @@ class PosterCardPresenter(
         PbGlide.clear(poster)
     }
 
+    /** Room the Top 10 rank takes before the poster. */
+    private fun rankWidth(host: android.view.View): Int = dp(host, 90)
+
     private fun cardWidth(host: android.view.View): Int =
         if (widthPx > 0) widthPx else dp(host, CARD_W)
 
@@ -198,7 +234,7 @@ class PosterCardPresenter(
         const val CARD_W = 168
         const val CARD_H = 252
         /** Focused cards grow by this much; grids/rows reserve room for it. */
-        const val FOCUS_SCALE = 1.08f
+        const val FOCUS_SCALE = 1.06f
         private const val FOCUS_ELEVATION = 28f
         private const val REST_ELEVATION = 4f
 
@@ -229,7 +265,7 @@ class PosterCardPresenter(
             // root's scale and animates it back to 1.0 (zoom-in → zoom-out glitch).
             val body = card.findViewById<View>(R.id.card_body) ?: return
             card.translationZ = if (hasFocus) FOCUS_ELEVATION else 0f
-            // Lift (shadow) instead of an outline: no stroke on focused cards.
+            // Blue ring from poster_focus_ring (via duplicateParentState), plus a lift.
             card.findViewById<View>(R.id.poster_frame)?.elevation =
                 if (hasFocus) FOCUS_ELEVATION else 0f
             body.animate().cancel()

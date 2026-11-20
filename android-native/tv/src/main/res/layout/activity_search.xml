@@ -23,7 +23,7 @@
             android:id="@+id/kind_movies"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:background="@drawable/kind_tab_bg"
+            android:background="@drawable/choice_chip"
             android:focusable="true"
             android:focusableInTouchMode="true"
             android:gravity="center"
@@ -33,16 +33,15 @@
             android:paddingHorizontal="16dp"
             android:paddingVertical="10dp"
             android:text="@string/movies"
-            android:textColor="@color/pb_seed"
-            android:textSize="16sp"
-            android:textStyle="bold" />
+            android:textColor="@color/pbt_on_primary"
+            android:textAppearance="@style/TextAppearance.Pb.Button" />
 
         <TextView
             android:id="@+id/kind_series"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginStart="10dp"
-            android:background="@drawable/kind_tab_bg"
+            android:background="@drawable/choice_chip"
             android:focusable="true"
             android:focusableInTouchMode="true"
             android:gravity="center"
@@ -52,15 +51,15 @@
             android:paddingHorizontal="16dp"
             android:paddingVertical="10dp"
             android:text="@string/series"
-            android:textColor="@color/pb_muted"
-            android:textSize="16sp" />
+            android:textColor="@color/pbt_text"
+            android:textAppearance="@style/TextAppearance.Pb.Button" />
 
         <FrameLayout
             android:layout_width="0dp"
             android:layout_height="44dp"
             android:layout_marginStart="16dp"
             android:layout_weight="1"
-            android:background="@drawable/bg_field">
+            android:background="@drawable/bg_search_field">
 
             <EditText
                 android:id="@+id/query"
@@ -203,7 +202,7 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_gravity="center"
-            android:indeterminateTint="@color/pb_seed"
+            android:indeterminateTint="@color/pbt_primary"
             android:visibility="gone" />
     </FrameLayout>
 </LinearLayout>

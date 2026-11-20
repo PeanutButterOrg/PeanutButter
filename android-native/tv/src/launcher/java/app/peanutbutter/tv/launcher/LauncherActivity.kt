@@ -18,6 +18,7 @@ import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.RecyclerView
 import app.peanutbutter.core.HomeFeed
+import app.peanutbutter.core.HomeSections
 import app.peanutbutter.core.TitleItem
 import app.peanutbutter.tv.BuildConfig
 import app.peanutbutter.tv.R
@@ -405,47 +406,25 @@ class LauncherActivity : FragmentActivity() {
             content.submit(sections)
             return
         }
-        val movies = feeds["MOVIE"]
-        val series = feeds["SERIES"]
-        when (tab) {
-            Tab.HOME -> {
-                val resume = (movies ?: series)?.continueWatching.orEmpty()
-                val picks = resume.take(2).map { slide(it, resume = true) } +
-                    interleave(movies?.trending.orEmpty().take(3), series?.trending.orEmpty().take(3))
-                        .map { slide(it, resume = false) }
-                sections += Section.Hero(picks.ifEmpty { listOf(if (offline) offlineSlide() else loadingSlide()) })
-                sections += Section.Apps
-                if (resume.isNotEmpty()) sections += Section.Posters(getString(R.string.row_continue), resume, "CONTINUE_WATCHING", null)
-                movies?.trending?.takeIf { it.isNotEmpty() }
-                    ?.let { sections += Section.Posters(getString(R.string.row_trending_movies), it, "TRENDING", "MOVIE") }
-                series?.trending?.takeIf { it.isNotEmpty() }
-                    ?.let { sections += Section.Posters(getString(R.string.row_trending_series), it, "TRENDING", "SERIES") }
-            }
-            Tab.MOVIES, Tab.SERIES -> {
-                val kind = if (tab == Tab.MOVIES) "MOVIE" else "SERIES"
-                val feed = feeds[kind]
-                val hero = feed?.trending.orEmpty().take(6).map { slide(it, resume = false) }
-                sections += Section.Hero(hero.ifEmpty { listOf(if (offline) offlineSlide() else loadingSlide()) })
-                if (feed != null) {
-                    val resume = feed.continueWatching.filter { it.kind == kind }
-                    if (resume.isNotEmpty()) sections += Section.Posters(getString(R.string.row_continue), resume, "CONTINUE_WATCHING", kind)
-                    if (feed.trending.isNotEmpty()) sections += Section.Posters(getString(R.string.row_trending), feed.trending, "TRENDING", kind)
-                    if (feed.popular.isNotEmpty()) sections += Section.Posters(getString(R.string.row_popular), feed.popular, "POPULARITY", kind)
-                    if (feed.recent.isNotEmpty()) sections += Section.Posters(getString(R.string.row_recent), feed.recent, "DATE_ADDED", kind)
-                }
-            }
+        val section = when (tab) {
+            Tab.HOME -> HomeSections.HOME
+            Tab.MOVIES -> "MOVIE"
+            Tab.SERIES -> "SERIES"
+        }
+        // Same sections as the TV app and desktop (core HomeSections).
+        val layout = HomeSections.build(section, feeds["MOVIE"], feeds["SERIES"])
+        val hero = layout.hero.mapIndexed { i, item -> slide(item, layout.eyebrows.getOrNull(i)) }
+        sections += Section.Hero(hero.ifEmpty { listOf(if (offline) offlineSlide() else loadingSlide()) })
+        if (tab == Tab.HOME) sections += Section.Apps
+        for (shelf in layout.shelves) {
+            if (shelf.items.isEmpty()) continue
+            sections += Section.Posters(shelf.title, shelf.items, shelf.sort, shelf.kind, shelf.style)
         }
         content.submit(sections)
     }
 
-    private fun <T> interleave(a: List<T>, b: List<T>): List<T> =
-        (0 until maxOf(a.size, b.size)).flatMap { listOfNotNull(a.getOrNull(it), b.getOrNull(it)) }
-
-    private fun slide(item: TitleItem, resume: Boolean): HeroCarousel.Slide {
-        val left = ((item.durationMs - item.positionMs) / 60_000).toInt()
-        val kindLabel = getString(if (item.kind == "SERIES") R.string.kind_series else R.string.kind_movie)
-        // One short line: year · length · rating · genre (whatever the title has).
-        // Same as the title page: "1h", not "1h 0m".
+    private fun slide(item: TitleItem, eyebrow: String?): HeroCarousel.Slide {
+        // One short line after the score: year · length · genre (whatever the title has).
         val runtime = item.runtimeMinutes?.takeIf { it > 0 }?.let { m ->
             when {
                 m < 60 -> "${m}m"
@@ -453,16 +432,16 @@ class LauncherActivity : FragmentActivity() {
                 else -> "${m / 60}h ${m % 60}m"
             }
         }
-        val rating = (item.tmdbVoteAverage ?: item.imdbRating)?.takeIf { it > 0 }?.let { "★ %.1f".format(java.util.Locale.US, it) }
-        val meta = listOfNotNull(item.year?.toString(), runtime, rating, item.genres.firstOrNull()).joinToString("  ·  ")
+        val meta = listOfNotNull(item.year?.toString(), runtime, item.genres.firstOrNull()).joinToString("  ·  ")
         return HeroCarousel.Slide(
             key = item.id,
-            kicker = if (resume) getString(R.string.hero_continue) else "${getString(R.string.hero_trending)}  ·  $kindLabel",
+            kicker = eyebrow ?: getString(R.string.hero_trending),
             title = item.displayTitle,
-            subtitle = if (resume && left > 0) getString(R.string.hero_minutes_left, left) + "  ·  " + meta else meta,
+            subtitle = meta,
             description = item.synopsis?.trim().orEmpty(),
             art = item.backdropUrl ?: item.posterUrl,
-            progress = if (resume) HomeContent.progressPercentOf(item) else null,
+            score = item.displayScore?.let { "${it.label} ${it.source}" },
+            onPlay = { openTitle(item, play = true) },
         ) { openTitle(item) }
     }
 
@@ -502,11 +481,12 @@ class LauncherActivity : FragmentActivity() {
         startActivity(intent)
     }
 
-    private fun openTitle(item: TitleItem) {
+    private fun openTitle(item: TitleItem, play: Boolean = false) {
         startActivity(
             Intent(this, DetailsActivity::class.java)
                 .putExtra(DetailsActivity.EXTRA_ID, item.id)
-                .putExtra(DetailsActivity.EXTRA_TITLE, item.displayTitle),
+                .putExtra(DetailsActivity.EXTRA_TITLE, item.displayTitle)
+                .putExtra(DetailsActivity.EXTRA_AUTOPLAY, play),
         )
     }
 

@@ -1,22 +1,24 @@
 <?xml version="1.0" encoding="utf-8"?>
-<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    android:layout_width="212dp"
-    android:layout_height="120dp"
+<!-- An episode, as on desktop: the still (progress, watched tick), then
+     "2. Name", the runtime and two lines of the synopsis. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="300dp"
+    android:layout_height="wrap_content"
     android:clipChildren="false"
     android:clipToPadding="false"
     android:clickable="true"
     android:focusable="true"
     android:focusableInTouchMode="true"
-    android:paddingStart="0dp"
-    android:paddingTop="4dp"
-    android:paddingEnd="12dp"
-    android:paddingBottom="4dp">
+    android:orientation="vertical"
+    android:paddingTop="6dp"
+    android:paddingEnd="16dp"
+    android:paddingBottom="6dp">
 
     <!-- Face scales on focus; duplicateParentState so focus ring tracks outer focus -->
     <FrameLayout
         android:id="@+id/episode_face"
         android:layout_width="match_parent"
-        android:layout_height="match_parent"
+        android:layout_height="161dp"
         android:background="@drawable/poster_card_bg"
         android:duplicateParentState="true"
         android:foreground="@drawable/poster_focus_ring">
@@ -28,36 +30,6 @@
             android:contentDescription="@null"
             android:duplicateParentState="true"
             android:scaleType="centerCrop" />
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_gravity="bottom"
-            android:orientation="vertical"
-            android:padding="8dp">
-
-            <TextView
-                android:id="@+id/episode_code"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:textColor="@color/pb_seed"
-                android:textSize="11sp"
-                android:textStyle="bold" />
-
-            <TextView
-                android:id="@+id/episode_name"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:ellipsize="end"
-                android:maxLines="1"
-                android:shadowColor="#E6000000"
-                android:shadowDx="0"
-                android:shadowDy="1"
-                android:shadowRadius="3"
-                android:textColor="@color/pb_white"
-                android:textSize="12sp"
-                android:textStyle="bold" />
-        </LinearLayout>
 
         <ImageView
             android:id="@+id/episode_watched"
@@ -76,11 +48,42 @@
             android:id="@+id/episode_progress"
             style="?android:attr/progressBarStyleHorizontal"
             android:layout_width="match_parent"
-            android:layout_height="3dp"
+            android:layout_height="4dp"
             android:layout_gravity="bottom"
             android:max="100"
             android:progressBackgroundTint="#3DFFFFFF"
-            android:progressTint="@color/pb_seed"
+            android:progressTint="@color/pbt_primary"
             android:visibility="gone" />
     </FrameLayout>
-</FrameLayout>
+
+    <TextView
+        android:id="@+id/episode_name"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="10dp"
+        android:ellipsize="end"
+        android:maxLines="1"
+        android:textColor="@color/pbt_text"
+        android:textSize="15sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/episode_code"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="2dp"
+        android:textColor="@color/pbt_text_muted"
+        android:textSize="13sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/episode_overview"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:ellipsize="end"
+        android:lineSpacingExtra="2dp"
+        android:maxLines="2"
+        android:textColor="@color/pbt_text_faint"
+        android:textSize="13sp" />
+</LinearLayout>

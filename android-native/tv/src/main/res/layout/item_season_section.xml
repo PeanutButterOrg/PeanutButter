@@ -24,7 +24,8 @@
             android:layout_height="wrap_content"
             android:layout_weight="1"
             android:textColor="@color/pb_white"
-            android:textSize="18sp"
+            android:textAppearance="@style/TextAppearance.Pb.H2"
+            android:textSize="20sp"
             android:textStyle="bold" />
 
         <ImageView
@@ -53,6 +54,6 @@
         android:layout_marginTop="8dp"
         android:max="1000"
         android:progressBackgroundTint="#33FFFFFF"
-        android:progressTint="@color/pb_seed"
+        android:progressTint="@color/pbt_primary"
         android:visibility="gone" />
 </LinearLayout>
