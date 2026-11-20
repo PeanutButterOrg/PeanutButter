@@ -4296,7 +4296,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
                             shape: const StadiumBorder(),
                           ),
                           icon: const Icon(Icons.replay_rounded, size: 20),
-                          label: Text('Start over', style: PbType.button),
+                          label: const Text('Start over', style: PbType.button),
                         ),
                       ),
                     ),

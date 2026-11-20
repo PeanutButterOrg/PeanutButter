@@ -6,7 +6,7 @@
 
 Writes:
   frontend/lib/design/tokens.g.dart                    Flutter (desktop, web)
-  android-native/tv/src/main/res/values/pb_tokens.xml  Android TV app and Launcher (+ values-v26/pb_type.xml)
+  android-native/tv/src/main/res/values/pb_tokens.xml  Android TV app and Launcher (+ values-v28/pb_type.xml)
   design/tokens.css                                    previews and docs
 
 Both apps read only these generated values, so a colour or size changes in one
@@ -20,7 +20,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 SRC = ROOT / "design" / "tokens.json"
 DART = ROOT / "frontend" / "lib" / "design" / "tokens.g.dart"
 XML = ROOT / "android-native" / "tv" / "src" / "main" / "res" / "values" / "pb_tokens.xml"
-XML_V26 = ROOT / "android-native" / "tv" / "src" / "main" / "res" / "values-v26" / "pb_type.xml"
+XML_V28 = ROOT / "android-native" / "tv" / "src" / "main" / "res" / "values-v28" / "pb_type.xml"
 CSS = ROOT / "design" / "tokens.css"
 
 HEADER = "Generated from design/tokens.json by scripts/gen-design-tokens.py. Do not edit."
@@ -120,8 +120,9 @@ FONT_RES = {"display": "@font/space_grotesk", "body": "@font/inter"}
 
 
 def text_appearances(t: dict, variations: bool) -> list:
-    """TextAppearance.Pb.<Name> per type token. Android 8+ (values-v26) also
-    sets the variable font's weight axis; older TVs get the regular weight."""
+    """TextAppearance.Pb.<Name> per type token. Android 9+ (values-v28, where
+    fontVariationSettings exists) also sets the variable font's weight axis;
+    older TVs get bold instead."""
     out = []
     for name, s in t["type"].items():
         style = "TextAppearance.Pb." + name[0].upper() + name[1:]
@@ -132,7 +133,7 @@ def text_appearances(t: dict, variations: bool) -> list:
         if s["tracking"]:
             em = round(s["tracking"] / s["tv"], 3)
             out.append(f'        <item name="android:letterSpacing">{em}</item>')
-        # Android 8+ sets the real weight on the variable font; bold on top of
+        # Android 9+ sets the real weight on the variable font; bold on top of
         # that would be synthesized twice, so only older TVs ask for bold.
         if s["weight"] >= 600 and not variations:
             out.append('        <item name="android:textStyle">bold</item>')
@@ -143,7 +144,7 @@ def text_appearances(t: dict, variations: bool) -> list:
     return out
 
 
-def xml_v26(t: dict) -> str:
+def xml_v28(t: dict) -> str:
     lines = ['<?xml version="1.0" encoding="utf-8"?>', f"<!-- {HEADER} -->", "<resources>"]
     lines += text_appearances(t, variations=True)
     lines.append("</resources>")
@@ -171,7 +172,7 @@ def css(t: dict) -> str:
 
 def main() -> int:
     tokens = json.loads(SRC.read_text())
-    outputs = {DART: dart(tokens), XML: xml(tokens), XML_V26: xml_v26(tokens), CSS: css(tokens)}
+    outputs = {DART: dart(tokens), XML: xml(tokens), XML_V28: xml_v28(tokens), CSS: css(tokens)}
     if "--check" in sys.argv:
         stale = [p for p, text in outputs.items() if not p.exists() or p.read_text() != text]
         for p in stale:

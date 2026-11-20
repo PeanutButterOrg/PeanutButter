@@ -110,9 +110,9 @@ class PbLogo extends StatelessWidget {
         ),
         const SizedBox(width: 10),
         Text.rich(
-          TextSpan(
+          const TextSpan(
             text: 'Peanut',
-            children: const [
+            children: [
               TextSpan(text: 'Butter', style: TextStyle(color: PbColors.focus)),
             ],
           ),

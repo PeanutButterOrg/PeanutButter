@@ -29,6 +29,7 @@ import java.io.File
  * Progressive HTTP torrents use plain seek — never setMediaItem mid-stream
  * (that caused player errors / black frames on BeyondTV).
  */
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class TvPlayback(
     context: Context,
     private val listener: PlaybackEngine.Listener,

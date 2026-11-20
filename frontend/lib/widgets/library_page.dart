@@ -125,7 +125,7 @@ class _LibraryPageState extends State<LibraryPage> {
       );
     }
 
-    final wideW = PbSize.wideCardWidthDesktop;
+    const wideW = PbSize.wideCardWidthDesktop;
     return PosterGrid(
       items: shown,
       sidePadding: PbSpace.gutterDesktop,

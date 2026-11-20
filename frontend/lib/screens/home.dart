@@ -719,11 +719,12 @@ class _RowArrowsState extends State<_RowArrows> {
     final p = c.position;
     final back = p.pixels > 4;
     final more = p.pixels < p.maxScrollExtent - 4;
-    if (back != _back || more != _more)
+    if (back != _back || more != _more) {
       setState(() {
         _back = back;
         _more = more;
       });
+    }
   }
 
   void _page(int dir) {
