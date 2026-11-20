@@ -6,7 +6,7 @@ import 'design/tokens.g.dart';
 /// Peanut amber is the one main action on a screen; blue is focus and links.
 class AppTheme {
   /// Focus, links and selection (was the old seed; same blue).
-  static const Color seed = PbColors.focus;
+  static const Color seed = PbColors.brand;
   static const Color canvas = PbColors.ground;
   static const Color rt = PbColors.rt;
 
@@ -47,7 +47,7 @@ class AppTheme {
       onPrimary: PbColors.onPrimary,
       primaryContainer: PbColors.primaryPressed,
       onPrimaryContainer: PbColors.onPrimary,
-      secondary: PbColors.focus,
+      secondary: PbColors.brand,
       onSecondary: PbColors.ground,
       secondaryContainer: PbColors.focusSoft,
       onSecondaryContainer: PbColors.text,
@@ -254,7 +254,7 @@ class PtTheme {
   static const Color bg = PbColors.ground;
   static const Color sidebar = PbColors.surface;
   static const Color panel = PbColors.surface;
-  static const Color accent = PbColors.focus;
+  static const Color accent = PbColors.brand;
   static const Color muted = PbColors.textMuted;
   static const Color rt = PbColors.rt;
   static const Color completed = PbColors.good;

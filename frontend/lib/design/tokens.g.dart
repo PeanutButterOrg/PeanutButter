@@ -25,10 +25,12 @@ abstract final class PbColors {
   static const Color primaryPressed = Color(0xFFC98A3E);
   /// Text and icons on primary
   static const Color onPrimary = Color(0xFF1A1206);
-  /// Focus ring, links, selected tab underline
-  static const Color focus = Color(0xFF5B9FFF);
+  /// Focus ring (keyboard / remote): soft white, like the text
+  static const Color focus = Color(0xFFF1F3F7);
   /// Focused surface tint on TV
-  static const Color focusSoft = Color(0xFF2A4C7F);
+  static const Color focusSoft = Color(0xFF3A3D48);
+  /// The blue 'Butter' in the logo
+  static const Color brand = Color(0xFF5B9FFF);
   /// Healthy, done, on
   static const Color good = Color(0xFF4ADE80);
   /// Weak, attention

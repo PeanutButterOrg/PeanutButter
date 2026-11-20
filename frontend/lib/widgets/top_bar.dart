@@ -113,7 +113,7 @@ class PbLogo extends StatelessWidget {
           const TextSpan(
             text: 'Peanut',
             children: [
-              TextSpan(text: 'Butter', style: TextStyle(color: PbColors.focus)),
+              TextSpan(text: 'Butter', style: TextStyle(color: PbColors.brand)),
             ],
           ),
           style: PbType.h2.copyWith(color: PbColors.text, fontSize: tv ? 22 : 21, letterSpacing: -0.2),

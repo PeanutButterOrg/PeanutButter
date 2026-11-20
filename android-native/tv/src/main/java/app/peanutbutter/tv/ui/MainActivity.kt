@@ -112,7 +112,7 @@ class MainActivity : FragmentActivity() {
 
     private fun wireHeader() {
         findViewById<TextView>(R.id.brand).text = android.text.SpannableStringBuilder("Peanut").apply {
-            append("Butter", android.text.style.ForegroundColorSpan(getColor(R.color.pbt_focus)), 0)
+            append("Butter", android.text.style.ForegroundColorSpan(getColor(R.color.pbt_brand)), 0)
         }
         styleSections(selectedKind)
 

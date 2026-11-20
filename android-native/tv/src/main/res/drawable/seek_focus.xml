@@ -5,7 +5,7 @@
             <solid android:color="@android:color/transparent" />
             <stroke
                 android:width="2dp"
-                android:color="@color/pb_seed" />
+                android:color="@color/pbt_focus" />
             <corners android:radius="10dp" />
         </shape>
     </item>

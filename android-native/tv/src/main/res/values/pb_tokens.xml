@@ -21,10 +21,12 @@
     <color name="pbt_primary_pressed">#FFC98A3E</color>
     <!-- Text and icons on primary -->
     <color name="pbt_on_primary">#FF1A1206</color>
-    <!-- Focus ring, links, selected tab underline -->
-    <color name="pbt_focus">#FF5B9FFF</color>
+    <!-- Focus ring (keyboard / remote): soft white, like the text -->
+    <color name="pbt_focus">#FFF1F3F7</color>
     <!-- Focused surface tint on TV -->
-    <color name="pbt_focus_soft">#FF2A4C7F</color>
+    <color name="pbt_focus_soft">#FF3A3D48</color>
+    <!-- The blue 'Butter' in the logo -->
+    <color name="pbt_brand">#FF5B9FFF</color>
     <!-- Healthy, done, on -->
     <color name="pbt_good">#FF4ADE80</color>
     <!-- Weak, attention -->
