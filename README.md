@@ -42,17 +42,17 @@ Run one small server at home, then browse and watch from your **TV, laptop or de
     <td width="50%" valign="top">
       <h4>🍿 Browse like a streaming app</h4>
       <ul>
-        <li>Movies and series with posters, trailers, cast, and TMDB, IMDb and Rotten Tomatoes scores</li>
-        <li>Trending, Popular and Last added rows, tagged with the streaming services that carry each title</li>
-        <li>Fast, typo-tolerant search and filters for genre, year, rating and service that keep pulling new titles from TMDB as you scroll</li>
+        <li><b>Home</b>, <b>Movies</b>, <b>Series</b> and <b>Explore</b>, the same on every screen: a big trending hero, <b>Top 10 today</b>, Continue watching, Popular and Recently added</li>
+        <li>Movies and series with trailers, cast, <b>More like this</b>, and TMDB, IMDb and Rotten Tomatoes scores; only rated titles make the rows</li>
+        <li>Fast, typo-tolerant search with the best-rated match on top, and filters for type, genre, year, rating and streaming service that keep pulling new titles from TMDB as you scroll</li>
       </ul>
     </td>
     <td width="50%" valign="top">
       <h4>▶️ Watch without friction</h4>
       <ul>
-        <li>Continue watching, favourites and watched marks</li>
+        <li>Continue watching, <b>My List</b> and watched marks; reopen a title and choose <b>Continue from</b> or <b>Start over</b></li>
         <li><b>Skip intro / credits</b> and <b>Play next</b> with a countdown</li>
-        <li>Subtitles from OpenSubtitles or Wyzie, or your own <code>.srt</code> / <code>.vtt</code></li>
+        <li>Subtitles from OpenSubtitles or Wyzie, or your own <code>.srt</code> / <code>.vtt</code>, with your choice of size, background and delay</li>
         <li><b>Notify me</b> when a followed series gets a new episode</li>
       </ul>
     </td>
@@ -89,14 +89,14 @@ Built for the remote: everything works with the arrow keys and OK.
 
 <table>
   <tr>
-    <td width="33%" valign="top"><a href="docs/screenshots/tv-home.webp"><img src="docs/screenshots/tv-home.webp" alt="TV home screen"></a><br><sub><b>Home</b> · trending hero, then your rows</sub></td>
-    <td width="33%" valign="top"><a href="docs/screenshots/tv-home-rows.webp"><img src="docs/screenshots/tv-home-rows.webp" alt="TV home rows"></a><br><sub><b>Continue watching</b> · with progress bars</sub></td>
-    <td width="33%" valign="top"><a href="docs/screenshots/tv-title.webp"><img src="docs/screenshots/tv-title.webp" alt="TV title page"></a><br><sub><b>Title page</b> · scores, Play, Watched, Favourite</sub></td>
+    <td width="33%" valign="top"><a href="docs/screenshots/tv-home.webp"><img src="docs/screenshots/tv-home.webp" alt="TV home screen"></a><br><sub><b>Home</b> · trending hero with Play, My List, More info</sub></td>
+    <td width="33%" valign="top"><a href="docs/screenshots/tv-home-rows.webp"><img src="docs/screenshots/tv-home-rows.webp" alt="TV home rows"></a><br><sub><b>Top 10 today</b>, then Continue watching</sub></td>
+    <td width="33%" valign="top"><a href="docs/screenshots/tv-title.webp"><img src="docs/screenshots/tv-title.webp" alt="TV title page"></a><br><sub><b>Title page</b> · Play, Mark watched, My List, Follow</sub></td>
   </tr>
   <tr>
-    <td width="33%" valign="top"><a href="docs/screenshots/tv-episodes.webp"><img src="docs/screenshots/tv-episodes.webp" alt="TV series episodes"></a><br><sub><b>Series</b> · seasons and episodes</sub></td>
-    <td width="33%" valign="top"><a href="docs/screenshots/tv-see-all.webp"><img src="docs/screenshots/tv-see-all.webp" alt="TV see all grid"></a><br><sub><b>See all</b> · sort and filters</sub></td>
-    <td width="33%" valign="top"><a href="docs/screenshots/tv-search.webp"><img src="docs/screenshots/tv-search.webp" alt="TV search results"></a><br><sub><b>Search</b> · typo-tolerant</sub></td>
+    <td width="33%" valign="top"><a href="docs/screenshots/tv-episodes.webp"><img src="docs/screenshots/tv-episodes.webp" alt="TV series episodes"></a><br><sub><b>Episodes</b> · stills, runtime and synopsis</sub></td>
+    <td width="33%" valign="top"><a href="docs/screenshots/tv-see-all.webp"><img src="docs/screenshots/tv-see-all.webp" alt="TV Explore grid"></a><br><sub><b>Explore</b> · movies and series, with filters</sub></td>
+    <td width="33%" valign="top"><a href="docs/screenshots/tv-search.webp"><img src="docs/screenshots/tv-search.webp" alt="TV search results"></a><br><sub><b>Search</b> · Movies or Series, voice or keyboard</sub></td>
   </tr>
 </table>
 
@@ -106,24 +106,26 @@ Your TV's whole Home screen: a clock, Home / Movies / Series, quick TV controls 
 
 <table>
   <tr>
-    <td width="33%" valign="top"><a href="docs/screenshots/launcher-home.webp"><img src="docs/screenshots/launcher-home.webp" alt="Launcher home"></a><br><sub><b>Home</b> · movies and series together</sub></td>
-    <td width="33%" valign="top"><a href="docs/screenshots/launcher-movies.webp"><img src="docs/screenshots/launcher-movies.webp" alt="Launcher movies tab"></a><br><sub><b>Movies</b> tab</sub></td>
+    <td width="33%" valign="top"><a href="docs/screenshots/launcher-home.webp"><img src="docs/screenshots/launcher-home.webp" alt="Launcher home"></a><br><sub><b>Home</b> · trending movies and series</sub></td>
+    <td width="33%" valign="top"><a href="docs/screenshots/launcher-movies.webp"><img src="docs/screenshots/launcher-movies.webp" alt="Launcher movies tab"></a><br><sub><b>Movies</b> · hero, then Top 10 movies today</sub></td>
     <td width="33%" valign="top"><a href="docs/screenshots/launcher-apps.webp"><img src="docs/screenshots/launcher-apps.webp" alt="Launcher apps editor"></a><br><sub><b>Your apps</b> · choose and order them</sub></td>
   </tr>
 </table>
 
 ### 💻 Desktop · Windows, macOS, Linux
 
+Mouse, keyboard or both: rows page with arrows, and the focus ring shows only when you use the keyboard.
+
 <table>
   <tr>
-    <td width="33%" valign="top"><a href="docs/screenshots/desktop-home.webp"><img src="docs/screenshots/desktop-home.webp" alt="Desktop home"></a><br><sub><b>Home</b></sub></td>
-    <td width="33%" valign="top"><a href="docs/screenshots/desktop-rows.webp"><img src="docs/screenshots/desktop-rows.webp" alt="Desktop rows"></a><br><sub><b>Rows</b> · Trending, Popular, Last added</sub></td>
-    <td width="33%" valign="top"><a href="docs/screenshots/desktop-title.webp"><img src="docs/screenshots/desktop-title.webp" alt="Desktop title page"></a><br><sub><b>Title page</b> · with cast</sub></td>
+    <td width="33%" valign="top"><a href="docs/screenshots/desktop-home.webp"><img src="docs/screenshots/desktop-home.webp" alt="Desktop home"></a><br><sub><b>Home</b> · hero and Top 10 today</sub></td>
+    <td width="33%" valign="top"><a href="docs/screenshots/desktop-rows.webp"><img src="docs/screenshots/desktop-rows.webp" alt="Desktop rows"></a><br><sub><b>Rows</b> · Top 10, Popular, Recently added</sub></td>
+    <td width="33%" valign="top"><a href="docs/screenshots/desktop-title.webp"><img src="docs/screenshots/desktop-title.webp" alt="Desktop title page"></a><br><sub><b>Title page</b> · cast, trailer, More like this</sub></td>
   </tr>
   <tr>
-    <td width="33%" valign="top"><a href="docs/screenshots/desktop-episodes.webp"><img src="docs/screenshots/desktop-episodes.webp" alt="Desktop episodes"></a><br><sub><b>Episodes</b></sub></td>
-    <td width="33%" valign="top"><a href="docs/screenshots/desktop-see-all.webp"><img src="docs/screenshots/desktop-see-all.webp" alt="Desktop see all with filters"></a><br><sub><b>See all</b> · year, rating and genre</sub></td>
-    <td width="33%" valign="top"><a href="docs/screenshots/desktop-search.webp"><img src="docs/screenshots/desktop-search.webp" alt="Desktop search"></a><br><sub><b>Search</b></sub></td>
+    <td width="33%" valign="top"><a href="docs/screenshots/desktop-episodes.webp"><img src="docs/screenshots/desktop-episodes.webp" alt="Desktop episodes"></a><br><sub><b>Episodes</b> · seasons and Up next</sub></td>
+    <td width="33%" valign="top"><a href="docs/screenshots/desktop-see-all.webp"><img src="docs/screenshots/desktop-see-all.webp" alt="Desktop Explore with filters"></a><br><sub><b>Explore</b> · type, year, rating and genre</sub></td>
+    <td width="33%" valign="top"><a href="docs/screenshots/desktop-search.webp"><img src="docs/screenshots/desktop-search.webp" alt="Desktop search"></a><br><sub><b>Search</b> · top result first</sub></td>
   </tr>
 </table>
 
@@ -284,7 +286,9 @@ cd android-native && ./gradlew :tv:assembleAppDebug :tv:assembleLauncherDebug
 ./scripts/update-apps.sh --tv         # build and install on a TV over adb
 ```
 
-Tests: `cd backend && cargo test` · `cd frontend && flutter test` · `cd android-native && ./gradlew :core:testDebugUnitTest`.
+Tests: `cd backend && cargo test` · `cd frontend && flutter analyze && flutter test` · `cd android-native && ./gradlew test`.
+
+Design tokens (colours, type, spacing) live in [`design/tokens.json`](design/tokens.json); `python3 scripts/gen-design-tokens.py` writes them out for the desktop app, the TV app and Launcher, and the docs.
 
 <details>
 <summary><b>How releases are cut</b></summary>
