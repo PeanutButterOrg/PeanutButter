@@ -455,12 +455,16 @@ class DetailsActivity : FragmentActivity() {
         val progress = card.findViewById<ProgressBar>(R.id.episode_progress)
         val watchedMark = card.findViewById<ImageView>(R.id.episode_watched)
 
-        code.text = getString(
-            R.string.episode_code,
-            season.seasonNumber,
-            TorrentFilePicker.viewingNumber(allSeasons, season.seasonNumber, ep.episodeNumber),
-        )
-        name.text = ep.titleLabel
+        val number = TorrentFilePicker.viewingNumber(allSeasons, season.seasonNumber, ep.episodeNumber)
+        // As on desktop: "2. Name", then the runtime (and the code), then the synopsis.
+        name.text = "$number. ${ep.titleLabel}"
+        val runtime = ep.runtime?.takeIf { it > 0 }?.let { "${it}m" }
+        code.text = listOfNotNull(runtime, getString(R.string.episode_code, season.seasonNumber, number))
+            .joinToString("  ·  ")
+        card.findViewById<TextView>(R.id.episode_overview).apply {
+            text = ep.overview.orEmpty()
+            isVisible = !ep.overview.isNullOrBlank()
+        }
         val started = !ep.watched && ep.watchProgress > 0.02
         watchedMark.isVisible = ep.watched
         when {
@@ -485,7 +489,7 @@ class DetailsActivity : FragmentActivity() {
                 progress.isVisible = false
             }
         }
-        PbGlide.thumb(still, ep.stillPath, wDp = 200, hDp = 112)
+        PbGlide.thumb(still, ep.stillPath, wDp = 284, hDp = 161)
         card.setOnClickListener {
             playSeason = season.seasonNumber
             playEpisode = ep.episodeNumber

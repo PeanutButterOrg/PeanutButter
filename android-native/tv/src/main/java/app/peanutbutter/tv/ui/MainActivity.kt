@@ -147,7 +147,8 @@ class MainActivity : FragmentActivity() {
                 open(
                     Intent(this, CatalogActivity::class.java)
                         .putExtra(CatalogActivity.EXTRA_TITLE, getString(R.string.explore))
-                        .putExtra(CatalogActivity.EXTRA_SORT, "POPULARITY"),
+                        .putExtra(CatalogActivity.EXTRA_SORT, "TRENDING")
+                        .putExtra(CatalogActivity.EXTRA_EXPLORE, true),
                 )
             },
             R.id.btn_search to { open(Intent(this, SearchActivity::class.java)) },

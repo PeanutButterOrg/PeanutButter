@@ -18,7 +18,7 @@
             android:orientation="horizontal"
             android:paddingStart="@dimen/shelf_inset"
             android:paddingTop="8dp"
-            android:paddingEnd="16dp"
+            android:paddingEnd="@dimen/shelf_inset"
             android:paddingBottom="4dp"
             android:visibility="gone">
 
@@ -35,75 +35,90 @@
             <TextView
                 android:id="@+id/filter_sort"
                 android:layout_width="wrap_content"
-                android:layout_height="32dp"
+                android:layout_height="36dp"
                 android:layout_marginStart="8dp"
-                android:background="@drawable/choice_chip"
+                android:background="@drawable/filter_box"
                 android:ellipsize="end"
                 android:focusable="true"
                 android:focusableInTouchMode="true"
                 android:gravity="center"
                 android:maxWidth="150dp"
                 android:maxLines="1"
-                android:paddingHorizontal="10dp"
-                android:textColor="@color/pb_white"
-                android:textSize="12sp" />
+                android:paddingHorizontal="12dp"
+                android:textColor="@color/pbt_text"
+                android:textSize="14sp" />
+
+            <!-- Explore only: movies and series together, or one of them. -->
+            <TextView
+                android:id="@+id/filter_kind"
+                android:layout_width="wrap_content"
+                android:layout_height="36dp"
+                android:layout_marginStart="8dp"
+                android:background="@drawable/filter_box"
+                android:focusable="true"
+                android:focusableInTouchMode="true"
+                android:gravity="center"
+                android:paddingHorizontal="12dp"
+                android:textColor="@color/pbt_text"
+                android:textSize="14sp"
+                android:visibility="gone" />
 
             <TextView
                 android:id="@+id/filter_year"
                 android:layout_width="wrap_content"
-                android:layout_height="32dp"
-                android:layout_marginStart="6dp"
-                android:background="@drawable/choice_chip"
+                android:layout_height="36dp"
+                android:layout_marginStart="8dp"
+                android:background="@drawable/filter_box"
                 android:focusable="true"
                 android:focusableInTouchMode="true"
                 android:gravity="center"
-                android:paddingHorizontal="10dp"
+                android:paddingHorizontal="12dp"
                 android:text="@string/filter_year"
-                android:textColor="@color/pb_white"
-                android:textSize="12sp" />
+                android:textColor="@color/pbt_text"
+                android:textSize="14sp" />
 
             <TextView
                 android:id="@+id/filter_rating"
                 android:layout_width="wrap_content"
-                android:layout_height="32dp"
-                android:layout_marginStart="6dp"
-                android:background="@drawable/choice_chip"
+                android:layout_height="36dp"
+                android:layout_marginStart="8dp"
+                android:background="@drawable/filter_box"
                 android:focusable="true"
                 android:focusableInTouchMode="true"
                 android:gravity="center"
-                android:paddingHorizontal="10dp"
+                android:paddingHorizontal="12dp"
                 android:text="@string/filter_rating"
-                android:textColor="@color/pb_white"
-                android:textSize="12sp" />
+                android:textColor="@color/pbt_text"
+                android:textSize="14sp" />
 
             <TextView
                 android:id="@+id/filter_genre"
                 android:layout_width="wrap_content"
-                android:layout_height="32dp"
-                android:layout_marginStart="6dp"
-                android:background="@drawable/choice_chip"
+                android:layout_height="36dp"
+                android:layout_marginStart="8dp"
+                android:background="@drawable/filter_box"
                 android:focusable="true"
                 android:focusableInTouchMode="true"
                 android:gravity="center"
-                android:paddingHorizontal="10dp"
+                android:paddingHorizontal="12dp"
                 android:text="@string/filter_genre"
-                android:textColor="@color/pb_white"
-                android:textSize="12sp" />
+                android:textColor="@color/pbt_text"
+                android:textSize="14sp" />
 
             <!-- Trending only, when catalog add-ons supply streaming services. -->
             <TextView
                 android:id="@+id/filter_service"
                 android:layout_width="wrap_content"
-                android:layout_height="32dp"
-                android:layout_marginStart="6dp"
-                android:background="@drawable/choice_chip"
+                android:layout_height="36dp"
+                android:layout_marginStart="8dp"
+                android:background="@drawable/filter_box"
                 android:focusable="true"
                 android:focusableInTouchMode="true"
                 android:gravity="center"
-                android:paddingHorizontal="10dp"
+                android:paddingHorizontal="12dp"
                 android:text="@string/filter_service"
-                android:textColor="@color/pb_white"
-                android:textSize="12sp"
+                android:textColor="@color/pbt_text"
+                android:textSize="14sp"
                 android:visibility="gone" />
         </LinearLayout>
 

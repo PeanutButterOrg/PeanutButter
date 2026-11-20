@@ -32,8 +32,20 @@ class CatalogActivity : androidx.fragment.app.FragmentActivity() {
         findViewById<View>(R.id.catalog_header).isVisible = true
         val sort = intent.getStringExtra(EXTRA_SORT)?.takeIf { it.isNotBlank() } ?: "TRENDING"
         val kind = intent.getStringExtra(EXTRA_KIND)?.takeIf { it.isNotBlank() }
+        explore = if (intent.getBooleanExtra(EXTRA_EXPLORE, false)) intent.getStringExtra(EXTRA_TITLE) else null
         refreshHeading(sort, kind)
         findViewById<TextView>(R.id.filter_sort).setOnClickListener { pickSort(sort, kind) }
+        // Explore: a Type picker in place of the sort (it's always trending first).
+        findViewById<View>(R.id.filter_sort).isVisible = explore == null
+        findViewById<TextView>(R.id.filter_kind).apply {
+            isVisible = explore != null
+            setOnClickListener { pickKind() }
+        }
+        setFilter(R.id.filter_kind, getString(R.string.filter_movies_and_series), false)
+        setFilter(R.id.filter_year, getString(R.string.filter_any_year), false)
+        setFilter(R.id.filter_rating, getString(R.string.filter_any_rating), false)
+        setFilter(R.id.filter_genre, getString(R.string.filter_all_genres), false)
+        setFilter(R.id.filter_service, getString(R.string.filter_all_services), false)
         findViewById<TextView>(R.id.filter_year).setOnClickListener { pickYear() }
         findViewById<TextView>(R.id.filter_rating).setOnClickListener { pickRating() }
         findViewById<TextView>(R.id.filter_genre).setOnClickListener { pickGenre(kind) }
@@ -46,7 +58,7 @@ class CatalogActivity : androidx.fragment.app.FragmentActivity() {
                 false
             }
         }
-        listOf(R.id.filter_sort, R.id.filter_year, R.id.filter_rating, R.id.filter_genre, R.id.filter_service).forEach {
+        listOf(R.id.filter_sort, R.id.filter_kind, R.id.filter_year, R.id.filter_rating, R.id.filter_genre, R.id.filter_service).forEach {
             findViewById<View>(it).setOnKeyListener(downToGrid)
         }
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
@@ -58,7 +70,7 @@ class CatalogActivity : androidx.fragment.app.FragmentActivity() {
                     isEnabled = true
                     return
                 }
-                val sortButton = findViewById<View>(R.id.filter_sort)
+                val sortButton = findViewById<View>(if (explore != null) R.id.filter_kind else R.id.filter_sort)
                 if (currentFocus !== sortButton) {
                     catalog()?.view?.findViewById<VerticalGridView>(androidx.leanback.R.id.browse_grid)
                         ?.setSelectedPosition(0)
@@ -73,11 +85,38 @@ class CatalogActivity : androidx.fragment.app.FragmentActivity() {
     private fun catalog(): CatalogFragment? =
         supportFragmentManager.findFragmentById(R.id.browse_host) as? CatalogFragment
 
+    /** Explore's own name; null on See all pages. */
+    private var explore: String? = null
+
     private fun refreshHeading(sort: String, kind: String?) {
-        findViewById<TextView>(R.id.catalog_heading).text = heading(sort, kind)
+        findViewById<TextView>(R.id.catalog_heading).text = explore ?: heading(sort, kind)
         val label = SORTS.firstOrNull { it.first == sort }?.second?.let { getString(it) } ?: sort
-        findViewById<TextView>(R.id.filter_sort).text = getString(R.string.sort_value, label)
+        setFilter(R.id.filter_sort, getString(R.string.sort_value, label), false)
     }
+
+    /** A filter's label with its drop arrow; amber outline once something's picked. */
+    private fun setFilter(id: Int, label: String, active: Boolean) {
+        findViewById<TextView>(id).apply {
+            text = "$label  \u25BE"
+            isSelected = active
+            setTextColor(getColor(if (active) R.color.pbt_primary else R.color.pbt_text))
+        }
+    }
+
+    private fun pickKind() {
+        val options = listOf(
+            "" to getString(R.string.filter_movies_and_series),
+            "MOVIE" to getString(R.string.heading_movies).replaceFirstChar { it.titlecase(java.util.Locale.US) },
+            "SERIES" to getString(R.string.heading_series).replaceFirstChar { it.titlecase(java.util.Locale.US) },
+        )
+        showChoices(getString(R.string.filter_type), options, pickedKind ?: "") { value ->
+            pickedKind = value.ifBlank { null }
+            setFilter(R.id.filter_kind, options.first { it.first == value }.second, pickedKind != null)
+            catalog()?.applyKind(pickedKind)
+        }
+    }
+
+    private var pickedKind: String? = null
 
     private fun heading(sort: String, kind: String?): String {
         val sortLabel = SORTS.firstOrNull { it.first == sort }?.second?.let { getString(it) } ?: getString(R.string.see_all)
@@ -121,8 +160,7 @@ class CatalogActivity : androidx.fragment.app.FragmentActivity() {
         for (year in now downTo 1970) options += year.toString() to year.toString()
         showChoices(getString(R.string.filter_year), options) { value ->
             val year = value.toIntOrNull()
-            findViewById<TextView>(R.id.filter_year).text =
-                year?.toString() ?: getString(R.string.filter_year)
+            setFilter(R.id.filter_year, year?.toString() ?: getString(R.string.filter_any_year), year != null)
             catalog()?.applyYear(year)
         }
     }
@@ -138,8 +176,7 @@ class CatalogActivity : androidx.fragment.app.FragmentActivity() {
         )
         showChoices(getString(R.string.filter_rating), options) { value ->
             val min = value.toDoubleOrNull()
-            findViewById<TextView>(R.id.filter_rating).text =
-                if (min == null) getString(R.string.filter_rating) else "${min.toInt()}+"
+            setFilter(R.id.filter_rating, if (min == null) getString(R.string.filter_any_rating) else "${min.toInt()}+", min != null)
             catalog()?.applyRating(min)
         }
     }
@@ -149,8 +186,7 @@ class CatalogActivity : androidx.fragment.app.FragmentActivity() {
             val names = runCatching { application.asTv().api.genres(kind) }.getOrDefault(emptyList())
             val options = listOf("" to getString(R.string.filter_all_genres)) + names.map { it to it }
             showChoices(getString(R.string.filter_genre), options) { value ->
-                findViewById<TextView>(R.id.filter_genre).text =
-                    value.ifBlank { getString(R.string.filter_genre) }
+                setFilter(R.id.filter_genre, value.ifBlank { getString(R.string.filter_all_genres) }, value.isNotBlank())
                 catalog()?.applyGenre(value.ifBlank { null })
             }
         }
@@ -169,8 +205,11 @@ class CatalogActivity : androidx.fragment.app.FragmentActivity() {
             val services = runCatching { application.asTv().api.streamingServices(kind) }.getOrDefault(emptyList())
             val options = listOf("" to getString(R.string.filter_all_services)) + services.map { it.id to it.name }
             showChoices(getString(R.string.filter_service), options) { value ->
-                findViewById<TextView>(R.id.filter_service).text =
-                    services.firstOrNull { it.id == value }?.name ?: getString(R.string.filter_service)
+                setFilter(
+                    R.id.filter_service,
+                    services.firstOrNull { it.id == value }?.name ?: getString(R.string.filter_all_services),
+                    value.isNotBlank(),
+                )
                 catalog()?.applyService(value.ifBlank { null })
             }
         }
@@ -214,6 +253,8 @@ class CatalogActivity : androidx.fragment.app.FragmentActivity() {
 
     companion object {
         const val EXTRA_TITLE = "catalog_title"
+        /** The Explore tab: its name as the heading, a Type picker, trending first. */
+        const val EXTRA_EXPLORE = "catalog_explore"
         const val EXTRA_KIND = "catalog_kind"
         const val EXTRA_SORT = "catalog_sort"
 
@@ -294,6 +335,12 @@ class CatalogFragment : VerticalGridSupportFragment() {
     fun applySort(next: String) {
         if (next == sort) return
         sort = next
+        reload()
+    }
+
+    fun applyKind(next: String?) {
+        if (next == kind) return
+        kind = next
         reload()
     }
 

@@ -67,6 +67,15 @@ interface PlaybackEngine {
 
     fun selectAudioTrack(id: String) {}
 
+    /** Subtitle size step (0–3) and background: "shadow", "outline" or "box". */
+    fun setSubtitleLook(size: Int, background: String) {}
+
+    /** Whether [setSubtitleDelay] moves the subtitles being shown now. */
+    val canDelaySubtitles: Boolean get() = false
+
+    /** Positive: subtitles later; negative: earlier. */
+    fun setSubtitleDelay(ms: Long) {}
+
     /** Side-load an SRT/VTT/ASS file and show it. */
     fun addExternalSubtitle(file: File, label: String, mimeType: String)
 

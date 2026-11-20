@@ -137,13 +137,14 @@ class SettingsActivity : FragmentActivity() {
                         getString(R.string.subs_wyzie_hint) + " — paste to replace"
                 }
                 val jackett = findViewById<TextView>(R.id.jackett_status)
-                if (info.jackettConfigured) {
-                    jackett.text = getString(R.string.jackett_ok)
-                    jackett.setTextColor(ContextCompat.getColor(this@SettingsActivity, R.color.pb_completed))
-                } else {
-                    jackett.text = getString(R.string.jackett_missing)
-                    jackett.setTextColor(ContextCompat.getColor(this@SettingsActivity, R.color.pb_muted))
-                }
+                val ready = info.jackettConfigured
+                jackett.text = getString(if (ready) R.string.jackett_ok else R.string.jackett_missing)
+                jackett.setTextColor(
+                    ContextCompat.getColor(this@SettingsActivity, if (ready) R.color.pbt_text else R.color.pbt_text_muted),
+                )
+                jackett.compoundDrawablesRelative[0]?.mutate()?.setTint(
+                    ContextCompat.getColor(this@SettingsActivity, if (ready) R.color.pbt_good else R.color.pbt_text_faint),
+                )
             } catch (e: Exception) {
                 findViewById<TextView>(R.id.server_version).text = getString(R.string.error_generic)
                 Toast.makeText(this@SettingsActivity, e.message, Toast.LENGTH_LONG).show()

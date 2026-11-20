@@ -113,9 +113,24 @@
                     android:id="@+id/server_info"
                     style="@style/SettingsValue" />
 
+                <!-- Torrent sources: a pill with a green / grey dot, as on desktop. -->
+                <TextView
+                    style="@style/SettingsLabel"
+                    android:layout_marginTop="12dp"
+                    android:text="@string/torrent_sources" />
+
                 <TextView
                     android:id="@+id/jackett_status"
-                    style="@style/SettingsValue"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:background="@drawable/status_pill"
+                    android:drawableStart="@drawable/status_dot"
+                    android:drawablePadding="8dp"
+                    android:paddingHorizontal="14dp"
+                    android:paddingVertical="6dp"
+                    android:textColor="@color/pbt_text"
+                    android:textSize="14sp"
                     android:textStyle="bold" />
             </LinearLayout>
 

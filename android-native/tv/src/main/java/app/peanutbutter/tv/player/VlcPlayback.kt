@@ -50,6 +50,12 @@ class VlcPlayback(
     override var wantsToPlay: Boolean = false
         private set
 
+    override val canDelaySubtitles: Boolean get() = mp != null
+
+    override fun setSubtitleDelay(ms: Long) {
+        runCatching { mp?.setSpuDelay(ms * 1000) }
+    }
+
     override fun bindSubtitles(view: SubtitleView?) {
         view?.setCues(emptyList())
     }

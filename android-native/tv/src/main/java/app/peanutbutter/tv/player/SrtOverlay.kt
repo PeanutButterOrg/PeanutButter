@@ -23,6 +23,14 @@ class SrtOverlay {
     var active: Boolean = false
         private set
 
+    /** Shifts the cues: positive shows them later. */
+    var delayMs: Long = 0
+        set(value) {
+            field = value
+            lastText = null
+            if (active) paint()
+        }
+
     private val tick = object : Runnable {
         override fun run() {
             if (!active) return
@@ -80,7 +88,7 @@ class SrtOverlay {
     }
 
     private fun paint() {
-        val pos = positionProvider?.invoke() ?: return
+        val pos = (positionProvider?.invoke() ?: return) - delayMs
         val text = cues
             .asSequence()
             .filter { pos >= it.startMs && pos < it.endMs }
