@@ -10,6 +10,7 @@ import '../providers/catalog.dart';
 import '../theme.dart';
 import '../tv.dart';
 import '../tv_nav.dart';
+import '../widgets/app_menu.dart';
 import '../widgets/empty_state.dart';
 import '../widgets/feature_card.dart';
 import '../widgets/filter_bar.dart';
@@ -577,12 +578,12 @@ class _SearchBar extends StatelessWidget {
           ),
           const SizedBox(width: 14),
           for (final (label, value) in const [('Movies', 'MOVIE'), ('Series', 'SERIES')]) ...[
-            ChoiceChip(
-              label: Text(label),
+            AppFilterChip(
+              label: label,
               selected: kind == value,
               onSelected: (_) => onKind(value),
             ),
-            const SizedBox(width: 8),
+            const SizedBox(width: 4),
           ],
         ],
       ),

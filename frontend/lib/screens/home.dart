@@ -33,11 +33,13 @@ final ValueNotifier<bool> _homeScrolled = ValueNotifier(false);
 enum _RowStyle { poster, top10, wide }
 
 class _RowSpec {
-  const _RowSpec(this.title, this.sort, this.items, {this.kind, this.style = _RowStyle.poster});
+  const _RowSpec(this.title, this.sort, this.items,
+      {this.kind, this.style = _RowStyle.poster});
 
   final String title;
   final String sort;
   final List<TitleItem> items;
+
   /// Null: See all opens every kind (movies and series).
   final String? kind;
   final _RowStyle style;
@@ -87,13 +89,16 @@ _HomeContent _contentFor(String section, HomeFeed? movies, HomeFeed? series) {
     ];
     return _HomeContent(hero, eyebrows, [
       // One Top 10 for movies and series together, in trending order.
-      _RowSpec('Top 10 today', 'TRENDING', _interleave(m.trending, s.trending, take: 10),
+      _RowSpec('Top 10 today', 'TRENDING',
+          _interleave(m.trending, s.trending, take: 10),
           style: _RowStyle.top10),
       _RowSpec('Continue watching', 'CONTINUE_WATCHING',
-          _interleave(m.continueWatching, s.continueWatching), style: _RowStyle.wide),
+          _interleave(m.continueWatching, s.continueWatching),
+          style: _RowStyle.wide),
       _RowSpec('Popular movies', 'POPULARITY', m.popular, kind: 'MOVIE'),
       _RowSpec('Popular series', 'POPULARITY', s.popular, kind: 'SERIES'),
-      _RowSpec('Recently added', 'DATE_ADDED', _tmdbRated(_interleave(m.recent, s.recent))),
+      _RowSpec('Recently added', 'DATE_ADDED',
+          _tmdbRated(_interleave(m.recent, s.recent))),
     ]);
   }
   final feed = section == 'SERIES' ? s : m;
@@ -101,20 +106,28 @@ _HomeContent _contentFor(String section, HomeFeed? movies, HomeFeed? series) {
   final hero = feed.trending.take(8).toList();
   return _HomeContent(
     hero,
-    [for (var i = 0; i < hero.length; i++) '#${i + 1} trending · ${_kindLabel(section)}'],
     [
-      _RowSpec('Top 10 $noun today', 'TRENDING', feed.trending.take(10).toList(),
+      for (var i = 0; i < hero.length; i++)
+        '#${i + 1} trending · ${_kindLabel(section)}'
+    ],
+    [
+      _RowSpec(
+          'Top 10 $noun today', 'TRENDING', feed.trending.take(10).toList(),
           kind: section, style: _RowStyle.top10),
       // The server sends one mixed list; this section shows only its own kind.
       _RowSpec(
         'Continue watching',
         'CONTINUE_WATCHING',
-        feed.continueWatching.where((t) => (t.kind == 'MOVIE') == (section == 'MOVIE')).toList(),
+        feed.continueWatching
+            .where((t) => (t.kind == 'MOVIE') == (section == 'MOVIE'))
+            .toList(),
         style: _RowStyle.wide,
       ),
-      _RowSpec('Trending $noun', 'TRENDING', feed.trending.skip(10).toList(), kind: section),
+      _RowSpec('Trending $noun', 'TRENDING', feed.trending.skip(10).toList(),
+          kind: section),
       _RowSpec('Popular $noun', 'POPULARITY', feed.popular, kind: section),
-      _RowSpec('Recently added', 'DATE_ADDED', _tmdbRated(feed.recent), kind: section),
+      _RowSpec('Recently added', 'DATE_ADDED', _tmdbRated(feed.recent),
+          kind: section),
     ],
   );
 }
@@ -134,7 +147,8 @@ class HomeScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final section = ref.watch(homeSectionProvider);
     final movies = ref.watch(homeFeedProvider('MOVIE'));
-    final series = section == 'MOVIE' ? null : ref.watch(homeFeedProvider('SERIES'));
+    final series =
+        section == 'MOVIE' ? null : ref.watch(homeFeedProvider('SERIES'));
     ref.watch(catalogWarmupProvider);
     final info = ref.watch(serverInfoProvider);
 
@@ -174,10 +188,14 @@ class HomeScreen extends ConsumerWidget {
       final kind = section == 'HOME' ? 'MOVIE' : section;
       final tmdb = info.asData?.value?.tmdbConfigured ?? false;
       final omdb = info.asData?.value?.omdbConfigured ?? true;
-      final content = _contentFor(section, movies.valueOrNull, series?.valueOrNull);
-      if (kindBlockedByMissingKeys(kind, omdbConfigured: omdb, tmdbConfigured: tmdb) || content.isEmpty) {
+      final content =
+          _contentFor(section, movies.valueOrNull, series?.valueOrNull);
+      if (kindBlockedByMissingKeys(kind,
+              omdbConfigured: omdb, tmdbConfigured: tmdb) ||
+          content.isEmpty) {
         body = EmptyState(
-          message: emptyKindMessage(kind: kind, omdbConfigured: omdb, tmdbConfigured: tmdb),
+          message: emptyKindMessage(
+              kind: kind, omdbConfigured: omdb, tmdbConfigured: tmdb),
           onRefresh: () => _refresh(ref),
           showSettings: true,
         );
@@ -212,9 +230,19 @@ class HomeScreen extends ConsumerWidget {
                     begin: Alignment.topCenter,
                     end: Alignment.bottomCenter,
                     colors: scrolled
-                        ? const [Color(0xFA0E0E12), Color(0xF00E0E12), Color(0x000E0E12)]
-                        : const [Color(0xD90E0E12), Color(0x660E0E12), Color(0x000E0E12)],
-                    stops: scrolled ? const [0.0, 0.8, 1.0] : const [0.0, 0.7, 1.0],
+                        ? const [
+                            Color(0xFA0E0E12),
+                            Color(0xF00E0E12),
+                            Color(0x000E0E12)
+                          ]
+                        : const [
+                            Color(0xD90E0E12),
+                            Color(0x660E0E12),
+                            Color(0x000E0E12)
+                          ],
+                    stops: scrolled
+                        ? const [0.0, 0.8, 1.0]
+                        : const [0.0, 0.7, 1.0],
                   ),
                 ),
                 child: child,
@@ -298,7 +326,9 @@ class _HomeBodyState extends ConsumerState<_HomeBody> {
   void _toTop() {
     if (!_scroll.hasClients) return;
     if (isAndroidTv) {
-      _scroll.animateTo(0, duration: const Duration(milliseconds: 420), curve: Curves.easeInOutCubic);
+      _scroll.animateTo(0,
+          duration: const Duration(milliseconds: 420),
+          curve: Curves.easeInOutCubic);
     } else {
       _scroll.jumpTo(0);
     }
@@ -307,7 +337,9 @@ class _HomeBodyState extends ConsumerState<_HomeBody> {
   void _toBanner() {
     if (_scroll.hasClients) {
       if (isAndroidTv) {
-        _scroll.animateTo(0, duration: const Duration(milliseconds: 420), curve: Curves.easeInOutCubic);
+        _scroll.animateTo(0,
+            duration: const Duration(milliseconds: 420),
+            curve: Curves.easeInOutCubic);
       } else {
         _scroll.jumpTo(0);
       }
@@ -329,7 +361,8 @@ class _HomeBodyState extends ConsumerState<_HomeBody> {
       addAutomaticKeepAlives: false,
       clipBehavior: isAndroidTv ? Clip.none : Clip.hardEdge,
       physics: const ClampingScrollPhysics(),
-      padding: EdgeInsets.only(bottom: isAndroidTv ? tvCenterBottomPad(context) : 48),
+      padding: EdgeInsets.only(
+          bottom: isAndroidTv ? tvCenterBottomPad(context) : 48),
       children: [
         FeaturedBanner(
           key: ValueKey(widget.section),
@@ -364,9 +397,11 @@ void _openCatalog(BuildContext context, {String? kind, required String sort}) {
 }
 
 class FeaturedBanner extends ConsumerStatefulWidget {
-  const FeaturedBanner({super.key, required this.items, this.eyebrows = const []});
+  const FeaturedBanner(
+      {super.key, required this.items, this.eyebrows = const []});
 
   final List<TitleItem> items;
+
   /// One line per slide, e.g. "#1 trending · Movie".
   final List<String> eyebrows;
 
@@ -378,7 +413,8 @@ class _FeaturedBannerState extends ConsumerState<FeaturedBanner> {
   /// My List taps not yet reflected in the feed (title id -> on the list).
   final Map<String, bool> _listed = {};
 
-  bool _onList(TitleItem item) => _listed[item.id] ?? item.userState?.favorite == true;
+  bool _onList(TitleItem item) =>
+      _listed[item.id] ?? item.userState?.favorite == true;
 
   Future<void> _toggleList(TitleItem item) async {
     final next = !_onList(item);
@@ -507,8 +543,11 @@ class _FeaturedBannerState extends ConsumerState<FeaturedBanner> {
                         animation: _page!,
                         builder: (context, child) {
                           final page = _page!;
-                          final value = page.hasClients ? (page.page ?? i.toDouble()) : i.toDouble();
-                          final opacity = (1.0 - (value - i).abs()).clamp(0.0, 1.0);
+                          final value = page.hasClients
+                              ? (page.page ?? i.toDouble())
+                              : i.toDouble();
+                          final opacity =
+                              (1.0 - (value - i).abs()).clamp(0.0, 1.0);
                           return Opacity(opacity: opacity, child: child);
                         },
                         child: BannerArt(
@@ -643,6 +682,115 @@ class _BannerCopy extends StatelessWidget {
   }
 }
 
+/// Desktop / web: Netflix-style strips at both ends of a row. Each pages the
+/// row by most of its width; it shows only when there's more that way.
+class _RowArrows extends StatefulWidget {
+  const _RowArrows(
+      {required this.controller, required this.gutter, required this.child});
+
+  final ScrollController controller;
+  final double gutter;
+  final Widget child;
+
+  @override
+  State<_RowArrows> createState() => _RowArrowsState();
+}
+
+class _RowArrowsState extends State<_RowArrows> {
+  var _back = false;
+  var _more = false;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.controller.addListener(_update);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _update());
+  }
+
+  @override
+  void dispose() {
+    widget.controller.removeListener(_update);
+    super.dispose();
+  }
+
+  void _update() {
+    final c = widget.controller;
+    if (!mounted || !c.hasClients) return;
+    final p = c.position;
+    final back = p.pixels > 4;
+    final more = p.pixels < p.maxScrollExtent - 4;
+    if (back != _back || more != _more)
+      setState(() {
+        _back = back;
+        _more = more;
+      });
+  }
+
+  void _page(int dir) {
+    final c = widget.controller;
+    if (!c.hasClients) return;
+    final p = c.position;
+    final target =
+        (p.pixels + dir * (p.viewportDimension - widget.gutter * 2) * 0.9)
+            .clamp(0.0, p.maxScrollExtent);
+    c.animateTo(target,
+        duration: const Duration(milliseconds: 520),
+        curve: Curves.easeInOutCubic);
+  }
+
+  Widget _arrow(int dir) {
+    final left = dir < 0;
+    return Positioned(
+      left: left ? 0 : null,
+      right: left ? null : 0,
+      top: 12,
+      bottom: 12,
+      width: widget.gutter < 44 ? 44 : widget.gutter,
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          canRequestFocus: false,
+          onTap: () => _page(dir),
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: left ? Alignment.centerLeft : Alignment.centerRight,
+                end: left ? Alignment.centerRight : Alignment.centerLeft,
+                colors: [
+                  PbColors.ground.withValues(alpha: 0.92),
+                  PbColors.ground.withValues(alpha: 0)
+                ],
+              ),
+            ),
+            child: Icon(
+              left ? Icons.chevron_left_rounded : Icons.chevron_right_rounded,
+              size: 40,
+              color: PbColors.text,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return NotificationListener<ScrollMetricsNotification>(
+      onNotification: (_) {
+        _update();
+        return false;
+      },
+      child: Stack(
+        children: [
+          Positioned.fill(child: widget.child),
+          if (_back) _arrow(-1),
+          if (_more) _arrow(1),
+        ],
+      ),
+    );
+  }
+}
+
 class _HomeRow extends StatefulWidget {
   const _HomeRow({super.key, required this.spec, required this.railIndex});
 
@@ -716,7 +864,11 @@ class _HomeRowState extends State<_HomeRow> {
         return (width: w, extent: w + gap, height: w * 9 / 16 + 24);
       case _RowStyle.top10:
         final w = tv ? TvPosterDim.width : PbSize.posterWidthDesktop;
-        return (width: w, extent: w + Top10Tile.numberWidth(w) + gap * 0.6, height: w * 1.5 + 24 + Top10Tile.nameHeight);
+        return (
+          width: w,
+          extent: w + Top10Tile.numberWidth(w) + gap * 0.6,
+          height: w * 1.5 + 24 + Top10Tile.nameHeight
+        );
       case _RowStyle.poster:
         final w = tv ? TvPosterDim.width : PbSize.posterWidthDesktop;
         return (width: w, extent: w + gap, height: w * 1.5 + 24);
@@ -746,12 +898,15 @@ class _HomeRowState extends State<_HomeRow> {
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.center,
                   children: [
-                    Text(spec.title, style: (tv ? PbTypeTv.h2 : PbType.h2).copyWith(color: PbColors.text)),
+                    Text(spec.title,
+                        style: (tv ? PbTypeTv.h2 : PbType.h2)
+                            .copyWith(color: PbColors.text)),
                     const SizedBox(width: 6),
                     _SeeAllButton(
                       focusNode: _seeAll,
                       onReveal: _revealRow,
-                      onPressed: () => _openCatalog(context, kind: spec.kind, sort: spec.sort),
+                      onPressed: () => _openCatalog(context,
+                          kind: spec.kind, sort: spec.sort),
                     ),
                   ],
                 ),
@@ -760,18 +915,12 @@ class _HomeRowState extends State<_HomeRow> {
                 height: dims.height,
                 // TV: eager children so column-N FocusNodes stay attached without
                 // jumpTo-scrolling the strip before selection.
-                child: ListView.builder(
-                  controller: _horizontal,
-                  clipBehavior: Clip.none,
-                  cacheExtent: tv ? 8000 : 600,
-                  addAutomaticKeepAlives: true,
-                  padding: EdgeInsets.symmetric(horizontal: gutter, vertical: 12),
-                  scrollDirection: Axis.horizontal,
-                  physics: const ClampingScrollPhysics(),
-                  itemExtent: dims.extent,
-                  itemCount: widget.items.length,
-                  itemBuilder: (context, i) => _tile(i, dims.width, tv ? TvPosterDim.gap : 14.0),
-                ),
+                child: tv
+                    ? _strip(tv, dims, gutter)
+                    : _RowArrows(
+                        controller: _horizontal,
+                        gutter: gutter,
+                        child: _strip(tv, dims, gutter)),
               ),
             ],
           ),
@@ -780,21 +929,41 @@ class _HomeRowState extends State<_HomeRow> {
     );
   }
 
+  Widget _strip(bool tv, ({double width, double extent, double height}) dims,
+      double gutter) {
+    return ListView.builder(
+      controller: _horizontal,
+      clipBehavior: Clip.none,
+      cacheExtent: tv ? 8000 : 600,
+      addAutomaticKeepAlives: true,
+      padding: EdgeInsets.symmetric(horizontal: gutter, vertical: 12),
+      scrollDirection: Axis.horizontal,
+      physics: const ClampingScrollPhysics(),
+      itemExtent: dims.extent,
+      itemCount: widget.items.length,
+      itemBuilder: (context, i) =>
+          _tile(i, dims.width, tv ? TvPosterDim.gap : 14.0),
+    );
+  }
+
   Widget _tile(int i, double width, double gap) {
     final item = widget.items[i];
     final node = _posterAt(i);
     final Widget card = switch (widget.spec.style) {
-      _RowStyle.wide => SizedBox(width: width, child: WideCard(item: item, focusNode: node)),
+      _RowStyle.wide =>
+        SizedBox(width: width, child: WideCard(item: item, focusNode: node)),
       _RowStyle.top10 => Top10Tile(
           rank: i + 1,
           posterWidth: width,
           name: item.title,
           child: PosterCard(item: item, focusNode: node),
         ),
-      _RowStyle.poster => SizedBox(width: width, child: PosterCard(item: item, focusNode: node)),
+      _RowStyle.poster =>
+        SizedBox(width: width, child: PosterCard(item: item, focusNode: node)),
     };
     return Padding(
-      padding: EdgeInsets.only(right: widget.spec.style == _RowStyle.top10 ? gap * 0.6 : gap),
+      padding: EdgeInsets.only(
+          right: widget.spec.style == _RowStyle.top10 ? gap * 0.6 : gap),
       child: Align(alignment: Alignment.bottomLeft, child: card),
     );
   }
@@ -845,7 +1014,8 @@ class _SeeAllButtonState extends State<_SeeAllButton> {
           padding: const EdgeInsets.symmetric(horizontal: 12),
           minimumSize: const Size(56, 36),
           foregroundColor: PbColors.textMuted,
-          textStyle: (isAndroidTv ? PbTypeTv.meta : PbType.meta).copyWith(fontWeight: FontWeight.w600),
+          textStyle: (isAndroidTv ? PbTypeTv.meta : PbType.meta)
+              .copyWith(fontWeight: FontWeight.w600),
           tapTargetSize: MaterialTapTargetSize.shrinkWrap,
         ),
         child: const Text('See all'),

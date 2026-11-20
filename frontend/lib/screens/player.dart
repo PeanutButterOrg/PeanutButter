@@ -14,6 +14,7 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
 import '../content_languages.dart';
+import '../design/tokens.g.dart';
 import '../graphql/client.dart';
 import '../graphql/queries.dart';
 import '../local_torrent.dart';
@@ -3639,6 +3640,83 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     );
   }
 
+  /// The player's menus (audio, subtitles, picture): a dark rounded panel
+  /// with a title, small section labels and an amber tick on the pick.
+  Future<T?> _panelMenu<T>(BuildContext anchor, String title, List<PopupMenuEntry<T>> items) async {
+    final box = anchor.findRenderObject() as RenderBox?;
+    if (box == null || !anchor.mounted) return null;
+    final origin = box.localToGlobal(Offset.zero);
+    return showMenu<T>(
+      context: anchor,
+      color: PbColors.surface,
+      elevation: 16,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(PbRadius.panel),
+        side: const BorderSide(color: PbColors.line),
+      ),
+      constraints: BoxConstraints(
+        minWidth: 280,
+        maxWidth: 360,
+        maxHeight: MediaQuery.sizeOf(anchor).height * 0.72,
+      ),
+      menuPadding: const EdgeInsets.fromLTRB(4, 8, 4, 10),
+      position: RelativeRect.fromLTRB(
+        origin.dx,
+        origin.dy + box.size.height,
+        origin.dx + box.size.width,
+        origin.dy,
+      ),
+      items: [
+        PopupMenuItem<T>(
+          enabled: false,
+          height: 40,
+          child: Text(title, style: PbType.h2.copyWith(fontSize: 17, color: PbColors.text)),
+        ),
+        ...items,
+      ],
+    );
+  }
+
+  static PopupMenuEntry<T> _menuSection<T>(String label) => PopupMenuItem<T>(
+        enabled: false,
+        height: 30,
+        child: Text(
+          label.toUpperCase(),
+          style: PbType.meta.copyWith(
+            fontSize: 11,
+            letterSpacing: 1.2,
+            fontWeight: FontWeight.w700,
+            color: PbColors.textFaint,
+          ),
+        ),
+      );
+
+  static PopupMenuEntry<T> _menuOption<T>(T value, String label, {bool checked = false, bool enabled = true}) =>
+      PopupMenuItem<T>(
+        value: value,
+        enabled: enabled,
+        height: 42,
+        child: Row(
+          children: [
+            SizedBox(
+              width: 28,
+              child: checked ? const Icon(Icons.check_rounded, size: 18, color: PbColors.primary) : null,
+            ),
+            Expanded(
+              child: Text(
+                label,
+                overflow: TextOverflow.ellipsis,
+                style: PbType.body.copyWith(
+                  fontSize: 14.5,
+                  color: !enabled ? PbColors.textFaint : (checked ? PbColors.primary : PbColors.text),
+                  fontWeight: checked ? FontWeight.w700 : FontWeight.w500,
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+
   Widget _aspectMenu() {
     return Builder(
       builder: (context) => _RoundButton(
@@ -3647,32 +3725,15 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         icon: Icons.aspect_ratio,
         onPressed: () async {
           _bumpChrome();
-          final box = context.findRenderObject() as RenderBox?;
-          if (box == null) return;
-          final origin = box.localToGlobal(Offset.zero);
-          final fit = await showMenu<BoxFit>(
-            context: context,
-            color: PtTheme.panel,
-            position: RelativeRect.fromLTRB(
-              origin.dx,
-              origin.dy + box.size.height,
-              origin.dx + box.size.width,
-              origin.dy,
-            ),
-            items: [
-              for (final (value, label) in const [
-                (BoxFit.contain, 'Fit'),
-                (BoxFit.none, 'Original'),
-                (BoxFit.cover, 'Fill'),
-                (BoxFit.fill, 'Stretch'),
-              ])
-                CheckedPopupMenuItem<BoxFit>(
-                  value: value,
-                  checked: _videoFit == value,
-                  child: Text(label),
-                ),
-            ],
-          );
+          final fit = await _panelMenu<BoxFit>(context, 'Picture', [
+            for (final (value, label) in const [
+              (BoxFit.contain, 'Fit'),
+              (BoxFit.none, 'Original'),
+              (BoxFit.cover, 'Fill'),
+              (BoxFit.fill, 'Stretch'),
+            ])
+              _menuOption(value, label, checked: _videoFit == value),
+          ]);
           if (fit == null || !mounted) return;
           _bumpChrome();
           setState(() => _videoFit = fit);
@@ -3690,40 +3751,13 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
             icon: Icons.language,
             onPressed: () async {
               _bumpChrome();
-              final items = <PopupMenuEntry<String>>[];
-              if (_audioTracks.isEmpty) {
-                items.add(
-                  const PopupMenuItem<String>(
-                    enabled: false,
-                    value: 'none',
-                    child: Text('Audio tracks appear after playback starts'),
-                  ),
-                );
-              } else {
-                for (final track in _audioTracks) {
-                  items.add(
-                    CheckedPopupMenuItem<String>(
-                      value: track.id,
-                      checked: _activeAudioId == track.id,
-                      child: Text(_audioLabel(track)),
-                    ),
-                  );
-                }
-              }
-              final box = context.findRenderObject() as RenderBox?;
-              if (box == null || !context.mounted) return;
-              final origin = box.localToGlobal(Offset.zero);
-              final id = await showMenu<String>(
-                context: context,
-                color: PtTheme.panel,
-                position: RelativeRect.fromLTRB(
-                  origin.dx,
-                  origin.dy + box.size.height,
-                  origin.dx + box.size.width,
-                  origin.dy,
-                ),
-                items: items,
-              );
+              final id = await _panelMenu<String>(context, 'Audio', [
+                if (_audioTracks.isEmpty)
+                  _menuOption('none', 'Audio tracks appear after playback starts', enabled: false)
+                else
+                  for (final track in _audioTracks)
+                    _menuOption(track.id, _audioLabel(track), checked: _activeAudioId == track.id),
+              ]);
               if (id == null || !mounted) return;
               _bumpChrome();
               final match = _audioTracks.where((t) => t.id == id);
@@ -3755,15 +3789,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   /// preferred languages; Wyzie results reopen this same menu (no second popup).
   Future<void> _openSubtitleMenu(BuildContext buttonContext) async {
     _bumpChrome();
-    final box = buttonContext.findRenderObject() as RenderBox?;
-    if (box == null || !buttonContext.mounted) return;
-    final origin = box.localToGlobal(Offset.zero);
-    final position = RelativeRect.fromLTRB(
-      origin.dx,
-      origin.dy + box.size.height,
-      origin.dx + box.size.width,
-      origin.dy,
-    );
 
     // Loop so Wyzie search can refresh items in the same dropdown.
     while (mounted) {
@@ -3784,75 +3809,35 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
       ];
 
       final items = <PopupMenuEntry<String>>[
-        CheckedPopupMenuItem(
-          value: 'off',
-          checked: _activeSubId == null,
-          child: const Text('Off'),
-        ),
+        _menuSection('Subtitle language'),
+        _menuOption('off', 'Off', checked: _activeSubId == null),
         for (final track in _fileSubtitleTracks)
-          CheckedPopupMenuItem(
-            value: 'emb:${track.id}',
-            checked: _activeSubId == 'emb:${track.id}',
-            child: Text(_embeddedSubLabel(track)),
-          ),
-        for (final sub in _subs)
-          CheckedPopupMenuItem(
-            value: sub.id,
-            checked: _activeSubId == sub.id,
-            child: Text(sub.label),
-          ),
+          _menuOption('emb:${track.id}', _embeddedSubLabel(track), checked: _activeSubId == 'emb:${track.id}'),
+        for (final sub in _subs) _menuOption(sub.id, sub.label, checked: _activeSubId == sub.id),
         if (_wyzieHits.isNotEmpty) ...[
-          const PopupMenuDivider(),
-          const PopupMenuItem(
-            enabled: false,
-            child: Text('Wyzie results', style: TextStyle(color: Colors.white54)),
-          ),
-          for (final hit in _wyzieHits)
-            PopupMenuItem(
-              value: 'wyzie_hit:${hit.id}',
-              child: Text(hit.label),
-            ),
+          const PopupMenuDivider(height: 12),
+          _menuSection('Wyzie results'),
+          for (final hit in _wyzieHits) _menuOption('wyzie_hit:${hit.id}', hit.label),
         ],
-        const PopupMenuDivider(),
-        const PopupMenuItem(
-          value: 'add_file',
-          child: Text('From storage…'),
-        ),
-        const PopupMenuItem(
-          value: 'add_url',
-          child: Text('From link…'),
-        ),
+        const PopupMenuDivider(height: 12),
+        _menuSection('Add subtitles'),
+        _menuOption('add_file', 'From storage…'),
+        _menuOption('add_url', 'From link…'),
         if (subsReady) ...[
-          const PopupMenuDivider(),
+          const PopupMenuDivider(height: 12),
+          _menuSection('Find online'),
           // One search per language (it used to be the first only).
           if (wyzieReady)
             for (final code in langs)
-              PopupMenuItem(
-                value: 'wyzie:$code',
-                child: Text(
-                  _subsLoading ? 'Searching Wyzie…' : 'Search Wyzie ($code)',
-                ),
-              ),
+              _menuOption('wyzie:$code', _subsLoading ? 'Searching Wyzie…' : 'Search Wyzie ($code)'),
           if (osReady)
-            for (final lang in osLangs)
-              PopupMenuItem(
-                value: 'download:${lang.code}',
-                child: Text('OpenSubtitles ${lang.label}'),
-              ),
+            for (final lang in osLangs) _menuOption('download:${lang.code}', 'OpenSubtitles ${lang.label}'),
         ] else
-          const PopupMenuItem(
-            value: 'settings',
-            child: Text('Add subtitle API key'),
-          ),
+          _menuOption('settings', 'Add subtitle API key'),
       ];
 
       if (!buttonContext.mounted) return;
-      final value = await showMenu<String>(
-        context: buttonContext,
-        color: PtTheme.panel,
-        position: position,
-        items: items,
-      );
+      final value = await _panelMenu<String>(buttonContext, 'Subtitles', items);
       if (value == null || !mounted) return;
       _bumpChrome();
 

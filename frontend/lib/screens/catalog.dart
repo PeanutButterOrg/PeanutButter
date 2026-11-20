@@ -221,7 +221,8 @@ class _CatalogScreenState extends ConsumerState<CatalogScreen> {
                       icon: const Icon(Icons.arrow_back_rounded, color: PbColors.text),
                     ),
                     const SizedBox(width: 8),
-                    Expanded(
+                    // As on Netflix: the page name, then its pickers right beside it.
+                    Flexible(
                       child: Text(
                         heading,
                         maxLines: 1,
@@ -229,7 +230,9 @@ class _CatalogScreenState extends ConsumerState<CatalogScreen> {
                         style: PbType.hero.copyWith(fontSize: 40, color: PbColors.text),
                       ),
                     ),
+                    const SizedBox(width: 28),
                     filters(tv: false),
+                    const Spacer(),
                   ],
                 ),
               ),

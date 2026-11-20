@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 
 import '../design/tokens.g.dart';
-import '../theme.dart';
 import '../tv.dart';
 import 'tv_chrome.dart';
 
@@ -63,11 +62,11 @@ class AppMenuButton<T> extends StatelessWidget {
         overlay.size.width - topLeft.dx - box.size.width,
         0,
       ),
-      color: PbColors.surfaceRaised,
+      color: compact ? const Color(0xF2000000) : PbColors.surfaceRaised,
       elevation: 12,
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(PbRadius.card + 2),
-        side: const BorderSide(color: PbColors.line),
+        borderRadius: BorderRadius.circular(compact ? 3 : PbRadius.card + 2),
+        side: BorderSide(color: compact ? PbColors.text.withValues(alpha: 0.35) : PbColors.line),
       ),
       constraints: BoxConstraints(
         minWidth: box.size.width < 180 ? 180 : box.size.width,
@@ -139,40 +138,54 @@ class AppMenuButton<T> extends StatelessWidget {
   Widget build(BuildContext context) {
     final active = _active;
     final fg = active ? PbColors.primary : PbColors.text;
-    final radius = BorderRadius.circular(compact ? PbRadius.pill : 12);
+    // Filters (compact): a plain outlined box like Netflix's "Genres" picker.
+    // Settings: the softer raised field.
+    final radius = BorderRadius.circular(compact ? 3 : 12);
     return TvFocus(
       child: Material(
-        color: active ? PbColors.primary.withValues(alpha: 0.12) : PbColors.surfaceRaised,
+        color: compact ? PbColors.ground : PbColors.surfaceRaised,
         borderRadius: radius,
         child: InkWell(
           focusNode: focusNode,
           borderRadius: radius,
-          hoverColor: Colors.white.withValues(alpha: 0.05),
+          hoverColor: Colors.white.withValues(alpha: 0.06),
           onTap: () => _pick(context),
           child: Container(
-            height: compact ? 40 : 48,
-            padding: EdgeInsets.fromLTRB(compact ? 14 : 14, 0, compact ? 10 : 10, 0),
+            height: compact ? 36 : 48,
+            padding: EdgeInsets.fromLTRB(compact ? 12 : 14, 0, compact ? 6 : 10, 0),
             decoration: BoxDecoration(
               borderRadius: radius,
-              border: Border.all(color: active ? PbColors.primary.withValues(alpha: 0.6) : PbColors.line),
+              border: Border.all(
+                color: active
+                    ? PbColors.primary
+                    : (compact ? PbColors.text.withValues(alpha: 0.75) : PbColors.line),
+              ),
             ),
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                if (icon != null) ...[
-                  Icon(icon, size: 16, color: active ? PbColors.primary : PbColors.textMuted),
+                if (icon != null && !compact) ...[
+                  Icon(icon, size: 16, color: PbColors.textMuted),
                   const SizedBox(width: 8),
                 ],
                 ConstrainedBox(
-                  constraints: BoxConstraints(maxWidth: compact ? 140 : 220),
+                  constraints: BoxConstraints(maxWidth: compact ? 160 : 220),
                   child: Text(
                     _label,
                     overflow: TextOverflow.ellipsis,
-                    style: PbType.button.copyWith(fontSize: 13.5, color: fg),
+                    style: PbType.button.copyWith(
+                      fontSize: compact ? 14 : 13.5,
+                      fontWeight: compact ? FontWeight.w500 : FontWeight.w600,
+                      color: fg,
+                    ),
                   ),
                 ),
-                const SizedBox(width: 4),
-                Icon(Icons.keyboard_arrow_down_rounded, size: 18, color: active ? PbColors.primary : PbColors.textMuted),
+                SizedBox(width: compact ? 10 : 4),
+                Icon(
+                  compact ? Icons.arrow_drop_down_rounded : Icons.keyboard_arrow_down_rounded,
+                  size: compact ? 22 : 18,
+                  color: active ? PbColors.primary : (compact ? PbColors.text : PbColors.textMuted),
+                ),
               ],
             ),
           ),
@@ -335,6 +348,8 @@ class AppMultiMenuButton extends StatelessWidget {
   }
 }
 
+/// A two-or-three-way switch (Movies / Series, All / Movies / Series): plain
+/// text, the picked one bright with an amber underline, like the top bar.
 class AppFilterChip extends StatelessWidget {
   const AppFilterChip({
     super.key,
@@ -349,26 +364,35 @@ class AppFilterChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
     return TvFocus(
-      child: TextButton(
-      onPressed: () => onSelected(!selected),
-      style: TextButton.styleFrom(
-        foregroundColor: selected ? scheme.primary : scheme.onSurface,
-        backgroundColor: selected
-            ? AppTheme.seed.withValues(alpha: 0.28)
-            : scheme.surfaceContainerHighest.withValues(alpha: 0.45),
-        minimumSize: const Size(64, 40),
-        padding: const EdgeInsets.symmetric(horizontal: 14),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(20),
-          side: BorderSide(
-            color: selected ? AppTheme.seed : scheme.outline.withValues(alpha: 0.22),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(4),
+        hoverColor: Colors.transparent,
+        onTap: () => onSelected(!selected),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                label,
+                style: PbType.button.copyWith(
+                  fontSize: 15,
+                  fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                  color: selected ? PbColors.text : PbColors.textMuted,
+                ),
+              ),
+              const SizedBox(height: 5),
+              AnimatedContainer(
+                duration: PbMotion.fast,
+                height: 2,
+                width: selected ? 22 : 0,
+                decoration: BoxDecoration(color: PbColors.primary, borderRadius: BorderRadius.circular(2)),
+              ),
+            ],
           ),
         ),
       ),
-      child: Text(label, style: TextStyle(fontWeight: selected ? FontWeight.w700 : FontWeight.w500)),
-    ),
     );
   }
 }

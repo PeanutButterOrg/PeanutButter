@@ -3,6 +3,7 @@ import 'package:go_router/go_router.dart';
 
 import '../design/tokens.g.dart';
 import '../models.dart';
+import 'app_menu.dart';
 import 'poster_card.dart';
 import 'poster_grid.dart';
 import 'wide_card.dart';
@@ -75,22 +76,22 @@ class _LibraryPageState extends State<LibraryPage> {
                 Row(
                   children: [
                     for (final (label, kind) in const [('All', null), ('Movies', 'MOVIE'), ('Series', 'SERIES')]) ...[
-                      ChoiceChip(
-                        label: Text(label),
+                      AppFilterChip(
+                        label: label,
                         selected: _kind == kind,
                         onSelected: (_) => setState(() => _kind = kind),
                       ),
                       const SizedBox(width: 8),
                     ],
                     const Spacer(),
-                    ChoiceChip(
-                      label: const Text('Recently added'),
+                    AppFilterChip(
+                      label: 'Recently added',
                       selected: !_az,
                       onSelected: (_) => setState(() => _az = false),
                     ),
                     const SizedBox(width: 8),
-                    ChoiceChip(
-                      label: const Text('A–Z'),
+                    AppFilterChip(
+                      label: 'A–Z',
                       selected: _az,
                       onSelected: (_) => setState(() => _az = true),
                     ),
