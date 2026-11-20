@@ -107,7 +107,7 @@ Your TV's whole Home screen: a clock, Home / Movies / Series, quick TV controls 
 <table>
   <tr>
     <td width="33%" valign="top"><a href="docs/screenshots/launcher-home.webp"><img src="docs/screenshots/launcher-home.webp" alt="Launcher home"></a><br><sub><b>Home</b> · trending movies and series</sub></td>
-    <td width="33%" valign="top"><a href="docs/screenshots/launcher-movies.webp"><img src="docs/screenshots/launcher-movies.webp" alt="Launcher movies tab"></a><br><sub><b>Movies</b> · hero, then Top 10 movies today</sub></td>
+    <td width="33%" valign="top"><a href="docs/screenshots/launcher-movies.webp"><img src="docs/screenshots/launcher-movies.webp" alt="Launcher movies tab"></a><br><sub><b>Movies</b> · Top 10 movies today</sub></td>
     <td width="33%" valign="top"><a href="docs/screenshots/launcher-apps.webp"><img src="docs/screenshots/launcher-apps.webp" alt="Launcher apps editor"></a><br><sub><b>Your apps</b> · choose and order them</sub></td>
   </tr>
 </table>
