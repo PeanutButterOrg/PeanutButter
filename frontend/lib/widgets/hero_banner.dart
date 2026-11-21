@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../design/tokens.g.dart';
 import '../theme.dart';
 import '../tv.dart';
 
@@ -23,7 +24,7 @@ class HeroBannerFrame extends StatelessWidget {
     if (isAndroidTv) {
       return (height * 0.58).clamp(460.0, 620.0);
     }
-    return (height * 0.48).clamp(380.0, 540.0);
+    return (height * 0.62).clamp(440.0, 600.0);
   }
 
   /// Clearance under Movies/Series chrome and the detail back button.
@@ -81,7 +82,7 @@ class HeroBannerFrame extends StatelessWidget {
               ),
             ),
             Positioned(
-              left: 32,
+              left: isAndroidTv ? PbSpace.gutterTv : PbSpace.gutterDesktop,
               top: inset > 0 ? inset : null,
               bottom: 36,
               width: 560,
@@ -121,24 +122,21 @@ class HeroBannerCopy extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       children: [
         Text(
-          eyebrow,
-          style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                color: Colors.white70,
-                letterSpacing: 1.2,
-              ),
+          eyebrow.toUpperCase(),
+          style: (isAndroidTv ? PbTypeTv.label : PbType.label).copyWith(
+            color: PbColors.primary,
+            letterSpacing: 1.1,
+          ),
         ),
         const SizedBox(height: 8),
-        SizedBox(
-          height: 72,
-          child: Text(
-            title,
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-            style: Theme.of(context).textTheme.displaySmall?.copyWith(
-                  color: Colors.white,
-                  fontWeight: FontWeight.w800,
-                  height: 1.05,
-                ),
+        Text(
+          title,
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: (isAndroidTv ? PbTypeTv.hero : PbType.hero).copyWith(
+            color: PbColors.text,
+            height: 1.05,
+            letterSpacing: -1.0,
           ),
         ),
         if (belowTitle != null) ...[
@@ -160,7 +158,11 @@ class HeroBannerCopy extends StatelessWidget {
             synopsis,
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
-            style: const TextStyle(color: Colors.white70, fontSize: 15, height: 1.4),
+            style: (isAndroidTv ? PbTypeTv.body : PbType.body).copyWith(
+              color: const Color(0xFFD6DAE3),
+              fontSize: isAndroidTv ? 16 : 15,
+              height: 1.45,
+            ),
           ),
         ),
         if (action != null) ...[

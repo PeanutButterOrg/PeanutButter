@@ -1,9 +1,11 @@
 package app.peanutbutter.core
 
-/** Flutter defaultQuality values: 480p / 720p / 1080p / 2160p (label 4K). */
+/**
+ * Flutter defaultQuality values: 720p / 1080p / 2160p (label 4K). HD only: the
+ * server never offers anything below 720p, so an old 480p setting reads as 720p.
+ */
 object StreamQuality {
     val OPTIONS: List<Pair<String, String>> = listOf(
-        "480p" to "480p",
         "720p" to "720p",
         "1080p" to "1080p",
         "2160p" to "4K",
@@ -15,7 +17,7 @@ object StreamQuality {
             q == "4k" || q == "2160" || q == "2160p" || q.contains("uhd") -> "2160p"
             q == "1080" || q == "1080p" || q.contains("1080") -> "1080p"
             q == "720" || q == "720p" || q.contains("720") -> "720p"
-            q == "480" || q == "480p" || q.contains("480") -> "480p"
+            q == "480" || q == "480p" || q.contains("480") -> "720p"
             else -> "1080p"
         }
     }

@@ -6,6 +6,11 @@ analyzer:
     - linux/third_party/**
     - "**/flutter/ephemeral/**"
     - build/**
+    - android/**
+    - web/**
+    - windows/**
+    - macos/**
+    - linux/**
 
 linter:
   rules:

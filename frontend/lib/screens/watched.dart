@@ -7,7 +7,9 @@ import '../models.dart';
 import '../providers/catalog.dart';
 import '../theme.dart';
 import '../tv.dart';
+import '../design/tokens.g.dart';
 import '../widgets/empty_state.dart';
+import '../widgets/library_page.dart';
 import '../widgets/hero_banner.dart';
 import '../widgets/local_overlay.dart';
 import '../widgets/poster_card.dart';
@@ -20,6 +22,28 @@ class WatchedScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final feed = ref.watch(watchedFeedProvider);
+
+    if (!isAndroidTv) {
+      return Scaffold(
+        backgroundColor: PbColors.ground,
+        body: SafeArea(
+          child: feed.when(
+            skipLoadingOnReload: true,
+            loading: () => const Center(child: CircularProgressIndicator()),
+            error: (e, _) => EmptyState(
+              message: friendlyError(e),
+              onRefresh: () async => ref.invalidate(watchedFeedProvider),
+            ),
+            data: (data) => LibraryPage(
+              title: 'Watched',
+              items: [...data.movies, ...data.series, ...data.anime],
+              emptyMessage: 'Nothing watched yet. Finish a movie or the last episode of a series and it shows up here.',
+              keepWatching: false,
+            ),
+          ),
+        ),
+      );
+    }
 
     return Scaffold(
       backgroundColor: AppTheme.canvas,

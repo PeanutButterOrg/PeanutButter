@@ -10,7 +10,6 @@
 #   PeanutButter-macos-universal.zip       (ditto zip → PeanutButter.app; compression-level 0)
 #   PeanutButter-android-tv.apk            (universal — any TV box)
 #   PeanutButter-android-tv-arm64-v8a.apk / -armeabi-v7a.apk (smaller, per CPU)
-#   PeanutButter-android-tv-launcher*.apk  (same, as a Home-screen launcher)
 #
 # macOS: never upload a raw .app directory — Actions' zip breaks Frameworks
 # symlinks. We ditto-zip the bundle, then upload with compression-level: 0 so
@@ -262,12 +261,24 @@ jobs:
       # a fixed key the old cache still counted as a hit, so the 25-minute rebuild
       # ran every time and was never saved. Key on the image; restore-keys still
       # reuses an older cache whenever vcpkg finds it compatible.
+      # The plugin DLL itself, built once and reused: it only changes with the
+      # plugin's native code. A hit skips vcpkg (~26 min on its cache misses,
+      # which every new runner image causes); the plugin then uses it as its
+      # prebuilt DLL. Bump v1 to force a rebuild (e.g. a libtorrent update).
+      - name: Restore libtorrent_flutter DLL
+        id: ltf-dll
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: frontend/plugins/libtorrent_flutter/prebuilt/windows/x64
+          key: ltf-windows-x64-dll-v1-${{ hashFiles('frontend/plugins/libtorrent_flutter/src/**', 'frontend/plugins/libtorrent_flutter/windows/**') }}
       - name: Read runner image version
         id: runner-image
+        if: steps.ltf-dll.outputs.cache-hit != 'true'
         shell: pwsh
         run: echo "version=$env:ImageVersion" >> $env:GITHUB_OUTPUT
       - name: Restore vcpkg cache
         id: vcpkg-cache
+        if: steps.ltf-dll.outputs.cache-hit != 'true'
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ${{ runner.temp }}/vcpkg-bincache
@@ -287,7 +298,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "vcpkg install libtorrent failed" }
           "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - name: Save vcpkg cache
-        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        if: steps.ltf-dll.outputs.cache-hit != 'true' && steps.vcpkg-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ${{ runner.temp }}/vcpkg-bincache
@@ -310,6 +321,23 @@ jobs:
           }
           Write-Host "Release dir: $src"
           "dir=$src" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      # Keep the freshly built plugin DLL for the next runs (see above).
+      - name: Keep libtorrent_flutter DLL
+        if: steps.ltf-dll.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $dll = Join-Path "${{ steps.winout.outputs.dir }}" "libtorrent_flutter.dll"
+          if (-not (Test-Path $dll)) { throw "libtorrent_flutter.dll not found in the build output" }
+          $dest = "plugins/libtorrent_flutter/prebuilt/windows/x64"
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          Copy-Item -Force $dll $dest
+      - name: Save libtorrent_flutter DLL
+        if: steps.ltf-dll.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: frontend/plugins/libtorrent_flutter/prebuilt/windows/x64
+          key: ltf-windows-x64-dll-v1-${{ hashFiles('frontend/plugins/libtorrent_flutter/src/**', 'frontend/plugins/libtorrent_flutter/windows/**') }}
 
       - name: Bundle VC++ runtime and verify DLLs
         shell: pwsh
@@ -385,9 +413,11 @@ jobs:
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.macos }}
     # Pinned, so a new macOS image can't change a release build unannounced. Needs
     # Xcode 26: connectivity_plus uses the macOS 26 SDK, and macos-15 has Xcode 16.
-    # Intel: GitHub's arm64 machines kept failing with "not acquired" for lack of
-    # capacity. The build script compiles both architectures either way.
-    runs-on: macos-26-intel
+    # Apple silicon: the universal build (both architectures either way) took
+    # 7-32 min on the Intel machines, mostly Xcode compiling. Apple-silicon
+    # machines once failed with "not acquired" for lack of capacity: if that
+    # comes back, `macos-26-intel` is the fallback.
+    runs-on: macos-26
     defaults:
       run:
         working-directory: frontend
@@ -555,17 +585,13 @@ jobs:
         working-directory: android-native
         run: |
           chmod +x ./gradlew
-          ./gradlew :tv:assembleAppRelease :tv:assembleLauncherRelease --stacktrace \
+          ./gradlew :tv:assembleAppRelease --stacktrace \
             -Ppb.versionName="$PB_VERSION" -Ppb.versionCode="$PB_BUILD"
-          # app -> PeanutButter-android-tv*.apk, launcher -> PeanutButter-android-tv-launcher*.apk
-          for flavor in app launcher; do
-            out=tv/build/outputs/apk/$flavor/release
-            name=PeanutButter-android-tv
-            [ "$flavor" = launcher ] && name=PeanutButter-android-tv-launcher
-            cp -f "$out/tv-$flavor-universal-release.apk" "$GITHUB_WORKSPACE/$name.apk"
-            cp -f "$out/tv-$flavor-arm64-v8a-release.apk" "$GITHUB_WORKSPACE/$name-arm64-v8a.apk"
-            cp -f "$out/tv-$flavor-armeabi-v7a-release.apk" "$GITHUB_WORKSPACE/$name-armeabi-v7a.apk"
-          done
+          out=tv/build/outputs/apk/app/release
+          name=PeanutButter-android-tv
+          cp -f "$out/tv-app-universal-release.apk" "$GITHUB_WORKSPACE/$name.apk"
+          cp -f "$out/tv-app-arm64-v8a-release.apk" "$GITHUB_WORKSPACE/$name-arm64-v8a.apk"
+          cp -f "$out/tv-app-armeabi-v7a-release.apk" "$GITHUB_WORKSPACE/$name-armeabi-v7a.apk"
           ls -lh "$GITHUB_WORKSPACE"/PeanutButter-android-tv*.apk
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

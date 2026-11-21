@@ -4,7 +4,7 @@ use uuid::Uuid;
 use crate::db::models::{SyncStateRow, TitleRow};
 use crate::error::AppError;
 use crate::graphql::types::{
-    HomeFeed, JackettCatalogStatus, MediaSegment, MediaSegments, SearchResult, ServerInfo, SortDir,
+    HomeFeed, JackettCatalogStatus, MediaSegment, MediaSegments, PersonDetails, SearchResult, ServerInfo, SimilarTitlesPage, SortDir,
     SortField, StreamBookmark, StreamSession, StreamSource, SyncStatus, Title, TitleConnection,
     TitleFilter, TitleKind, TorrentFile, TorrentProbe,
 };
@@ -51,7 +51,8 @@ impl Query {
             None => None,
         };
         // A service filter shows that service's lists, not TMDB's shelves.
-        if !personal && service_names.is_none() {
+        // Availability ranks your own files, which TMDB can't add to.
+        if !personal && service_names.is_none() && sort != SortField::Availability {
             let shelf = match sort {
                 SortField::Trending => Some("trending"),
                 SortField::Popularity => Some("popular"),
@@ -93,6 +94,9 @@ impl Query {
         }
         qb.push(" WHERE 1=1");
         apply_filters(&mut qb, &filter);
+        if !(continue_watching || favorites || watched) {
+            apply_rated_only(&mut qb);
+        }
         if let Some(names) = &service_names {
             qb.push(" AND EXISTS (SELECT 1 FROM addon_catalog_items a WHERE ");
             push_service_match(&mut qb, names);
@@ -136,6 +140,9 @@ impl Query {
         }
         count_qb.push(" WHERE 1=1");
         apply_filters(&mut count_qb, &filter);
+        if !(continue_watching || favorites || watched) {
+            apply_rated_only(&mut count_qb);
+        }
         if let Some(names) = &service_names {
             count_qb.push(" AND EXISTS (SELECT 1 FROM addon_catalog_items a WHERE ");
             push_service_match(&mut count_qb, names);
@@ -216,6 +223,59 @@ impl Query {
             }
         });
         Ok(Some(Title::from_row(row, &state.config.public_url)))
+    }
+
+    /// "More like this" for a title page: what TMDB recommends that is (or is
+    /// now) in the catalog, in TMDB's order. Empty without a TMDB key.
+    async fn similar_titles(
+        &self,
+        ctx: &Context<'_>,
+        title_id: Uuid,
+        limit: Option<i32>,
+    ) -> async_graphql::Result<Vec<Title>> {
+        let state = ctx.data::<AppState>()?;
+        let limit = limit.unwrap_or(12).clamp(1, 24) as usize;
+        let ingest = crate::ingest::IngestContext::from(state);
+        let ids = match crate::ingest::tmdb::similar_titles(&ingest, title_id, limit).await {
+            Ok(ids) => ids,
+            Err(e) => {
+                // A missing row is not worth failing the title page over.
+                tracing::warn!(title_id = %title_id, error = %e, "more like this failed");
+                return Ok(vec![]);
+            }
+        };
+        similar_rows(state, ids).await
+    }
+
+    /// "More like this", a TMDB page (up to 20) at a time, for a row that
+    /// keeps loading as it scrolls until TMDB's list ends.
+    async fn similar_titles_page(
+        &self,
+        ctx: &Context<'_>,
+        title_id: Uuid,
+        page: Option<i32>,
+    ) -> async_graphql::Result<SimilarTitlesPage> {
+        let state = ctx.data::<AppState>()?;
+        let page = page.unwrap_or(1).clamp(1, 500);
+        let ingest = crate::ingest::IngestContext::from(state);
+        let (ids, has_next_page) =
+            match crate::ingest::tmdb::similar_titles_page(&ingest, title_id, page, 20, 20).await {
+                Ok(found) => found,
+                Err(e) => {
+                    tracing::warn!(title_id = %title_id, page, error = %e, "more like this page failed");
+                    (vec![], false)
+                }
+            };
+        Ok(SimilarTitlesPage { items: similar_rows(state, ids).await?, has_next_page, page })
+    }
+
+    /// A cast or crew member's page (by `Person.tmdbPersonId`): bio and full
+    /// filmography from TMDB, with catalog titles marked.
+    async fn person(&self, ctx: &Context<'_>, tmdb_id: i32) -> async_graphql::Result<PersonDetails> {
+        let state = ctx.data::<AppState>()?;
+        let ingest = crate::ingest::IngestContext::from(state);
+        let page = crate::ingest::tmdb::person_page(&ingest, tmdb_id).await?;
+        Ok(PersonDetails::from_page(page, &state.config))
     }
 
     async fn search(
@@ -336,6 +396,7 @@ impl Query {
         qb.push(")");
         apply_adult_block(&mut qb);
         apply_released_only(&mut qb);
+        apply_rated_only(&mut qb);
         let rows: Vec<TitleRow> = qb.build_query_as().fetch_all(&state.pool).await?;
 
         let mut by_id: std::collections::HashMap<Uuid, TitleRow> =
@@ -408,9 +469,13 @@ impl Query {
         Ok(services_by_size(rows))
     }
 
-    async fn genres(&self, ctx: &Context<'_>) -> async_graphql::Result<Vec<String>> {
+    /// Every genre, or with `kind` only the genres titles of that kind have.
+    async fn genres(&self, ctx: &Context<'_>, kind: Option<TitleKind>) -> async_graphql::Result<Vec<String>> {
         let state = ctx.data::<AppState>()?;
-        Ok(crate::db::all_genre_names(&state.pool).await?)
+        Ok(match kind {
+            Some(kind) => crate::db::genre_names_for_kind(&state.pool, kind.as_db()).await?,
+            None => crate::db::all_genre_names(&state.pool).await?,
+        })
     }
 
     async fn server_info(&self, ctx: &Context<'_>) -> async_graphql::Result<ServerInfo> {
@@ -598,7 +663,8 @@ impl Query {
                 String::new()
             }
         };
-        // v5: merged + ranked across all sources, with `score` / `kind` / `url`.
+        // v6: merged + ranked across all sources, with `score` / `kind` / `url`,
+        // HD only (v5 lists still had SD copies).
         // The enabled sources are part of the key, so switching one on or off
         // doesn't serve a list made without it.
         let sources_sig = {
@@ -620,7 +686,7 @@ impl Query {
             .unwrap_or_else(|| state.config.live.streaming_resolution());
         let cache_key = crate::db::stream_search_cache_key(
             title_id,
-            &format!("v5:{sources_sig}:{preferred_res}|{query}"),
+            &format!("v6:{sources_sig}:{preferred_res}|{query}"),
             kind.as_db(),
             season,
             episode,
@@ -660,32 +726,7 @@ impl Query {
 
         // Prefer catalog metadata over the client string so searches stay exact
         // (clean title + imdb + S/E), even if the app sends a messy query.
-        let mut target = crate::jackett::SearchTarget {
-            title: query.clone(),
-            year,
-            ..Default::default()
-        };
-        if let Some(id) = title_id {
-            if let Ok(Some(meta)) = crate::db::title_stream_meta(&state.pool, id).await {
-                // Catalog title is the canonical English/UI name torrents usually use.
-                if !meta.title.trim().is_empty() {
-                    target.title = meta.title;
-                }
-                target.year = meta.year.or(year);
-                target.imdb_id = meta.imdb_id.filter(|s| !s.trim().is_empty());
-                // Releases may use the original title (anime romaji, foreign films)
-                // or whatever the app sent.
-                for alt in [meta.original_title, Some(query.clone())].into_iter().flatten() {
-                    let alt = alt.trim().to_string();
-                    if !alt.is_empty()
-                        && !alt.eq_ignore_ascii_case(&target.title)
-                        && !target.alt_titles.iter().any(|a| a.eq_ignore_ascii_case(&alt))
-                    {
-                        target.alt_titles.push(alt);
-                    }
-                }
-            }
-        }
+        let target = crate::sources::target_for_title(&state.pool, title_id, &query, year).await;
 
         let q = crate::sources::SourceQuery {
             target,
@@ -1021,6 +1062,7 @@ async fn fetch_home_row(
     }
     apply_adult_block(&mut qb);
     apply_released_only(&mut qb);
+    apply_rated_only(&mut qb);
     apply_language_filter(&mut qb, langs);
     qb.push(" ORDER BY ");
     qb.push(order_sql(Some(kind), sort, SortDir::Desc));
@@ -1068,6 +1110,31 @@ fn services_by_size(rows: Vec<(String, i64)>) -> Vec<crate::graphql::types::Serv
 
 /// Tag each title that's on a catalog add-on list with its services, best-ranked
 /// list first (see `crate::addon_catalogs::tags`).
+/// The catalog rows for "More like this" ids, kept in TMDB's order and run
+/// through the catalog's usual filters.
+async fn similar_rows(state: &AppState, ids: Vec<Uuid>) -> async_graphql::Result<Vec<Title>> {
+    if ids.is_empty() {
+        return Ok(vec![]);
+    }
+    let mut qb = sqlx::QueryBuilder::new("SELECT ");
+    qb.push(TITLE_COLUMNS);
+    qb.push(" FROM titles t WHERE t.id = ANY(");
+    qb.push_bind(ids.clone());
+    qb.push(")");
+    apply_adult_block(&mut qb);
+    apply_released_only(&mut qb);
+    apply_rated_only(&mut qb);
+    // Titles already in the catalog skip the import-time language check.
+    apply_language_filter(&mut qb, &state.config.live.preferred_language_codes());
+    let rows: Vec<TitleRow> = qb.build_query_as().fetch_all(&state.pool).await?;
+    let mut by_id: std::collections::HashMap<Uuid, TitleRow> =
+        rows.into_iter().map(|r| (r.id, r)).collect();
+    Ok(ids
+        .into_iter()
+        .filter_map(|id| by_id.remove(&id).map(|r| Title::from_row(r, &state.config.public_url)))
+        .collect())
+}
+
 async fn attach_services(pool: &sqlx::PgPool, titles: &mut [Title]) -> sqlx::Result<()> {
     if titles.is_empty() {
         return Ok(());
@@ -1126,6 +1193,7 @@ async fn trending_with_addon_catalogs(
     qb.push(")");
     apply_adult_block(&mut qb);
     apply_released_only(&mut qb);
+    apply_rated_only(&mut qb);
     apply_language_filter(&mut qb, langs);
     let found: Vec<TitleRow> = qb.build_query_as().fetch_all(pool).await?;
     let mut by_id: std::collections::HashMap<Uuid, Title> = found
@@ -1203,6 +1271,20 @@ fn apply_adult_block<'a>(qb: &mut sqlx::QueryBuilder<'a, sqlx::Postgres>) {
             upper(trim(COALESCE(t.content_rating, ''))) IN ('XXX','AO') \
             OR upper(COALESCE(t.content_rating, '')) LIKE '%XXX%'\
         )",
+    );
+}
+
+/// Only titles with a known id (TMDB, IMDb or AniList: OMDb-only servers have no
+/// TMDB ids) and a score (TMDB, IMDb, Rotten Tomatoes or AniList): the rest are
+/// hidden from every browse list on every device. Rows stay in the
+/// database, so a title shows up again once it gets a rating. Your own lists
+/// (Continue watching, My List, Watched) still show everything.
+fn apply_rated_only<'a>(qb: &mut sqlx::QueryBuilder<'a, sqlx::Postgres>) {
+    qb.push(
+        " AND (t.tmdb_id IS NOT NULL OR t.imdb_id IS NOT NULL OR t.anilist_id IS NOT NULL) \
+          AND EXISTS (SELECT 1 FROM ratings rr WHERE rr.title_id = t.id AND (\
+            COALESCE(rr.tmdb_vote_average, 0) > 0 OR COALESCE(rr.imdb_rating, 0) > 0 \
+            OR COALESCE(rr.rt_score, 0) > 0 OR COALESCE(rr.anilist_score, 0) > 0))",
     );
 }
 
@@ -1338,19 +1420,22 @@ async fn fill_catalog_page(
         rating_min: filter.rating_min,
         order,
     };
-    let filtered = discover.is_active();
-    let shelf = shelf.filter(|_| !filtered);
-    if !filtered && shelf.is_none() {
+    // Filters, or a sort with no TMDB shelf of its own (Rating, Year, Title,
+    // …), go through Discover; plain Trending / Popular / Fresh use their
+    // shelf. Before, the second case fetched nothing and only ever showed
+    // titles already stored.
+    let shelf = shelf.filter(|_| !discover.is_active());
+    if kind == Some("anime") && shelf.is_none() {
+        // Anime has no Discover list of its own (stored as TMDB series).
         return false;
     }
     // Enough rows to fill this page, plus the next so scrolling doesn't wait.
     let wanted = (i64::from(page) + 1) * i64::from(per_page);
     let mut depth = page;
     loop {
-        let more = if filtered {
-            tmdb::ensure_discover_pages_for_catalog(&ingest, kind, &discover, depth, per_page).await
-        } else {
-            tmdb::ensure_shelf_pages_for_catalog(&ingest, shelf.unwrap_or_default(), kind, depth, per_page).await
+        let more = match shelf {
+            Some(shelf) => tmdb::ensure_shelf_pages_for_catalog(&ingest, shelf, kind, depth, per_page).await,
+            None => tmdb::ensure_discover_pages_for_catalog(&ingest, kind, &discover, depth, per_page).await,
         };
         let more = match more {
             Ok(more) => more,
@@ -1359,7 +1444,7 @@ async fn fill_catalog_page(
                 return false;
             }
         };
-        if !more || ingest.syncing.load(std::sync::atomic::Ordering::Relaxed) {
+        if !more {
             return more;
         }
         let mut count = sqlx::QueryBuilder::new(

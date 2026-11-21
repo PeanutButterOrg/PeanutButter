@@ -23,6 +23,26 @@ class SrtOverlay {
     var active: Boolean = false
         private set
 
+    /** Shifts the cues: positive shows them later. */
+    var delayMs: Long = 0
+        set(value) {
+            field = value
+            lastText = null
+            if (active) paint()
+        }
+
+    /**
+     * Gap under the text as a share of the view's height, like the view's own
+     * bottom padding (which skips cues that set their own line).
+     */
+    var bottomFraction: Float = 0.10f
+        set(value) {
+            if (field == value) return
+            field = value
+            lastText = null
+            if (active) paint()
+        }
+
     private val tick = object : Runnable {
         override fun run() {
             if (!active) return
@@ -80,7 +100,7 @@ class SrtOverlay {
     }
 
     private fun paint() {
-        val pos = positionProvider?.invoke() ?: return
+        val pos = (positionProvider?.invoke() ?: return) - delayMs
         val text = cues
             .asSequence()
             .filter { pos >= it.startMs && pos < it.endMs }
@@ -92,12 +112,12 @@ class SrtOverlay {
         if (text.isEmpty()) {
             v.setCues(emptyList())
         } else {
-            // Explicit bottom line — default Cue placement can land mid-frame on TV.
+            // Explicit line near the bottom: default placement can land mid-frame on TV.
             v.setCues(
                 listOf(
                     Cue.Builder()
                         .setText(text)
-                        .setLine(1.0f, Cue.LINE_TYPE_FRACTION)
+                        .setLine(1f - bottomFraction, Cue.LINE_TYPE_FRACTION)
                         .setLineAnchor(Cue.ANCHOR_TYPE_END)
                         .setPosition(0.5f)
                         .setPositionAnchor(Cue.ANCHOR_TYPE_MIDDLE)

@@ -1413,10 +1413,13 @@ pub(crate) fn source_quality_score(title: &str) -> i32 {
     2
 }
 
+/// Cinema recordings and screeners, from a [padded] name. Dashes are spaces by
+/// then, so "HD-TS" is caught by "ts".
 pub(crate) fn looks_like_cam(padded_title: &str) -> bool {
     [
-        "cam", "camrip", "hdcam", "hdts", "telesync", "telecine", "hd-ts", "hd-tc", "screener",
-        "dvdscr", "r5",
+        "cam", "camrip", "hdcam", "hqcam", "hdts", "tsrip", "hdtsrip", "telesync", "telecine",
+        "tcrip", "hdtc", "screener", "dvdscr", "dvdscreener", "scr", "bdscr", "hdscr", "webscr",
+        "predvd", "pdvd", "r5",
     ]
     .iter()
     .any(|t| has_token(padded_title, t))
@@ -1656,6 +1659,21 @@ mod tests {
     #[test]
     fn rejects_cam_and_tv_leaks_for_movies() {
         assert!(super::looks_like_cam(&super::padded("Movie.2024.HDCam.x264")));
+        // Spellings that used to slip through.
+        for name in [
+            "Ebenezer (2026) TSRip [H.264] [AD]",
+            "Film.2026.1080p.HDTC.x264",
+            "Film 2026 HQCAM 1080p",
+            "Film.2026.PreDVD.720p",
+            "Film.2026.SCR.1080p",
+            "Film.2026.HD-TS.1080p",
+        ] {
+            assert!(super::looks_like_cam(&super::padded(name)), "{name}");
+        }
+        // Real releases stay.
+        for name in ["Film.2026.1080p.WEB-DL", "Film.2026.2160p.BluRay.REMUX", "Film.2026.720p.HDRip"] {
+            assert!(!super::looks_like_cam(&super::padded(name)), "{name}");
+        }
         assert!(super::looks_like_junk_release("Show.S01E01.1080p", "movie"));
         assert!(!super::looks_like_junk_release("Movie.2024.1080p.BluRay", "movie"));
     }

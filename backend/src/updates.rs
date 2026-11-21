@@ -42,9 +42,6 @@ pub const PLATFORMS: &[&str] = &[
     "android-tv",
     "android-tv-arm64-v8a",
     "android-tv-armeabi-v7a",
-    "android-tv-launcher",
-    "android-tv-launcher-arm64-v8a",
-    "android-tv-launcher-armeabi-v7a",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -537,10 +534,14 @@ pub async fn file(
     UrlPath((tag, name)): UrlPath<(String, String)>,
     req_headers: HeaderMap,
 ) -> Result<Response, AppError> {
-    if !safe_name(&tag) || !safe_name(&name) || name.starts_with("manifest") {
+    serve_mirrored(&tag, &name, req_headers).await
+}
+
+async fn serve_mirrored(tag: &str, name: &str, req_headers: HeaderMap) -> Result<Response, AppError> {
+    if !safe_name(tag) || !safe_name(name) || name.starts_with("manifest") {
         return Err(AppError::NotFound("no such update file".into()));
     }
-    let path = service().releases_dir().join(&tag).join(&name);
+    let path = service().releases_dir().join(tag).join(name);
     if !path.is_file() {
         return Err(AppError::NotFound("no such update file".into()));
     }
@@ -558,6 +559,64 @@ pub async fn file(
             .unwrap_or_else(|_| header::HeaderValue::from_static("attachment")),
     );
     Ok(res)
+}
+
+/// The mirrored release the sign-in page offers: its version and the apps
+/// whose files are on disk, by platform key.
+pub async fn published_apps() -> Option<(String, HashMap<String, Asset>)> {
+    let svc = service();
+    let tag = svc.current_tag().await?;
+    let (manifest, _, _) = svc.load(&tag).await?;
+    let dir = svc.releases_dir().join(&tag);
+    let assets: HashMap<String, Asset> = manifest
+        .assets
+        .into_iter()
+        .filter(|(_, a)| safe_name(&a.name) && dir.join(&a.name).is_file())
+        .collect();
+    (!assets.is_empty()).then_some((manifest.version, assets))
+}
+
+/// The TV build for the browser asking: by the CPU its user agent names, else
+/// the universal APK (browsers seldom say, and it runs on every TV).
+pub fn tv_platform_for(user_agent: &str) -> &'static str {
+    let ua = user_agent.to_ascii_lowercase();
+    // armv8l is a 64-bit CPU running 32-bit Android: the 64-bit APK won't install.
+    if ua.contains("armv8l") || ua.contains("armv7") {
+        "android-tv-armeabi-v7a"
+    } else if ua.contains("aarch64") || ua.contains("arm64") || ua.contains("armv8") {
+        "android-tv-arm64-v8a"
+    } else {
+        "android-tv"
+    }
+}
+
+/// GET /apps/{platform} — a mirrored app, for downloading from the sign-in
+/// page (no device key: these are the public GitHub release files).
+/// `android-tv-auto` picks the TV build for the browser asking.
+pub async fn app(
+    UrlPath(platform): UrlPath<String>,
+    req_headers: HeaderMap,
+) -> Result<Response, AppError> {
+    let Some((_, assets)) = published_apps().await else {
+        return Err(AppError::NotFound("no apps mirrored on this server yet".into()));
+    };
+    let wanted = if platform == "android-tv-auto" {
+        let ua = req_headers
+            .get(header::USER_AGENT)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        tv_platform_for(ua)
+    } else if PLATFORMS.contains(&platform.as_str()) {
+        PLATFORMS.iter().copied().find(|p| *p == platform).unwrap_or_default()
+    } else {
+        return Err(AppError::NotFound("no such app".into()));
+    };
+    let asset = assets
+        .get(wanted)
+        .or_else(|| wanted.starts_with("android-tv").then(|| assets.get("android-tv")).flatten())
+        .ok_or_else(|| AppError::NotFound("that app isn't in this release".into()))?;
+    let tag = service().current_tag().await.unwrap_or_default();
+    serve_mirrored(&tag, &asset.name, req_headers).await
 }
 
 #[cfg(test)]
@@ -609,6 +668,14 @@ mod tests {
         assert_eq!(at(50, 200), 25);
         assert_eq!(at(200, 200), 100);
         assert_eq!(at(300, 200), 100);
+    }
+
+    #[test]
+    fn tv_build_follows_the_browsers_cpu() {
+        assert_eq!(tv_platform_for("Mozilla/5.0 (Linux; Android 11; BRAVIA 4K) Chrome/120"), "android-tv");
+        assert_eq!(tv_platform_for("Mozilla/5.0 (X11; Linux aarch64) Chrome/120"), "android-tv-arm64-v8a");
+        assert_eq!(tv_platform_for("Mozilla/5.0 (X11; Linux armv8l) Chrome/120"), "android-tv-armeabi-v7a");
+        assert_eq!(tv_platform_for("Mozilla/5.0 (X11; Linux armv7l) Chrome/120"), "android-tv-armeabi-v7a");
     }
 
     #[test]

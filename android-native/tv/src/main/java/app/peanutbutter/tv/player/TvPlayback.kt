@@ -29,6 +29,7 @@ import java.io.File
  * Progressive HTTP torrents use plain seek — never setMediaItem mid-stream
  * (that caused player errors / black frames on BeyondTV).
  */
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class TvPlayback(
     context: Context,
     private val listener: PlaybackEngine.Listener,
@@ -171,16 +172,53 @@ class TvPlayback(
         view?.setApplyEmbeddedStyles(true)
         // Sit near the bottom of the TV frame, clear of the transport bar.
         view?.setBottomPaddingFraction(SUBTITLE_PAD_IDLE)
-        view?.setUserDefaultStyle()
-        view?.setUserDefaultTextSize()
+        applySubtitleLook()
         srtOverlay.bind(view) { exo.currentPosition.coerceAtLeast(0L) }
+    }
+
+    private var subSize = 1
+    private var subBackground = "box"
+
+    override val canStyleSubtitles: Boolean get() = true
+
+    override fun setSubtitleLook(size: Int, background: String) {
+        subSize = size.coerceIn(0, SUB_SCALES.size - 1)
+        subBackground = background
+        applySubtitleLook()
+    }
+
+    private fun applySubtitleLook() {
+        val view = subtitles ?: return
+        view.setFractionalTextSize(SubtitleView.DEFAULT_TEXT_SIZE_FRACTION * SUB_SCALES[subSize])
+        val edge = when (subBackground) {
+            "outline" -> androidx.media3.ui.CaptionStyleCompat.EDGE_TYPE_OUTLINE
+            "shadow" -> androidx.media3.ui.CaptionStyleCompat.EDGE_TYPE_DROP_SHADOW
+            else -> androidx.media3.ui.CaptionStyleCompat.EDGE_TYPE_NONE
+        }
+        view.setStyle(
+            androidx.media3.ui.CaptionStyleCompat(
+                android.graphics.Color.WHITE,
+                if (subBackground == "box") 0xAA000000.toInt() else android.graphics.Color.TRANSPARENT,
+                android.graphics.Color.TRANSPARENT,
+                edge,
+                android.graphics.Color.BLACK,
+                null,
+            ),
+        )
+    }
+
+    // Exo can only shift the subtitles we draw ourselves (downloaded / added ones).
+    override val canDelaySubtitles: Boolean get() = srtOverlay.active
+
+    override fun setSubtitleDelay(ms: Long) {
+        srtOverlay.delayMs = ms
     }
 
     /** Lift captions when transport chrome is up so they aren't under the seek bar. */
     fun setSubtitlesChromeVisible(chromeVisible: Boolean) {
-        subtitles?.setBottomPaddingFraction(
-            if (chromeVisible) SUBTITLE_PAD_CHROME else SUBTITLE_PAD_IDLE,
-        )
+        val pad = if (chromeVisible) SUBTITLE_PAD_CHROME else SUBTITLE_PAD_IDLE
+        subtitles?.setBottomPaddingFraction(pad)
+        srtOverlay.bottomFraction = pad
     }
 
     override fun attachSurface(view: SurfaceView?) {
@@ -494,7 +532,8 @@ class TvPlayback(
         private const val TAG = "TvPlayback"
         private const val DEFAULT_USER_AGENT = "PeanutButterTV/1.0"
         /** Fraction of view height reserved below captions (idle / chrome up). */
+        private val SUB_SCALES = floatArrayOf(0.8f, 1f, 1.3f, 1.65f)
         private const val SUBTITLE_PAD_IDLE = 0.10f
-        private const val SUBTITLE_PAD_CHROME = 0.22f
+        private const val SUBTITLE_PAD_CHROME = 0.28f
     }
 }

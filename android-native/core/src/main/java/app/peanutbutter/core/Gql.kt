@@ -19,6 +19,56 @@ fragment T on Title {
 }
 """
 
+    /** "More like this" on a title page (server 0.3.25+). */
+    const val SIMILAR = """
+query SimilarTitles(${'$'}titleId: UUID!, ${'$'}limit: Int) {
+  similarTitles(titleId: ${'$'}titleId, limit: ${'$'}limit) {
+    id kind title originalTitle synopsis year runtimeMinutes
+    posterUrl backdropUrl logoUrl
+    ratings { tmdbVoteAverage imdbRating rtScore }
+    genres
+    userState { positionMs durationMs progressPercent watched favorite }
+  }
+}
+"""
+
+    /** "More like this", a page at a time (server 0.3.26+). */
+    const val SIMILAR_PAGE = """
+query SimilarTitlesPage(${'$'}titleId: UUID!, ${'$'}page: Int) {
+  similarTitlesPage(titleId: ${'$'}titleId, page: ${'$'}page) {
+    hasNextPage
+    items {
+      id kind title originalTitle synopsis year runtimeMinutes
+      posterUrl backdropUrl logoUrl
+      ratings { tmdbVoteAverage imdbRating rtScore }
+      genres
+      userState { positionMs durationMs progressPercent watched favorite }
+    }
+  }
+}
+"""
+
+    /** A cast or crew member's page (server 0.3.26+). */
+    const val PERSON = """
+query Person(${'$'}tmdbId: Int!) {
+  person(tmdbId: ${'$'}tmdbId) {
+    tmdbId name biography birthday deathday placeOfBirth knownFor profileUrl checkingCredits
+    acting { tmdbId kind title role year posterUrl voteAverage titleId }
+    crew { tmdbId kind title role year posterUrl voteAverage titleId }
+  }
+}
+"""
+
+    /** The catalog title for a TMDB id, stored first if needed (server 0.3.26+). */
+    const val OPEN_TMDB_TITLE = """
+mutation OpenTmdbTitle(${'$'}tmdbId: Int!, ${'$'}kind: TitleKind!) {
+  openTmdbTitle(tmdbId: ${'$'}tmdbId, kind: ${'$'}kind) { id }
+}
+"""
+
+    /** [TITLE] with each person's TMDB id, which opens their page (server 0.3.26+). */
+    val TITLE_WITH_PEOPLE_IDS: String get() = TITLE.replace("people { id name", "people { id tmdbPersonId name")
+
     const val TITLE = """
 query GetTitle(${'$'}id: UUID!) {
   title(id: ${'$'}id) {
@@ -189,10 +239,15 @@ mutation SetWatched(${'$'}titleId: UUID!, ${'$'}watched: Boolean!) {
 query Genres { genres }
 """
 
+    /** Genres titles of one kind actually have (servers from 0.3.23). */
+    const val GENRES_FOR_KIND = """
+query GenresForKind(${'$'}kind: TitleKind) { genres(kind: ${'$'}kind) }
+"""
+
     const val SEARCH = """
 query Search(${'$'}q: String!, ${'$'}kind: TitleKind) {
   search(query: ${'$'}q, kind: ${'$'}kind) {
-    items { id kind title originalTitle year posterUrl backdropUrl synopsis ratings { imdbRating tmdbVoteAverage rtScore } genres
+    items { id kind title originalTitle year posterUrl backdropUrl synopsis ratings { imdbRating tmdbVoteAverage tmdbVoteCount rtScore } genres
       userState { positionMs durationMs progressPercent watched favorite } }
   }
 }

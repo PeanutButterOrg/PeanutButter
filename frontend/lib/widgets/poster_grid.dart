@@ -15,7 +15,18 @@ class PosterGrid extends StatefulWidget {
     this.controller,
     this.onMoveUp,
     this.firstFocus,
+    this.headerSlivers = const [],
+    this.footerSlivers = const [],
+    this.sidePadding = 20,
   });
+
+  /// Shown under the grid (e.g. "That's everything in this category.").
+  final List<Widget> footerSlivers;
+
+  /// Shown above the grid in the same scroll (search's title and top result).
+  final List<Widget> headerSlivers;
+  /// Left and right margin of the grid.
+  final double sidePadding;
 
   final List<TitleItem> items;
   final VoidCallback? onEndReached;
@@ -83,7 +94,7 @@ class _PosterGridState extends State<PosterGrid> {
     return LayoutBuilder(
       builder: (context, constraints) {
         final tv = isAndroidTv;
-        const hPad = 20.0;
+        final hPad = widget.sidePadding;
         final minCard = tv ? 148.0 : 148.0;
         final gap = tv ? 14.0 : 12.0;
         final available = (constraints.maxWidth - hPad * 2).clamp(minCard, 4000.0);
@@ -106,6 +117,7 @@ class _PosterGridState extends State<PosterGrid> {
             cacheExtent: tv ? 280 : 800,
             clipBehavior: tv ? Clip.none : Clip.hardEdge,
             slivers: [
+              ...widget.headerSlivers,
               SliverPadding(
                 padding: EdgeInsets.fromLTRB(
                   hPad,
@@ -130,6 +142,7 @@ class _PosterGridState extends State<PosterGrid> {
                   ),
                 ),
               ),
+              ...widget.footerSlivers,
               if (widget.loadingMore)
                 const SliverToBoxAdapter(
                   child: Padding(

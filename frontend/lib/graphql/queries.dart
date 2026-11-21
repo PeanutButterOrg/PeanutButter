@@ -71,6 +71,8 @@ query GetCatalog(
       year
       posterUrl
       bestQuality
+      # The score badge, as on home rows and search (one batched lookup).
+      ratings { tmdbVoteAverage imdbRating rtScore anilistScore }
       userState {
         favorite
         watched
@@ -192,10 +194,15 @@ query SearchTitles($query: String!, $kind: TitleKind, $page: Int, $perPage: Int)
       kind
       title
       originalTitle
+      synopsis
       year
+      runtimeMinutes
       posterUrl
+      backdropUrl
+      thumbUrl
       ratings {
         tmdbVoteAverage
+        tmdbVoteCount
         imdbRating
         anilistScore
         rtScore
@@ -302,9 +309,54 @@ fragment HomeTitle on Title {
 }
 ''';
 
+/// [GET_TITLE] with each person's TMDB id, which opens their page (server 0.3.26+).
+final String GET_TITLE_WITH_PEOPLE_IDS = GET_TITLE.replaceFirst('people {\n      id\n', 'people {\n      id\n      tmdbPersonId\n');
+
+/// "More like this", a page at a time (server 0.3.26+).
+final String SIMILAR_TITLES_PAGE = r'''
+query SimilarTitlesPage($titleId: UUID!, $page: Int) {
+  similarTitlesPage(titleId: $titleId, page: $page) {
+    hasNextPage
+    items { ...HomeTitle }
+  }
+}
+''' + GET_HOME_FEED.substring(GET_HOME_FEED.indexOf('fragment HomeTitle'));
+
+/// A cast or crew member's page (server 0.3.26+).
+const String GET_PERSON = r'''
+query Person($tmdbId: Int!) {
+  person(tmdbId: $tmdbId) {
+    tmdbId name biography birthday deathday placeOfBirth knownFor profileUrl checkingCredits
+    acting { tmdbId kind title role year posterUrl voteAverage titleId }
+    crew { tmdbId kind title role year posterUrl voteAverage titleId }
+  }
+}
+''';
+
+/// The catalog title for a TMDB id, stored first if needed (server 0.3.26+).
+const String OPEN_TMDB_TITLE = r'''
+mutation OpenTmdbTitle($tmdbId: Int!, $kind: TitleKind!) {
+  openTmdbTitle(tmdbId: $tmdbId, kind: $kind) { id }
+}
+''';
+
+/// "More like this" on a title page. Servers before 0.3.25 don't have it.
+final String SIMILAR_TITLES = r'''
+query SimilarTitles($titleId: UUID!, $limit: Int) {
+  similarTitles(titleId: $titleId, limit: $limit) { ...HomeTitle }
+}
+''' + GET_HOME_FEED.substring(GET_HOME_FEED.indexOf('fragment HomeTitle'));
+
 const String GET_GENRES = r'''
 query GetGenres {
   genres
+}
+''';
+
+/// Genres titles of one kind actually have (servers from 0.3.23).
+const String GET_GENRES_FOR_KIND = r'''
+query GetGenresForKind($kind: TitleKind) {
+  genres(kind: $kind)
 }
 ''';
 

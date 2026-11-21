@@ -183,6 +183,10 @@ pub async fn gate(
     if method == Method::OPTIONS || path == "/health" || path == "/pair" {
         return Ok(next.run(req).await);
     }
+    // App downloads on the sign-in page: the public GitHub release files.
+    if path.starts_with("/apps/") && (method == Method::GET || method == Method::HEAD) {
+        return Ok(next.run(req).await);
+    }
     // Public art proxy — TVs often lack DNS for image.tmdb.org / YouTube.
     if path.starts_with("/art/") && (method == Method::GET || method == Method::HEAD) {
         return Ok(next.run(req).await);

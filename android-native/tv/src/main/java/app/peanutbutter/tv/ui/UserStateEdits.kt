@@ -2,6 +2,8 @@ package app.peanutbutter.tv.ui
 
 import android.view.View
 import app.peanutbutter.core.TitleItem
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import java.util.WeakHashMap
 
 /**
@@ -17,6 +19,10 @@ object UserStateEdits {
     /** Bound poster card → the item it shows (main thread only). */
     private val bound = WeakHashMap<View, TitleItem>()
     private var redraw: ((View, TitleItem) -> Unit)? = null
+
+    /** Bumped on every edit, so Compose cards that read it redraw. */
+    var version by androidx.compose.runtime.mutableIntStateOf(0)
+        private set
 
     fun setFavorite(id: String, favorite: Boolean) {
         edits[id] = (edits[id] ?: Edit(null, null)).copy(favorite = favorite)
@@ -47,6 +53,7 @@ object UserStateEdits {
     }
 
     private fun refresh(id: String) {
+        version++
         val draw = redraw ?: return
         for ((card, item) in bound.entries.toList()) {
             if (item.id == id) draw(card, apply(item))

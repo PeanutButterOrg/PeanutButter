@@ -5,7 +5,6 @@
 #   ./scripts/update-apps.sh              # Linux + TV
 #   ./scripts/update-apps.sh --linux      # Linux only
 #   ./scripts/update-apps.sh --tv         # Android TV app only (native, android-native/)
-#   ./scripts/update-apps.sh --launcher   # PeanutButter Launcher only
 #   ./scripts/update-apps.sh --no-launch  # install without launching
 # The TV builds are debug builds (release ones are signed by CI).
 set -euo pipefail
@@ -16,7 +15,6 @@ NATIVE="$ROOT/android-native"
 DIST="$ROOT/dist"
 TV_HOST="${PB_TV_HOST:-10.0.0.9}"
 TV_PORT="${PB_TV_PORT:-5555}"
-TV_FLAVOR="app"
 TV_APK=""
 DESKTOP_ID="app.peanutbutter.peanutbutter"
 OPT_DIR="${HOME}/.local/opt/peanutbutter"
@@ -29,10 +27,9 @@ for arg in "$@"; do
   case "$arg" in
     --linux) do_tv=0 ;;
     --tv) do_linux=0 ;;
-    --launcher) do_linux=0; TV_FLAVOR="launcher" ;;
     --no-launch) do_launch=0 ;;
     -h|--help)
-      sed -n '2,10p' "$0"
+      sed -n '2,9p' "$0"
       exit 0
       ;;
   esac
@@ -145,19 +142,16 @@ EOF
 }
 
 install_tv() {
-  # The TV app and the Launcher are the native app in android-native/ (the
-  # Flutter Android build is no longer used on TVs).
+  # The TV app is the native app in android-native/ (the Flutter Android
+  # build is no longer used on TVs).
   local pkg="app.peanutbutter.tv"
-  [[ "$TV_FLAVOR" == "launcher" ]] && pkg="app.peanutbutter.tv.launcher"
-  local cap="App"
-  [[ "$TV_FLAVOR" == "launcher" ]] && cap="Launcher"
-  echo "==> Building Android TV ($TV_FLAVOR, debug)"
-  (cd "$NATIVE" && ./gradlew -q ":tv:assemble${cap}Debug")
-  local out="$NATIVE/tv/build/outputs/apk/$TV_FLAVOR/debug"
+  echo "==> Building Android TV (debug)"
+  (cd "$NATIVE" && ./gradlew -q ":tv:assembleAppDebug")
+  local out="$NATIVE/tv/build/outputs/apk/app/debug"
 
   # Always keep a copy under dist/ for sharing or sideloading, whether or not
   # a TV is connected. The universal APK runs on any TV.
-  cp -f "$out/tv-$TV_FLAVOR-universal-debug.apk" "$TV_APK"
+  cp -f "$out/tv-app-universal-debug.apk" "$TV_APK"
   echo "TV APK saved → $TV_APK"
 
   if ! command -v adb >/dev/null 2>&1; then
@@ -184,18 +178,14 @@ install_tv() {
   # The APK for the TV's CPU is smaller than the universal one.
   local abi apk
   abi="$(adb -s "$dev" shell getprop ro.product.cpu.abi 2>/dev/null | tr -d '\r')"
-  apk="$out/tv-$TV_FLAVOR-$abi-debug.apk"
-  [[ -f "$apk" ]] || apk="$out/tv-$TV_FLAVOR-universal-debug.apk"
+  apk="$out/tv-app-$abi-debug.apk"
+  [[ -f "$apk" ]] || apk="$out/tv-app-universal-debug.apk"
 
   echo "==> Installing $(basename "$apk") on $dev (abi=${abi:-unknown})"
   adb -s "$dev" install -r "$apk"
   adb -s "$dev" shell am force-stop "$pkg" >/dev/null 2>&1 || true
   if [[ "$do_launch" -eq 1 ]]; then
-    if [[ "$TV_FLAVOR" == "launcher" ]]; then
-      adb -s "$dev" shell am start -n "$pkg/app.peanutbutter.tv.launcher.LauncherActivity" >/dev/null
-    else
-      adb -s "$dev" shell am start -n "$pkg/app.peanutbutter.tv.ui.SplashActivity" >/dev/null
-    fi
+    adb -s "$dev" shell am start -n "$pkg/app.peanutbutter.tv.ui.SplashActivity" >/dev/null
     echo "TV launched on $dev"
   else
     echo "TV installed on $dev (not launched)"
@@ -206,11 +196,7 @@ if [[ "$do_linux" -eq 1 ]]; then
   install_linux
 fi
 if [[ "$do_tv" -eq 1 ]]; then
-  if [[ "$TV_FLAVOR" == "launcher" ]]; then
-    TV_APK="$DIST/PeanutButter-tv-launcher.apk"
-  else
-    TV_APK="$DIST/PeanutButter-tv.apk"
-  fi
+  TV_APK="$DIST/PeanutButter-tv.apk"
   install_tv
 fi
 

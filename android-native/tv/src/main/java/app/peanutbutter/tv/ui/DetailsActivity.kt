@@ -1,45 +1,40 @@
 package app.peanutbutter.tv.ui
 
 import android.content.Intent
-import android.content.res.ColorStateList
 import android.os.Bundle
 import android.util.Log
 import android.view.KeyEvent
-import android.view.LayoutInflater
-import android.view.View
-import android.view.ViewGroup
-import android.graphics.Rect
-import android.widget.HorizontalScrollView
-import android.widget.ImageButton
-import android.widget.ImageView
-import android.widget.LinearLayout
-import android.widget.ProgressBar
-import android.widget.TextView
 import android.widget.Toast
-import androidx.core.content.ContextCompat
-import androidx.core.view.isVisible
+import androidx.activity.compose.setContent
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.lifecycleScope
-import androidx.recyclerview.widget.LinearLayoutManager
-import androidx.recyclerview.widget.RecyclerView
 import app.peanutbutter.core.AppLog
 import app.peanutbutter.core.Episode
 import app.peanutbutter.core.Season
 import app.peanutbutter.core.StreamQuality
-import app.peanutbutter.core.StreamSource
+import app.peanutbutter.core.Person
 import app.peanutbutter.core.TitleItem
+import app.peanutbutter.core.Trailer
 import app.peanutbutter.core.TorrentFilePicker
 import app.peanutbutter.core.seriesPlayTarget
-import app.peanutbutter.tv.PbGlide
 import app.peanutbutter.tv.R
 import app.peanutbutter.tv.asTv
 import app.peanutbutter.tv.player.PlayerActivity
 import app.peanutbutter.tv.player.PlayerActivity.Companion.putStreamSource
 import kotlinx.coroutines.launch
 
-/** Flutter detail — hero + cast + seasons/episodes; series Play → S01E01. */
-class DetailsActivity : FragmentActivity() {
-    private var item: TitleItem? = null
+/**
+ * The title page, drawn like the desktop's ([DetailsScreen]): hero, credits,
+ * cast, trailer, seasons and episodes, more like this. This activity loads the
+ * title and finds and starts streams.
+ */
+class DetailsActivity : FragmentActivity(), DetailsActions {
+    private val ui = DetailsState()
+    private var item: TitleItem?
+        get() = ui.item
+        set(value) {
+            ui.item = value
+        }
     private var searching = false
     private var lastPlayerLaunchMs = 0L
     private var searchJob: kotlinx.coroutines.Job? = null
@@ -59,10 +54,7 @@ class DetailsActivity : FragmentActivity() {
         lifecycleScope.launch {
             try {
                 app.awaitWrites()
-                val loaded = app.api.title(id)
-                item = loaded
-                bind(loaded)
-                if (currentFocus == null) findViewById<View>(R.id.btn_play).requestFocus()
+                item = app.api.title(id)
             } catch (e: Exception) {
                 AppLog.i("DetailsActivity", "refresh after player failed: ${e.message}")
             }
@@ -81,497 +73,161 @@ class DetailsActivity : FragmentActivity() {
         super.onCreate(savedInstanceState)
         // Start the torrent engine while the user reads the page, not after Play.
         app.peanutbutter.core.TorrentClient.prewarm(this)
-        setContentView(R.layout.activity_details)
+        setContent { DetailsScreen(ui, this) }
         val id = intent.getStringExtra(EXTRA_ID).orEmpty()
-        setBusy(true)
         lifecycleScope.launch {
-            var loadedOk = false
             try {
                 val loaded = application.asTv().api.title(id)
                 item = loaded
-                bind(loaded)
-                loadedOk = true
+                loadExtras(loaded)
+                // Play on the home hero: press Play once the page is up (not on rotate/recreate).
+                if (savedInstanceState == null && intent.getBooleanExtra(EXTRA_AUTOPLAY, false)) {
+                    intent.removeExtra(EXTRA_AUTOPLAY)
+                    play(fromStart = false)
+                }
             } catch (e: Exception) {
                 Toast.makeText(this@DetailsActivity, e.message, Toast.LENGTH_LONG).show()
-            } finally {
-                setBusy(false)
-                if (loadedOk) findViewById<View>(R.id.btn_play).requestFocus()
+                finish()
             }
         }
     }
 
+    /** Follow state (series) and More like this. */
+    private fun loadExtras(t: TitleItem) {
+        val api = application.asTv().api
+        if (t.kind.equals("SERIES", true) || t.kind.equals("TV", true) || t.kind.equals("ANIME", true)) {
+            lifecycleScope.launch { ui.following = runCatching { api.isFollowing(t.id) }.getOrNull() }
+        }
+        similarPage = 0
+        similarHasMore = true
+        ui.similar = emptyList()
+        loadMoreSimilar()
+    }
+
+    // More like this, a page at a time until the list ends.
+    private var similarPage = 0
+    private var similarHasMore = true
+    private var similarLoading = false
+
+    override fun loadMoreSimilar() {
+        val t = item ?: return
+        if (similarLoading || !similarHasMore) return
+        similarLoading = true
+        val page = similarPage + 1
+        lifecycleScope.launch {
+            val (items, more) = application.asTv().api.similarPage(t.id, page)
+            similarLoading = false
+            if (isFinishing || item?.id != t.id) return@launch
+            similarPage = page
+            similarHasMore = more
+            val seen = ui.similar.mapTo(HashSet()) { it.id }
+            ui.similar = ui.similar + items.filter { it.id != t.id && seen.add(it.id) }
+            // A page that was all filtered out: keep going while there is more.
+            if (items.isEmpty() && more) loadMoreSimilar()
+        }
+    }
+
+    override fun openPerson(person: Person) {
+        val id = person.tmdbPersonId
+        if (id == null) {
+            Toast.makeText(this, R.string.person_needs_server, Toast.LENGTH_LONG).show()
+            return
+        }
+        startActivity(
+            Intent(this, PersonActivity::class.java)
+                .putExtra(PersonActivity.EXTRA_TMDB_ID, id)
+                .putExtra(PersonActivity.EXTRA_NAME, person.name),
+        )
+    }
+
     private fun setBusy(show: Boolean) {
-        val block = findViewById<View>(R.id.busy_block)
-        block.isVisible = show
-        findViewById<View>(R.id.action_row).isVisible = !show
-        if (show) block.requestFocus()
+        ui.busy = show
+        if (!show) ui.focusPlay++
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        if (findViewById<View>(R.id.busy_block).isVisible) {
+        if (ui.busy) {
             // Source searches can take a minute: Back cancels instead of being swallowed.
             if (event.keyCode == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_UP) {
                 searchJob?.cancel()
                 searchJob = null
                 searching = false
                 setBusy(false)
-                findViewById<View>(R.id.btn_play)?.requestFocus()
             }
             return true
         }
         return super.dispatchKeyEvent(event)
     }
 
-    private fun bind(t: TitleItem) {
-        val backdrop = findViewById<ImageView>(R.id.backdrop)
-        val logo = findViewById<ImageView>(R.id.logo)
-        val title = findViewById<TextView>(R.id.title)
-        val eyebrow = findViewById<TextView>(R.id.eyebrow)
-        val synopsis = findViewById<TextView>(R.id.synopsis)
-        val chips = findViewById<LinearLayout>(R.id.meta_chips)
-        val play = findViewById<View>(R.id.btn_play)
-        val playLabel = findViewById<TextView>(R.id.btn_play_label)
-        val fromStart = findViewById<TextView>(R.id.btn_from_start)
-        val watchedBtn = findViewById<ImageButton>(R.id.btn_watched)
-        val favBtn = findViewById<ImageButton>(R.id.btn_favorite)
+    // ---- DetailsActions ----
 
-        val isSeries = t.kind.equals("SERIES", true) ||
-            t.kind.equals("TV", true) ||
-            t.kind.equals("ANIME", true)
+    override fun back() = finish()
 
-        eyebrow.text = when {
-            isSeries && t.kind.equals("ANIME", true) -> "Anime"
-            isSeries -> getString(R.string.series)
-            else -> getString(R.string.movies)
-        }
-        title.text = t.displayTitle
-        synopsis.text = t.synopsis.orEmpty()
-        synopsis.isVisible = !t.synopsis.isNullOrBlank()
-
-        PbGlide.backdrop(backdrop, t.backdropUrl ?: t.posterUrl)
-
-        // Always use app text title — never branded logo artwork / colors.
-        logo.isVisible = false
-        title.isVisible = true
-        PbGlide.clear(logo)
-
-        chips.removeAllViews()
-        var first = true
-        fun addPiece(block: () -> Unit) {
-            if (!first) addDot(chips)
-            first = false
-            block()
-        }
-        t.displayScore?.let { score ->
-            addPiece {
-                val label = if (score.rtScore == null) "★ ${score.label} ${score.source}"
-                else "${score.label} ${score.source}"
-                addChip(chips, label, pill = false)
-            }
-        }
-        t.year?.let { y -> addPiece { addMetaText(chips, y.toString()) } }
-        t.runtimeMinutes?.takeIf { it > 0 }?.let { m ->
-            addPiece {
-                val label = when {
-                    m < 60 -> "${m}m"
-                    m % 60 == 0 -> "${m / 60}h"
-                    else -> "${m / 60}h ${m % 60}m"
-                }
-                addMetaText(chips, label)
-            }
-        }
-        t.genres.take(3).forEach { g -> addPiece { addChip(chips, g, pill = true) } }
-
-        // Default series target = resume / next / S01E01
-        if (isSeries) {
+    override fun play(fromStart: Boolean) {
+        val t = item ?: return
+        val series = t.kind.equals("SERIES", true) || t.kind.equals("TV", true) || t.kind.equals("ANIME", true)
+        if (series) {
+            // Default series target = resume / next / S01E01.
             val target = t.seriesPlayTarget()
-            if (target != null) {
-                playSeason = target.first.seasonNumber
-                playEpisode = target.second.episodeNumber
-                playEpisodeId = target.second.id
-                playLabel.text = if (t.canResume && t.episodeId == target.second.id) {
-                    getString(R.string.resume)
-                } else {
-                    getString(R.string.play)
-                }
-                fromStart.isVisible = t.canResume && t.episodeId == target.second.id
-            } else {
-                playSeason = 1
-                playEpisode = 1
-                playLabel.text = getString(R.string.play)
-                fromStart.isVisible = false
-            }
+            playSeason = target?.first?.seasonNumber ?: 1
+            playEpisode = target?.second?.episodeNumber ?: 1
+            playEpisodeId = target?.second?.id
         } else {
             playSeason = null
             playEpisode = null
             playEpisodeId = null
-            playLabel.text = if (t.canResume) getString(R.string.resume) else getString(R.string.play)
-            fromStart.isVisible = t.canResume
         }
-
-        play.setOnClickListener { openSources(fromBeginning = false) }
-        fromStart.setOnClickListener { openSources(fromBeginning = true) }
-
-        updateWatchedFav(t)
-        watchedBtn.setOnClickListener { toggleWatched() }
-        favBtn.setOnClickListener { toggleFavorite() }
-        bindFollow(t, isSeries)
-
-        // Flutter order: cast → trailer → seasons (all visible, page scrolls)
-        bindCastAndTrailer(t)
-        bindSeasons(t, playableSeasons(t))
-
-        // Size hero like Flutter HeroBannerFrame (~58% viewport, clamp 460–620)
-        val hero = findViewById<View>(R.id.hero_frame)
-        val dm = resources.displayMetrics
-        val heroH = (dm.heightPixels * 0.58f).toInt().coerceIn(dp(460), dp(620))
-        hero.layoutParams = hero.layoutParams.apply { height = heroH }
-
-        Log.i(TAG, "bind kind=${t.kind} seasonsRaw=${t.seasons.size} people=${t.people.size}")
+        openSources(fromBeginning = fromStart)
     }
 
-    /** Every season being listed, for the episodes' viewing order. */
-    private var allSeasons: List<Season> = emptyList()
-
-    private fun playableSeasons(t: TitleItem): List<Season> =
-        t.seasons.filter { s ->
-            s.seasonNumber > 0 &&
-                !s.name.orEmpty().contains("special", ignoreCase = true) &&
-                s.episodes.isNotEmpty()
-        }.sortedBy { it.seasonNumber }
-
-    private fun bindCastAndTrailer(t: TitleItem) {
-        val castHeading = findViewById<TextView>(R.id.cast_heading)
-        val castList = findViewById<RecyclerView>(R.id.cast_list)
-        val trailerHeading = findViewById<TextView>(R.id.trailer_heading)
-        val trailerCard = findViewById<ViewGroup>(R.id.trailer_card)
-        val trailerThumb = findViewById<ImageView>(R.id.trailer_thumb)
-
-        if (t.people.isNotEmpty()) {
-            castHeading.isVisible = true
-            castList.isVisible = true
-            castList.unclipAncestors()
-            castList.isHorizontalScrollBarEnabled = false
-            castList.overScrollMode = View.OVER_SCROLL_NEVER
-            castList.descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
-            castList.layoutManager = LinearLayoutManager(this, LinearLayoutManager.HORIZONTAL, false)
-            castList.adapter = PersonAdapter(t.people.take(24))
-        } else {
-            castHeading.isVisible = false
-            castList.isVisible = false
-        }
-
-        val trailerWrap = findViewById<View>(R.id.trailer_wrap)
-        val trailer = t.playableTrailers.firstOrNull()
-        if (trailer != null) {
-            trailerHeading.isVisible = true
-            trailerWrap.isVisible = true
-            trailerCard.clipToOutline = true
-            trailerCard.stateListAnimator = null
-            (trailerCard.parent as? View)?.unclipAncestors()
-            trailerCard.setOnFocusChangeListener { v, hasFocus ->
-                PosterCardPresenter.applyFocusScaleElevate(v as ViewGroup, hasFocus)
-            }
-            PbGlide.thumb(trailerThumb, trailer.thumbnailUrl, wDp = 220, hDp = 124)
-            trailerCard.setOnClickListener {
-                // Play is starting: the trailer app would end up behind a second video.
-                if (searching) return@setOnClickListener
-                startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(trailer.watchUrl)))
-            }
-        } else {
-            trailerHeading.isVisible = false
-            trailerWrap.isVisible = false
-        }
+    override fun playEpisode(season: Season, episode: Episode) {
+        playSeason = season.seasonNumber
+        playEpisode = episode.episodeNumber
+        playEpisodeId = episode.id
+        val t = item
+        val resumeHere = !episode.watched &&
+            (episode.positionMs > 2000 || (t?.episodeId == episode.id && t.canResume))
+        openSources(fromBeginning = !resumeHere)
     }
 
-    private fun bindSeasons(t: TitleItem, seasons: List<Season>) {
-        val heading = findViewById<TextView>(R.id.seasons_heading)
-        val container = findViewById<LinearLayout>(R.id.seasons_container)
-        container.removeAllViews()
-        heading.isVisible = false
-
-        if (seasons.isEmpty()) {
-            container.isVisible = false
-            return
-        }
-        container.isVisible = true
-
-        val progressId = t.episodeId
-        allSeasons = seasons
-        val sections = seasons.map { season -> buildSeasonSection(season, progressId) }
-        sections.forEachIndexed { index, section ->
-            container.addView(
-                section.header,
-                LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT,
-                ).apply {
-                    topMargin = if (index == 0) dp(8) else dp(14)
-                },
-            )
-            container.addView(
-                section.scroller,
-                LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT,
-                ).apply { topMargin = dp(2) },
-            )
-        }
-        sections.forEachIndexed { index, section ->
-            val above = sections.getOrNull(index - 1)?.cards.orEmpty()
-            val below = sections.getOrNull(index + 1)?.cards.orEmpty()
-            val playBtn = findViewById<View>(R.id.btn_play)
-            section.cards.forEachIndexed { column, card ->
-                val left = section.cards.getOrNull(column - 1)
-                val right = section.cards.getOrNull(column + 1)
-                // L/R stay on episode cards in this season row only.
-                card.nextFocusLeftId = left?.id ?: card.id
-                card.nextFocusRightId = right?.id ?: card.id
-                card.nextFocusUpId = (above.getOrNull(column) ?: above.lastOrNull())?.id
-                    ?: playBtn?.id
-                    ?: View.NO_ID
-                card.nextFocusDownId = (below.getOrNull(column) ?: below.firstOrNull())?.id
-                    ?: View.NO_ID
-            }
-        }
+    override fun openTrailer(trailer: Trailer) {
+        // Play is starting: the trailer app would end up behind a second video.
+        if (searching) return
+        runCatching { startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(trailer.watchUrl))) }
     }
 
-    private fun buildSeasonSection(season: Season, progressId: String?): SeasonSection {
-        val episodes = TorrentFilePicker.inViewingOrder(allSeasons, season)
-        val header = LayoutInflater.from(this).inflate(R.layout.item_season_section, null)
-        header.id = View.generateViewId()
-        bindSeasonHeader(header, season, episodes, containsResume = episodes.any { it.id == progressId })
-
-        val row = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            clipChildren = false
-            clipToPadding = false
-        }
-        val cards = episodes.map { ep ->
-            val card = LayoutInflater.from(this).inflate(R.layout.item_episode_card, row, false)
-            card.id = View.generateViewId()
-            bindEpisodeCard(card, season, ep)
-            row.addView(card)
-            card
-        }
-        val landing = cards.zip(episodes).firstOrNull { it.second.id == progressId }?.first
-            ?: cards.zip(episodes).firstOrNull { !it.second.watched }?.first
-            ?: cards.firstOrNull()
-        val scroller = CenterFocusScroll(this).apply { addView(row) }
-        scroller.post { scroller.unclipAncestors() }
-        cards.forEach { card ->
-            card.setOnFocusChangeListener { v, hasFocus ->
-                if (hasFocus) scroller.centerChild(v, smooth = true)
-            }
-        }
-        landing?.let { card ->
-            row.post { scroller.centerChild(card, smooth = false) }
-        }
-        return SeasonSection(header, scroller, cards, landing)
-    }
-
-    private fun bindSeasonHeader(
-        header: View,
-        season: Season,
-        episodes: List<Episode>,
-        containsResume: Boolean,
-    ) {
-        val title = header.findViewById<TextView>(R.id.season_title)
-        val meta = header.findViewById<TextView>(R.id.season_meta)
-        val check = header.findViewById<ImageView>(R.id.season_check)
-        val progress = header.findViewById<ProgressBar>(R.id.season_progress)
-        title.text = season.name?.takeIf { it.isNotBlank() }
-            ?: getString(R.string.season_n, season.seasonNumber)
-
-        val total = episodes.size
-        val done = episodes.count { it.watched }
-        val started = episodes.count { !it.watched && it.watchProgress > 0.02 }
-        val complete = total > 0 && done == total
-        val fraction = if (total == 0) {
-            0.0
-        } else {
-            episodes.sumOf { ep ->
-                when {
-                    ep.watched -> 1.0
-                    ep.watchProgress > 0.02 -> ep.watchProgress
-                    else -> 0.0
-                }
-            } / total
-        }
-
-        meta.text = when {
-            total == 0 -> getString(R.string.episodes_count, 0)
-            done == 0 && started == 0 -> getString(R.string.episodes_count, total)
-            started > 0 -> getString(R.string.episodes_progress, done, total, started)
-            else -> getString(R.string.episodes_completed, done, total)
-        }
-        val accent = when {
-            complete -> R.color.pb_completed
-            containsResume || started > 0 -> R.color.pb_seed
-            else -> R.color.pb_muted
-        }
-        meta.setTextColor(ContextCompat.getColor(this, accent))
-        title.setTextColor(
-            ContextCompat.getColor(
-                this,
-                if (containsResume && !complete) R.color.pb_seed else R.color.pb_white,
-            ),
-        )
-        check.isVisible = complete
-        if (fraction > 0.02) {
-            progress.isVisible = true
-            progress.progress = (fraction * 1000).toInt().coerceIn(20, 1000)
-            progress.progressTintList = ColorStateList.valueOf(
-                ContextCompat.getColor(this, if (complete) R.color.pb_completed else R.color.pb_seed),
-            )
-        } else {
-            progress.isVisible = false
-        }
-    }
-
-    private fun bindEpisodeCard(card: View, season: Season, ep: Episode) {
-        val still = card.findViewById<ImageView>(R.id.episode_still)
-        val code = card.findViewById<TextView>(R.id.episode_code)
-        val name = card.findViewById<TextView>(R.id.episode_name)
-        val progress = card.findViewById<ProgressBar>(R.id.episode_progress)
-        val watchedMark = card.findViewById<ImageView>(R.id.episode_watched)
-
-        code.text = getString(
-            R.string.episode_code,
-            season.seasonNumber,
-            TorrentFilePicker.viewingNumber(allSeasons, season.seasonNumber, ep.episodeNumber),
-        )
-        name.text = ep.titleLabel
-        val started = !ep.watched && ep.watchProgress > 0.02
-        watchedMark.isVisible = ep.watched
-        when {
-            ep.watched -> {
-                name.setTextColor(ContextCompat.getColor(this, R.color.pb_white))
-                progress.isVisible = true
-                progress.progress = 100
-                progress.progressTintList = ColorStateList.valueOf(
-                    ContextCompat.getColor(this, R.color.pb_completed),
-                )
-            }
-            started -> {
-                name.setTextColor(ContextCompat.getColor(this, R.color.pb_seed))
-                progress.isVisible = true
-                progress.progress = (ep.watchProgress * 100).toInt().coerceIn(2, 100)
-                progress.progressTintList = ColorStateList.valueOf(
-                    ContextCompat.getColor(this, R.color.pb_seed),
-                )
-            }
-            else -> {
-                name.setTextColor(ContextCompat.getColor(this, R.color.pb_white))
-                progress.isVisible = false
-            }
-        }
-        PbGlide.thumb(still, ep.stillPath, wDp = 200, hDp = 112)
-        card.setOnClickListener {
-            playSeason = season.seasonNumber
-            playEpisode = ep.episodeNumber
-            playEpisodeId = ep.id
-            val resumeHere = !ep.watched &&
-                (ep.positionMs > 2000 || (item?.episodeId == ep.id && item?.canResume == true))
-            openSources(fromBeginning = !resumeHere)
-        }
-    }
-
-    private fun addDot(parent: LinearLayout) {
-        parent.addView(
-            View(this).apply {
-                layoutParams = LinearLayout.LayoutParams(dp(3), dp(3)).apply {
-                    marginStart = dp(8)
-                    marginEnd = dp(8)
-                    gravity = android.view.Gravity.CENTER_VERTICAL
-                }
-                background = getDrawable(R.drawable.meta_dot)
-            },
+    override fun openTitle(item: TitleItem) {
+        startActivity(
+            Intent(this, DetailsActivity::class.java)
+                .putExtra(EXTRA_ID, item.id)
+                .putExtra(EXTRA_TITLE, item.displayTitle),
         )
     }
 
-    private fun addMetaText(parent: LinearLayout, text: String) {
-        parent.addView(
-            TextView(this).apply {
-                this.text = text
-                setTextColor(0xD1FFFFFF.toInt())
-                textSize = 13f
-                setTypeface(typeface, android.graphics.Typeface.BOLD)
-            },
-        )
+    override fun toggleFollow() {
+        val t = item ?: return
+        toggleFollow(t.id)
     }
 
-    private fun addChip(parent: LinearLayout, text: String, pill: Boolean) {
-        parent.addView(
-            TextView(this).apply {
-                this.text = text
-                setTextColor(getColor(R.color.pb_white))
-                textSize = if (pill) 12f else 13f
-                setTypeface(typeface, android.graphics.Typeface.BOLD)
-                setPadding(
-                    dp(if (pill) 8 else 0),
-                    dp(if (pill) 3 else 0),
-                    dp(if (pill) 8 else 0),
-                    dp(if (pill) 3 else 0),
-                )
-                if (pill) background = getDrawable(R.drawable.meta_chip_bg)
-            },
-        )
-    }
-
-    private fun updateWatchedFav(t: TitleItem) {
-        findViewById<ImageButton>(R.id.btn_watched).setImageResource(
-            if (t.watched) R.drawable.ic_check else R.drawable.ic_check_outline,
-        )
-        findViewById<ImageButton>(R.id.btn_favorite).setImageResource(
-            if (t.favorite) R.drawable.ic_favorite else R.drawable.ic_favorite_border,
-        )
-    }
-
-    private fun toggleWatched() {
+    override fun toggleWatched() {
         val t = item ?: return
         val next = !t.watched
         item = t.copy(watched = next, positionMs = if (next) 0 else t.positionMs)
-        updateWatchedFav(item!!)
         UserStateEdits.setWatched(t.id, next)
         lifecycleScope.launch {
             try {
                 application.asTv().api.setWatched(t.id, next)
             } catch (e: Exception) {
                 item = t
-                updateWatchedFav(t)
                 UserStateEdits.setWatched(t.id, t.watched)
                 Toast.makeText(this@DetailsActivity, e.message, Toast.LENGTH_SHORT).show()
             }
         }
     }
 
-    private var following = false
-
-    /** Series only: "Notify me" of new episodes. Hidden on servers without it. */
-    private fun bindFollow(t: TitleItem, isSeries: Boolean) {
-        val btn = findViewById<ImageButton>(R.id.btn_follow)
-        btn.isVisible = false
-        if (!isSeries) return
-        lifecycleScope.launch {
-            val now = application.asTv().api.isFollowing(t.id) ?: return@launch
-            following = now
-            showFollow()
-            btn.isVisible = true
-            btn.setOnClickListener { toggleFollow(t.id) }
-        }
-    }
-
-    private fun showFollow() {
-        findViewById<ImageButton>(R.id.btn_follow).setImageResource(
-            if (following) R.drawable.ic_notifications else R.drawable.ic_notifications_none,
-        )
-    }
-
     private fun toggleFollow(titleId: String) {
-        val next = !following
-        following = next
-        showFollow()
+        val next = ui.following != true
+        ui.following = next
         if (next && android.os.Build.VERSION.SDK_INT >= 33 &&
             !app.peanutbutter.tv.EpisodeNotifier.canNotify(this)
         ) {
@@ -586,25 +242,22 @@ class DetailsActivity : FragmentActivity() {
                     Toast.LENGTH_SHORT,
                 ).show()
             } catch (e: Exception) {
-                following = !next
-                showFollow()
+                ui.following = !next
                 Toast.makeText(this@DetailsActivity, e.message, Toast.LENGTH_SHORT).show()
             }
         }
     }
 
-    private fun toggleFavorite() {
+    override fun toggleFavorite() {
         val t = item ?: return
         val next = !t.favorite
         item = t.copy(favorite = next)
-        updateWatchedFav(item!!)
         UserStateEdits.setFavorite(t.id, next)
         lifecycleScope.launch {
             try {
                 application.asTv().api.setFavorite(t.id, next)
             } catch (e: Exception) {
                 item = t
-                updateWatchedFav(t)
                 UserStateEdits.setFavorite(t.id, t.favorite)
                 Toast.makeText(this@DetailsActivity, e.message, Toast.LENGTH_SHORT).show()
             }
@@ -697,14 +350,13 @@ class DetailsActivity : FragmentActivity() {
                     return@launch
                 }
                 SourcesDialog.show(
-                    supportFragmentManager,
+                    this@DetailsActivity,
                     // The episode the user chose, even when the search used the release's number.
-                    if (season != null && episode != null) {
-                        String.format(java.util.Locale.US, "%s S%02dE%02d", t.displayTitle, season, episode)
-                    } else {
-                        query
-                    },
+                    t.displayTitle,
                     sources,
+                    subtitle = if (season != null && episode != null) "Season $season · Episode $episode"
+                    else if (t.kind.equals("MOVIE", true)) "Movie" else "Series",
+                    posterUrl = t.posterUrl,
                     onRefresh = {
                         StreamQuality.rankSources(
                             api.streamingSearch(
@@ -824,147 +476,10 @@ class DetailsActivity : FragmentActivity() {
         }
     }
 
-    private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
-
-    private class PersonAdapter(
-        private val people: List<app.peanutbutter.core.Person>,
-    ) : RecyclerView.Adapter<PersonAdapter.VH>() {
-        class VH(val root: View) : RecyclerView.ViewHolder(root)
-
-        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VH {
-            val v = LayoutInflater.from(parent.context)
-                .inflate(R.layout.item_person_card, parent, false) as ViewGroup
-            v.isFocusable = true
-            v.isFocusableInTouchMode = true
-            v.stateListAnimator = null
-            v.clipChildren = false
-            v.clipToPadding = false
-            val face = v.findViewById<ViewGroup>(R.id.person_face)
-            face.clipToOutline = true
-            face.stateListAnimator = null
-            face.elevation = 4f
-            v.setOnFocusChangeListener { view, hasFocus ->
-                PosterCardPresenter.applyFocusScaleElevate(
-                    view.findViewById(R.id.person_face),
-                    hasFocus,
-                )
-            }
-            return VH(v)
-        }
-
-        override fun onBindViewHolder(holder: VH, position: Int) {
-            val p = people[position]
-            val root = holder.root
-            val face = root.findViewById<ViewGroup>(R.id.person_face)
-            if (!root.hasFocus()) {
-                face.animate().cancel()
-                face.scaleX = 1f
-                face.scaleY = 1f
-                face.elevation = 4f
-            }
-            val photo = root.findViewById<ImageView>(R.id.person_photo)
-            root.findViewById<TextView>(R.id.person_name).text = p.name
-            root.findViewById<TextView>(R.id.person_role).text = p.role
-            PbGlide.thumb(photo, p.profileUrl, wDp = 104, hDp = 148)
-        }
-
-        override fun getItemCount(): Int = people.size
-    }
-
     companion object {
         private const val TAG = "DetailsActivity"
         const val EXTRA_ID = "title_id"
         const val EXTRA_TITLE = "title_name"
-    }
-}
-
-private class SeasonSection(
-    val header: View,
-    val scroller: HorizontalScrollView,
-    val cards: List<View>,
-    val landing: View?,
-)
-
-/** Keeps focused episode cards centered in-row for L/R; U/D leave to adjacent seasons. */
-private class CenterFocusScroll(
-    context: android.content.Context,
-) : HorizontalScrollView(context) {
-    init {
-        isHorizontalScrollBarEnabled = false
-        isFocusable = false
-        isFocusableInTouchMode = false
-        descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
-        clipChildren = false
-        clipToPadding = false
-        val pad = resources.getDimensionPixelSize(R.dimen.shelf_inset)
-        // Symmetric padding so edge episodes can still center in the viewport.
-        setPadding(pad, 0, pad, 0)
-    }
-
-    override fun focusSearch(focused: View?, direction: Int): View? {
-        val row = getChildAt(0) as? ViewGroup
-        if (focused != null && row != null) {
-            val card = findDirectChild(row, focused)
-            if (card != null) {
-                when (direction) {
-                    View.FOCUS_LEFT, View.FOCUS_RIGHT -> {
-                        val idx = row.indexOfChild(card)
-                        val nextIdx = if (direction == View.FOCUS_LEFT) idx - 1 else idx + 1
-                        if (nextIdx in 0 until row.childCount) {
-                            val next = row.getChildAt(nextIdx)
-                            centerChild(next, smooth = true)
-                            return next
-                        }
-                        // End of season row — stay on this card (don't jump to cast/hero).
-                        return focused
-                    }
-                }
-            }
-        }
-        return super.focusSearch(focused, direction)
-    }
-
-    private fun findDirectChild(row: ViewGroup, focused: View): View? {
-        var v: View? = focused
-        while (v != null) {
-            if (v.parent === row) return v
-            v = v.parent as? View
-        }
-        return null
-    }
-
-    /** Keep the focused episode near the middle of the row — never snap to the extreme left. */
-    fun centerChild(child: View?, smooth: Boolean = true) {
-        if (child == null) return
-        post {
-            if (width <= 0) return@post
-            val target = child.left + child.width / 2 - width / 2
-            val content = getChildAt(0)?.width ?: 0
-            val max = (content + paddingLeft + paddingRight - width).coerceAtLeast(0)
-            val x = target.coerceIn(0, max)
-            if (smooth) smoothScrollTo(x, 0) else scrollTo(x, 0)
-        }
-    }
-
-    override fun requestChildRectangleOnScreen(
-        child: View,
-        rectangle: Rect,
-        immediate: Boolean,
-    ): Boolean {
-        // `child` is the row LinearLayout; `rectangle` is the focused card relative to it.
-        val focusCenter = child.left + rectangle.left + rectangle.width() / 2
-        val target = focusCenter - width / 2
-        val content = getChildAt(0)?.width ?: 0
-        val max = (content + paddingLeft + paddingRight - width).coerceAtLeast(0)
-        val x = target.coerceIn(0, max)
-        if (immediate) scrollTo(x, scrollY) else smoothScrollTo(x, scrollY)
-        // Consume horizontal scroll so the parent doesn't left-align the card.
-        // Still ask the vertical parent to keep this row on-screen.
-        val parent = parent as? ViewGroup
-        if (parent != null) {
-            val local = Rect(0, top, width, bottom)
-            parent.requestChildRectangleOnScreen(this, local, immediate)
-        }
-        return true
+        const val EXTRA_AUTOPLAY = "autoplay"
     }
 }

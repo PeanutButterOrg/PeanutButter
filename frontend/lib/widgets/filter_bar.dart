@@ -182,7 +182,16 @@ String catalogHeading(CatalogFilter filter) {
     'ANIME' => 'anime',
     _ => 'titles',
   };
-  return '$sortLabel $kind';
+  // Sorts that aren't a list name read as a phrase ("Top rated series",
+  // "Movies by year"), not "Rating series" / "Year movies".
+  final kindTitle = '${kind[0].toUpperCase()}${kind.substring(1)}';
+  return switch (filter.sort) {
+    'RATING' => 'Top rated $kind',
+    'YEAR' => '$kindTitle by year',
+    'TITLE' => '$kindTitle A–Z',
+    'ROTTEN_TOMATOES' => '$kindTitle by Rotten Tomatoes',
+    _ => '$sortLabel $kind',
+  };
 }
 
 const kRatingPresets = <(double, String)>[
@@ -419,7 +428,7 @@ class CatalogGenreMenu extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final genres = ref.watch(genresProvider).maybeWhen(
+    final genres = ref.watch(genresProvider(filter.kind)).maybeWhen(
           data: (v) => v,
           orElse: () => const <String>[],
         );

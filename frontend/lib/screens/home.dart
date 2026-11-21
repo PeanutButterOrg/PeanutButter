@@ -3,8 +3,11 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:graphql_flutter/graphql_flutter.dart';
 
+import '../design/tokens.g.dart';
 import '../friendly_error.dart';
+import '../graphql/queries.dart';
 import '../models.dart';
 import '../providers/catalog.dart';
 import '../providers/settings.dart';
@@ -17,20 +20,135 @@ import '../widgets/empty_state.dart';
 import '../widgets/hero_banner.dart';
 import '../widgets/local_overlay.dart';
 import '../widgets/poster_card.dart';
-import '../widgets/filter_bar.dart';
 import '../widgets/title_meta.dart';
 import '../widgets/episode_alerts.dart';
+import '../widgets/top_bar.dart';
 import '../widgets/tv_chrome.dart';
+import '../widgets/wide_card.dart';
+
+/// Whether the home rows have scrolled under the header (darker header bar).
+final ValueNotifier<bool> _homeScrolled = ValueNotifier(false);
+
+/// One home row: what it shows and how its cards look.
+enum _RowStyle { poster, top10, wide }
+
+class _RowSpec {
+  const _RowSpec(this.title, this.sort, this.items,
+      {this.kind, this.style = _RowStyle.poster});
+
+  final String title;
+  final String sort;
+  final List<TitleItem> items;
+
+  /// Null: See all opens every kind (movies and series).
+  final String? kind;
+  final _RowStyle style;
+}
+
+/// What the home shows for a section: hero slides and rows.
+class _HomeContent {
+  const _HomeContent(this.hero, this.heroEyebrows, this.rows);
+
+  final List<TitleItem> hero;
+  final List<String> heroEyebrows;
+  final List<_RowSpec> rows;
+
+  bool get isEmpty => hero.isEmpty && rows.every((r) => r.items.isEmpty);
+}
+
+List<TitleItem> _interleave(List<TitleItem> a, List<TitleItem> b, {int? take}) {
+  final out = <TitleItem>[];
+  final seen = <String>{};
+  for (var i = 0; i < a.length || i < b.length; i++) {
+    for (final list in [a, b]) {
+      if (i < list.length && seen.add(list[i].id)) out.add(list[i]);
+    }
+  }
+  return take == null || out.length <= take ? out : out.sublist(0, take);
+}
+
+String _kindLabel(String kind) => kind == 'SERIES' ? 'Series' : 'Movie';
+
+/// Only titles TMDB knows and has rated (servers before 0.3.25 send the rest too).
+List<TitleItem> _tmdbRated(List<TitleItem> items) =>
+    items.where((t) => (t.ratings?.tmdbVoteAverage ?? 0) > 0).toList();
+
+_HomeContent _contentFor(String section, HomeFeed? movies, HomeFeed? series) {
+  const empty = HomeFeed(trending: [], popular: [], recent: []);
+  final m = movies ?? empty;
+  final s = series ?? empty;
+  if (section == 'HOME') {
+    final heroMovies = m.trending.take(5).toList();
+    final heroSeries = s.trending.take(5).toList();
+    final hero = _interleave(heroMovies, heroSeries);
+    final eyebrows = [
+      for (final item in hero)
+        heroMovies.contains(item)
+            ? '#${heroMovies.indexOf(item) + 1} trending · Movie'
+            : '#${heroSeries.indexOf(item) + 1} trending · Series',
+    ];
+    return _HomeContent(hero, eyebrows, [
+      // One Top 10 for movies and series together, in trending order.
+      _RowSpec('Top 10 today', 'TRENDING',
+          _interleave(m.trending, s.trending, take: 10),
+          style: _RowStyle.top10),
+      _RowSpec('Continue watching', 'CONTINUE_WATCHING',
+          _interleave(m.continueWatching, s.continueWatching),
+          style: _RowStyle.wide),
+      _RowSpec('Popular movies', 'POPULARITY', m.popular, kind: 'MOVIE'),
+      _RowSpec('Popular series', 'POPULARITY', s.popular, kind: 'SERIES'),
+      _RowSpec('Recently added', 'DATE_ADDED',
+          _tmdbRated(_interleave(m.recent, s.recent))),
+    ]);
+  }
+  final feed = section == 'SERIES' ? s : m;
+  final noun = section == 'SERIES' ? 'series' : 'movies';
+  final hero = feed.trending.take(8).toList();
+  return _HomeContent(
+    hero,
+    [
+      for (var i = 0; i < hero.length; i++)
+        '#${i + 1} trending · ${_kindLabel(section)}'
+    ],
+    [
+      _RowSpec(
+          'Top 10 $noun today', 'TRENDING', feed.trending.take(10).toList(),
+          kind: section, style: _RowStyle.top10),
+      // The server sends one mixed list; this section shows only its own kind.
+      _RowSpec(
+        'Continue watching',
+        'CONTINUE_WATCHING',
+        feed.continueWatching
+            .where((t) => (t.kind == 'MOVIE') == (section == 'MOVIE'))
+            .toList(),
+        style: _RowStyle.wide,
+      ),
+      _RowSpec('Trending $noun', 'TRENDING', feed.trending.skip(10).toList(),
+          kind: section),
+      _RowSpec('Popular $noun', 'POPULARITY', feed.popular, kind: section),
+      _RowSpec('Recently added', 'DATE_ADDED', _tmdbRated(feed.recent),
+          kind: section),
+    ],
+  );
+}
 
 class HomeScreen extends ConsumerWidget {
   const HomeScreen({super.key});
 
   Future<void> _refresh(WidgetRef ref) => refreshCatalogData(ref);
 
+  static HomeSection _sectionOf(String value) => switch (value) {
+        'MOVIE' => HomeSection.movies,
+        'SERIES' => HomeSection.series,
+        _ => HomeSection.home,
+      };
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final kind = ref.watch(selectedKindProvider);
-    final feed = ref.watch(homeFeedProvider(kind));
+    final section = ref.watch(homeSectionProvider);
+    final movies = ref.watch(homeFeedProvider('MOVIE'));
+    final series =
+        section == 'MOVIE' ? null : ref.watch(homeFeedProvider('SERIES'));
     ref.watch(catalogWarmupProvider);
     final info = ref.watch(serverInfoProvider);
 
@@ -41,141 +159,116 @@ class HomeScreen extends ConsumerWidget {
       });
     }
 
+    void selectSection(HomeSection value) {
+      final next = switch (value) {
+        HomeSection.movies => 'MOVIE',
+        HomeSection.series => 'SERIES',
+        HomeSection.home => 'HOME',
+      };
+      ref.read(homeSectionProvider.notifier).state = next;
+      // Search, See all and the catalog still follow the last kind picked.
+      if (next != 'HOME') ref.read(selectedKindProvider.notifier).state = next;
+    }
+
+    // Movies and series load side by side; show what's there as soon as one is in.
+    final feeds = [if (section != 'SERIES') movies, if (series != null) series];
+    final loading = feeds.every((f) => f.isLoading && !f.hasValue);
+    final failed = feeds.every((f) => f.hasError && !f.hasValue);
+
+    Widget body;
+    if (loading) {
+      body = const Center(child: CircularProgressIndicator());
+    } else if (failed) {
+      body = EmptyState(
+        message: friendlyError(feeds.first.error!),
+        onRefresh: () => _refresh(ref),
+        showSettings: true,
+      );
+    } else {
+      final kind = section == 'HOME' ? 'MOVIE' : section;
+      final tmdb = info.asData?.value?.tmdbConfigured ?? false;
+      final omdb = info.asData?.value?.omdbConfigured ?? true;
+      final content =
+          _contentFor(section, movies.valueOrNull, series?.valueOrNull);
+      if (kindBlockedByMissingKeys(kind,
+              omdbConfigured: omdb, tmdbConfigured: tmdb) ||
+          content.isEmpty) {
+        body = EmptyState(
+          message: emptyKindMessage(
+              kind: kind, omdbConfigured: omdb, tmdbConfigured: tmdb),
+          onRefresh: () => _refresh(ref),
+          showSettings: true,
+        );
+      } else {
+        body = _HomeBody(section: section, content: content);
+      }
+    }
+
     return EpisodeAlertsListener(
       child: Scaffold(
-      backgroundColor: AppTheme.canvas,
-      body: TvNavHost(
-        strategies: [
-          TvNavBarStrategy(
-            nodes: TvHeaderFocus.homeBar,
-            onMoveDown: exitHeaderToBanner,
-          ),
-          TvNavHomeStrategy(),
-        ],
-        child: TvBackScope(
-        overlapHeader: true,
-        root: true,
-        headerFocus: TvHeaderFocus.forKind(kind),
-        header: DecoratedBox(
-          decoration: const BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topCenter,
-              end: Alignment.bottomCenter,
-              colors: [
-                Color(0xB30E0E12),
-                Color(0x660E0E12),
-                Color(0x000E0E12),
-              ],
-              stops: [0.0, 0.7, 1.0],
+        backgroundColor: AppTheme.canvas,
+        body: TvNavHost(
+          strategies: [
+            TvNavBarStrategy(
+              nodes: TvHeaderFocus.homeBar,
+              onMoveDown: exitHeaderToBanner,
             ),
-          ),
-          child: SafeArea(
-            bottom: false,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 6, 8, 0),
-              child: Row(
-                children: [
-                  KindSwitch(
-                    kind: kind == 'ANIME' ? 'MOVIE' : kind,
-                    moviesFocus: TvHeaderFocus.movies,
-                    onMoveTrailing: () => TvHeaderFocus.favourites.requestFocus(),
-                    onMoveDown: exitHeaderToBanner,
-                    onChanged: (value) {
-                      ref.read(selectedKindProvider.notifier).state = value;
-                    },
+            TvNavHomeStrategy(),
+          ],
+          child: TvBackScope(
+            overlapHeader: true,
+            root: true,
+            headerFocus: TvHeaderFocus.forKind(section),
+            // Light over the hero; once rows scroll under it, a near-solid bar
+            // so posters don't show through the section names.
+            header: ValueListenableBuilder<bool>(
+              valueListenable: _homeScrolled,
+              builder: (context, scrolled, child) => AnimatedContainer(
+                duration: PbMotion.base,
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: scrolled
+                        ? const [
+                            Color(0xFA0E0E12),
+                            Color(0xF00E0E12),
+                            Color(0x000E0E12)
+                          ]
+                        : const [
+                            Color(0xD90E0E12),
+                            Color(0x660E0E12),
+                            Color(0x000E0E12)
+                          ],
+                    stops: scrolled
+                        ? const [0.0, 0.8, 1.0]
+                        : const [0.0, 0.7, 1.0],
                   ),
-                  const Spacer(),
-                  TvHeaderButton(
-                    tooltip: 'Favourites',
-                    focusNode: TvHeaderFocus.favourites,
-                    onPressed: () => context.push('/favourites'),
-                    onMoveLeft: () => TvHeaderFocus.series.requestFocus(),
-                    onMoveRight: () => TvHeaderFocus.watched.requestFocus(),
-                    onMoveDown: exitHeaderToBanner,
-                    icon: const Icon(Icons.favorite_rounded),
-                  ),
-                  TvHeaderButton(
-                    tooltip: 'Watched',
-                    focusNode: TvHeaderFocus.watched,
-                    onPressed: () => context.push('/watched'),
-                    onMoveLeft: () => TvHeaderFocus.favourites.requestFocus(),
-                    onMoveRight: () => TvHeaderFocus.search.requestFocus(),
-                    onMoveDown: exitHeaderToBanner,
-                    icon: const Icon(Icons.video_library_rounded),
-                  ),
-                  TvHeaderButton(
-                    tooltip: 'Search',
-                    focusNode: TvHeaderFocus.search,
-                    onPressed: () => context.push('/search'),
-                    onMoveLeft: () => TvHeaderFocus.watched.requestFocus(),
-                    onMoveRight: () => TvHeaderFocus.settings.requestFocus(),
-                    onMoveDown: () => context.push('/search'),
-                    icon: const Icon(Icons.search_rounded),
-                  ),
-                  TvHeaderButton(
-                    tooltip: 'Settings',
-                    focusNode: TvHeaderFocus.settings,
-                    onPressed: () => context.push('/settings'),
-                    onMoveLeft: () => TvHeaderFocus.search.requestFocus(),
-                    onMoveDown: exitHeaderToBanner,
-                    icon: const Icon(Icons.settings_outlined),
-                  ),
-                ],
+                ),
+                child: child,
+              ),
+              child: SafeArea(
+                bottom: false,
+                child: PbTopBar(
+                  section: _sectionOf(section),
+                  onSection: selectSection,
+                  onMoveDown: exitHeaderToBanner,
+                ),
               ),
             ),
-              ],
-            ),
-          ),
-        ),
-        body: KeyedSubtree(
-          key: ValueKey(kind),
-          child: feed.when(
-            skipLoadingOnReload: true,
-            skipLoadingOnRefresh: true,
-            loading: () => const Center(child: CircularProgressIndicator()),
-            error: (e, _) => EmptyState(
-              message: friendlyError(e),
-              onRefresh: () => _refresh(ref),
-              showSettings: true,
-            ),
-            data: (data) {
-              final tmdb = info.asData?.value?.tmdbConfigured ?? false;
-              final omdb = info.asData?.value?.omdbConfigured ?? true;
-              if (kindBlockedByMissingKeys(kind, omdbConfigured: omdb, tmdbConfigured: tmdb)) {
-                return EmptyState(
-                  message: emptyKindMessage(kind: kind, omdbConfigured: omdb, tmdbConfigured: tmdb),
-                  onRefresh: () => _refresh(ref),
-                  showSettings: true,
-                );
-              }
-              final empty = data.trending.isEmpty && data.popular.isEmpty && data.recent.isEmpty;
-              if (empty) {
-                return EmptyState(
-                  message: emptyKindMessage(kind: kind, omdbConfigured: omdb, tmdbConfigured: tmdb),
-                  onRefresh: () => _refresh(ref),
-                  showSettings: true,
-                );
-              }
-              return _HomeBody(kind: kind, feed: data);
-            },
+            body: KeyedSubtree(key: ValueKey(section), child: body),
           ),
         ),
       ),
-      ),
-    ),
     );
   }
 }
 
 class _HomeBody extends ConsumerStatefulWidget {
-  const _HomeBody({required this.kind, required this.feed});
+  const _HomeBody({required this.section, required this.content});
 
-  final String kind;
-  final HomeFeed feed;
+  final String section;
+  final _HomeContent content;
 
   @override
   ConsumerState<_HomeBody> createState() => _HomeBodyState();
@@ -184,9 +277,15 @@ class _HomeBody extends ConsumerStatefulWidget {
 class _HomeBodyState extends ConsumerState<_HomeBody> {
   final ScrollController _scroll = ScrollController();
 
+  void _trackScrolled() {
+    _homeScrolled.value = _scroll.hasClients && _scroll.offset > 120;
+  }
+
   @override
   void initState() {
     super.initState();
+    _scroll.addListener(_trackScrolled);
+    _homeScrolled.value = false;
     TvHomeScroll.toTop = _toTop;
     TvHomeScroll.toBanner = _toBanner;
     if (isAndroidTv) {
@@ -227,7 +326,9 @@ class _HomeBodyState extends ConsumerState<_HomeBody> {
   void _toTop() {
     if (!_scroll.hasClients) return;
     if (isAndroidTv) {
-      _scroll.animateTo(0, duration: const Duration(milliseconds: 420), curve: Curves.easeInOutCubic);
+      _scroll.animateTo(0,
+          duration: const Duration(milliseconds: 420),
+          curve: Curves.easeInOutCubic);
     } else {
       _scroll.jumpTo(0);
     }
@@ -236,7 +337,9 @@ class _HomeBodyState extends ConsumerState<_HomeBody> {
   void _toBanner() {
     if (_scroll.hasClients) {
       if (isAndroidTv) {
-        _scroll.animateTo(0, duration: const Duration(milliseconds: 420), curve: Curves.easeInOutCubic);
+        _scroll.animateTo(0,
+            duration: const Duration(milliseconds: 420),
+            curve: Curves.easeInOutCubic);
       } else {
         _scroll.jumpTo(0);
       }
@@ -250,29 +353,29 @@ class _HomeBodyState extends ConsumerState<_HomeBody> {
 
   @override
   Widget build(BuildContext context) {
-    final kind = widget.kind;
-    final feed = widget.feed;
+    final content = widget.content;
+    var rail = 0;
     final list = ListView(
       controller: _scroll,
       cacheExtent: isAndroidTv ? 280 : 800,
       addAutomaticKeepAlives: false,
       clipBehavior: isAndroidTv ? Clip.none : Clip.hardEdge,
       physics: const ClampingScrollPhysics(),
-      padding: EdgeInsets.only(bottom: isAndroidTv ? tvCenterBottomPad(context) : 48),
+      padding: EdgeInsets.only(
+          bottom: isAndroidTv ? tvCenterBottomPad(context) : 48),
       children: [
-          FeaturedBanner(key: ValueKey(kind), items: feed.trending),
-        if (feed.continueWatching.isNotEmpty)
-          _HomeRow(
-            title: 'Continue watching',
-            sort: 'CONTINUE_WATCHING',
-            items: feed.continueWatching,
-            kind: kind,
-            allCatalogKinds: true,
-            railIndex: 0,
-          ),
-        _HomeRow(title: 'Trending', sort: 'TRENDING', items: feed.trending, kind: kind, railIndex: 1),
-        _HomeRow(title: 'Popular', sort: 'POPULARITY', items: feed.popular, kind: kind, railIndex: 2),
-        _HomeRow(title: 'Last added', sort: 'DATE_ADDED', items: feed.recent, kind: kind, railIndex: 3),
+        FeaturedBanner(
+          key: ValueKey(widget.section),
+          items: content.hero,
+          eyebrows: content.heroEyebrows,
+        ),
+        for (final row in content.rows)
+          if (row.items.isNotEmpty)
+            _HomeRow(
+              key: ValueKey('${widget.section}-${row.title}'),
+              spec: row,
+              railIndex: rail++,
+            ),
       ],
     );
     return ClippedOverlay(child: list);
@@ -293,16 +396,42 @@ void _openCatalog(BuildContext context, {String? kind, required String sort}) {
   context.push('/catalog');
 }
 
-class FeaturedBanner extends StatefulWidget {
-  const FeaturedBanner({super.key, required this.items});
+class FeaturedBanner extends ConsumerStatefulWidget {
+  const FeaturedBanner(
+      {super.key, required this.items, this.eyebrows = const []});
 
   final List<TitleItem> items;
 
+  /// One line per slide, e.g. "#1 trending · Movie".
+  final List<String> eyebrows;
+
   @override
-  State<FeaturedBanner> createState() => _FeaturedBannerState();
+  ConsumerState<FeaturedBanner> createState() => _FeaturedBannerState();
 }
 
-class _FeaturedBannerState extends State<FeaturedBanner> {
+class _FeaturedBannerState extends ConsumerState<FeaturedBanner> {
+  /// My List taps not yet reflected in the feed (title id -> on the list).
+  final Map<String, bool> _listed = {};
+
+  bool _onList(TitleItem item) =>
+      _listed[item.id] ?? item.userState?.favorite == true;
+
+  Future<void> _toggleList(TitleItem item) async {
+    final next = !_onList(item);
+    setState(() => _listed[item.id] = next);
+    try {
+      await ref.read(graphQLClientProvider).mutate(
+            MutationOptions(
+              document: gql(SET_FAVORITE),
+              variables: {'titleId': item.id, 'favorite': next},
+            ),
+          );
+      ref.invalidate(favoritesFeedProvider);
+    } catch (_) {
+      if (mounted) setState(() => _listed[item.id] = !next);
+    }
+  }
+
   PageController? _page;
   final GlobalKey _bannerKey = GlobalKey();
   Timer? _timer;
@@ -341,6 +470,7 @@ class _FeaturedBannerState extends State<FeaturedBanner> {
   }
 
   bool get _holdRotation {
+    // Any hero button focused (they share the label).
     return FocusManager.instance.primaryFocus?.debugLabel == 'banner-details';
   }
 
@@ -413,8 +543,11 @@ class _FeaturedBannerState extends State<FeaturedBanner> {
                         animation: _page!,
                         builder: (context, child) {
                           final page = _page!;
-                          final value = page.hasClients ? (page.page ?? i.toDouble()) : i.toDouble();
-                          final opacity = (1.0 - (value - i).abs()).clamp(0.0, 1.0);
+                          final value = page.hasClients
+                              ? (page.page ?? i.toDouble())
+                              : i.toDouble();
+                          final opacity =
+                              (1.0 - (value - i).abs()).clamp(0.0, 1.0);
                           return Opacity(opacity: opacity, child: child);
                         },
                         child: BannerArt(
@@ -454,18 +587,17 @@ class _FeaturedBannerState extends State<FeaturedBanner> {
               child: _BannerCopy(
                 key: ValueKey(item.id),
                 item: item,
+                eyebrow: _index % widget.items.length < widget.eyebrows.length
+                    ? widget.eyebrows[_index % widget.items.length]
+                    : 'Trending now',
               ),
             ),
-            const SizedBox(height: 12),
-            TvFocus(
-              allowHorizontal: false,
-              child: FilledButton.icon(
-                focusNode: isAndroidTv ? TvHeaderFocus.bannerDetails : null,
-                onPressed: () => context.push('/title/${item.id}'),
-                style: FilledButton.styleFrom(minimumSize: const Size(120, 48)),
-                icon: const Icon(Icons.play_arrow_rounded),
-                label: const Text('Details'),
-              ),
+            const SizedBox(height: 4),
+            _HeroButtons(
+              onList: _onList(item),
+              onPlay: () => context.push('/title/${item.id}?play=1'),
+              onToggleList: () => unawaited(_toggleList(item)),
+              onInfo: () => context.push('/title/${item.id}'),
             ),
             const SizedBox(height: 8),
           ],
@@ -475,15 +607,74 @@ class _FeaturedBannerState extends State<FeaturedBanner> {
   }
 }
 
+/// Play (amber) · My List · More info, on desktop and TV alike.
+class _HeroButtons extends StatelessWidget {
+  const _HeroButtons({
+    required this.onList,
+    required this.onPlay,
+    required this.onToggleList,
+    required this.onInfo,
+  });
+
+  final bool onList;
+  final VoidCallback onPlay;
+  final VoidCallback onToggleList;
+  final VoidCallback onInfo;
+
+  @override
+  Widget build(BuildContext context) {
+    final tv = isAndroidTv;
+    final size = Size(0, tv ? PbSize.buttonHeightTv : 40);
+    final text = tv ? PbTypeTv.button : PbType.button;
+    return Row(
+      children: [
+        TvFocus(
+          allowHorizontal: false,
+          child: FilledButton.icon(
+            focusNode: tv ? TvHeaderFocus.bannerDetails : null,
+            onPressed: onPlay,
+            style: FilledButton.styleFrom(minimumSize: size, textStyle: text),
+            icon: const Icon(Icons.play_arrow_rounded),
+            label: const Text('Play'),
+          ),
+        ),
+        const SizedBox(width: 10),
+        TvFocus(
+          allowHorizontal: false,
+          child: OutlinedButton.icon(
+            focusNode: tv ? TvHeaderFocus.bannerList : null,
+            onPressed: onToggleList,
+            style: OutlinedButton.styleFrom(minimumSize: size, textStyle: text),
+            icon: Icon(onList ? Icons.check_rounded : Icons.add_rounded),
+            label: const Text('My List'),
+          ),
+        ),
+        const SizedBox(width: 10),
+        TvFocus(
+          allowHorizontal: false,
+          child: OutlinedButton.icon(
+            focusNode: tv ? TvHeaderFocus.bannerInfo : null,
+            onPressed: onInfo,
+            style: OutlinedButton.styleFrom(minimumSize: size, textStyle: text),
+            icon: const Icon(Icons.info_outline_rounded),
+            label: const Text('More info'),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
 class _BannerCopy extends StatelessWidget {
-  const _BannerCopy({super.key, required this.item});
+  const _BannerCopy({super.key, required this.item, required this.eyebrow});
 
   final TitleItem item;
+  final String eyebrow;
 
   @override
   Widget build(BuildContext context) {
     return HeroBannerCopy(
-      eyebrow: 'Trending now',
+      eyebrow: eyebrow,
       title: item.title,
       synopsis: item.synopsis ?? '',
       meta: TitleMetaRow(item: item, maxGenres: 3),
@@ -491,23 +682,123 @@ class _BannerCopy extends StatelessWidget {
   }
 }
 
-class _HomeRow extends StatefulWidget {
-  const _HomeRow({
-    required this.title,
-    required this.sort,
-    required this.items,
-    required this.kind,
-    required this.railIndex,
-    this.allCatalogKinds = false,
-  });
+/// Desktop / web: Netflix-style strips at both ends of a row. Each pages the
+/// row by most of its width; it shows only when there's more that way.
+class _RowArrows extends StatefulWidget {
+  const _RowArrows(
+      {required this.controller, required this.gutter, required this.child});
 
-  final String title;
-  final String sort;
-  final List<TitleItem> items;
-  final String kind;
-  /// When true, See all opens the catalog with no kind filter (movies+series+anime).
-  final bool allCatalogKinds;
+  final ScrollController controller;
+  final double gutter;
+  final Widget child;
+
+  @override
+  State<_RowArrows> createState() => _RowArrowsState();
+}
+
+class _RowArrowsState extends State<_RowArrows> {
+  var _back = false;
+  var _more = false;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.controller.addListener(_update);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _update());
+  }
+
+  @override
+  void dispose() {
+    widget.controller.removeListener(_update);
+    super.dispose();
+  }
+
+  void _update() {
+    final c = widget.controller;
+    if (!mounted || !c.hasClients) return;
+    final p = c.position;
+    final back = p.pixels > 4;
+    final more = p.pixels < p.maxScrollExtent - 4;
+    if (back != _back || more != _more) {
+      setState(() {
+        _back = back;
+        _more = more;
+      });
+    }
+  }
+
+  void _page(int dir) {
+    final c = widget.controller;
+    if (!c.hasClients) return;
+    final p = c.position;
+    final target =
+        (p.pixels + dir * (p.viewportDimension - widget.gutter * 2) * 0.9)
+            .clamp(0.0, p.maxScrollExtent);
+    c.animateTo(target,
+        duration: const Duration(milliseconds: 520),
+        curve: Curves.easeInOutCubic);
+  }
+
+  Widget _arrow(int dir) {
+    final left = dir < 0;
+    return Positioned(
+      left: left ? 0 : null,
+      right: left ? null : 0,
+      top: 12,
+      bottom: 12,
+      width: widget.gutter < 44 ? 44 : widget.gutter,
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          canRequestFocus: false,
+          onTap: () => _page(dir),
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: left ? Alignment.centerLeft : Alignment.centerRight,
+                end: left ? Alignment.centerRight : Alignment.centerLeft,
+                colors: [
+                  PbColors.ground.withValues(alpha: 0.92),
+                  PbColors.ground.withValues(alpha: 0)
+                ],
+              ),
+            ),
+            child: Icon(
+              left ? Icons.chevron_left_rounded : Icons.chevron_right_rounded,
+              size: 40,
+              color: PbColors.text,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return NotificationListener<ScrollMetricsNotification>(
+      onNotification: (_) {
+        _update();
+        return false;
+      },
+      child: Stack(
+        children: [
+          Positioned.fill(child: widget.child),
+          if (_back) _arrow(-1),
+          if (_more) _arrow(1),
+        ],
+      ),
+    );
+  }
+}
+
+class _HomeRow extends StatefulWidget {
+  const _HomeRow({super.key, required this.spec, required this.railIndex});
+
+  final _RowSpec spec;
   final int railIndex;
+
+  List<TitleItem> get items => spec.items;
 
   @override
   State<_HomeRow> createState() => _HomeRowState();
@@ -565,86 +856,120 @@ class _HomeRowState extends State<_HomeRow> {
     // Selection is by FocusNode index; ensureVisible runs after focus if needed.
   }
 
+  /// Card width, strip extent and strip height for this row's style.
+  ({double width, double extent, double height}) _dims(bool tv) {
+    final gap = tv ? TvPosterDim.gap : 14.0;
+    switch (widget.spec.style) {
+      case _RowStyle.wide:
+        final w = tv ? PbSize.wideCardWidthTv : PbSize.wideCardWidthDesktop;
+        return (width: w, extent: w + gap, height: w * 9 / 16 + 24);
+      case _RowStyle.top10:
+        final w = tv ? TvPosterDim.width : PbSize.posterWidthDesktop;
+        return (
+          width: w,
+          extent: w + Top10Tile.numberWidth(w) + gap * 0.6,
+          height: w * 1.5 + 24 + Top10Tile.nameHeight
+        );
+      case _RowStyle.poster:
+        final w = tv ? TvPosterDim.width : PbSize.posterWidthDesktop;
+        return (width: w, extent: w + gap, height: w * 1.5 + 24);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     if (widget.items.isEmpty) return const SizedBox.shrink();
     final tv = isAndroidTv;
+    final spec = widget.spec;
+    final dims = _dims(tv);
+    final gutter = tv ? PbSpace.gutterTv : PbSpace.gutterDesktop;
     return TvHomeRailScope(
       rail: _rail,
       child: TvFocusReveal(
-      onReveal: _revealRow,
-      child: Padding(
-        key: _rowKey,
-        padding: const EdgeInsets.only(top: 4),
-        child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 20),
-            child: Row(
-              children: [
-                Text(
-                  widget.title,
-                  style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
+        onReveal: _revealRow,
+        child: Padding(
+          key: _rowKey,
+          padding: const EdgeInsets.only(top: 10),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Padding(
+                padding: EdgeInsets.only(left: gutter, right: gutter - 12),
+                // The row's name, "See all" at the right end (as on TV).
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    Expanded(
+                      child: Text(spec.title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: (tv ? PbTypeTv.h2 : PbType.h2)
+                              .copyWith(color: PbColors.text)),
+                    ),
+                    const SizedBox(width: 6),
+                    _SeeAllButton(
+                      focusNode: _seeAll,
+                      onReveal: _revealRow,
+                      onPressed: () => _openCatalog(context,
+                          kind: spec.kind, sort: spec.sort),
+                    ),
+                  ],
                 ),
-                const Spacer(),
-                _SeeAllButton(
-                  focusNode: _seeAll,
-                  onReveal: _revealRow,
-                  onPressed: () => _openCatalog(
-                    context,
-                    kind: widget.allCatalogKinds ? null : widget.kind,
-                    sort: widget.sort,
-                  ),
-                ),
-              ],
-            ),
+              ),
+              SizedBox(
+                height: dims.height,
+                // TV: eager children so column-N FocusNodes stay attached without
+                // jumpTo-scrolling the strip before selection.
+                child: tv
+                    ? _strip(tv, dims, gutter)
+                    : _RowArrows(
+                        controller: _horizontal,
+                        gutter: gutter,
+                        child: _strip(tv, dims, gutter)),
+              ),
+            ],
           ),
-          SizedBox(
-            height: tv ? TvPosterDim.rowHeight : 248,
-            // TV: eager children so column-N FocusNodes stay attached without
-            // jumpTo-scrolling the strip before selection.
-            child: tv
-                ? ListView.builder(
-                    controller: _horizontal,
-                    clipBehavior: Clip.none,
-                    cacheExtent: 8000,
-                    addAutomaticKeepAlives: true,
-                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 6),
-                    scrollDirection: Axis.horizontal,
-                    physics: const ClampingScrollPhysics(),
-                    itemExtent: TvPosterDim.extent,
-                    itemCount: widget.items.length,
-                    itemBuilder: (context, i) => _posterTile(tv: true, i: i),
-                  )
-                : ListView.builder(
-                    controller: _horizontal,
-                    clipBehavior: Clip.none,
-                    cacheExtent: 600,
-                    addAutomaticKeepAlives: true,
-                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 6),
-                    scrollDirection: Axis.horizontal,
-                    physics: const ClampingScrollPhysics(),
-                    itemExtent: 168,
-                    itemCount: widget.items.length,
-                    itemBuilder: (context, i) => _posterTile(tv: false, i: i),
-                  ),
-          ),
-        ],
+        ),
       ),
-      ),
-    ),
     );
   }
 
-  Widget _posterTile({required bool tv, required int i}) {
+  Widget _strip(bool tv, ({double width, double extent, double height}) dims,
+      double gutter) {
+    return ListView.builder(
+      controller: _horizontal,
+      clipBehavior: Clip.none,
+      cacheExtent: tv ? 8000 : 600,
+      addAutomaticKeepAlives: true,
+      padding: EdgeInsets.symmetric(horizontal: gutter, vertical: 12),
+      scrollDirection: Axis.horizontal,
+      physics: const ClampingScrollPhysics(),
+      itemExtent: dims.extent,
+      itemCount: widget.items.length,
+      itemBuilder: (context, i) =>
+          _tile(i, dims.width, tv ? TvPosterDim.gap : 14.0),
+    );
+  }
+
+  Widget _tile(int i, double width, double gap) {
     final item = widget.items[i];
+    final node = _posterAt(i);
+    final Widget card = switch (widget.spec.style) {
+      _RowStyle.wide =>
+        SizedBox(width: width, child: WideCard(item: item, focusNode: node)),
+      _RowStyle.top10 => Top10Tile(
+          rank: i + 1,
+          posterWidth: width,
+          name: item.title,
+          child: PosterCard(item: item, focusNode: node),
+        ),
+      _RowStyle.poster =>
+        SizedBox(width: width, child: PosterCard(item: item, focusNode: node)),
+    };
     return Padding(
-      padding: EdgeInsets.only(right: tv ? TvPosterDim.gap : 12),
-      child: SizedBox(
-        width: tv ? TvPosterDim.width : 156,
-        child: PosterCard(item: item, focusNode: _posterAt(i)),
-      ),
+      padding: EdgeInsets.only(
+          right: widget.spec.style == _RowStyle.top10 ? gap * 0.6 : gap),
+      child: Align(alignment: Alignment.bottomLeft, child: card),
     );
   }
 }
@@ -691,9 +1016,12 @@ class _SeeAllButtonState extends State<_SeeAllButton> {
         focusNode: _node,
         onPressed: widget.onPressed,
         style: TextButton.styleFrom(
-          padding: const EdgeInsets.symmetric(horizontal: 14),
-          minimumSize: const Size(64, 40),
-          tapTargetSize: MaterialTapTargetSize.padded,
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          minimumSize: const Size(56, 36),
+          foregroundColor: PbColors.textMuted,
+          textStyle: (isAndroidTv ? PbTypeTv.meta : PbType.meta)
+              .copyWith(fontWeight: FontWeight.w600),
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
         ),
         child: const Text('See all'),
       ),

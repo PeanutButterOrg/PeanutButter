@@ -25,6 +25,9 @@ void main() {
       catalogHeading(const CatalogFilter(kind: 'ANIME', sort: 'DATE_ADDED')),
       'Last added anime',
     );
+    // Sorts that aren't a list name read as a phrase.
+    expect(catalogHeading(const CatalogFilter(kind: 'SERIES', sort: 'RATING')), 'Top rated series');
+    expect(catalogHeading(const CatalogFilter(kind: 'MOVIE', sort: 'YEAR')), 'Movies by year');
   });
 
   test('catalog filter omits default year min', () {

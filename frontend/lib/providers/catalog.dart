@@ -34,6 +34,9 @@ int catalogPageAfter({
 
 final selectedKindProvider = StateProvider<String>((ref) => 'MOVIE');
 
+/// The home section in the top bar: 'HOME' (movies and series), 'MOVIE' or 'SERIES'.
+final homeSectionProvider = StateProvider<String>((ref) => 'HOME');
+
 final catalogEpochProvider = StateProvider<int>((ref) => 0);
 
 final refreshBusyProvider = StateProvider<bool>((ref) => false);
@@ -550,11 +553,25 @@ final streamingServicesProvider =
   ];
 });
 
-final genresProvider = FutureProvider<List<String>>((ref) async {
+/// Genres for the filter. With a kind ('MOVIE', 'SERIES'), only the genres
+/// those titles have, so movies don't list TV-only genres; an older server
+/// that doesn't take a kind gets the full list.
+final genresProvider = FutureProvider.family<List<String>, String?>((ref, kind) async {
   final client = ref.watch(graphQLClientProvider);
-  final result = await client.query(
-    QueryOptions(document: gql(GET_GENRES), fetchPolicy: FetchPolicy.cacheFirst),
+  var result = await client.query(
+    kind == null
+        ? QueryOptions(document: gql(GET_GENRES), fetchPolicy: FetchPolicy.cacheFirst)
+        : QueryOptions(
+            document: gql(GET_GENRES_FOR_KIND),
+            variables: {'kind': kind},
+            fetchPolicy: FetchPolicy.cacheFirst,
+          ),
   );
+  if (result.hasException && kind != null) {
+    result = await client.query(
+      QueryOptions(document: gql(GET_GENRES), fetchPolicy: FetchPolicy.cacheFirst),
+    );
+  }
   if (result.hasException) return const [];
   const blocked = {
     'sex',
@@ -586,6 +603,141 @@ final genresProvider = FutureProvider<List<String>>((ref) async {
 
 /// Auto-disposed so every title opened in a session isn't held forever, but
 /// kept for a few minutes after its page closes so going back stays instant.
+/// "More like this" for a title page; empty on servers without it or on any error.
+final similarTitlesProvider = FutureProvider.autoDispose.family<List<TitleItem>, String>((ref, id) async {
+  final client = ref.watch(graphQLClientProvider);
+  try {
+    final result = await client
+        .query(
+          QueryOptions(
+            document: gql(SIMILAR_TITLES),
+            variables: {'titleId': id, 'limit': 12},
+            fetchPolicy: FetchPolicy.noCache,
+          ),
+        )
+        // The server may store new titles from TMDB first: give it time.
+        .timeout(const Duration(seconds: 45));
+    if (result.hasException) return const [];
+    final items = result.data?['similarTitles'] as List? ?? const [];
+    return items.map((e) => TitleItem.fromJson(e as Map<String, dynamic>)).toList();
+  } catch (_) {
+    return const [];
+  }
+});
+
+/// More like this, a page at a time until TMDB's list ends.
+class SimilarRow {
+  const SimilarRow({this.items = const [], this.hasMore = true, this.loading = false});
+
+  final List<TitleItem> items;
+  final bool hasMore;
+  final bool loading;
+}
+
+class SimilarRowNotifier extends StateNotifier<SimilarRow> {
+  SimilarRowNotifier(this._client, this._titleId) : super(const SimilarRow()) {
+    loadMore();
+  }
+
+  final GraphQLClient _client;
+  final String _titleId;
+  int _page = 0;
+
+  /// The next page; call as the row nears its end.
+  Future<void> loadMore() async {
+    if (state.loading || !state.hasMore) return;
+    state = SimilarRow(items: state.items, hasMore: true, loading: true);
+    final page = _page + 1;
+    List<TitleItem> items = const [];
+    var more = false;
+    try {
+      final result = await _client
+          .query(QueryOptions(
+            document: gql(SIMILAR_TITLES_PAGE),
+            variables: {'titleId': _titleId, 'page': page},
+            fetchPolicy: FetchPolicy.noCache,
+          ))
+          // The server may store new titles from TMDB first: give it time.
+          .timeout(const Duration(seconds: 45));
+      if (result.hasException) {
+        // Servers before 0.3.26 have no pages: their one list, then the end.
+        if (page == 1) items = await _oldList();
+      } else {
+        final root = result.data?['similarTitlesPage'] as Map<String, dynamic>?;
+        items = [
+          for (final e in (root?['items'] as List? ?? const []))
+            TitleItem.fromJson(e as Map<String, dynamic>),
+        ];
+        more = root?['hasNextPage'] as bool? ?? false;
+      }
+    } catch (_) {}
+    if (!mounted) return;
+    _page = page;
+    final seen = {for (final t in state.items) t.id};
+    final merged = [
+      ...state.items,
+      ...items.where((t) => t.id != _titleId && seen.add(t.id)),
+    ];
+    state = SimilarRow(items: merged, hasMore: more, loading: false);
+    // A page that was all filtered out: keep going while there is more.
+    if (items.isEmpty && more) unawaited(loadMore());
+  }
+
+  Future<List<TitleItem>> _oldList() async {
+    final result = await _client
+        .query(QueryOptions(
+          document: gql(SIMILAR_TITLES),
+          variables: {'titleId': _titleId, 'limit': 24},
+          fetchPolicy: FetchPolicy.noCache,
+        ))
+        .timeout(const Duration(seconds: 45));
+    if (result.hasException) return const [];
+    return [
+      for (final e in (result.data?['similarTitles'] as List? ?? const []))
+        TitleItem.fromJson(e as Map<String, dynamic>),
+    ];
+  }
+}
+
+final similarRowProvider =
+    StateNotifierProvider.autoDispose.family<SimilarRowNotifier, SimilarRow, String>((ref, id) {
+  return SimilarRowNotifier(ref.watch(graphQLClientProvider), id);
+});
+
+/// A cast or crew member's page. Fails on servers before 0.3.26.
+final personProvider = FutureProvider.autoDispose.family<PersonDetails, int>((ref, tmdbId) async {
+  final client = ref.watch(graphQLClientProvider);
+  final result = await client.query(QueryOptions(
+    document: gql(GET_PERSON),
+    variables: {'tmdbId': tmdbId},
+    fetchPolicy: FetchPolicy.noCache,
+  ));
+  if (result.hasException) throw result.exception!;
+  return PersonDetails.fromJson(result.data!['person'] as Map<String, dynamic>);
+});
+
+/// The catalog id for a filmography credit, stored on the server first if needed.
+Future<String> openTmdbTitle(GraphQLClient client, PersonCredit credit) async {
+  final result = await client
+      .mutate(MutationOptions(
+        document: gql(OPEN_TMDB_TITLE),
+        variables: {'tmdbId': credit.tmdbId, 'kind': credit.kind == 'MOVIE' ? 'MOVIE' : 'SERIES'},
+      ))
+      .timeout(const Duration(seconds: 45));
+  if (result.hasException) throw result.exception!;
+  return (result.data?['openTmdbTitle'] as Map<String, dynamic>?)?['id'] as String? ?? '';
+}
+
+/// When each server (its GraphQL client) last rejected `Person.tmdbPersonId`.
+/// Asked again after a while, so an upgraded server is noticed without a
+/// restart; a new server gets a new client, and starts unmarked.
+final Expando<DateTime> _oldTitleQuerySince = Expando('oldTitleQuery');
+
+bool _usesOldTitleQuery(GraphQLClient client) {
+  final since = _oldTitleQuerySince[client];
+  return since != null && DateTime.now().difference(since) < const Duration(minutes: 10);
+}
+
 final detailProvider = FutureProvider.autoDispose.family<TitleItem?, String>((ref, id) async {
   final link = ref.keepAlive();
   Timer? expiry;
@@ -593,13 +745,23 @@ final detailProvider = FutureProvider.autoDispose.family<TitleItem?, String>((re
   ref.onResume(() => expiry?.cancel());
   ref.onDispose(() => expiry?.cancel());
   final client = ref.watch(graphQLClientProvider);
-  final result = await client.query(
-    QueryOptions(
-      document: gql(GET_TITLE),
-      variables: {'id': id},
-      fetchPolicy: FetchPolicy.noCache,
-    ),
-  );
+  Future<QueryResult> load(String query) => client.query(
+        QueryOptions(
+          document: gql(query),
+          variables: {'id': id},
+          fetchPolicy: FetchPolicy.noCache,
+        ),
+      );
+  // Newer servers also give each person's TMDB id; older ones reject the field.
+  final old = _usesOldTitleQuery(client);
+  var result = await load(old ? GET_TITLE : GET_TITLE_WITH_PEOPLE_IDS);
+  if (result.hasException && !old && result.exception!.graphqlErrors.isNotEmpty) {
+    final retry = await load(GET_TITLE);
+    if (!retry.hasException) _oldTitleQuerySince[client] = DateTime.now();
+    result = retry;
+  } else if (!old && !result.hasException) {
+    _oldTitleQuerySince[client] = null;
+  }
   if (result.hasException) {
     throw result.exception!;
   }
@@ -661,12 +823,18 @@ class SearchNotifier extends StateNotifier<SearchState> {
   Timer? _debounce;
   var _generation = 0;
 
+  /// Searching starts at this many characters, once typing pauses for [_pause].
+  static const minLength = 2;
+  static const _pause = Duration(milliseconds: 450);
+
+  static bool searchable(String query) => query.trim().length >= minLength;
+
   void onQueryChanged(String value) {
     _debounce?.cancel();
     final generation = ++_generation;
     state = state.copyWith(query: value);
     final trimmed = value.trim();
-    if (trimmed.isEmpty) {
+    if (trimmed.length < minLength) {
       state = SearchState(
         query: value,
         kind: state.kind,
@@ -681,7 +849,7 @@ class SearchNotifier extends StateNotifier<SearchState> {
     }
     // Old results go at once and the loader shows while the user pauses.
     state = state.copyWith(loading: true, results: const [], clearError: true);
-    _debounce = Timer(const Duration(milliseconds: 320), () {
+    _debounce = Timer(_pause, () {
       _run(trimmed, page: 1, replace: true, generation: generation);
     });
   }
@@ -689,7 +857,7 @@ class SearchNotifier extends StateNotifier<SearchState> {
   void setKind(String? kind) {
     state = state.copyWith(kind: kind, clearKind: kind == null);
     final q = state.query.trim();
-    if (q.isNotEmpty) {
+    if (searchable(q)) {
       _run(q, page: 1, replace: true);
     }
   }
@@ -704,7 +872,7 @@ class SearchNotifier extends StateNotifier<SearchState> {
       clearYearMax: facets.yearMax == null,
     );
     final q = state.query.trim();
-    if (q.isNotEmpty) {
+    if (searchable(q)) {
       _run(q, page: 1, replace: true);
     }
   }
@@ -719,7 +887,7 @@ class SearchNotifier extends StateNotifier<SearchState> {
 
   Future<void> loadMore() async {
     final q = state.query.trim();
-    if (!state.hasNextPage || state.loadingMore || state.loading || q.isEmpty) {
+    if (!state.hasNextPage || state.loadingMore || state.loading || !searchable(q)) {
       return;
     }
     await _run(q, page: state.page + 1, replace: false, generation: _generation);

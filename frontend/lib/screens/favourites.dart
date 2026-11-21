@@ -7,7 +7,9 @@ import '../models.dart';
 import '../providers/catalog.dart';
 import '../theme.dart';
 import '../tv.dart';
+import '../design/tokens.g.dart';
 import '../widgets/empty_state.dart';
+import '../widgets/library_page.dart';
 import '../widgets/hero_banner.dart';
 import '../widgets/local_overlay.dart';
 import '../widgets/poster_card.dart';
@@ -21,6 +23,28 @@ class FavouritesScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final feed = ref.watch(favoritesFeedProvider);
+
+    if (!isAndroidTv) {
+      return Scaffold(
+        backgroundColor: PbColors.ground,
+        body: SafeArea(
+          child: feed.when(
+            skipLoadingOnReload: true,
+            loading: () => const Center(child: CircularProgressIndicator()),
+            error: (e, _) => EmptyState(
+              message: friendlyError(e),
+              onRefresh: () async => ref.invalidate(favoritesFeedProvider),
+            ),
+            data: (data) => LibraryPage(
+              title: 'My List',
+              items: [...data.movies, ...data.series, ...data.anime],
+              emptyMessage: 'Nothing in My List yet. Open a title and choose My List to save it here.',
+              keepWatching: true,
+            ),
+          ),
+        ),
+      );
+    }
 
     return Scaffold(
       backgroundColor: AppTheme.canvas,

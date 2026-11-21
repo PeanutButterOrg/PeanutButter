@@ -40,6 +40,7 @@ pub struct TitlePersonRow {
     pub department: String,
     pub profile_path: Option<String>,
     pub sort_order: i32,
+    pub tmdb_person_id: Option<i32>,
 }
 
 #[derive(Debug, Clone, FromRow)]

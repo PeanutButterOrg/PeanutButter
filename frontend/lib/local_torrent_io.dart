@@ -6,6 +6,7 @@ import 'package:libtorrent_flutter/libtorrent_flutter.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'local_torrent_types.dart';
+import 'stream_cleanup_barrier.dart';
 import 'torrent_file_picker.dart';
 
 /// Device-side streaming. Backend only supplies magnets / metadata.
@@ -21,6 +22,14 @@ class LocalTorrentEngine {
   /// Active Range probe from [seekTo]; closed in [stop] so leave can't abort.
   HttpClient? _rangeClient;
   int _pullGen = 0;
+  /// Bumped by every [start]: a closing player's cleanup passes the number it
+  /// had, so it can't stop or wipe a stream started since.
+  int _generation = 0;
+  int get generation => _generation;
+  /// Includes native teardown and all torrent/cache cleanup. Starting another
+  /// stream must wait until both have actually finished touching shared files.
+  final _cleanup = StreamCleanupBarrier();
+  void noteCleanup(Future<void> cleanup) => _cleanup.add(cleanup);
 
   bool get supported =>
       !_nativeUnavailable &&
@@ -172,6 +181,8 @@ class LocalTorrentEngine {
     int? fileIndex,
     void Function(LocalStreamStats stats)? onStats,
   }) async {
+    await _cleanup.wait();
+    _generation++;
     await ensureInit();
     try {
       await TrackerManager.fetchBestTrackers().timeout(const Duration(seconds: 4));
@@ -419,8 +430,10 @@ class LocalTorrentEngine {
     );
   }
 
-  Future<void> stop({bool deleteFiles = true}) async {
+  /// [onlyGeneration]: do nothing if another stream has started since then.
+  Future<void> stop({bool deleteFiles = true, int? onlyGeneration}) async {
     if (!_ready) return;
+    if (onlyGeneration != null && onlyGeneration != _generation) return;
     final engine = LibtorrentFlutter.instance;
     final sid = _streamId;
     final tid = _torrentId;
@@ -465,8 +478,9 @@ class LocalTorrentEngine {
   }
 
   /// Stop every local torrent and delete downloaded stream pieces from disk.
-  Future<void> purgeDownloads() async {
+  Future<void> purgeDownloads({int? onlyGeneration}) async {
     if (!supported) return;
+    if (onlyGeneration != null && onlyGeneration != _generation) return;
     try {
       await stop(deleteFiles: true);
     } catch (_) {}

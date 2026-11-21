@@ -1,0 +1,126 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Generated from design/tokens.json by scripts/gen-design-tokens.py. Do not edit. -->
+<resources>
+    <!-- Page background, behind everything -->
+    <color name="pbt_ground">#FF0E0E12</color>
+    <!-- Cards, panels, menus -->
+    <color name="pbt_surface">#FF16171D</color>
+    <!-- Hovered or selected surface, inputs -->
+    <color name="pbt_surface_raised">#FF1E2028</color>
+    <!-- Hairlines and outlines -->
+    <color name="pbt_line">#FF2A2D37</color>
+    <!-- Main text -->
+    <color name="pbt_text">#FFF1F3F7</color>
+    <!-- Secondary text, captions -->
+    <color name="pbt_text_muted">#FFA7ADBB</color>
+    <!-- Hints, disabled text -->
+    <color name="pbt_text_faint">#FF6E7483</color>
+    <!-- Peanut amber: the main action (Play, Save) and active chips -->
+    <color name="pbt_primary">#FFE2A456</color>
+    <!-- Primary while pressed -->
+    <color name="pbt_primary_pressed">#FFC98A3E</color>
+    <!-- Text and icons on primary -->
+    <color name="pbt_on_primary">#FF1A1206</color>
+    <!-- Focus ring (keyboard / remote): soft white, like the text -->
+    <color name="pbt_focus">#FFF1F3F7</color>
+    <!-- Focused surface tint on TV -->
+    <color name="pbt_focus_soft">#FF3A3D48</color>
+    <!-- The blue 'Butter' in the logo -->
+    <color name="pbt_brand">#FF5B9FFF</color>
+    <!-- Healthy, done, on -->
+    <color name="pbt_good">#FF4ADE80</color>
+    <!-- Weak, attention -->
+    <color name="pbt_warn">#FFFBBF24</color>
+    <!-- Errors, dead, destructive -->
+    <color name="pbt_bad">#FFF87171</color>
+    <!-- Rotten Tomatoes red, only on its badge -->
+    <color name="pbt_rt">#FFFA320A</color>
+    <!-- Top bar once content scrolls under it -->
+    <color name="pbt_scrim_top">#F20E0E12</color>
+    <!-- Hero fade behind text -->
+    <color name="pbt_scrim_hero">#E60E0E12</color>
+    <dimen name="pbt_type_hero">44sp</dimen>
+    <dimen name="pbt_type_h1">32sp</dimen>
+    <dimen name="pbt_type_h2">24sp</dimen>
+    <dimen name="pbt_type_title">18sp</dimen>
+    <dimen name="pbt_type_body">16sp</dimen>
+    <dimen name="pbt_type_meta">15sp</dimen>
+    <dimen name="pbt_type_label">12sp</dimen>
+    <dimen name="pbt_type_button">16sp</dimen>
+    <dimen name="pbt_space_xxs">4dp</dimen>
+    <dimen name="pbt_space_xs">8dp</dimen>
+    <dimen name="pbt_space_sm">12dp</dimen>
+    <dimen name="pbt_space_md">16dp</dimen>
+    <dimen name="pbt_space_lg">24dp</dimen>
+    <dimen name="pbt_space_xl">32dp</dimen>
+    <dimen name="pbt_space_xxl">48dp</dimen>
+    <dimen name="pbt_space_gutter_desktop">36dp</dimen>
+    <dimen name="pbt_space_gutter_tv">48dp</dimen>
+    <dimen name="pbt_radius_badge">6dp</dimen>
+    <dimen name="pbt_radius_card">10dp</dimen>
+    <dimen name="pbt_radius_panel">16dp</dimen>
+    <dimen name="pbt_radius_pill">999dp</dimen>
+    <dimen name="pbt_size_poster_width_desktop">150dp</dimen>
+    <dimen name="pbt_size_poster_width_tv">132dp</dimen>
+    <dimen name="pbt_size_wide_card_width_desktop">300dp</dimen>
+    <dimen name="pbt_size_wide_card_width_tv">268dp</dimen>
+    <dimen name="pbt_size_button_height_desktop">38dp</dimen>
+    <dimen name="pbt_size_button_height_tv">48dp</dimen>
+    <dimen name="pbt_size_top_bar_height_desktop">60dp</dimen>
+    <dimen name="pbt_size_top_bar_height_tv">72dp</dimen>
+    <dimen name="pbt_size_focus_ring">3dp</dimen>
+    <dimen name="pbt_size_focus_ring_offset">3dp</dimen>
+    <item name="pbt_focus_scale" format="float" type="dimen">1.06</item>
+    <integer name="pbt_motion_fast">120</integer>
+    <integer name="pbt_motion_base">180</integer>
+    <integer name="pbt_motion_slow">280</integer>
+    <style name="TextAppearance.Pb.Hero" parent="android:TextAppearance">
+        <item name="android:fontFamily">@font/space_grotesk</item>
+        <item name="android:textSize">@dimen/pbt_type_hero</item>
+        <item name="android:textColor">@color/pbt_text</item>
+        <item name="android:letterSpacing">-0.011</item>
+        <item name="android:textStyle">bold</item>
+    </style>
+    <style name="TextAppearance.Pb.H1" parent="android:TextAppearance">
+        <item name="android:fontFamily">@font/space_grotesk</item>
+        <item name="android:textSize">@dimen/pbt_type_h1</item>
+        <item name="android:textColor">@color/pbt_text</item>
+        <item name="android:letterSpacing">-0.009</item>
+        <item name="android:textStyle">bold</item>
+    </style>
+    <style name="TextAppearance.Pb.H2" parent="android:TextAppearance">
+        <item name="android:fontFamily">@font/space_grotesk</item>
+        <item name="android:textSize">@dimen/pbt_type_h2</item>
+        <item name="android:textColor">@color/pbt_text</item>
+        <item name="android:textStyle">bold</item>
+    </style>
+    <style name="TextAppearance.Pb.Title" parent="android:TextAppearance">
+        <item name="android:fontFamily">@font/inter</item>
+        <item name="android:textSize">@dimen/pbt_type_title</item>
+        <item name="android:textColor">@color/pbt_text</item>
+        <item name="android:textStyle">bold</item>
+    </style>
+    <style name="TextAppearance.Pb.Body" parent="android:TextAppearance">
+        <item name="android:fontFamily">@font/inter</item>
+        <item name="android:textSize">@dimen/pbt_type_body</item>
+        <item name="android:textColor">@color/pbt_text</item>
+    </style>
+    <style name="TextAppearance.Pb.Meta" parent="android:TextAppearance">
+        <item name="android:fontFamily">@font/inter</item>
+        <item name="android:textSize">@dimen/pbt_type_meta</item>
+        <item name="android:textColor">@color/pbt_text</item>
+    </style>
+    <style name="TextAppearance.Pb.Label" parent="android:TextAppearance">
+        <item name="android:fontFamily">@font/inter</item>
+        <item name="android:textSize">@dimen/pbt_type_label</item>
+        <item name="android:textColor">@color/pbt_text</item>
+        <item name="android:letterSpacing">0.067</item>
+        <item name="android:textStyle">bold</item>
+    </style>
+    <style name="TextAppearance.Pb.Button" parent="android:TextAppearance">
+        <item name="android:fontFamily">@font/inter</item>
+        <item name="android:textSize">@dimen/pbt_type_button</item>
+        <item name="android:textColor">@color/pbt_text</item>
+        <item name="android:textStyle">bold</item>
+    </style>
+</resources>

@@ -15,12 +15,18 @@
 //! - size sanity: a "1080p" movie of 300 MB is a fake or a re-encode, a 70 GB
 //!   remux is too heavy to stream when 1080p was asked;
 //! - for episodes, the exact episode before a season pack.
+//!
+//! Only HD is offered: CAM / telesync copies, anything below 720p and
+//! releases that don't name a resolution are dropped before scoring.
 
 use crate::graphql::types::StreamSource;
 use crate::jackett::{episode_specificity, has_token, padded, source_quality_score};
 
 /// Most results a picker shows.
 pub const MAX_RESULTS: usize = 24;
+/// Lowest resolution ever offered. Anything below it, or with no resolution
+/// in its name, isn't offered at all (HD only).
+pub const MIN_RESOLUTION: u32 = 720;
 
 pub struct RankPrefs<'a> {
     /// "2160p" | "1080p" | "720p" | "480p" (empty = 1080p).
@@ -41,6 +47,9 @@ pub fn rank(mut out: Vec<StreamSource>, prefs: &RankPrefs) -> Vec<StreamSource> 
     }
     // CAM / telesync never.
     out.retain(|s| source_quality_score(&s.title) >= 2);
+    // HD only: 720p, 1080p or 4K named in the release. SD copies and ones that
+    // don't say their resolution aren't offered.
+    out.retain(|s| detect_resolution(&s.title).is_some_and(|r| r >= MIN_RESOLUTION));
     // Confirmed-dead torrents only when there is nothing else.
     if out.iter().any(|s| s.health != "dead") {
         out.retain(|s| s.health != "dead");
@@ -227,6 +236,25 @@ mod tests {
 
     fn titles(v: &[StreamSource]) -> Vec<&str> {
         v.iter().map(|s| s.title.as_str()).collect()
+    }
+
+    #[test]
+    fn only_hd_copies_are_offered() {
+        let out = rank(
+            vec![
+                torrent("Film.2025.2160p.WEB-DL", 50, 15.0),
+                torrent("Film.2025.1080p.BluRay", 50, 8.0),
+                torrent("Film.2025.720p.WEB", 50, 3.0),
+                torrent("Film.2025.480p.WEB", 50, 1.0),
+                torrent("Film.2025.DVDRip.XviD", 50, 1.0),
+                torrent("Film.2025.WEB-DL", 50, 4.0),
+                torrent("Film.2025.1080p.HDCAM", 50, 2.0),
+            ],
+            &prefs("1080p", ""),
+        );
+        let mut got = titles(&out);
+        got.sort();
+        assert_eq!(got, ["Film.2025.1080p.BluRay", "Film.2025.2160p.WEB-DL", "Film.2025.720p.WEB"]);
     }
 
     #[test]

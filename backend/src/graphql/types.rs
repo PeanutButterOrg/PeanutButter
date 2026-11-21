@@ -353,6 +353,9 @@ pub struct Person {
     pub job: Option<String>,
     pub department: String,
     pub profile_url: Option<String>,
+    /// Who this credit is at TMDB (opens their page with `person`); credits
+    /// are joined into one card by it.
+    pub tmdb_person_id: Option<i32>,
 }
 
 impl Person {
@@ -364,8 +367,56 @@ impl Person {
             job: row.job,
             department: row.department,
             profile_url: profile_url(public_url, &row.profile_path),
+            tmdb_person_id: row.tmdb_person_id,
         }
     }
+
+    /// Whether two credits are the same person. TMDB's person id decides;
+    /// different people can share a name. Credits saved before the id was
+    /// kept only join when the name and the photo both match.
+    fn same_person(&self, other: &Person) -> bool {
+        match (self.tmdb_person_id, other.tmdb_person_id) {
+            (Some(a), Some(b)) => a == b,
+            (None, None) => {
+                self.profile_url.is_some()
+                    && self.profile_url == other.profile_url
+                    && self.name.trim().eq_ignore_ascii_case(other.name.trim())
+            }
+            _ => false,
+        }
+    }
+}
+
+/// One card per person: TMDB lists someone once per job ("David Ayer ·
+/// Director", "David Ayer · Producer"), and the apps showed every row. The
+/// first row keeps its place; later jobs join its job ("Director, Producer").
+/// Rows are matched by TMDB person id (see `Person::same_person`).
+pub fn merge_people(people: Vec<Person>) -> Vec<Person> {
+    let mut out: Vec<Person> = Vec::with_capacity(people.len());
+    for p in people {
+        match out.iter_mut().find(|q| q.same_person(&p)) {
+            Some(first) => {
+                if let Some(job) = p.job.filter(|j| !j.trim().is_empty()) {
+                    match &mut first.job {
+                        Some(jobs) if !jobs.split(", ").any(|j| j.eq_ignore_ascii_case(&job)) => {
+                            jobs.push_str(", ");
+                            jobs.push_str(&job);
+                        }
+                        Some(_) => {}
+                        None => first.job = Some(job),
+                    }
+                }
+                if first.character.is_none() {
+                    first.character = p.character;
+                }
+                if first.profile_url.is_none() {
+                    first.profile_url = p.profile_url;
+                }
+            }
+            None => out.push(p),
+        }
+    }
+    out
 }
 
 #[derive(SimpleObject, Clone, Debug)]
@@ -607,7 +658,7 @@ impl Title {
         let state = ctx.data::<AppState>()?;
         let rows: Vec<TitlePersonRow> = sqlx::query_as(
             r#"
-            SELECT id, title_id, name, character, job, department, profile_path, sort_order
+            SELECT id, title_id, name, character, job, department, profile_path, sort_order, tmdb_person_id
             FROM title_people
             WHERE title_id = $1
             ORDER BY department ASC, sort_order ASC
@@ -617,10 +668,9 @@ impl Title {
         .fetch_all(&state.pool)
         .await
         .map_err(AppError::Database)?;
-        Ok(rows
-            .into_iter()
-            .map(|r| Person::from_row(r, &state.config.public_url))
-            .collect())
+        Ok(merge_people(
+            rows.into_iter().map(|r| Person::from_row(r, &state.config.public_url)).collect(),
+        ))
     }
 
     async fn user_state(&self, ctx: &Context<'_>) -> async_graphql::Result<Option<UserState>> {
@@ -665,6 +715,7 @@ pub struct HomeFeed {
     pub recent: Vec<Title>,
     pub continue_watching: Vec<Title>,
 }
+
 
 #[derive(SimpleObject, Clone, Debug)]
 pub struct SyncStatus {
@@ -809,6 +860,80 @@ pub struct TorrentProbe {
     pub health: String,
 }
 
+/// A person's page: who they are and their full filmography.
+#[derive(SimpleObject, Clone, Debug)]
+pub struct PersonDetails {
+    pub tmdb_id: i32,
+    pub name: String,
+    pub biography: Option<String>,
+    /// YYYY-MM-DD.
+    pub birthday: Option<String>,
+    pub deathday: Option<String>,
+    pub place_of_birth: Option<String>,
+    /// "Acting", "Directing", …
+    pub known_for: Option<String>,
+    pub profile_url: Option<String>,
+    /// Newest first, one entry per title.
+    pub acting: Vec<PersonCredit>,
+    pub crew: Vec<PersonCredit>,
+    /// Credits still being content-checked, left out for now: ask again in a
+    /// few seconds while this is above 0.
+    pub checking_credits: i32,
+}
+
+/// A title in a person's filmography.
+#[derive(SimpleObject, Clone, Debug)]
+pub struct PersonCredit {
+    pub tmdb_id: i32,
+    /// MOVIE or SERIES.
+    pub kind: TitleKind,
+    pub title: String,
+    /// Characters (acting) or jobs (crew).
+    pub role: Option<String>,
+    pub year: Option<i32>,
+    pub poster_url: Option<String>,
+    pub vote_average: Option<f64>,
+    /// Set when it is in the catalog; otherwise open it with `openTmdbTitle`.
+    pub title_id: Option<Uuid>,
+}
+
+impl PersonDetails {
+    pub fn from_page(p: crate::ingest::tmdb::PersonPage, config: &crate::config::Config) -> Self {
+        let credit = |c: crate::ingest::tmdb::PersonCredit| PersonCredit {
+            tmdb_id: c.tmdb_id,
+            kind: if c.kind == "movie" { TitleKind::Movie } else { TitleKind::Series },
+            title: c.title,
+            role: c.role,
+            year: c.date.as_deref().and_then(|d| d.get(..4)).and_then(|y| y.parse().ok()),
+            poster_url: config.poster_url(&c.poster_path),
+            vote_average: c.vote_average,
+            title_id: c.title_id,
+        };
+        Self {
+            tmdb_id: p.tmdb_id,
+            name: p.name,
+            biography: p.biography,
+            birthday: p.birthday,
+            deathday: p.deathday,
+            place_of_birth: p.place_of_birth,
+            known_for: p.known_for,
+            profile_url: crate::config::profile_url(&config.public_url, &p.profile_path),
+            acting: p.acting.into_iter().map(credit).collect(),
+            crew: p.crew.into_iter().map(credit).collect(),
+            checking_credits: p.checking as i32,
+        }
+    }
+}
+
+/// One page of "More like this".
+#[derive(SimpleObject, Clone, Debug)]
+pub struct SimilarTitlesPage {
+    pub items: Vec<Title>,
+    /// TMDB has another page: ask for `page + 1`.
+    pub has_next_page: bool,
+    pub page: i32,
+}
+
 #[derive(SimpleObject, Clone, Debug)]
 pub struct SearchResult {
     pub items: Vec<Title>,
@@ -888,4 +1013,62 @@ pub struct MediaSegment {
 pub struct MediaSegments {
     pub tmdb_id: Option<i32>,
     pub segments: Vec<MediaSegment>,
+}
+
+#[cfg(test)]
+mod people_tests {
+    use super::*;
+
+    fn person(tmdb_id: i32, name: &str, character: Option<&str>, job: Option<&str>) -> Person {
+        Person {
+            id: Uuid::new_v4(),
+            name: name.into(),
+            character: character.map(Into::into),
+            job: job.map(Into::into),
+            department: String::new(),
+            profile_url: None,
+            tmdb_person_id: Some(tmdb_id),
+        }
+    }
+
+    #[test]
+    fn one_card_per_person_with_their_jobs() {
+        let merged = merge_people(vec![
+            person(287, "Brad Pitt", Some("James Belmont"), None),
+            person(19769, "David Ayer", None, Some("Director")),
+            person(5, "Olivia Hamilton", None, Some("Producer")),
+            person(19769, "David Ayer", None, Some("Producer")),
+            person(19769, "David Ayer", None, Some("Producer")),
+        ]);
+        let names: Vec<&str> = merged.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["Brad Pitt", "David Ayer", "Olivia Hamilton"]);
+        assert_eq!(merged[1].job.as_deref(), Some("Director, Producer"));
+        assert_eq!(merged[0].character.as_deref(), Some("James Belmont"));
+    }
+
+    #[test]
+    fn people_who_share_a_name_keep_their_own_cards() {
+        let mut a = person(1, "Chris Smith", None, Some("Director"));
+        a.profile_url = Some("a.jpg".into());
+        let mut b = person(2, "Chris Smith", None, Some("Producer"));
+        b.profile_url = Some("b.jpg".into());
+        let merged = merge_people(vec![a, b]);
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0].job.as_deref(), Some("Director"));
+        assert_eq!(merged[1].job.as_deref(), Some("Producer"));
+    }
+
+    #[test]
+    fn credits_saved_without_an_id_join_only_on_name_and_photo() {
+        let legacy = |job: &str, photo: Option<&str>| Person {
+            tmdb_person_id: None,
+            profile_url: photo.map(Into::into),
+            ..person(0, "David Ayer", None, Some(job))
+        };
+        let merged = merge_people(vec![legacy("Director", Some("p.jpg")), legacy("Producer", Some("p.jpg"))]);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].job.as_deref(), Some("Director, Producer"));
+        let merged = merge_people(vec![legacy("Director", None), legacy("Producer", None)]);
+        assert_eq!(merged.len(), 2);
+    }
 }

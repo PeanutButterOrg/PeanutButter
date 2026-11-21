@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+
+import '../design/tokens.g.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:graphql_flutter/graphql_flutter.dart';
@@ -25,6 +27,7 @@ class SettingsScreen extends ConsumerStatefulWidget {
 }
 
 class _SettingsScreenState extends ConsumerState<SettingsScreen> {
+
   final _opensubKey = TextEditingController();
   final _wyzieKey = TextEditingController();
   bool _saving = false;
@@ -139,16 +142,16 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       body: Align(
         alignment: Alignment.topCenter,
         child: ConstrainedBox(
-          // A readable column instead of rows stretched across wide windows.
-          constraints: const BoxConstraints(maxWidth: 760),
+          // A readable width instead of rows stretched across wide windows.
+          constraints: const BoxConstraints(maxWidth: 1120),
           child: ListView(
-            padding: const EdgeInsets.fromLTRB(24, 20, 24, 120),
+            padding: const EdgeInsets.fromLTRB(36, 20, 36, 120),
             children: [
               _Header(
                 serverUrl: settings.serverUrl,
                 onBack: isAndroidTv ? null : () => Navigator.of(context).maybePop(),
               ),
-              const SizedBox(height: 24),
+              const SizedBox(height: 28),
 
               _Section(
                 icon: Icons.play_circle_outline_rounded,
@@ -162,31 +165,13 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     trailing: AppMenuButton<String>(
                       hint: 'Quality',
                       value: settings.defaultQuality,
+                      // HD only: the server never offers anything below 720p.
                       entries: const [
-                        AppMenuEntry(value: '480p', label: '480p'),
                         AppMenuEntry(value: '720p', label: '720p'),
                         AppMenuEntry(value: '1080p', label: '1080p'),
                         AppMenuEntry(value: '2160p', label: '4K'),
                       ],
                       onSelected: (v) => ref.read(settingsProvider.notifier).setDefaultQuality(v),
-                    ),
-                  ),
-                  _SettingRow(
-                    icon: Icons.contrast_rounded,
-                    label: 'Theme',
-                    trailing: Wrap(
-                      spacing: 8,
-                      children: [
-                        for (final mode in const [
-                          (ThemeMode.dark, 'Dark'),
-                          (ThemeMode.light, 'Light'),
-                        ])
-                          AppFilterChip(
-                            label: mode.$2,
-                            selected: settings.themeMode == mode.$1,
-                            onSelected: (_) => ref.read(settingsProvider.notifier).setThemeMode(mode.$1),
-                          ),
-                      ],
                     ),
                   ),
                 ],
@@ -247,7 +232,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                       subtitle: server.syncing ? 'Syncing new titles…' : 'Movies, series and anime on the server',
                       trailing: Text(
                         '${server.totalTitles} titles',
-                        style: const TextStyle(color: Colors.white70, fontWeight: FontWeight.w600),
+                        style: const TextStyle(color: PbColors.textMuted, fontWeight: FontWeight.w600),
                       ),
                     ),
                 ],
@@ -308,7 +293,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                               ? const SizedBox.shrink()
                               : Text(
                                   _opensubMessage!,
-                                  style: const TextStyle(color: Colors.white70, fontSize: 13, height: 1.35),
+                                  style: const TextStyle(color: PbColors.textMuted, fontSize: 13, height: 1.35),
                                 ),
                         ),
                         const SizedBox(width: 12),
@@ -369,7 +354,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     subtitle: settings.serverUrl.isEmpty ? null : settings.serverUrl,
                     trailing: Text(
                       server?.version ?? '–',
-                      style: const TextStyle(color: Colors.white70, fontWeight: FontWeight.w600),
+                      style: const TextStyle(color: PbColors.textMuted, fontWeight: FontWeight.w600),
                     ),
                   ),
                 ],
@@ -398,34 +383,40 @@ class _Header extends StatelessWidget {
   final String serverUrl;
   final VoidCallback? onBack;
 
+  /// Back arrow width plus its gap: the line under the title starts after it.
+  static const double _backRoom = 24 + 14;
+
   @override
   Widget build(BuildContext context) {
-    return Row(
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        if (onBack != null) ...[
-          IconButton.filledTonal(
-            tooltip: 'Back',
-            onPressed: onBack,
-            icon: const Icon(Icons.arrow_back_rounded),
-          ),
-          const SizedBox(width: 14),
-        ],
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'Settings',
-                style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w800),
+        Row(
+          children: [
+            if (onBack != null) ...[
+              // No padding, so the arrow lines up with the section titles below.
+              TvFocus(
+                child: IconButton(
+                  tooltip: 'Back',
+                  onPressed: onBack,
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                  style: IconButton.styleFrom(tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+                  icon: const Icon(Icons.arrow_back_rounded, size: 24, color: PbColors.text),
+                ),
               ),
-              const SizedBox(height: 2),
-              Text(
-                serverUrl.isEmpty ? 'Not paired with a server' : 'Connected to $serverUrl',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(color: Colors.white54, fontSize: 13),
-              ),
+              const SizedBox(width: 14),
             ],
+            Text('Settings', style: PbType.h1.copyWith(color: PbColors.text)),
+          ],
+        ),
+        Padding(
+          padding: EdgeInsets.only(left: onBack != null ? _backRoom : 0, top: 2),
+          child: Text(
+            serverUrl.isEmpty ? 'Not paired with a server' : 'Connected to $serverUrl',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: PbType.meta.copyWith(color: PbColors.textFaint),
           ),
         ),
       ],
@@ -433,7 +424,8 @@ class _Header extends StatelessWidget {
   }
 }
 
-/// A titled group of settings: icon + title + one-line description over a card.
+/// One group of settings, as in the design: the name and what it's for on
+/// the left, a card of rows on the right (stacked on narrow windows).
 class _Section extends StatelessWidget {
   const _Section({
     required this.icon,
@@ -452,46 +444,50 @@ class _Section extends StatelessWidget {
     final rows = <Widget>[];
     for (var k = 0; k < children.length; k++) {
       if (k > 0 && children[k] is _SettingRow && children[k - 1] is _SettingRow) {
-        rows.add(const Divider(height: 1, indent: 68, color: Color(0x14FFFFFF)));
+        rows.add(const Divider(height: 1, indent: 66, color: PbColors.line));
       }
       rows.add(children[k]);
     }
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 22),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(4, 0, 4, 10),
-            child: Row(
-              children: [
-                Icon(icon, size: 18, color: AppTheme.seed),
-                const SizedBox(width: 8),
-                Text(title, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
-                if (description != null) ...[
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      description!,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(color: Colors.white38, fontSize: 12.5),
-                    ),
-                  ),
-                ],
-              ],
-            ),
-          ),
-          Container(
-            decoration: BoxDecoration(
-              color: const Color(0xFF15151C),
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: const Color(0x14FFFFFF)),
-            ),
-            clipBehavior: Clip.antiAlias,
-            child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: rows),
-          ),
+    final label = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(title, style: PbType.h1.copyWith(fontSize: 28, color: PbColors.text)),
+        if (description != null) ...[
+          const SizedBox(height: 6),
+          Text(description!, style: PbType.body.copyWith(color: PbColors.textMuted, height: 1.45)),
         ],
+      ],
+    );
+    final card = Container(
+      decoration: BoxDecoration(
+        color: PbColors.surface,
+        borderRadius: BorderRadius.circular(PbRadius.panel),
+        border: Border.all(color: PbColors.line),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: rows),
+    );
+    return Container(
+      padding: const EdgeInsets.only(bottom: 28),
+      margin: const EdgeInsets.only(bottom: 28),
+      decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: PbColors.line))),
+      child: LayoutBuilder(
+        builder: (context, box) {
+          if (box.maxWidth < 760) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [label, const SizedBox(height: 14), card],
+            );
+          }
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SizedBox(width: 300, child: label),
+              const SizedBox(width: 48),
+              Expanded(child: card),
+            ],
+          );
+        },
       ),
     );
   }
@@ -523,10 +519,11 @@ class _SettingRow extends StatelessWidget {
               width: 36,
               height: 36,
               decoration: BoxDecoration(
-                color: AppTheme.seed.withValues(alpha: 0.12),
-                borderRadius: BorderRadius.circular(10),
+                color: Colors.white.withValues(alpha: 0.06),
+                borderRadius: BorderRadius.circular(9),
+                border: Border.all(color: PbColors.line),
               ),
-              child: Icon(icon, size: 19, color: AppTheme.seed),
+              child: Icon(icon, size: 18, color: PbColors.textMuted),
             ),
             const SizedBox(width: 16),
             Expanded(
@@ -534,12 +531,12 @@ class _SettingRow extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text(label, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14.5)),
+                  Text(label, style: PbType.title.copyWith(fontSize: 15, color: PbColors.text)),
                   if (subtitle != null) ...[
                     const SizedBox(height: 3),
                     Text(
                       subtitle!,
-                      style: const TextStyle(color: Colors.white54, fontSize: 12.5, height: 1.3),
+                      style: PbType.meta.copyWith(fontSize: 12.5, color: PbColors.textFaint, height: 1.3),
                     ),
                   ],
                 ],
@@ -562,20 +559,26 @@ class _StatusPill extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final color = ok ? const Color(0xFF7DD3A0) : Colors.white54;
+    final color = ok ? PbColors.good : PbColors.textFaint;
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.1),
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: color.withValues(alpha: 0.3)),
+        color: PbColors.surfaceRaised,
+        borderRadius: BorderRadius.circular(PbRadius.pill),
+        border: Border.all(color: PbColors.line),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Container(width: 6, height: 6, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
-          const SizedBox(width: 6),
-          Text(label, style: TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.w700)),
+          Container(width: 7, height: 7, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
+          const SizedBox(width: 8),
+          Text(
+            label,
+            style: PbType.meta.copyWith(
+              color: ok ? PbColors.text : PbColors.textMuted,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
         ],
       ),
     );
@@ -592,7 +595,7 @@ class _AppVersion extends StatelessWidget {
       builder: (context, snap) {
         final info = snap.data;
         final text = info == null ? '–' : '${info.version} (${info.buildNumber})';
-        return Text(text, style: const TextStyle(color: Colors.white70, fontWeight: FontWeight.w600));
+        return Text(text, style: const TextStyle(color: PbColors.textMuted, fontWeight: FontWeight.w600));
       },
     );
   }

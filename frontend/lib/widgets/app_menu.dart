@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
-import '../theme.dart';
+import '../design/tokens.g.dart';
+import '../tv.dart';
 import 'tv_chrome.dart';
 
 class AppMenuEntry<T> {
@@ -38,12 +39,71 @@ class AppMenuButton<T> extends StatelessWidget {
     return hint;
   }
 
+  /// A filter (compact) with something other than its first ("Any …") entry
+  /// picked; settings menus never light up.
+  bool get _active => compact && entries.isNotEmpty && value != null && value != entries.first.value;
+
   Future<void> _pick(BuildContext context) async {
-    final picked = await showDialog<T>(
+    final picked = isAndroidTv ? await _dialog(context) : await _dropdown(context);
+    if (picked != null) onSelected(picked);
+  }
+
+  /// Desktop / web: a list right under the button.
+  Future<T?> _dropdown(BuildContext context) {
+    final box = context.findRenderObject() as RenderBox?;
+    final overlay = Overlay.of(context).context.findRenderObject() as RenderBox?;
+    if (box == null || overlay == null) return _dialog(context);
+    final topLeft = box.localToGlobal(Offset(0, box.size.height + 6), ancestor: overlay);
+    return showMenu<T>(
+      context: context,
+      position: RelativeRect.fromLTRB(
+        topLeft.dx,
+        topLeft.dy,
+        overlay.size.width - topLeft.dx - box.size.width,
+        0,
+      ),
+      color: compact ? const Color(0xF2000000) : PbColors.surfaceRaised,
+      elevation: 12,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(compact ? 3 : PbRadius.card + 2),
+        side: BorderSide(color: compact ? PbColors.text.withValues(alpha: 0.35) : PbColors.line),
+      ),
+      constraints: BoxConstraints(
+        minWidth: box.size.width < 180 ? 180 : box.size.width,
+        maxHeight: MediaQuery.sizeOf(context).height * 0.5,
+      ),
+      items: [
+        for (final entry in entries)
+          PopupMenuItem<T>(
+            value: entry.value,
+            height: 40,
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    entry.label,
+                    style: PbType.body.copyWith(
+                      fontSize: 14,
+                      color: entry.value == value ? PbColors.primary : PbColors.text,
+                      fontWeight: entry.value == value ? FontWeight.w700 : FontWeight.w500,
+                    ),
+                  ),
+                ),
+                if (entry.value == value) const Icon(Icons.check_rounded, size: 18, color: PbColors.primary),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+
+  Future<T?> _dialog(BuildContext context) {
+    return showDialog<T>(
       context: context,
       builder: (ctx) {
         return AlertDialog(
-          title: Text(hint),
+          backgroundColor: PbColors.surface,
+          title: Text(hint, style: PbType.h2.copyWith(color: PbColors.text)),
           contentPadding: const EdgeInsets.fromLTRB(8, 12, 8, 16),
           content: SizedBox(
             width: 420,
@@ -58,9 +118,10 @@ class AppMenuButton<T> extends StatelessWidget {
                     ListTile(
                       autofocus: entry.value == value,
                       selected: entry.value == value,
+                      selectedColor: PbColors.primary,
                       title: Text(entry.label),
                       trailing: entry.value == value
-                          ? Icon(Icons.check_rounded, color: Theme.of(ctx).colorScheme.primary)
+                          ? const Icon(Icons.check_rounded, color: PbColors.primary)
                           : null,
                       onTap: () => Navigator.pop(ctx, entry.value),
                     ),
@@ -71,51 +132,64 @@ class AppMenuButton<T> extends StatelessWidget {
         );
       },
     );
-    if (picked != null) onSelected(picked);
   }
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
+    final active = _active;
+    final fg = active ? PbColors.primary : PbColors.text;
+    // Filters (compact): a plain outlined box like Netflix's "Genres" picker.
+    // Settings: the softer raised field.
+    final radius = BorderRadius.circular(compact ? 3 : 12);
     return TvFocus(
       child: Material(
-      color: scheme.surfaceContainerHighest.withValues(alpha: 0.55),
-      borderRadius: BorderRadius.circular(compact ? 20 : 12),
-      child: InkWell(
-        focusNode: focusNode,
-        borderRadius: BorderRadius.circular(compact ? 20 : 12),
-        onTap: () => _pick(context),
-        child: Container(
-          height: compact ? 40 : 48,
-          padding: EdgeInsets.fromLTRB(compact ? 10 : 12, 0, compact ? 4 : 8, 0),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(compact ? 20 : 12),
-            border: Border.all(color: scheme.outline.withValues(alpha: 0.22)),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (icon != null) ...[
-                Icon(icon, size: compact ? 15 : 16, color: scheme.onSurfaceVariant),
-                SizedBox(width: compact ? 6 : 8),
-              ],
-              ConstrainedBox(
-                constraints: BoxConstraints(maxWidth: compact ? 132 : 220),
-                child: Text(
-                  _label,
-                  overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    fontWeight: FontWeight.w600,
-                    fontSize: compact ? 13 : null,
+        color: compact ? PbColors.ground : PbColors.surfaceRaised,
+        borderRadius: radius,
+        child: InkWell(
+          focusNode: focusNode,
+          borderRadius: radius,
+          hoverColor: Colors.white.withValues(alpha: 0.06),
+          onTap: () => _pick(context),
+          child: Container(
+            height: compact ? 36 : 48,
+            padding: EdgeInsets.fromLTRB(compact ? 12 : 14, 0, compact ? 6 : 10, 0),
+            decoration: BoxDecoration(
+              borderRadius: radius,
+              border: Border.all(
+                color: active
+                    ? PbColors.primary
+                    : (compact ? PbColors.text.withValues(alpha: 0.75) : PbColors.line),
+              ),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (icon != null && !compact) ...[
+                  Icon(icon, size: 16, color: PbColors.textMuted),
+                  const SizedBox(width: 8),
+                ],
+                ConstrainedBox(
+                  constraints: BoxConstraints(maxWidth: compact ? 160 : 220),
+                  child: Text(
+                    _label,
+                    overflow: TextOverflow.ellipsis,
+                    style: PbType.button.copyWith(
+                      fontSize: compact ? 14 : 13.5,
+                      fontWeight: compact ? FontWeight.w500 : FontWeight.w600,
+                      color: fg,
+                    ),
                   ),
                 ),
-              ),
-              const SizedBox(width: 4),
-              Icon(Icons.expand_more_rounded, size: compact ? 16 : 18, color: scheme.onSurfaceVariant),
-            ],
+                SizedBox(width: compact ? 10 : 4),
+                Icon(
+                  compact ? Icons.arrow_drop_down_rounded : Icons.keyboard_arrow_down_rounded,
+                  size: compact ? 22 : 18,
+                  color: active ? PbColors.primary : (compact ? PbColors.text : PbColors.textMuted),
+                ),
+              ],
+            ),
           ),
         ),
-      ),
       ),
     );
   }
@@ -274,6 +348,8 @@ class AppMultiMenuButton extends StatelessWidget {
   }
 }
 
+/// A two-or-three-way switch (Movies / Series, All / Movies / Series): plain
+/// text, the picked one bright with an amber underline, like the top bar.
 class AppFilterChip extends StatelessWidget {
   const AppFilterChip({
     super.key,
@@ -288,26 +364,35 @@ class AppFilterChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
     return TvFocus(
-      child: TextButton(
-      onPressed: () => onSelected(!selected),
-      style: TextButton.styleFrom(
-        foregroundColor: selected ? scheme.primary : scheme.onSurface,
-        backgroundColor: selected
-            ? AppTheme.seed.withValues(alpha: 0.28)
-            : scheme.surfaceContainerHighest.withValues(alpha: 0.45),
-        minimumSize: const Size(64, 40),
-        padding: const EdgeInsets.symmetric(horizontal: 14),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(20),
-          side: BorderSide(
-            color: selected ? AppTheme.seed : scheme.outline.withValues(alpha: 0.22),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(4),
+        hoverColor: Colors.transparent,
+        onTap: () => onSelected(!selected),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                label,
+                style: PbType.button.copyWith(
+                  fontSize: 15,
+                  fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                  color: selected ? PbColors.text : PbColors.textMuted,
+                ),
+              ),
+              const SizedBox(height: 5),
+              AnimatedContainer(
+                duration: PbMotion.fast,
+                height: 2,
+                width: selected ? 22 : 0,
+                decoration: BoxDecoration(color: PbColors.primary, borderRadius: BorderRadius.circular(2)),
+              ),
+            ],
           ),
         ),
       ),
-      child: Text(label, style: TextStyle(fontWeight: selected ? FontWeight.w700 : FontWeight.w500)),
-    ),
     );
   }
 }
