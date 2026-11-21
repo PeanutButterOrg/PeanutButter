@@ -24,6 +24,7 @@ import 'screens/favourites.dart';
 import 'screens/watched.dart';
 import 'screens/home.dart';
 import 'screens/pairing.dart';
+import 'screens/person.dart';
 import 'screens/player.dart';
 import 'screens/search.dart';
 import 'screens/settings.dart';
@@ -219,6 +220,16 @@ GoRouter _buildRouter(SettingsState Function() readSettings) {
           DetailScreen(
             titleId: state.pathParameters['id']!,
             autoPlay: state.uri.queryParameters['play'] == '1',
+          ),
+        ),
+      ),
+      GoRoute(
+        path: '/person/:tmdbId',
+        pageBuilder: (context, state) => pageFor(
+          state,
+          PersonScreen(
+            tmdbId: int.tryParse(state.pathParameters['tmdbId']!) ?? 0,
+            name: state.uri.queryParameters['name'] ?? '',
           ),
         ),
       ),

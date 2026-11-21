@@ -624,6 +624,7 @@ class Person {
     this.character,
     this.job,
     this.profileUrl,
+    this.tmdbPersonId,
   });
 
   final String id;
@@ -632,6 +633,8 @@ class Person {
   final String? character;
   final String? job;
   final String? profileUrl;
+  /// Opens their page; null on servers before 0.3.26.
+  final int? tmdbPersonId;
 
   factory Person.fromJson(Map<String, dynamic> json) {
     return Person(
@@ -641,8 +644,95 @@ class Person {
       character: json['character'] as String?,
       job: json['job'] as String?,
       profileUrl: json['profileUrl'] as String?,
+      tmdbPersonId: (json['tmdbPersonId'] as num?)?.toInt(),
     );
   }
+}
+
+/// A cast or crew member's page: who they are and their filmography.
+class PersonDetails {
+  const PersonDetails({
+    required this.tmdbId,
+    required this.name,
+    this.biography,
+    this.birthday,
+    this.deathday,
+    this.placeOfBirth,
+    this.knownFor,
+    this.profileUrl,
+    this.acting = const [],
+    this.crew = const [],
+  });
+
+  final int tmdbId;
+  final String name;
+  final String? biography;
+  final String? birthday;
+  final String? deathday;
+  final String? placeOfBirth;
+  final String? knownFor;
+  final String? profileUrl;
+  final List<PersonCredit> acting;
+  final List<PersonCredit> crew;
+
+  factory PersonDetails.fromJson(Map<String, dynamic> json) {
+    List<PersonCredit> credits(String key) => [
+          for (final c in (json[key] as List? ?? const []))
+            PersonCredit.fromJson(c as Map<String, dynamic>),
+        ];
+    String? text(String key) {
+      final v = json[key] as String?;
+      return v == null || v.trim().isEmpty ? null : v;
+    }
+
+    return PersonDetails(
+      tmdbId: (json['tmdbId'] as num).toInt(),
+      name: json['name'] as String? ?? '',
+      biography: text('biography'),
+      birthday: text('birthday'),
+      deathday: text('deathday'),
+      placeOfBirth: text('placeOfBirth'),
+      knownFor: text('knownFor'),
+      profileUrl: text('profileUrl'),
+      acting: credits('acting'),
+      crew: credits('crew'),
+    );
+  }
+}
+
+/// A title in a person's filmography; [titleId] is set when the catalog has it.
+class PersonCredit {
+  const PersonCredit({
+    required this.tmdbId,
+    required this.kind,
+    required this.title,
+    this.role,
+    this.year,
+    this.posterUrl,
+    this.voteAverage,
+    this.titleId,
+  });
+
+  final int tmdbId;
+  /// MOVIE or SERIES.
+  final String kind;
+  final String title;
+  final String? role;
+  final int? year;
+  final String? posterUrl;
+  final double? voteAverage;
+  final String? titleId;
+
+  factory PersonCredit.fromJson(Map<String, dynamic> json) => PersonCredit(
+        tmdbId: (json['tmdbId'] as num).toInt(),
+        kind: json['kind'] as String? ?? 'MOVIE',
+        title: json['title'] as String? ?? '',
+        role: json['role'] as String?,
+        year: (json['year'] as num?)?.toInt(),
+        posterUrl: json['posterUrl'] as String?,
+        voteAverage: (json['voteAverage'] as num?)?.toDouble(),
+        titleId: json['titleId'] as String?,
+      );
 }
 
 class UserState {

@@ -999,11 +999,16 @@ class _CastTileState extends State<_CastTile> {
           );
     return _LabeledFocus(
       label: 'cast',
+      onActivate: () => _openPerson(context),
       onFocus: (focused) {
         if (_focused == focused) return;
         setState(() => _focused = focused);
       },
-      child: Column(
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: GestureDetector(
+          onTap: () => _openPerson(context),
+          child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           AnimatedScale(
@@ -1038,8 +1043,21 @@ class _CastTileState extends State<_CastTile> {
               style: const TextStyle(color: Colors.white54, fontSize: 12),
             ),
         ],
+          ),
+        ),
       ),
     );
+  }
+
+  void _openPerson(BuildContext context) {
+    final id = widget.person.tmdbPersonId;
+    if (id == null) {
+      ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+        const SnackBar(content: Text('Opening people needs PeanutButter server 0.3.26 or later.')),
+      );
+      return;
+    }
+    context.push('/person/$id?name=${Uri.encodeQueryComponent(widget.person.name)}');
   }
 }
 
@@ -1603,7 +1621,8 @@ class _MoreLikeThis extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final items = ref.watch(similarTitlesProvider(titleId)).valueOrNull ?? const <TitleItem>[];
+    final row = ref.watch(similarRowProvider(titleId));
+    final items = row.items;
     if (items.isEmpty) return const SizedBox.shrink();
     final tv = isAndroidTv;
     final width = tv ? TvPosterDim.width : PbSize.posterWidthDesktop;
@@ -1624,10 +1643,18 @@ class _MoreLikeThis extends ConsumerWidget {
               padding: EdgeInsets.symmetric(horizontal: _gutter, vertical: 12),
               itemExtent: width + 14,
               itemCount: items.length,
-              itemBuilder: (context, i) => Padding(
-                padding: const EdgeInsets.only(right: 14),
-                child: PosterCard(item: items[i]),
-              ),
+              itemBuilder: (context, i) {
+                // Near the end: fetch the next page, until the list ends.
+                if (row.hasMore && !row.loading && i >= items.length - 6) {
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    if (context.mounted) ref.read(similarRowProvider(titleId).notifier).loadMore();
+                  });
+                }
+                return Padding(
+                  padding: const EdgeInsets.only(right: 14),
+                  child: PosterCard(item: items[i]),
+                );
+              },
             ),
           ),
         ],
