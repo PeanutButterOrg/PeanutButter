@@ -57,18 +57,30 @@ fun FeatureCard(
     val shape = RoundedCornerShape(PbRadius.panel + 4.dp)
     BoxWithConstraints(modifier.height(height).clip(shape).background(PbColors.ground)) {
         val artW = minOf(height * 16f / 9f, maxWidth)
+        val narrow = maxWidth < 460.dp
         PbImage(
             item.backdropUrl ?: item.posterUrl,
             Modifier.align(Alignment.CenterEnd).width(artW).height(height),
             artW, height,
         )
+        // The art's left edge fades into the card (no hard line), as on desktop.
         Box(
             Modifier
-                .align(Alignment.CenterStart)
-                .width(maxWidth - artW * 0.55f)
+                .align(Alignment.CenterEnd)
+                .width(artW)
                 .height(height)
-                .background(Brush.horizontalGradient(0f to PbColors.ground, 0.55f to PbColors.ground, 1f to Color(0x000E0E12))),
+                .background(Brush.horizontalGradient(0f to PbColors.ground, 0.45f to Color(0x000E0E12))),
         )
+        // When the art fills the card, keep the copy's side readable.
+        if (artW >= maxWidth) {
+            Box(
+                Modifier
+                    .align(Alignment.CenterStart)
+                    .width(maxWidth * 0.75f)
+                    .height(height)
+                    .background(Brush.horizontalGradient(0f to PbColors.ground.copy(alpha = 0.92f), 1f to Color(0x000E0E12))),
+            )
+        }
         Box(Modifier.fillMaxSize().background(Brush.verticalGradient(0.5f to Color.Transparent, 1f to Color(0xB30E0E12))))
         Column(
             Modifier
@@ -92,10 +104,11 @@ fun FeatureCard(
                 )
             }
             Spacer(Modifier.height(12.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                PbButton("Play", Icons.Rounded.PlayArrow, primary = true, onClick = onPlay)
-                PbButton("My List", if (onList) Icons.Rounded.Check else Icons.Rounded.Add, primary = false, onClick = onToggleList)
-                PbButton("More info", Icons.Outlined.Info, primary = false, onClick = onInfo)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                PbButton("Play", Icons.Rounded.PlayArrow, primary = true, onClick = onPlay, compact = true)
+                PbButton("My List", if (onList) Icons.Rounded.Check else Icons.Rounded.Add, primary = false, onClick = onToggleList, compact = true)
+                // A narrow card (Explore beside three posters): More info as an icon.
+                PbButton(if (narrow) "" else "More info", Icons.Outlined.Info, primary = false, onClick = onInfo, compact = true)
             }
         }
     }

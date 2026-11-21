@@ -136,6 +136,14 @@ fun CatalogScreen(state: CatalogState, actions: CatalogActions) {
     }
 
     LaunchedEffect(state.reset) { if (state.reset > 0) grid.scrollToItem(0) }
+    // Start on the first filter box once the page is in (not on Back).
+    var focusedOnce by remember { mutableStateOf(false) }
+    LaunchedEffect(state.loading, firstFilter) {
+        if (!focusedOnce && !state.loading && firstFilter != null) {
+            focusedOnce = true
+            runCatching { filterFocus[firstFilter]?.requestFocus() }
+        }
+    }
 
     // Load the next page as the end comes into view.
     LaunchedEffect(grid) {

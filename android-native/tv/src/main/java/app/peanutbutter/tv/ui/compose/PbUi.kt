@@ -446,6 +446,8 @@ fun PbButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     onFocus: (Boolean) -> Unit = {},
+    /** Smaller, for buttons inside a card (Explore's and Search's featured title). */
+    compact: Boolean = false,
 ) {
     var focused by remember { mutableStateOf(false) }
     val pill = RoundedCornerShape(PbRadius.pill)
@@ -456,7 +458,7 @@ fun PbButton(
         modifier = modifier
             .pbFocusRing(focused, pill)
             .pbClick({ focused = it; onFocus(it) }, onClick)
-            .height(PbSize.buttonHeightTv)
+            .height(if (compact) 40.dp else PbSize.buttonHeightTv)
             .background(
                 when {
                     primary -> PbColors.primary
@@ -466,13 +468,19 @@ fun PbButton(
                 pill,
             )
             .border(1.dp, if (primary) Color.Transparent else Color.White.copy(alpha = 0.28f), pill)
-            .padding(start = if (icon != null) 18.dp else 24.dp, end = 24.dp),
+            .padding(
+                start = if (text.isEmpty()) 10.dp else if (compact) 12.dp else if (icon != null) 18.dp else 24.dp,
+                end = if (text.isEmpty()) 10.dp else if (compact) 16.dp else 24.dp,
+            ),
     ) {
         if (icon != null) {
-            Icon(icon, null, tint = color, modifier = Modifier.size(24.dp))
-            Spacer(Modifier.width(8.dp))
+            Icon(icon, null, tint = color, modifier = Modifier.size(if (compact) 20.dp else 24.dp))
+            // An empty label: a round icon-only button.
+            if (text.isNotEmpty()) Spacer(Modifier.width(if (compact) 6.dp else 8.dp))
         }
-        BasicText(text, maxLines = 1, style = PbType.button.copy(color = color, fontSize = 17.sp))
+        if (text.isNotEmpty()) {
+            BasicText(text, maxLines = 1, softWrap = false, style = PbType.button.copy(color = color, fontSize = if (compact) 15.sp else 17.sp))
+        }
     }
 }
 

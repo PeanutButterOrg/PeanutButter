@@ -119,7 +119,7 @@ fun VerticalGridView.pinPosterGrid() {
 }
 
 /** Screen containers a poster grid must stay inside (the filter bar above it). */
-private val GRID_CONTAINERS = setOf(R.id.browse_host)
+private val GRID_CONTAINERS = emptySet<Int>()
 
 /**
  * Let a zoomed child draw past this view and its parents, up to the window,

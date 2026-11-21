@@ -165,6 +165,7 @@ private fun SearchBar(state: SearchState, actions: SearchActions, field: FocusRe
 @Composable
 private fun SearchField(state: SearchState, actions: SearchActions, outer: FocusRequester, modifier: Modifier) {
     var editing by remember { mutableStateOf(false) }
+    var hadFocus by remember { mutableStateOf(false) }
     var focused by remember { mutableStateOf(false) }
     val input = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
@@ -218,7 +219,14 @@ private fun SearchField(state: SearchState, actions: SearchActions, outer: Focus
                     modifier = Modifier
                         .fillMaxWidth()
                         .focusRequester(input)
-                        .onFocusChanged { if (!it.isFocused && editing) editing = false },
+                        // Leaving the field ends editing; its first report (before it gets focus) doesn't.
+                        .onFocusChanged {
+                            if (it.isFocused) hadFocus = true
+                            else if (hadFocus && editing) {
+                                hadFocus = false
+                                editing = false
+                            }
+                        },
                 )
             } else {
                 BasicText(

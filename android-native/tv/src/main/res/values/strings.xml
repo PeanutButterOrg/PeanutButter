@@ -60,7 +60,7 @@
     <string name="voice_permission">Allow the microphone to search by voice</string>
     <string name="search_empty">Nothing matches that name. Try another title.</string>
     <string name="settings">Settings</string>
-    <string name="empty_favourites">No favourites yet. Open a title and press the heart to save it here.</string>
+    <string name="empty_favourites">Nothing in My List yet. Open a title and choose My List to save it here.</string>
     <string name="empty_watched">Nothing watched yet. Finish a movie or the last episode of a series and it shows up here.</string>
     <string name="empty_catalog">No titles match these filters. Try another year, rating or genre.</string>
     <string name="settings_library">Library &amp; sources</string>
