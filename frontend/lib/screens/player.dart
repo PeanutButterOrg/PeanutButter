@@ -181,7 +181,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   bool? _resumeAfterSeek;
   /// Slider thumb while dragging; the position stream must not move it.
   Duration? _scrubPos;
-  BoxFit _videoFit = BoxFit.contain;
+  /// Picture: Fit, Original, Fill, Stretch, 16:9 or 4:3 (the TV's choices).
+  _Picture _picture = _Picture.fit;
+  BoxFit get _videoFit => _picture.boxFit;
   bool _lastPointerWasTouch = false;
   int _seekToken = 0;
   Duration _lastGoodPos = Duration.zero;
@@ -3801,26 +3803,46 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         ),
       );
 
-  static PopupMenuEntry<T> _menuOption<T>(T value, String label, {bool checked = false, bool enabled = true}) =>
+  static PopupMenuEntry<T> _menuOption<T>(
+    T value,
+    String label, {
+    bool checked = false,
+    bool enabled = true,
+    String? detail,
+    Widget? leading,
+  }) =>
       PopupMenuItem<T>(
         value: value,
         enabled: enabled,
-        height: 42,
+        height: detail == null ? 42 : 58,
         child: Row(
           children: [
             SizedBox(
               width: 28,
               child: checked ? const Icon(Icons.check_rounded, size: 18, color: PbColors.primary) : null,
             ),
+            if (leading != null) ...[leading, const SizedBox(width: 12)],
             Expanded(
-              child: Text(
-                label,
-                overflow: TextOverflow.ellipsis,
-                style: PbType.body.copyWith(
-                  fontSize: 14.5,
-                  color: !enabled ? PbColors.textFaint : (checked ? PbColors.primary : PbColors.text),
-                  fontWeight: checked ? FontWeight.w700 : FontWeight.w500,
-                ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    label,
+                    overflow: TextOverflow.ellipsis,
+                    style: PbType.body.copyWith(
+                      fontSize: 14.5,
+                      color: !enabled ? PbColors.textFaint : (checked ? PbColors.primary : PbColors.text),
+                      fontWeight: checked ? FontWeight.w700 : FontWeight.w500,
+                    ),
+                  ),
+                  if (detail != null)
+                    Text(
+                      detail,
+                      overflow: TextOverflow.ellipsis,
+                      style: PbType.meta.copyWith(fontSize: 12.5, color: PbColors.textMuted),
+                    ),
+                ],
               ),
             ),
           ],
@@ -3831,22 +3853,23 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     return Builder(
       builder: (context) => _RoundButton(
         focusNode: _aspectFocus,
-        tooltip: 'Aspect ratio',
+        tooltip: 'Picture',
         icon: Icons.aspect_ratio,
         onPressed: () async {
           _bumpChrome();
-          final fit = await _panelMenu<BoxFit>(context, 'Picture', [
-            for (final (value, label) in const [
-              (BoxFit.contain, 'Fit'),
-              (BoxFit.none, 'Original'),
-              (BoxFit.cover, 'Fill'),
-              (BoxFit.fill, 'Stretch'),
-            ])
-              _menuOption(value, label, checked: _videoFit == value),
+          final picked = await _panelMenu<_Picture>(context, 'Picture', [
+            for (final p in _Picture.values)
+              _menuOption(
+                p,
+                p.label,
+                checked: _picture == p,
+                detail: p.detail,
+                leading: _PictureGlyph(p, selected: _picture == p),
+              ),
           ]);
-          if (fit == null || !mounted) return;
+          if (picked == null || !mounted) return;
           _bumpChrome();
-          setState(() => _videoFit = fit);
+          setState(() => _picture = picked);
         },
       ),
     );
@@ -4687,6 +4710,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
       key: _videoKey,
       controller: controller,
       fit: _videoFit,
+      aspectRatio: _picture.ratio,
       controls: _videoControls,
       wakelock: true,
       subtitleViewConfiguration: _subtitleView(_showChrome && _showSeekControls ? 150 : 28),
@@ -4882,4 +4906,89 @@ class _ActionChipFocusState extends State<_ActionChipFocus> {
 /// stopped the web app from compiling. Callers check `is NativePlayer` first.
 Future<void> _setMpv(NativePlayer player, String name, String value) async {
   await (player as dynamic).setProperty(name, value);
+}
+
+
+/// The Picture menu's choices, as on the TV.
+enum _Picture {
+  fit('Fit', 'Whole picture, black bars if needed', BoxFit.contain),
+  original('Original', 'Native size, no scaling', BoxFit.none),
+  fill('Fill', 'Fills the screen, trims the edges', BoxFit.cover),
+  stretch('Stretch', 'Fills the screen, stretches the shape', BoxFit.fill),
+  wide('16:9', 'Shows it as widescreen', BoxFit.contain, 16 / 9),
+  classic('4:3', 'Shows it as classic TV', BoxFit.contain, 4 / 3);
+
+  const _Picture(this.label, this.detail, this.boxFit, [this.ratio]);
+  final String label;
+  final String detail;
+  final BoxFit boxFit;
+  /// Forces the picture's shape; null keeps the video's own.
+  final double? ratio;
+}
+
+/// A small screen with the picture drawn the way [mode] places it
+/// (a 2.39:1 film on a 16:9 screen).
+class _PictureGlyph extends StatelessWidget {
+  const _PictureGlyph(this.mode, {required this.selected});
+
+  final _Picture mode;
+  final bool selected;
+
+  @override
+  Widget build(BuildContext context) =>
+      CustomPaint(size: const Size(44, 26), painter: _PictureGlyphPainter(mode, selected));
+}
+
+class _PictureGlyphPainter extends CustomPainter {
+  _PictureGlyphPainter(this.mode, this.selected);
+
+  final _Picture mode;
+  final bool selected;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final screen = Offset.zero & size;
+    final film = (selected ? PbColors.primary : PbColors.textMuted).withValues(alpha: 0.9);
+    final w = size.width, h = size.height;
+    final picture = switch (mode) {
+      _Picture.fit => Rect.fromCenter(center: screen.center, width: w, height: w / 2.39),
+      _Picture.original => Rect.fromCenter(center: screen.center, width: w * 0.62, height: w * 0.62 / 2.39),
+      _Picture.fill => Rect.fromCenter(center: screen.center, width: h * 2.39, height: h),
+      _Picture.stretch => screen,
+      _Picture.wide => screen,
+      _Picture.classic => Rect.fromCenter(center: screen.center, width: h * 4 / 3, height: h),
+    };
+    final round = RRect.fromRectAndRadius(screen, const Radius.circular(3));
+    canvas.drawRRect(round, Paint()..color = Colors.black);
+    if (mode == _Picture.fill) {
+      // The trimmed edges, faint outside the screen.
+      canvas.drawRect(picture, Paint()..color = film.withValues(alpha: 0.25));
+    }
+    canvas.save();
+    canvas.clipRRect(round);
+    canvas.drawRect(picture, Paint()..color = film);
+    canvas.restore();
+    if (mode == _Picture.stretch) {
+      final arrow = Paint()
+        ..color = Colors.black.withValues(alpha: 0.7)
+        ..strokeWidth = 1.6
+        ..strokeCap = StrokeCap.round;
+      final c = screen.center;
+      canvas.drawLine(Offset(c.dx, 4), Offset(c.dx, h - 4), arrow);
+      canvas.drawLine(Offset(c.dx - 3, 7), Offset(c.dx, 4), arrow);
+      canvas.drawLine(Offset(c.dx + 3, 7), Offset(c.dx, 4), arrow);
+      canvas.drawLine(Offset(c.dx - 3, h - 7), Offset(c.dx, h - 4), arrow);
+      canvas.drawLine(Offset(c.dx + 3, h - 7), Offset(c.dx, h - 4), arrow);
+    }
+    canvas.drawRRect(
+      round,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.2
+        ..color = selected ? PbColors.primary : PbColors.line,
+    );
+  }
+
+  @override
+  bool shouldRepaint(_PictureGlyphPainter old) => old.mode != mode || old.selected != selected;
 }

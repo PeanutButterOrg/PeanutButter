@@ -1729,22 +1729,28 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
 
     private fun openAspect() {
         showChrome()
+        data class Mode(val key: String, val label: Int, val detail: Int, val glyph: PictureGlyph)
         val options = listOf(
-            SessionStore.ASPECT_FIT to R.string.aspect_fit,
-            SessionStore.ASPECT_ORIGINAL to R.string.aspect_original,
-            SessionStore.ASPECT_FILL to R.string.aspect_fill,
-            SessionStore.ASPECT_STRETCH to R.string.aspect_stretch,
-            SessionStore.ASPECT_16_9 to R.string.aspect_16_9,
-            SessionStore.ASPECT_4_3 to R.string.aspect_4_3,
+            Mode(SessionStore.ASPECT_FIT, R.string.aspect_fit, R.string.aspect_fit_detail, PictureGlyph.FIT),
+            Mode(SessionStore.ASPECT_ORIGINAL, R.string.aspect_original, R.string.aspect_original_detail, PictureGlyph.ORIGINAL),
+            Mode(SessionStore.ASPECT_FILL, R.string.aspect_fill, R.string.aspect_fill_detail, PictureGlyph.FILL),
+            Mode(SessionStore.ASPECT_STRETCH, R.string.aspect_stretch, R.string.aspect_stretch_detail, PictureGlyph.STRETCH),
+            Mode(SessionStore.ASPECT_16_9, R.string.aspect_16_9, R.string.aspect_16_9_detail, PictureGlyph.WIDE),
+            Mode(SessionStore.ASPECT_4_3, R.string.aspect_4_3, R.string.aspect_4_3_detail, PictureGlyph.CLASSIC),
         )
         val current = application.asTv().session.aspectRatio
         ui.openMenu(
             PlayerMenu(
                 getString(R.string.menu_picture),
-                options.map { (mode, label) ->
-                    MenuRow.Option(getString(label), checked = mode == current) {
-                        application.asTv().session.aspectRatio = mode
-                        player?.setAspectMode(mode)
+                options.map { m ->
+                    MenuRow.Option(
+                        getString(m.label),
+                        checked = m.key == current,
+                        detail = getString(m.detail),
+                        picture = m.glyph,
+                    ) {
+                        application.asTv().session.aspectRatio = m.key
+                        player?.setAspectMode(m.key)
                     }
                 },
             ),

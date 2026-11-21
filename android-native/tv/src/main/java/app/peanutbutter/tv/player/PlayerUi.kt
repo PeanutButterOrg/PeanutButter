@@ -68,6 +68,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.TextStyle
@@ -97,6 +98,10 @@ sealed interface MenuRow {
         val label: String,
         val checked: Boolean = false,
         val enabled: Boolean = true,
+        /** A second, quieter line under the label. */
+        val detail: String? = null,
+        /** Picture menu: draws how this mode places the picture. */
+        val picture: PictureGlyph? = null,
         val onPick: () -> Unit,
     ) : MenuRow
 
@@ -122,6 +127,9 @@ sealed interface MenuRow {
 }
 
 class PlayerMenu(val title: String, val rows: List<MenuRow>)
+
+/** How a Picture mode places a 2.39:1 film on a 16:9 screen, for its menu row. */
+enum class PictureGlyph { FIT, ORIGINAL, FILL, STRETCH, WIDE, CLASSIC }
 
 class ResumeCard(val title: String, val atMs: Long, val totalMs: Long)
 
@@ -718,7 +726,7 @@ private fun MenuOptionRow(row: MenuRow.Option, active: Boolean) {
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
             .fillMaxWidth()
-            .height(46.dp)
+            .height(if (row.detail == null) 46.dp else 62.dp)
             .background(if (active) PbColors.focusSoft else Color.Transparent, shape)
             .then(if (active) Modifier.border(2.dp, PbColors.focus, shape) else Modifier)
             .padding(horizontal = 12.dp),
@@ -726,20 +734,71 @@ private fun MenuOptionRow(row: MenuRow.Option, active: Boolean) {
         Box(Modifier.width(30.dp)) {
             if (row.checked) Icon(Icons.Rounded.Check, 20.dp, PbColors.primary)
         }
-        BasicText(
-            row.label,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            style = PbType.body.copy(
-                fontSize = 16.sp,
-                color = when {
-                    !row.enabled -> PbColors.textFaint
-                    row.checked -> PbColors.primary
-                    else -> PbColors.text
-                },
-                fontWeight = if (row.checked) FontWeight.W700 else FontWeight.W500,
-            ),
-        )
+        row.picture?.let {
+            PictureGlyphView(it, row.checked)
+            Spacer(Modifier.width(14.dp))
+        }
+        Column {
+            BasicText(
+                row.label,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                style = PbType.body.copy(
+                    fontSize = 16.sp,
+                    color = when {
+                        !row.enabled -> PbColors.textFaint
+                        row.checked -> PbColors.primary
+                        else -> PbColors.text
+                    },
+                    fontWeight = if (row.checked) FontWeight.W700 else FontWeight.W500,
+                ),
+            )
+            row.detail?.let {
+                BasicText(
+                    it,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = PbType.meta.copy(fontSize = 13.sp, color = PbColors.textMuted),
+                )
+            }
+        }
+    }
+}
+
+/** A small screen with the picture drawn the way [mode] places it. */
+@Composable
+private fun PictureGlyphView(mode: PictureGlyph, selected: Boolean) {
+    val film = (if (selected) PbColors.primary else PbColors.textMuted).copy(alpha = 0.9f)
+    val edge = if (selected) PbColors.primary else PbColors.line
+    Canvas(Modifier.size(48.dp, 27.dp)) {
+        val w = size.width
+        val h = size.height
+        val radius = CornerRadius(3.dp.toPx())
+        fun centered(pw: Float, ph: Float) = Offset((w - pw) / 2f, (h - ph) / 2f) to Size(pw, ph)
+        val (at, sz) = when (mode) {
+            PictureGlyph.FIT -> centered(w, w / 2.39f)
+            PictureGlyph.ORIGINAL -> centered(w * 0.62f, w * 0.62f / 2.39f)
+            PictureGlyph.FILL -> centered(h * 2.39f, h)
+            PictureGlyph.STRETCH, PictureGlyph.WIDE -> Offset.Zero to size
+            PictureGlyph.CLASSIC -> centered(h * 4f / 3f, h)
+        }
+        drawRoundRect(Color.Black, cornerRadius = radius)
+        // Fill: the trimmed edges, faint outside the screen.
+        if (mode == PictureGlyph.FILL) drawRect(film.copy(alpha = 0.25f), at, sz)
+        clipRect(0f, 0f, w, h) { drawRect(film, at, sz) }
+        if (mode == PictureGlyph.STRETCH) {
+            val c = w / 2f
+            val ink = Color.Black.copy(alpha = 0.7f)
+            val sw = 1.8.dp.toPx()
+            val inset = 4.dp.toPx()
+            val tip = 3.dp.toPx()
+            drawLine(ink, Offset(c, inset), Offset(c, h - inset), sw, StrokeCap.Round)
+            for ((y, dir) in listOf(inset to 1f, h - inset to -1f)) {
+                drawLine(ink, Offset(c - tip, y + tip * dir), Offset(c, y), sw, StrokeCap.Round)
+                drawLine(ink, Offset(c + tip, y + tip * dir), Offset(c, y), sw, StrokeCap.Round)
+            }
+        }
+        drawRoundRect(edge, cornerRadius = radius, style = Stroke(1.3.dp.toPx()))
     }
 }
 

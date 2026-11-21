@@ -170,6 +170,12 @@
     <string name="aspect_stretch">Stretch</string>
     <string name="aspect_16_9">16:9</string>
     <string name="aspect_4_3">4:3</string>
+    <string name="aspect_fit_detail">Whole picture, black bars if needed</string>
+    <string name="aspect_original_detail">Native size, no scaling</string>
+    <string name="aspect_fill_detail">Fills the screen, trims the edges</string>
+    <string name="aspect_stretch_detail">Fills the screen, stretches the shape</string>
+    <string name="aspect_16_9_detail">Shows it as widescreen</string>
+    <string name="aspect_4_3_detail">Shows it as classic TV</string>
     <string name="clear_cache_on_exit">Clear cache on exit</string>
     <string name="clear_cache_on_exit_hint">When on, delete streamed downloads when leaving the app. When off, downloads stay after the player closes and across reboots</string>
     <string name="results_count">%1$d results</string>
