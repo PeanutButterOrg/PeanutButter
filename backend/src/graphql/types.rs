@@ -353,8 +353,8 @@ pub struct Person {
     pub job: Option<String>,
     pub department: String,
     pub profile_url: Option<String>,
-    /// Who this credit is at TMDB; credits are joined into one card by it.
-    #[graphql(skip)]
+    /// Who this credit is at TMDB (opens their page with `person`); credits
+    /// are joined into one card by it.
     pub tmdb_person_id: Option<i32>,
 }
 
@@ -858,6 +858,76 @@ pub struct TorrentProbe {
     pub seeders: i32,
     pub peers: i32,
     pub health: String,
+}
+
+/// A person's page: who they are and their full filmography.
+#[derive(SimpleObject, Clone, Debug)]
+pub struct PersonDetails {
+    pub tmdb_id: i32,
+    pub name: String,
+    pub biography: Option<String>,
+    /// YYYY-MM-DD.
+    pub birthday: Option<String>,
+    pub deathday: Option<String>,
+    pub place_of_birth: Option<String>,
+    /// "Acting", "Directing", …
+    pub known_for: Option<String>,
+    pub profile_url: Option<String>,
+    /// Newest first, one entry per title.
+    pub acting: Vec<PersonCredit>,
+    pub crew: Vec<PersonCredit>,
+}
+
+/// A title in a person's filmography.
+#[derive(SimpleObject, Clone, Debug)]
+pub struct PersonCredit {
+    pub tmdb_id: i32,
+    /// MOVIE or SERIES.
+    pub kind: TitleKind,
+    pub title: String,
+    /// Characters (acting) or jobs (crew).
+    pub role: Option<String>,
+    pub year: Option<i32>,
+    pub poster_url: Option<String>,
+    pub vote_average: Option<f64>,
+    /// Set when it is in the catalog; otherwise open it with `openTmdbTitle`.
+    pub title_id: Option<Uuid>,
+}
+
+impl PersonDetails {
+    pub fn from_page(p: crate::ingest::tmdb::PersonPage, config: &crate::config::Config) -> Self {
+        let credit = |c: crate::ingest::tmdb::PersonCredit| PersonCredit {
+            tmdb_id: c.tmdb_id,
+            kind: if c.kind == "movie" { TitleKind::Movie } else { TitleKind::Series },
+            title: c.title,
+            role: c.role,
+            year: c.date.as_deref().and_then(|d| d.get(..4)).and_then(|y| y.parse().ok()),
+            poster_url: config.poster_url(&c.poster_path),
+            vote_average: c.vote_average,
+            title_id: c.title_id,
+        };
+        Self {
+            tmdb_id: p.tmdb_id,
+            name: p.name,
+            biography: p.biography,
+            birthday: p.birthday,
+            deathday: p.deathday,
+            place_of_birth: p.place_of_birth,
+            known_for: p.known_for,
+            profile_url: crate::config::profile_url(&config.public_url, &p.profile_path),
+            acting: p.acting.into_iter().map(credit).collect(),
+            crew: p.crew.into_iter().map(credit).collect(),
+        }
+    }
+}
+
+/// One page of "More like this".
+#[derive(SimpleObject, Clone, Debug)]
+pub struct SimilarTitlesPage {
+    pub items: Vec<Title>,
+    /// TMDB has another page: ask for `page + 1`.
+    pub has_next_page: bool,
+    pub page: i32,
 }
 
 #[derive(SimpleObject, Clone, Debug)]

@@ -4,7 +4,7 @@ use uuid::Uuid;
 use crate::db::models::{SyncStateRow, TitleRow};
 use crate::error::AppError;
 use crate::graphql::types::{
-    HomeFeed, JackettCatalogStatus, MediaSegment, MediaSegments, SearchResult, ServerInfo, SortDir,
+    HomeFeed, JackettCatalogStatus, MediaSegment, MediaSegments, PersonDetails, SearchResult, ServerInfo, SimilarTitlesPage, SortDir,
     SortField, StreamBookmark, StreamSession, StreamSource, SyncStatus, Title, TitleConnection,
     TitleFilter, TitleKind, TorrentFile, TorrentProbe,
 };
@@ -244,26 +244,38 @@ impl Query {
                 return Ok(vec![]);
             }
         };
-        if ids.is_empty() {
-            return Ok(vec![]);
-        }
-        let mut qb = sqlx::QueryBuilder::new("SELECT ");
-        qb.push(TITLE_COLUMNS);
-        qb.push(" FROM titles t WHERE t.id = ANY(");
-        qb.push_bind(ids.clone());
-        qb.push(")");
-        apply_adult_block(&mut qb);
-        apply_released_only(&mut qb);
-        apply_rated_only(&mut qb);
-        // Titles already in the catalog skip the import-time language check.
-        apply_language_filter(&mut qb, &state.config.live.preferred_language_codes());
-        let rows: Vec<TitleRow> = qb.build_query_as().fetch_all(&state.pool).await?;
-        let mut by_id: std::collections::HashMap<Uuid, TitleRow> =
-            rows.into_iter().map(|r| (r.id, r)).collect();
-        Ok(ids
-            .into_iter()
-            .filter_map(|id| by_id.remove(&id).map(|r| Title::from_row(r, &state.config.public_url)))
-            .collect())
+        similar_rows(state, ids).await
+    }
+
+    /// "More like this", a TMDB page (up to 20) at a time, for a row that
+    /// keeps loading as it scrolls until TMDB's list ends.
+    async fn similar_titles_page(
+        &self,
+        ctx: &Context<'_>,
+        title_id: Uuid,
+        page: Option<i32>,
+    ) -> async_graphql::Result<SimilarTitlesPage> {
+        let state = ctx.data::<AppState>()?;
+        let page = page.unwrap_or(1).clamp(1, 500);
+        let ingest = crate::ingest::IngestContext::from(state);
+        let (ids, has_next_page) =
+            match crate::ingest::tmdb::similar_titles_page(&ingest, title_id, page, 20).await {
+                Ok(found) => found,
+                Err(e) => {
+                    tracing::warn!(title_id = %title_id, page, error = %e, "more like this page failed");
+                    (vec![], false)
+                }
+            };
+        Ok(SimilarTitlesPage { items: similar_rows(state, ids).await?, has_next_page, page })
+    }
+
+    /// A cast or crew member's page (by `Person.tmdbPersonId`): bio and full
+    /// filmography from TMDB, with catalog titles marked.
+    async fn person(&self, ctx: &Context<'_>, tmdb_id: i32) -> async_graphql::Result<PersonDetails> {
+        let state = ctx.data::<AppState>()?;
+        let ingest = crate::ingest::IngestContext::from(state);
+        let page = crate::ingest::tmdb::person_page(&ingest, tmdb_id).await?;
+        Ok(PersonDetails::from_page(page, &state.config))
     }
 
     async fn search(
@@ -1098,6 +1110,31 @@ fn services_by_size(rows: Vec<(String, i64)>) -> Vec<crate::graphql::types::Serv
 
 /// Tag each title that's on a catalog add-on list with its services, best-ranked
 /// list first (see `crate::addon_catalogs::tags`).
+/// The catalog rows for "More like this" ids, kept in TMDB's order and run
+/// through the catalog's usual filters.
+async fn similar_rows(state: &AppState, ids: Vec<Uuid>) -> async_graphql::Result<Vec<Title>> {
+    if ids.is_empty() {
+        return Ok(vec![]);
+    }
+    let mut qb = sqlx::QueryBuilder::new("SELECT ");
+    qb.push(TITLE_COLUMNS);
+    qb.push(" FROM titles t WHERE t.id = ANY(");
+    qb.push_bind(ids.clone());
+    qb.push(")");
+    apply_adult_block(&mut qb);
+    apply_released_only(&mut qb);
+    apply_rated_only(&mut qb);
+    // Titles already in the catalog skip the import-time language check.
+    apply_language_filter(&mut qb, &state.config.live.preferred_language_codes());
+    let rows: Vec<TitleRow> = qb.build_query_as().fetch_all(&state.pool).await?;
+    let mut by_id: std::collections::HashMap<Uuid, TitleRow> =
+        rows.into_iter().map(|r| (r.id, r)).collect();
+    Ok(ids
+        .into_iter()
+        .filter_map(|id| by_id.remove(&id).map(|r| Title::from_row(r, &state.config.public_url)))
+        .collect())
+}
+
 async fn attach_services(pool: &sqlx::PgPool, titles: &mut [Title]) -> sqlx::Result<()> {
     if titles.is_empty() {
         return Ok(());

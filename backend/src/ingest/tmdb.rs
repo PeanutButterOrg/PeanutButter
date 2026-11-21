@@ -1711,9 +1711,11 @@ pub async fn ensure_discover_pages_for_catalog(
     Ok(has_more)
 }
 
-/// Most new titles "More like this" stores from TMDB per request, so a first
-/// visit stays quick; later visits find them in the catalog.
+/// Most new titles "More like this" stores from TMDB for its first page, so a
+/// title page opens quickly; later visits find them in the catalog.
 const SIMILAR_MAX_NEW: usize = 8;
+/// Later pages load while the row is scrolled, so they may store a full page.
+const SIMILAR_MAX_NEW_LATER: usize = 20;
 
 /// "More like this": the catalog ids of what TMDB recommends for a title
 /// (its "similar" list when there are no recommendations), in TMDB's order.
@@ -1721,8 +1723,20 @@ const SIMILAR_MAX_NEW: usize = 8;
 /// row always opens real title pages. Same filters as the rest of the catalog
 /// (adult, blocked genres, preferred languages) through the normal upsert.
 pub async fn similar_titles(ctx: &IngestContext, title_id: Uuid, limit: usize) -> Result<Vec<Uuid>> {
+    Ok(similar_titles_page(ctx, title_id, 1, limit).await?.0)
+}
+
+/// One TMDB page (20) of "More like this", at most [limit] titles, and
+/// whether TMDB has another page after it.
+pub async fn similar_titles_page(
+    ctx: &IngestContext,
+    title_id: Uuid,
+    page: i32,
+    limit: usize,
+) -> Result<(Vec<Uuid>, bool)> {
+    let page = page.max(1);
     if ctx.config.tmdb_key().is_empty() {
-        return Ok(vec![]);
+        return Ok((vec![], false));
     }
     let row: Option<(Option<i32>, String)> =
         sqlx::query_as("SELECT tmdb_id, kind FROM titles WHERE id = $1")
@@ -1730,18 +1744,25 @@ pub async fn similar_titles(ctx: &IngestContext, title_id: Uuid, limit: usize) -
             .fetch_optional(&ctx.pool)
             .await?;
     let Some((Some(tmdb_id), kind)) = row else {
-        return Ok(vec![]);
+        return Ok((vec![], false));
     };
     let media = if kind == "movie" { "movie" } else { "tv" };
-    let mut ids = fetch_list_page_ids(ctx, &format!("/{media}/{tmdb_id}/recommendations"), false, 1)
-        .await?
-        .0;
+    let recommendations = format!("/{media}/{tmdb_id}/recommendations");
+    let (mut ids, mut total) = fetch_list_page_ids(ctx, &recommendations, false, page).await?;
     if ids.is_empty() {
-        ids = fetch_list_page_ids(ctx, &format!("/{media}/{tmdb_id}/similar"), false, 1).await?.0;
+        // Recommendations ran out, or there never were any: only in the
+        // second case does the list continue with TMDB's "similar" one.
+        let had_recommendations = page > 1
+            && !fetch_list_page_ids(ctx, &recommendations, false, 1).await?.0.is_empty();
+        if had_recommendations {
+            return Ok((vec![], false));
+        }
+        (ids, total) = fetch_list_page_ids(ctx, &format!("/{media}/{tmdb_id}/similar"), false, page).await?;
     }
+    let has_more = page < total;
     ids.retain(|id| *id != tmdb_id);
     if ids.is_empty() {
-        return Ok(vec![]);
+        return Ok((vec![], has_more));
     }
     let kinds: &[&str] = if media == "tv" { &["series", "anime"] } else { &["movie"] };
     let lookup = |ids: Vec<i32>| {
@@ -1760,11 +1781,12 @@ pub async fn similar_titles(ctx: &IngestContext, title_id: Uuid, limit: usize) -
     let mut known = lookup(ids.clone()).await?;
     if known.len() < limit {
         let upsert_kind = if media == "tv" { "series" } else { "movie" };
+        let max_new = if page == 1 { SIMILAR_MAX_NEW } else { SIMILAR_MAX_NEW_LATER };
         let missing: Vec<i32> = ids
             .iter()
             .copied()
             .filter(|id| !known.contains_key(id))
-            .take(SIMILAR_MAX_NEW.min(limit - known.len()))
+            .take(max_new.min(limit - known.len()))
             .collect();
         stream::iter(missing)
             .map(|id| {
@@ -1785,12 +1807,13 @@ pub async fn similar_titles(ctx: &IngestContext, title_id: Uuid, limit: usize) -
             .await;
         known = lookup(ids.clone()).await?;
     }
-    Ok(ids
+    let found = ids
         .iter()
         .filter_map(|id| known.get(id).copied())
         .filter(|id| *id != title_id)
         .take(limit)
-        .collect())
+        .collect();
+    Ok((found, has_more))
 }
 
 /// TMDB Discover pages needed to fill `catalog_page`, plus one of slack for
@@ -3202,6 +3225,200 @@ pub async fn purge_explicit_titles(ctx: &IngestContext) -> Result<()> {
         "explicit-content cleanup done"
     );
     Ok(())
+}
+
+/// A person's TMDB page for the app: who they are and everything they made.
+#[derive(Debug, Clone)]
+pub struct PersonPage {
+    pub tmdb_id: i32,
+    pub name: String,
+    pub biography: Option<String>,
+    pub birthday: Option<String>,
+    pub deathday: Option<String>,
+    pub place_of_birth: Option<String>,
+    pub known_for: Option<String>,
+    pub profile_path: Option<String>,
+    /// Newest first; one entry per title with every role they had in it.
+    pub acting: Vec<PersonCredit>,
+    pub crew: Vec<PersonCredit>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PersonCredit {
+    pub tmdb_id: i32,
+    /// "movie" or "series".
+    pub kind: &'static str,
+    pub title: String,
+    /// Characters (acting) or jobs (crew), joined.
+    pub role: Option<String>,
+    pub date: Option<String>,
+    pub poster_path: Option<String>,
+    pub vote_average: Option<f64>,
+    /// The catalog title, when it is in the catalog already.
+    pub title_id: Option<Uuid>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TmdbPerson {
+    id: i32,
+    name: String,
+    biography: Option<String>,
+    birthday: Option<String>,
+    deathday: Option<String>,
+    place_of_birth: Option<String>,
+    known_for_department: Option<String>,
+    profile_path: Option<String>,
+    #[serde(default)]
+    combined_credits: TmdbCombinedCredits,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct TmdbCombinedCredits {
+    #[serde(default)]
+    cast: Vec<TmdbPersonCredit>,
+    #[serde(default)]
+    crew: Vec<TmdbPersonCredit>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TmdbPersonCredit {
+    id: i32,
+    media_type: Option<String>,
+    title: Option<String>,
+    name: Option<String>,
+    character: Option<String>,
+    job: Option<String>,
+    release_date: Option<String>,
+    first_air_date: Option<String>,
+    poster_path: Option<String>,
+    vote_average: Option<f64>,
+    #[serde(default)]
+    adult: Option<bool>,
+    #[serde(default)]
+    genre_ids: Vec<i32>,
+}
+
+/// TMDB's Talk and News genres: guest spots there aren't filmography.
+const PERSON_SKIP_GENRES: &[i32] = &[10767, 10763];
+
+/// One person from TMDB with their full filmography (acting and crew), merged
+/// per title, newest first, and matched to catalog titles where present.
+pub async fn person_page(ctx: &IngestContext, person_id: i32) -> Result<PersonPage> {
+    if ctx.config.tmdb_key().is_empty() {
+        return Err(AppError::Message("TMDB is not set up on this server".into()));
+    }
+    let url = format!(
+        "{TMDB}/person/{person_id}?api_key={}&language={}&append_to_response=combined_credits",
+        ctx.config.tmdb_key(),
+        tmdb_locale(ctx)
+    );
+    let person: TmdbPerson = get_json(ctx, &url).await?;
+    let merge = |credits: Vec<TmdbPersonCredit>, crew: bool| -> Vec<PersonCredit> {
+        let mut out: Vec<PersonCredit> = Vec::new();
+        let mut at: std::collections::HashMap<(i32, &'static str), usize> = Default::default();
+        for c in credits {
+            if c.adult == Some(true) || c.genre_ids.iter().any(|g| PERSON_SKIP_GENRES.contains(g)) {
+                continue;
+            }
+            let kind = match c.media_type.as_deref() {
+                Some("movie") => "movie",
+                Some("tv") => "series",
+                _ => continue,
+            };
+            let Some(title) = c.title.or(c.name).filter(|t| !t.trim().is_empty()) else { continue };
+            let role = if crew { c.job } else { c.character }.filter(|r| !r.trim().is_empty());
+            match at.get(&(c.id, kind)) {
+                Some(&i) => {
+                    if let Some(r) = role {
+                        let entry = &mut out[i];
+                        match &mut entry.role {
+                            Some(roles) if !roles.split(", ").any(|x| x == r) => {
+                                roles.push_str(", ");
+                                roles.push_str(&r);
+                            }
+                            Some(_) => {}
+                            None => entry.role = Some(r),
+                        }
+                    }
+                }
+                None => {
+                    at.insert((c.id, kind), out.len());
+                    out.push(PersonCredit {
+                        tmdb_id: c.id,
+                        kind,
+                        title,
+                        role,
+                        date: c.release_date.or(c.first_air_date).filter(|d| !d.is_empty()),
+                        poster_path: c.poster_path,
+                        vote_average: c.vote_average.filter(|v| *v > 0.0),
+                        title_id: None,
+                    });
+                }
+            }
+        }
+        // Newest first; undated (often announced) ones first of all.
+        out.sort_by(|a, b| match (&a.date, &b.date) {
+            (None, None) => std::cmp::Ordering::Equal,
+            (None, Some(_)) => std::cmp::Ordering::Less,
+            (Some(_), None) => std::cmp::Ordering::Greater,
+            (Some(x), Some(y)) => y.cmp(x),
+        });
+        out
+    };
+    let mut acting = merge(person.combined_credits.cast, false);
+    let mut crew = merge(person.combined_credits.crew, true);
+
+    // Which of these the catalog already has, to open them directly.
+    let movies: Vec<i32> = acting.iter().chain(&crew).filter(|c| c.kind == "movie").map(|c| c.tmdb_id).collect();
+    let series: Vec<i32> = acting.iter().chain(&crew).filter(|c| c.kind == "series").map(|c| c.tmdb_id).collect();
+    let rows: Vec<(Uuid, i32, String)> = sqlx::query_as(
+        "SELECT id, tmdb_id, kind FROM titles
+         WHERE (kind = 'movie' AND tmdb_id = ANY($1))
+            OR (kind IN ('series', 'anime') AND tmdb_id = ANY($2))",
+    )
+    .bind(&movies)
+    .bind(&series)
+    .fetch_all(&ctx.pool)
+    .await?;
+    let known: std::collections::HashMap<(i32, &str), Uuid> = rows
+        .iter()
+        .map(|(id, tmdb, kind)| ((*tmdb, if kind == "movie" { "movie" } else { "series" }), *id))
+        .collect();
+    for c in acting.iter_mut().chain(crew.iter_mut()) {
+        c.title_id = known.get(&(c.tmdb_id, c.kind)).copied();
+    }
+
+    Ok(PersonPage {
+        tmdb_id: person.id,
+        name: person.name,
+        biography: person.biography.filter(|b| !b.trim().is_empty()),
+        birthday: person.birthday.filter(|d| !d.is_empty()),
+        deathday: person.deathday.filter(|d| !d.is_empty()),
+        place_of_birth: person.place_of_birth.filter(|p| !p.trim().is_empty()),
+        known_for: person.known_for_department.filter(|k| !k.trim().is_empty()),
+        profile_path: person.profile_path,
+        acting,
+        crew,
+    })
+}
+
+/// The catalog title for a TMDB id, stored first when the catalog doesn't
+/// have it yet (opening a credit from a person's filmography).
+pub async fn title_for_tmdb(ctx: &IngestContext, tmdb_id: i32, kind: &str) -> Result<Uuid> {
+    let kinds: &[&str] = if kind == "movie" { &["movie"] } else { &["series", "anime"] };
+    let found: Option<(Uuid,)> = sqlx::query_as("SELECT id FROM titles WHERE tmdb_id = $1 AND kind = ANY($2) LIMIT 1")
+        .bind(tmdb_id)
+        .bind(kinds)
+        .fetch_optional(&ctx.pool)
+        .await?;
+    if let Some((id,)) = found {
+        return Ok(id);
+    }
+    let id = fetch_details_explicit(ctx, tmdb_id, if kind == "movie" { "movie" } else { "series" }).await?;
+    if let Err(e) = reindex(ctx, id).await {
+        debug!(tmdb_id, error = %e, "meili reindex skipped");
+    }
+    Ok(id)
 }
 
 async fn get_json<T: serde::de::DeserializeOwned>(ctx: &IngestContext, url: &str) -> Result<T> {
