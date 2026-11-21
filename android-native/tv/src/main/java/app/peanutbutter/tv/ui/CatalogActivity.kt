@@ -3,120 +3,66 @@ package app.peanutbutter.tv.ui
 import android.content.Intent
 import android.os.Bundle
 import android.util.Log
-import android.view.KeyEvent
-import android.view.View
-import android.widget.TextView
 import android.widget.Toast
-import androidx.activity.OnBackPressedCallback
-import androidx.core.view.isVisible
-import androidx.leanback.app.VerticalGridSupportFragment
-import androidx.leanback.widget.ArrayObjectAdapter
-import androidx.leanback.widget.FocusHighlight
-import androidx.leanback.widget.VerticalGridPresenter
-import androidx.leanback.widget.VerticalGridView
+import androidx.activity.compose.setContent
+import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.lifecycleScope
 import app.peanutbutter.core.TitleItem
 import app.peanutbutter.tv.R
 import app.peanutbutter.tv.asTv
 import kotlinx.coroutines.launch
 
-class CatalogActivity : androidx.fragment.app.FragmentActivity() {
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_browse_host)
-        if (savedInstanceState == null) {
-            supportFragmentManager.beginTransaction()
-                .replace(R.id.browse_host, CatalogFragment())
-                .commitNow()
-        }
-        findViewById<View>(R.id.catalog_header).isVisible = true
-        val sort = intent.getStringExtra(EXTRA_SORT)?.takeIf { it.isNotBlank() } ?: "TRENDING"
-        val kind = intent.getStringExtra(EXTRA_KIND)?.takeIf { it.isNotBlank() }
-        explore = if (intent.getBooleanExtra(EXTRA_EXPLORE, false)) intent.getStringExtra(EXTRA_TITLE) else null
-        refreshHeading(sort, kind)
-        findViewById<TextView>(R.id.filter_sort).setOnClickListener { pickSort(sort, kind) }
-        // Explore: a Type picker in place of the sort (it's always trending first).
-        findViewById<View>(R.id.filter_sort).isVisible = explore == null
-        findViewById<TextView>(R.id.filter_kind).apply {
-            isVisible = explore != null
-            setOnClickListener { pickKind() }
-        }
-        setFilter(R.id.filter_kind, getString(R.string.filter_movies_and_series), false)
-        setFilter(R.id.filter_year, getString(R.string.filter_any_year), false)
-        setFilter(R.id.filter_rating, getString(R.string.filter_any_rating), false)
-        setFilter(R.id.filter_genre, getString(R.string.filter_all_genres), false)
-        setFilter(R.id.filter_service, getString(R.string.filter_all_services), false)
-        findViewById<TextView>(R.id.filter_year).setOnClickListener { pickYear() }
-        findViewById<TextView>(R.id.filter_rating).setOnClickListener { pickRating() }
-        findViewById<TextView>(R.id.filter_genre).setOnClickListener { pickGenre(kind) }
-        findViewById<TextView>(R.id.filter_service).setOnClickListener { pickService(kind) }
-        if (sort == "TRENDING") showServiceFilterIfAny(kind)
-        val downToGrid = View.OnKeyListener { _, keyCode, event ->
-            if (event.action == KeyEvent.ACTION_DOWN && keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
-                catalog()?.view?.findViewById<View>(androidx.leanback.R.id.browse_grid)?.requestFocus() == true
-            } else {
-                false
-            }
-        }
-        listOf(R.id.filter_sort, R.id.filter_kind, R.id.filter_year, R.id.filter_rating, R.id.filter_genre, R.id.filter_service).forEach {
-            findViewById<View>(it).setOnKeyListener(downToGrid)
-        }
-        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
-            override fun handleOnBackPressed() {
-                val focused = currentFocus
-                if (focused != null && focused.rootView !== window.decorView) {
-                    isEnabled = false
-                    onBackPressedDispatcher.onBackPressed()
-                    isEnabled = true
-                    return
-                }
-                val sortButton = findViewById<View>(if (explore != null) R.id.filter_kind else R.id.filter_sort)
-                if (currentFocus !== sortButton) {
-                    catalog()?.view?.findViewById<VerticalGridView>(androidx.leanback.R.id.browse_grid)
-                        ?.setSelectedPosition(0)
-                    sortButton.requestFocus()
-                } else {
-                    finish()
-                }
-            }
-        })
-    }
-
-    private fun catalog(): CatalogFragment? =
-        supportFragmentManager.findFragmentById(R.id.browse_host) as? CatalogFragment
-
+/**
+ * Explore and the See all pages, drawn like the desktop's ([CatalogScreen]):
+ * the name with filter boxes top right, #1 featured, then a poster grid that
+ * pages in as you scroll.
+ */
+class CatalogActivity : FragmentActivity(), CatalogActions {
+    private val ui = CatalogState()
+    private var kind: String? = null
+    private var sort: String = "TRENDING"
+    private var year: Int? = null
+    private var ratingMin: Double? = null
+    private var genre: String? = null
+    private var service: String? = null
+    private var page = 1
+    private var loading = false
+    private var hasNext = true
+    private var loadGen = 0
     /** Explore's own name; null on See all pages. */
     private var explore: String? = null
 
-    private fun refreshHeading(sort: String, kind: String?) {
-        findViewById<TextView>(R.id.catalog_heading).text = explore ?: heading(sort, kind)
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        sort = intent.getStringExtra(EXTRA_SORT)?.takeIf { it.isNotBlank() } ?: "TRENDING"
+        kind = intent.getStringExtra(EXTRA_KIND)?.takeIf { it.isNotBlank() }
+        explore = if (intent.getBooleanExtra(EXTRA_EXPLORE, false)) intent.getStringExtra(EXTRA_TITLE) else null
+        // Explore: a Type picker in place of the sort (it's always trending first).
+        if (explore != null) {
+            ui.filters += CatalogFilter("kind", getString(R.string.filter_movies_and_series))
+        } else {
+            ui.filters += CatalogFilter("sort", "")
+        }
+        ui.filters += CatalogFilter("year", getString(R.string.filter_any_year))
+        ui.filters += CatalogFilter("rating", getString(R.string.filter_any_rating))
+        ui.filters += CatalogFilter("genre", getString(R.string.filter_all_genres))
+        ui.filters += CatalogFilter("service", getString(R.string.filter_all_services)).apply { visible = false }
+        refreshHeading()
+        if (sort == "TRENDING") showServiceFilterIfAny()
+        setContent { CatalogScreen(ui, this) }
+        loadMore()
+    }
+
+    private fun filter(key: String) = ui.filters.first { it.key == key }
+
+    private fun refreshHeading() {
+        ui.heading = explore ?: heading(sort, kind)
         val label = SORTS.firstOrNull { it.first == sort }?.second?.let { getString(it) } ?: sort
-        setFilter(R.id.filter_sort, getString(R.string.sort_value, label), false)
+        ui.filters.firstOrNull { it.key == "sort" }?.label = getString(R.string.sort_value, label)
+        // Your own lists stay a plain grid; browse lists get the featured top.
+        ui.featured = sort !in setOf("CONTINUE_WATCHING", "FAVORITES", "WATCHED")
+        ui.eyebrow = if (explore != null) "#1 trending" else "#1 in ${ui.heading}"
     }
-
-    /** A filter's label with its drop arrow; amber outline once something's picked. */
-    private fun setFilter(id: Int, label: String, active: Boolean) {
-        findViewById<TextView>(id).apply {
-            text = "$label  \u25BE"
-            isSelected = active
-            setTextColor(getColor(if (active) R.color.pbt_primary else R.color.pbt_text))
-        }
-    }
-
-    private fun pickKind() {
-        val options = listOf(
-            "" to getString(R.string.filter_movies_and_series),
-            "MOVIE" to getString(R.string.heading_movies).replaceFirstChar { it.titlecase(java.util.Locale.US) },
-            "SERIES" to getString(R.string.heading_series).replaceFirstChar { it.titlecase(java.util.Locale.US) },
-        )
-        showChoices(getString(R.string.filter_type), options, pickedKind ?: "") { value ->
-            pickedKind = value.ifBlank { null }
-            setFilter(R.id.filter_kind, options.first { it.first == value }.second, pickedKind != null)
-            catalog()?.applyKind(pickedKind)
-        }
-    }
-
-    private var pickedKind: String? = null
 
     private fun heading(sort: String, kind: String?): String {
         val sortLabel = SORTS.firstOrNull { it.first == sort }?.second?.let { getString(it) } ?: getString(R.string.see_all)
@@ -139,119 +85,184 @@ class CatalogActivity : androidx.fragment.app.FragmentActivity() {
         }
     }
 
-    private fun pickSort(current: String, kind: String?) {
-        showChoices(getString(R.string.sort), SORTS.map { it.first to getString(it.second) }, current) { key ->
-            refreshHeading(key, kind)
-            // The Provider chip belongs to Trending only.
-            if (key == "TRENDING") {
-                showServiceFilterIfAny(kind)
-            } else {
-                findViewById<View>(R.id.filter_service).isVisible = false
-            }
-            catalog()?.applySort(key)
-            findViewById<TextView>(R.id.filter_sort).setOnClickListener { pickSort(key, kind) }
-        }
-    }
+    // ---- CatalogActions ----
 
-    private fun pickYear() {
-        val now = java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)
-        val options = ArrayList<Pair<String, String>>()
-        options += "" to getString(R.string.filter_any_year)
-        for (year in now downTo 1970) options += year.toString() to year.toString()
-        showChoices(getString(R.string.filter_year), options) { value ->
-            val year = value.toIntOrNull()
-            setFilter(R.id.filter_year, year?.toString() ?: getString(R.string.filter_any_year), year != null)
-            catalog()?.applyYear(year)
-        }
-    }
+    override fun back() = finish()
 
-    private fun pickRating() {
-        val options = listOf(
-            "" to getString(R.string.filter_any_rating),
-            "9" to "9+",
-            "8" to "8+",
-            "7" to "7+",
-            "6" to "6+",
-            "5" to "5+",
+    override fun open(item: TitleItem, play: Boolean) {
+        startActivity(
+            Intent(this, DetailsActivity::class.java)
+                .putExtra(DetailsActivity.EXTRA_ID, item.id)
+                .putExtra(DetailsActivity.EXTRA_TITLE, item.displayTitle)
+                .putExtra(DetailsActivity.EXTRA_AUTOPLAY, play),
         )
-        showChoices(getString(R.string.filter_rating), options) { value ->
-            val min = value.toDoubleOrNull()
-            setFilter(R.id.filter_rating, if (min == null) getString(R.string.filter_any_rating) else "${min.toInt()}+", min != null)
-            catalog()?.applyRating(min)
+    }
+
+    override fun setOnList(item: TitleItem, on: Boolean, done: (Boolean) -> Unit) {
+        val app = application.asTv()
+        lifecycleScope.launch {
+            val ok = runCatching { app.api.setFavorite(item.id, on) }.isSuccess
+            if (ok) UserStateEdits.setFavorite(item.id, on)
+            done(ok)
         }
     }
 
-    private fun pickGenre(kind: String?) {
-        lifecycleScope.launch {
-            val names = runCatching { application.asTv().api.genres(kind) }.getOrDefault(emptyList())
-            val options = listOf("" to getString(R.string.filter_all_genres)) + names.map { it to it }
-            showChoices(getString(R.string.filter_genre), options) { value ->
-                setFilter(R.id.filter_genre, value.ifBlank { getString(R.string.filter_all_genres) }, value.isNotBlank())
-                catalog()?.applyGenre(value.ifBlank { null })
+    override fun openFilter(key: String) {
+        when (key) {
+            "sort" -> showChoices(key, SORTS.map { it.first to getString(it.second) }, sort) { value ->
+                if (value == sort) return@showChoices
+                sort = value
+                refreshHeading()
+                // The Provider box belongs to Trending only.
+                if (value == "TRENDING") showServiceFilterIfAny() else filter("service").visible = false
+                reload()
             }
-        }
-    }
-
-    /** Trending only: the Provider chip shows when catalog add-ons supply services. */
-    private fun showServiceFilterIfAny(kind: String?) {
-        lifecycleScope.launch {
-            val services = runCatching { application.asTv().api.streamingServices(kind) }.getOrDefault(emptyList())
-            findViewById<View>(R.id.filter_service).isVisible = services.isNotEmpty()
-        }
-    }
-
-    private fun pickService(kind: String?) {
-        lifecycleScope.launch {
-            val services = runCatching { application.asTv().api.streamingServices(kind) }.getOrDefault(emptyList())
-            val options = listOf("" to getString(R.string.filter_all_services)) + services.map { it.id to it.name }
-            showChoices(getString(R.string.filter_service), options) { value ->
-                setFilter(
-                    R.id.filter_service,
-                    services.firstOrNull { it.id == value }?.name ?: getString(R.string.filter_all_services),
-                    value.isNotBlank(),
+            "kind" -> {
+                val options = listOf(
+                    "" to getString(R.string.filter_movies_and_series),
+                    "MOVIE" to getString(R.string.heading_movies).replaceFirstChar { it.titlecase(java.util.Locale.US) },
+                    "SERIES" to getString(R.string.heading_series).replaceFirstChar { it.titlecase(java.util.Locale.US) },
                 )
-                catalog()?.applyService(value.ifBlank { null })
+                showChoices(key, options, kind ?: "") { value ->
+                    val next = value.ifBlank { null }
+                    filter(key).label = options.first { it.first == value }.second
+                    filter(key).active = next != null
+                    if (next != kind) {
+                        kind = next
+                        reload()
+                    }
+                }
+            }
+            "year" -> {
+                val now = java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)
+                val options = listOf("" to getString(R.string.filter_any_year)) +
+                    (now downTo 1970).map { it.toString() to it.toString() }
+                showChoices(key, options, year?.toString() ?: "") { value ->
+                    val next = value.toIntOrNull()
+                    filter(key).label = next?.toString() ?: getString(R.string.filter_any_year)
+                    filter(key).active = next != null
+                    if (next != year) {
+                        year = next
+                        reload()
+                    }
+                }
+            }
+            "rating" -> {
+                val options = listOf("" to getString(R.string.filter_any_rating)) +
+                    listOf(9, 8, 7, 6, 5).map { "$it" to "$it+" }
+                showChoices(key, options, ratingMin?.toInt()?.toString() ?: "") { value ->
+                    val next = value.toDoubleOrNull()
+                    filter(key).label = if (next == null) getString(R.string.filter_any_rating) else "${next.toInt()}+"
+                    filter(key).active = next != null
+                    if (next != ratingMin) {
+                        ratingMin = next
+                        reload()
+                    }
+                }
+            }
+            "genre" -> lifecycleScope.launch {
+                val names = runCatching { application.asTv().api.genres(kind) }.getOrDefault(emptyList())
+                val options = listOf("" to getString(R.string.filter_all_genres)) + names.map { it to it }
+                showChoices(key, options, genre ?: "") { value ->
+                    val next = value.ifBlank { null }
+                    filter(key).label = next ?: getString(R.string.filter_all_genres)
+                    filter(key).active = next != null
+                    if (next != genre) {
+                        genre = next
+                        reload()
+                    }
+                }
+            }
+            "service" -> lifecycleScope.launch {
+                val services = runCatching { application.asTv().api.streamingServices(kind) }.getOrDefault(emptyList())
+                val options = listOf("" to getString(R.string.filter_all_services)) + services.map { it.id to it.name }
+                showChoices(key, options, service ?: "") { value ->
+                    val next = value.ifBlank { null }
+                    filter(key).label = services.firstOrNull { it.id == value }?.name ?: getString(R.string.filter_all_services)
+                    filter(key).active = next != null
+                    if (next != service) {
+                        service = next
+                        reload()
+                    }
+                }
             }
         }
     }
 
-    /** Filter and sort menus, in the app's own rounded panel. */
-    private fun showChoices(
-        title: String,
-        options: List<Pair<String, String>>,
-        current: String? = null,
-        onPick: (String) -> Unit,
-    ) {
-        showRoundListDialog(
-            this,
-            title,
-            options.map { it.second },
-            checked = options.indexOfFirst { it.first == current },
-        ) { i -> onPick(options[i].first) }
+    private fun showChoices(key: String, options: List<Pair<String, String>>, current: String, onPick: (String) -> Unit) {
+        ui.menu = FilterMenu(key, options, current, onPick)
     }
 
-    /** "No titles match" when the first page comes back empty. */
-    fun setEmpty(empty: Boolean) {
-        findViewById<TextView>(R.id.empty_state).apply {
-            setText(R.string.empty_catalog)
-            isVisible = empty
+    /** Trending only: the Provider box shows when catalog add-ons supply services. */
+    private fun showServiceFilterIfAny() {
+        lifecycleScope.launch {
+            val services = runCatching { application.asTv().api.streamingServices(kind) }.getOrDefault(emptyList())
+            filter("service").visible = services.isNotEmpty() && sort == "TRENDING"
         }
     }
 
-    /** Slim bar at the bottom while a further page loads. */
-    fun setLoadingMore(loading: Boolean) {
-        findViewById<View>(R.id.loading_more).isVisible = loading
+    private fun reload() {
+        page = 1
+        hasNext = true
+        loadGen++
+        loading = false
+        ui.items.clear()
+        ui.empty = false
+        ui.done = false
+        ui.loadingMore = false
+        ui.reset++
+        loadMore()
     }
 
-    fun setLoading(loading: Boolean) {
-        findViewById<View>(R.id.loading_overlay).apply {
-            isVisible = loading
-            isClickable = loading
-            isFocusable = loading
+    override fun loadMore() {
+        if (loading || !hasNext) return
+        loading = true
+        // Full-screen busy on the first page, a spinner under the grid for the next ones.
+        if (page == 1) ui.loading = true else ui.loadingMore = true
+        val app = application.asTv()
+        val pageToLoad = page
+        val gen = loadGen
+        val sortNow = sort
+        lifecycleScope.launch {
+            try {
+                val result = app.api.catalog(
+                    kind = kind,
+                    sort = sortNow,
+                    page = pageToLoad,
+                    perPage = PER_PAGE,
+                    genre = genre,
+                    yearMin = year,
+                    yearMax = year,
+                    ratingMin = ratingMin,
+                    // The Provider box only shows on Trending.
+                    service = service.takeIf { sortNow == "TRENDING" },
+                )
+                if (gen != loadGen) return@launch
+                val have = ui.items.map { it.id }.toHashSet()
+                ui.items.addAll(result.items.filter { have.add(it.id) })
+                hasNext = result.hasNextPage
+                if (pageToLoad == 1) ui.empty = ui.items.isEmpty()
+                ui.done = !hasNext && ui.items.isNotEmpty()
+                // A short page: the server is still bringing titles in. Ask for it
+                // again, or the ones landing in the gap are skipped.
+                if (result.items.size >= PER_PAGE || !result.hasNextPage) page = pageToLoad + 1
+            } catch (e: Exception) {
+                Log.e(TAG, "catalog load failed kind=$kind sort=$sort", e)
+                Toast.makeText(this@CatalogActivity, e.message ?: getString(R.string.error_generic), Toast.LENGTH_LONG).show()
+                // Keep paging: the next scroll tries again.
+            } finally {
+                if (gen == loadGen) {
+                    loading = false
+                    ui.loading = false
+                    ui.loadingMore = false
+                }
+            }
         }
     }
 
     companion object {
+        private const val TAG = "CatalogActivity"
+        private const val PER_PAGE = 48
         const val EXTRA_TITLE = "catalog_title"
         /** The Explore tab: its name as the heading, a Type picker, trending first. */
         const val EXTRA_EXPLORE = "catalog_explore"
@@ -268,231 +279,5 @@ class CatalogActivity : androidx.fragment.app.FragmentActivity() {
             "ROTTEN_TOMATOES" to R.string.sort_rt,
             "TITLE" to R.string.sort_title,
         )
-    }
-}
-
-class CatalogFragment : VerticalGridSupportFragment() {
-    private lateinit var gridAdapter: ArrayObjectAdapter
-    private val loaded = ArrayList<TitleItem>()
-    private var columns = 0
-    private var cardWidth = 0
-    private var cardHeight = 0
-    private var kind: String? = null
-    private var sort: String = "TRENDING"
-    private var year: Int? = null
-    private var ratingMin: Double? = null
-    private var genre: String? = null
-    private var service: String? = null
-    private var page = 1
-    private var loading = false
-    private var hasNext = true
-    private var loadGen = 0
-
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        val intent = requireActivity().intent
-        showTitle(false)
-        kind = intent.getStringExtra(CatalogActivity.EXTRA_KIND)?.takeIf { it.isNotBlank() }
-        sort = intent.getStringExtra(CatalogActivity.EXTRA_SORT)?.takeIf { it.isNotBlank() } ?: "TRENDING"
-
-        val dm = resources.displayMetrics
-        val density = dm.density
-        val padH = resources.getDimensionPixelSize(R.dimen.shelf_inset)
-        val padV = (GridMetrics.PAD_V_DP * density).toInt()
-        val gap = (8 * density).toInt()
-        val chrome = (52 * density).toInt()
-        applyFit(
-            GridMetrics.fit(
-                dm.widthPixels,
-                (dm.heightPixels - chrome).coerceAtLeast(1),
-                padH,
-                padV,
-                gap,
-            ),
-        )
-
-        setOnItemViewClickedListener { _, item, _, _ ->
-            if (item is TitleItem) {
-                startActivity(
-                    Intent(requireContext(), DetailsActivity::class.java)
-                        .putExtra(DetailsActivity.EXTRA_ID, item.id)
-                        .putExtra(DetailsActivity.EXTRA_TITLE, item.displayTitle),
-                )
-            }
-        }
-
-        setOnItemViewSelectedListener { _, item, _, _ ->
-            if (item == null) return@setOnItemViewSelectedListener
-            val idx = gridAdapter.indexOf(item)
-            if (idx >= 0 && hasNext && !loading && idx >= gridAdapter.size() - 8) {
-                loadMore()
-            }
-        }
-
-        loadMore()
-    }
-
-    fun applySort(next: String) {
-        if (next == sort) return
-        sort = next
-        reload()
-    }
-
-    fun applyKind(next: String?) {
-        if (next == kind) return
-        kind = next
-        reload()
-    }
-
-    fun applyYear(next: Int?) {
-        if (next == year) return
-        year = next
-        reload()
-    }
-
-    fun applyRating(next: Double?) {
-        if (next == ratingMin) return
-        ratingMin = next
-        reload()
-    }
-
-    fun applyService(next: String?) {
-        if (next == service) return
-        service = next
-        reload()
-    }
-
-    fun applyGenre(next: String?) {
-        if (next == genre) return
-        genre = next
-        reload()
-    }
-
-    private fun reload() {
-        (activity as? CatalogActivity)?.setLoadingMore(false)
-        (activity as? CatalogActivity)?.setEmpty(false)
-        page = 1
-        hasNext = true
-        loadGen++
-        loading = false
-        loaded.clear()
-        gridAdapter.clear()
-        loadMore()
-    }
-
-    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
-        super.onViewCreated(view, savedInstanceState)
-        view.post { refit(view) }
-    }
-
-    private fun refit(view: View) {
-        if (view.width <= 0 || view.height <= 0) {
-            view.post { refit(view) }
-            return
-        }
-        val density = resources.displayMetrics.density
-        val padH = resources.getDimensionPixelSize(R.dimen.shelf_inset)
-        val padV = (GridMetrics.PAD_V_DP * density).toInt()
-        val gap = (8 * density).toInt()
-        val fit = GridMetrics.fit(view.width, view.height, padH, padV, gap)
-        if (fit.columns != columns || fit.width != cardWidth || fit.height != cardHeight) {
-            applyFit(fit)
-        }
-        view.post {
-            val grid = view.findViewById<VerticalGridView>(androidx.leanback.R.id.browse_grid) ?: return@post
-            grid.setNumColumns(columns)
-            grid.pinPosterGrid()
-            grid.setOnKeyInterceptListener { event ->
-                if (event.action == KeyEvent.ACTION_DOWN && event.keyCode == KeyEvent.KEYCODE_DPAD_UP) {
-                    if (grid.selectedPosition < columns.coerceAtLeast(1)) {
-                        val sort = activity?.findViewById<View>(R.id.filter_sort)
-                        if (sort != null && sort.isVisible) {
-                            sort.requestFocus()
-                            return@setOnKeyInterceptListener true
-                        }
-                    }
-                }
-                false
-            }
-        }
-    }
-
-    private fun applyFit(fit: PosterGridFit) {
-        columns = fit.columns
-        cardWidth = fit.width
-        cardHeight = fit.height
-        val live = view?.findViewById<VerticalGridView>(androidx.leanback.R.id.browse_grid)
-        if (live == null) {
-            gridPresenter = VerticalGridPresenter(FocusHighlight.ZOOM_FACTOR_NONE, false).apply {
-                numberOfColumns = columns
-                shadowEnabled = false
-                // Leanback clips each item to a rounded outline of its cell,
-                // which cut the zoomed focus card (home rows turn it off too).
-                enableChildRoundedCorners(false)
-            }
-        } else {
-            (gridPresenter as? VerticalGridPresenter)?.numberOfColumns = columns
-            live.setNumColumns(columns)
-        }
-        gridAdapter = ArrayObjectAdapter(PosterCardPresenter(cardWidth, cardHeight))
-        adapter = gridAdapter
-        loaded.forEach { gridAdapter.add(it) }
-    }
-
-    private fun loadMore() {
-        if (loading || !hasNext) return
-        loading = true
-        val host = activity as? CatalogActivity
-        // Full-screen busy on the first page, a slim bar for the next ones.
-        if (page == 1) host?.setLoading(true) else host?.setLoadingMore(true)
-        val app = requireActivity().application.asTv()
-        val pageToLoad = page
-        val gen = loadGen
-        val sortNow = sort
-        lifecycleScope.launch {
-            try {
-                val result = app.api.catalog(
-                    kind = kind,
-                    sort = sortNow,
-                    page = pageToLoad,
-                    perPage = PER_PAGE,
-                    genre = genre,
-                    yearMin = year,
-                    yearMax = year,
-                    ratingMin = ratingMin,
-                    // The Provider chip only shows on Trending.
-                    service = service.takeIf { sortNow == "TRENDING" },
-                )
-                if (gen != loadGen) return@launch
-                result.items.filter { new -> loaded.none { it.id == new.id } }.forEach {
-                    loaded.add(it)
-                    gridAdapter.add(it)
-                }
-                hasNext = result.hasNextPage
-                if (pageToLoad == 1) host?.setEmpty(loaded.isEmpty())
-                // A short page: the server is still bringing titles in. Ask for it
-                // again, or the ones landing in the gap are skipped.
-                if (result.items.size >= PER_PAGE || !result.hasNextPage) page = pageToLoad + 1
-            } catch (e: Exception) {
-                Log.e(TAG, "catalog load failed kind=$kind sort=$sort", e)
-                Toast.makeText(
-                    requireContext(),
-                    e.message ?: getString(R.string.error_generic),
-                    Toast.LENGTH_LONG,
-                ).show()
-                // Keep paging: the next scroll tries again.
-            } finally {
-                if (gen == loadGen) {
-                    loading = false
-                    host?.setLoading(false)
-                    host?.setLoadingMore(false)
-                }
-            }
-        }
-    }
-
-    companion object {
-        private const val TAG = "CatalogFragment"
-        private const val PER_PAGE = 48
     }
 }
