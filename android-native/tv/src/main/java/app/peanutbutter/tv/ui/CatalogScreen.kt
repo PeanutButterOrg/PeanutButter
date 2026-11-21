@@ -335,59 +335,20 @@ private fun FeatureRow(state: CatalogState, top: List<TitleItem>, width: Dp, act
     val poster = ((width - gap * 3) / 5.6f).coerceIn(150.dp, 320.dp)
     val height = poster * 1.5f
     Row(Modifier.fillMaxWidth().height(height).padding(bottom = 4.dp), horizontalArrangement = Arrangement.spacedBy(gap)) {
-        FeatureCard(state, top.first(), state.eyebrow, height, actions, Modifier.weight(1f))
+        val first = top.first()
+        val onList = state.listed[first.id] ?: UserStateEdits.apply(first).favorite
+        FeatureCard(
+            first, state.eyebrow, height, onList,
+            onPlay = { actions.open(first, play = true) },
+            onToggleList = {
+                val next = !onList
+                state.listed[first.id] = next
+                actions.setOnList(first, next) { ok -> if (!ok) state.listed[first.id] = !next }
+            },
+            onInfo = { actions.open(first) },
+            modifier = Modifier.weight(1f),
+        )
         top.drop(1).forEach { item -> PosterCard(item, poster, { actions.open(item) }) }
-    }
-}
-
-@Composable
-private fun FeatureCard(
-    state: CatalogState,
-    item: TitleItem,
-    eyebrow: String,
-    height: Dp,
-    actions: CatalogActions,
-    modifier: Modifier,
-) {
-    val shape = RoundedCornerShape(PbRadius.panel + 4.dp)
-    BoxWithConstraints(modifier.height(height).clip(shape).background(PbColors.ground)) {
-        // The whole 16:9 backdrop on the right; the text side fades into it.
-        val artW = minOf(height * 16f / 9f, maxWidth)
-        PbImage(
-            item.backdropUrl ?: item.posterUrl,
-            Modifier.align(Alignment.CenterEnd).width(artW).height(height),
-            artW, height,
-        )
-        Box(
-            Modifier
-                .align(Alignment.CenterStart)
-                .width(maxWidth - artW * 0.55f)
-                .height(height)
-                .background(Brush.horizontalGradient(0f to PbColors.ground, 0.55f to PbColors.ground, 1f to Color(0x000E0E12))),
-        )
-        Box(Modifier.fillMaxSize().background(Brush.verticalGradient(0.5f to Color.Transparent, 1f to Color(0xB30E0E12))))
-        Column(Modifier.align(Alignment.BottomStart).padding(start = 22.dp, end = 22.dp, bottom = 18.dp)) {
-            BasicText(eyebrow.uppercase(), style = PbType.label.copy(color = PbColors.primary, letterSpacing = 1.1.sp))
-            Spacer(Modifier.height(4.dp))
-            BasicText(item.displayTitle, maxLines = 2, overflow = TextOverflow.Ellipsis,
-                style = PbType.h1.copy(fontSize = 26.sp, lineHeight = 28.sp))
-            Spacer(Modifier.height(8.dp))
-            MetaRow(item, maxGenres = 1)
-            Spacer(Modifier.height(12.dp))
-            val onList = state.listed[item.id] ?: UserStateEdits.apply(item).favorite
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                PbButton("Play", Icons.Rounded.PlayArrow, primary = true, onClick = { actions.open(item, play = true) })
-                PbButton(
-                    "My List", if (onList) Icons.Rounded.Check else Icons.Rounded.Add, primary = false,
-                    onClick = {
-                        val next = !onList
-                        state.listed[item.id] = next
-                        actions.setOnList(item, next) { ok -> if (!ok) state.listed[item.id] = !next }
-                    },
-                )
-                PbButton("More info", Icons.Outlined.Info, primary = false, onClick = { actions.open(item) })
-            }
-        }
     }
 }
 
