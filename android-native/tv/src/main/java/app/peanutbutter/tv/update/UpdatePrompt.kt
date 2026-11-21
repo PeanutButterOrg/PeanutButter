@@ -1,16 +1,15 @@
 package app.peanutbutter.tv.update
 
-import android.app.AlertDialog
-import android.graphics.Color
-import android.graphics.drawable.ColorDrawable
-import android.view.LayoutInflater
-import android.widget.TextView
 import android.widget.Toast
-import androidx.core.view.isVisible
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.lifecycleScope
 import app.peanutbutter.tv.R
 import app.peanutbutter.tv.asTv
+import app.peanutbutter.tv.ui.ConfirmCard
+import app.peanutbutter.tv.ui.showPbDialog
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
@@ -48,28 +47,17 @@ fun checkForTvUpdate(activity: FragmentActivity, manual: Boolean = false) {
 
 private fun showUpdateDialog(activity: FragmentActivity, update: AppUpdate) {
     val session = activity.application.asTv().session
-    val view = LayoutInflater.from(activity).inflate(R.layout.dialog_confirm, null)
-    val title = view.findViewById<TextView>(R.id.dialog_title)
-    val message = view.findViewById<TextView>(R.id.dialog_message)
-    val later = view.findViewById<TextView>(R.id.dialog_negative)
-    val install = view.findViewById<TextView>(R.id.dialog_positive)
     val mb = update.size / (1024 * 1024)
-    title.text = activity.getString(R.string.update_title, update.version)
-    message.text = activity.getString(R.string.update_message, mb)
-    later.setText(R.string.update_later)
-    install.setText(R.string.update_install)
-
-    val dialog = AlertDialog.Builder(activity).setView(view).create()
+    // What the card shows; the download updates it.
+    var message by mutableStateOf(activity.getString(R.string.update_message, mb))
+    var positive by mutableStateOf<String?>(activity.getString(R.string.update_install))
+    var negative by mutableStateOf(activity.getString(R.string.update_later))
     var job: Job? = null
-    later.setOnClickListener {
-        job?.cancel()
-        deferredBuild = update.build
-        dialog.dismiss()
-    }
-    install.setOnClickListener {
-        install.isVisible = false
-        later.setText(R.string.update_cancel)
-        later.requestFocus()
+    var dialog: androidx.activity.ComponentDialog? = null
+
+    fun install() {
+        positive = null
+        negative = activity.getString(R.string.update_cancel)
         job = activity.lifecycleScope.launch {
             // Progress is posted from the download thread; once it's done, late
             // posts must not overwrite later messages (the dialog used to sit at
@@ -82,42 +70,48 @@ private fun showUpdateDialog(activity: FragmentActivity, update: AppUpdate) {
                     if (pct == lastPct) return@download
                     lastPct = pct
                     activity.runOnUiThread {
-                        if (downloading && dialog.isShowing) {
-                            message.text = activity.getString(R.string.update_downloading, pct)
+                        if (downloading && dialog?.isShowing == true) {
+                            message = activity.getString(R.string.update_downloading, pct)
                         }
                     }
                 }
                 downloading = false
-                message.setText(R.string.update_installing)
+                message = activity.getString(R.string.update_installing)
                 // Hand the APK to Android's installer first, then close: the
                 // dialog's dismiss listener cancels this job, and dismissing
-                // before install() cancelled the install itself, so Install
-                // often did nothing.
+                // before install() cancelled the install itself.
                 AppUpdater.install(activity, apk)
-                dialog.dismiss()
+                dialog?.dismiss()
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
                 downloading = false
-                if (!dialog.isShowing) {
+                if (dialog?.isShowing != true) {
                     toast(activity, e.message ?: e.toString())
                     return@launch
                 }
-                message.text = e.message ?: e.toString()
-                install.setText(R.string.update_retry)
-                install.isVisible = true
-                later.setText(R.string.update_later)
-                install.requestFocus()
+                message = e.message ?: e.toString()
+                positive = activity.getString(R.string.update_retry)
+                negative = activity.getString(R.string.update_later)
             }
         }
     }
-    dialog.setOnDismissListener { job?.cancel() }
-    dialog.setOnShowListener {
-        dialog.window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
-        install.requestFocus()
+
+    dialog = showPbDialog(activity, onDismiss = { job?.cancel() }) { dismiss ->
+        ConfirmCard(
+            title = activity.getString(R.string.update_title, update.version),
+            message = message,
+            negative = negative,
+            positive = positive,
+            onNegative = {
+                job?.cancel()
+                deferredBuild = update.build
+                dismiss()
+            },
+            onPositive = { install() },
+            focusPositive = true,
+        )
     }
-    dialog.show()
-    dialog.window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
 }
 
 private fun toast(activity: FragmentActivity, text: String) {

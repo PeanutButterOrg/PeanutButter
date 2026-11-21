@@ -313,7 +313,7 @@ class DetailsActivity : FragmentActivity(), DetailsActions {
                     return@launch
                 }
                 SourcesDialog.show(
-                    supportFragmentManager,
+                    this@DetailsActivity,
                     // The episode the user chose, even when the search used the release's number.
                     t.displayTitle,
                     sources,
