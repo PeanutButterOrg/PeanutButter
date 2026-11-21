@@ -413,9 +413,11 @@ jobs:
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.macos }}
     # Pinned, so a new macOS image can't change a release build unannounced. Needs
     # Xcode 26: connectivity_plus uses the macOS 26 SDK, and macos-15 has Xcode 16.
-    # Intel: GitHub's arm64 machines kept failing with "not acquired" for lack of
-    # capacity. The build script compiles both architectures either way.
-    runs-on: macos-26-intel
+    # Apple silicon: the universal build (both architectures either way) took
+    # 7-32 min on the Intel machines, mostly Xcode compiling. Apple-silicon
+    # machines once failed with "not acquired" for lack of capacity: if that
+    # comes back, `macos-26-intel` is the fallback.
+    runs-on: macos-26
     defaults:
       run:
         working-directory: frontend
