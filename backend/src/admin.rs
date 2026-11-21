@@ -1212,6 +1212,90 @@ async fn test_jackett(state: &HttpState, form: &AdminForm) -> String {
     }
 }
 
+/// "Get the apps" under the sign-in form: the apps this server mirrors, one
+/// icon per platform. Windows, macOS, Linux and (from a computer) the TV ask
+/// which file; on a TV's own browser the TV icon downloads the right build.
+async fn apps_section() -> String {
+    match crate::updates::published_apps().await {
+        Some((version, assets)) => apps_section_html(&version, &assets),
+        None => String::new(),
+    }
+}
+
+fn apps_section_html(
+    version: &str,
+    assets: &std::collections::HashMap<String, crate::updates::Asset>,
+) -> String {
+    let version = html_escape(version);
+    let size = |key: &str| {
+        assets
+            .get(key)
+            .map(|a| format!("{:.0} MB", a.size as f64 / (1024.0 * 1024.0)))
+    };
+    let option = |key: &str, label: &str| {
+        size(key)
+            .map(|mb| format!(r#"<a href="/apps/{key}" download>{label}<span>{mb}</span></a>"#))
+            .unwrap_or_default()
+    };
+    let tile = |class: &str, icon: &str, name: &str, options: String| {
+        if options.is_empty() {
+            return String::new();
+        }
+        format!(
+            r#"<details class="app {class}"><summary>{icon}<b>{name}</b></summary><div class="opts">{options}</div></details>"#
+        )
+    };
+    const WINDOWS: &str = r#"<svg viewBox="0 0 24 24"><path d="M3 5.5 10.5 4.4v7.1H3zM11.5 4.3 21 3v8.5h-9.5zM3 12.5h7.5v7.1L3 18.5zM11.5 12.5H21V21l-9.5-1.3z"/></svg>"#;
+    const APPLE: &str = r#"<svg viewBox="0 0 24 24"><path d="M16.4 12.6c0-2.3 1.9-3.4 2-3.5-1.1-1.6-2.8-1.8-3.4-1.8-1.4-.1-2.8.9-3.5.9-.7 0-1.8-.8-3-.8-1.5 0-3 .9-3.8 2.3-1.6 2.8-.4 7 1.2 9.2.8 1.1 1.7 2.4 2.8 2.3 1.1 0 1.6-.7 3-.7s1.8.7 3 .7c1.2 0 2-1.1 2.8-2.2.9-1.3 1.2-2.5 1.2-2.6 0 0-2.3-.9-2.3-3.8zM14.1 5.8c.6-.8 1.1-1.8.9-2.8-.9 0-2 .6-2.6 1.4-.6.7-1.1 1.7-1 2.7 1 .1 2-.5 2.7-1.3z"/></svg>"#;
+    const LINUX: &str = r#"<svg viewBox="0 0 24 24"><path d="M3 4h18a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1zm1 3v11h16V7zm2 2.2 1.4-1.4L11.6 12l-4.2 4.2L6 14.8 8.8 12zM12 15h6v1.8h-6z"/></svg>"#;
+    const TV: &str = r#"<svg viewBox="0 0 24 24"><path d="M4 5h16a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-6v1.5h3V21H7v-1.5h3V18H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2zm0 2v9h16V7z"/></svg>"#;
+    let tiles = [
+        tile("win", WINDOWS, "Windows", option("windows", "Installer (.exe)")),
+        tile("mac", APPLE, "macOS", option("macos", "Apple silicon &amp; Intel (.zip)")),
+        tile(
+            "linux",
+            LINUX,
+            "Linux",
+            option("linux-appimage", "AppImage (any distribution)") + &option("linux-deb", ".deb (Debian, Ubuntu)"),
+        ),
+        tile(
+            "tv",
+            TV,
+            "Android TV",
+            option("android-tv-arm64-v8a", "64-bit ARM (most TVs)")
+                + &option("android-tv-armeabi-v7a", "32-bit ARM (older TVs)")
+                + &option("android-tv", "Any TV (larger download)"),
+        ),
+    ]
+    .concat();
+    format!(
+        r#"<section class="panel apps">
+          <h2>Get the apps</h2>
+          <p class="lead">PeanutButter {version}, straight from this server.</p>
+          <div class="app-row">{tiles}</div>
+          <script>
+            (function () {{
+              var apps = document.querySelectorAll('.app-row details');
+              apps.forEach(function (d) {{
+                d.addEventListener('toggle', function () {{
+                  if (d.open) apps.forEach(function (o) {{ if (o !== d) o.open = false; }});
+                }});
+              }});
+              // On the TV itself: no question, the build for this TV.
+              var tv = document.querySelector('.app.tv summary');
+              if (tv && /Android/i.test(navigator.userAgent)) {{
+                tv.parentNode.classList.add('direct');
+                tv.addEventListener('click', function (e) {{
+                  e.preventDefault();
+                  location.href = '/apps/android-tv-auto';
+                }});
+              }}
+            }})();
+          </script>
+        </section>"#
+    )
+}
+
 async fn render(
     state: &HttpState,
     authed: bool,
@@ -1225,6 +1309,7 @@ async fn render(
         .unwrap_or_default();
 
     let body = if !authed {
+        let apps_html = apps_section().await;
         format!(
             r#"
             {notice_html}
@@ -1241,6 +1326,7 @@ async fn render(
                 <button type="submit">Continue</button>
               </form>
             </section>
+            {apps_html}
             "#
         )
     } else {
@@ -2261,6 +2347,32 @@ fn shell(title: &str, body: &str, authed: bool) -> String {
   .panel.login {{ margin-top: 14vh; padding: 2rem; }}
   .panel.login .logo {{ margin-bottom: 1rem; }}
   .panel.login h1 {{ font-size: 1.6rem; margin-top: 0.2rem; }}
+  .panel.apps {{ padding: 1.5rem 2rem 1.7rem; }}
+  .panel.apps h2 {{ margin: 0; font-size: 1.1rem; }}
+  .panel.apps .lead {{ margin-bottom: 1rem; }}
+  .app-row {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr)); gap: 0.7rem; align-items: start; }}
+  .app {{ position: relative; }}
+  .app summary {{
+    list-style: none; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 0.5rem;
+    padding: 1rem 0.6rem 0.9rem; border-radius: 14px; border: 1px solid var(--line);
+    background: var(--card); color: var(--ink); font-size: 0.88rem; text-align: center;
+  }}
+  .app summary::-webkit-details-marker {{ display: none; }}
+  .app summary svg {{ width: 30px; height: 30px; fill: currentColor; opacity: 0.9; }}
+  .app summary:hover, .app summary:focus-visible, .app[open] summary {{ border-color: #5b9fff66; background: var(--accent-soft); outline: none; }}
+  .app .opts {{
+    position: absolute; z-index: 2; left: 0; width: max(100%, 16rem); margin-top: 0.4rem;
+    display: flex; flex-direction: column; padding: 0.35rem; border-radius: 12px;
+    background: var(--card-2); border: 1px solid var(--line); box-shadow: var(--shadow);
+  }}
+  .app .opts a {{
+    display: flex; justify-content: space-between; gap: 0.8rem; padding: 0.6rem 0.7rem; border-radius: 8px;
+    color: var(--ink); text-decoration: none; font-size: 0.86rem;
+  }}
+  .app .opts a span {{ color: var(--muted); font-size: 0.8rem; white-space: nowrap; }}
+  .app .opts a:hover, .app .opts a:focus-visible {{ background: var(--accent-soft); outline: none; }}
+  .app.tv .opts {{ left: auto; right: 0; }}
+  .app.direct .opts {{ display: none; }}
   .row-head {{ display: flex; align-items: center; justify-content: space-between; gap: 0.7rem; flex-wrap: wrap; }}
   .banner {{
     display: flex; gap: 0.6rem; align-items: flex-start;
@@ -2432,6 +2544,30 @@ fn shell(title: &str, body: &str, authed: bool) -> String {
 </body>
 </html>"#
     )
+}
+
+#[cfg(test)]
+mod apps_tests {
+    use super::*;
+
+    fn asset(name: &str) -> crate::updates::Asset {
+        crate::updates::Asset { name: name.into(), size: 80 * 1024 * 1024, sha256: String::new() }
+    }
+
+    #[test]
+    fn apps_section_lists_mirrored_platforms_only() {
+        let assets: std::collections::HashMap<_, _> = [
+            ("windows".to_string(), asset("w.exe")),
+            ("android-tv".to_string(), asset("tv.apk")),
+            ("android-tv-arm64-v8a".to_string(), asset("tv64.apk")),
+        ]
+        .into();
+        let html = apps_section_html("0.3.26", &assets);
+        assert!(html.contains(r#"href="/apps/windows""#));
+        assert!(html.contains(r#"href="/apps/android-tv-arm64-v8a""#));
+        assert!(!html.contains("macOS"), "no macOS file, no macOS tile");
+        assert!(!html.contains("armeabi"), "only the TV files that exist");
+    }
 }
 
 #[cfg(test)]

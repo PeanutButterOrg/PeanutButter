@@ -241,6 +241,7 @@ async fn main() -> Result<()> {
         .route("/art/youtube/{key}", get(media::proxy_youtube).head(media::proxy_youtube))
         .route("/updates/latest", get(updates::latest))
         .route("/updates/files/{tag}/{name}", get(updates::file).head(updates::file))
+        .route("/apps/{platform}", get(updates::app).head(updates::app))
         .with_state(http_state.clone())
         .layer(middleware::from_fn_with_state(http_state, auth::gate))
         .layer(cors)
