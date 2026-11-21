@@ -1513,10 +1513,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         closing: true,
         invalidateHome: true,
       ));
-      unawaited(() async {
-        await _disposePlaybackEngines();
-        await _releaseStreamResources(wipe: wipe);
-      }());
+      final generation = LocalTorrentEngine.instance.generation;
+      final teardown = _disposePlaybackEngines().catchError((_) {});
+      LocalTorrentEngine.instance.noteTeardown(teardown);
+      unawaited(teardown.then((_) => _releaseStreamResources(wipe: wipe, generation: generation)));
     }
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     super.dispose();
@@ -1525,7 +1525,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   /// Stop torrent / stream; [wipe] = Settings → Clear cache on exit.
   ///
   /// Doesn't touch `ref` — it also runs after dispose().
-  Future<void> _releaseStreamResources({required bool wipe}) async {
+  /// [generation]: the torrent engine's stream when this player closed; a
+  /// stream started since (the next video) is left alone.
+  Future<void> _releaseStreamResources({required bool wipe, int? generation}) async {
     final sessionId = widget.sessionId;
     final localActive = widget.localTorrent ||
         (widget.isStream && (sessionId?.startsWith('local-') ?? false)) ||
@@ -1533,10 +1535,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     if (!localActive && !wipe) return;
     try {
       if (wipe) {
-        await LocalTorrentEngine.instance.purgeDownloads();
+        if (generation != null && generation != LocalTorrentEngine.instance.generation) return;
+        await LocalTorrentEngine.instance.purgeDownloads(onlyGeneration: generation);
         await PlayerCache.clear();
       } else if (localActive) {
-        await LocalTorrentEngine.instance.stop(deleteFiles: false);
+        await LocalTorrentEngine.instance.stop(deleteFiles: false, onlyGeneration: generation);
       }
     } catch (_) {}
   }
@@ -1612,9 +1615,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     // The torrent is only removed once the player has really let go of it
     // (removing it under a still-reading player crashes the desktop), so the
     // cleanup is chained after teardown, which the page doesn't wait out.
+    final generation = LocalTorrentEngine.instance.generation;
     final teardown = _disposePlaybackEngines().catchError((_) {});
+    LocalTorrentEngine.instance.noteTeardown(teardown);
     unawaited(teardown.then(
-      (_) => _releaseStreamResources(wipe: wipe)
+      (_) => _releaseStreamResources(wipe: wipe, generation: generation)
           .timeout(const Duration(seconds: 30), onTimeout: () {})
           .catchError((_) {}),
     ));

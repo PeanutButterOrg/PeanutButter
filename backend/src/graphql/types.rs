@@ -876,6 +876,9 @@ pub struct PersonDetails {
     /// Newest first, one entry per title.
     pub acting: Vec<PersonCredit>,
     pub crew: Vec<PersonCredit>,
+    /// Credits still being content-checked, left out for now: ask again in a
+    /// few seconds while this is above 0.
+    pub checking_credits: i32,
 }
 
 /// A title in a person's filmography.
@@ -917,6 +920,7 @@ impl PersonDetails {
             profile_url: crate::config::profile_url(&config.public_url, &p.profile_path),
             acting: p.acting.into_iter().map(credit).collect(),
             crew: p.crew.into_iter().map(credit).collect(),
+            checking_credits: p.checking as i32,
         }
     }
 }

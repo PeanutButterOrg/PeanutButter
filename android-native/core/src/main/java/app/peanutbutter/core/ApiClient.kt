@@ -275,6 +275,7 @@ class ApiClient(
             profileUrl = resolveMediaUrl(str(o, "profileUrl")),
             acting = credits("acting"),
             crew = credits("crew"),
+            checkingCredits = o.get("checkingCredits")?.takeUnless { it.isJsonNull }?.asInt ?: 0,
         )
     }
 

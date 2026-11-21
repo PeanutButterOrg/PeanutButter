@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -25,6 +27,24 @@ class PersonScreen extends ConsumerStatefulWidget {
 
 class _PersonScreenState extends ConsumerState<PersonScreen> {
   bool _opening = false;
+  Timer? _recheck;
+  int _rechecks = 0;
+
+  @override
+  void dispose() {
+    _recheck?.cancel();
+    super.dispose();
+  }
+
+  /// The server is still checking some titles: ask again so they appear.
+  void _scheduleRecheck(PersonDetails? p) {
+    if (p == null || p.checkingCredits == 0 || _recheck != null || _rechecks >= 20) return;
+    _recheck = Timer(const Duration(seconds: 3), () {
+      _recheck = null;
+      _rechecks++;
+      if (mounted) ref.invalidate(personProvider(widget.tmdbId));
+    });
+  }
 
   Future<void> _open(PersonCredit credit) async {
     final known = credit.titleId;
@@ -53,6 +73,7 @@ class _PersonScreenState extends ConsumerState<PersonScreen> {
     const gutter = PbSpace.gutterDesktop;
     const poster = PbSize.posterWidthDesktop;
     final p = person.valueOrNull;
+    if (!person.isLoading) _scheduleRecheck(p);
 
     Widget section(String label, List<PersonCredit> credits) => SliverMainAxisGroup(
           slivers: [
@@ -109,13 +130,13 @@ class _PersonScreenState extends ConsumerState<PersonScreen> {
                         ),
                         Padding(
                           padding: const EdgeInsets.only(left: 8, top: 12),
-                          child: _Header(person: p, name: widget.name, loading: person.isLoading),
+                          child: _Header(person: p, name: widget.name, loading: p == null && person.isLoading),
                         ),
                       ],
                     ),
                   ),
                 ),
-                if (person.hasError)
+                if (person.hasError && p == null)
                   SliverFillRemaining(
                     hasScrollBody: false,
                     child: Center(
@@ -215,6 +236,10 @@ class _Header extends StatelessWidget {
                     style: PbType.body.copyWith(fontSize: 15, height: 1.55, color: const Color(0xFFD6DAE3)),
                   ),
                 ),
+              ],
+              if (p != null && p.checkingCredits > 0) ...[
+                const SizedBox(height: 12),
+                Text('Checking more titles…', style: PbType.meta.copyWith(color: PbColors.textFaint)),
               ],
               if (loading) ...[
                 const SizedBox(height: 16),

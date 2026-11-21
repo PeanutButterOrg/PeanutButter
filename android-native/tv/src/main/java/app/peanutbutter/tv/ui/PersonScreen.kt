@@ -72,7 +72,8 @@ fun PersonScreen(state: PersonState, onBack: () -> Unit, onOpen: (PersonCredit) 
     val firstCard = remember { FocusRequester() }
     val back = remember { FocusRequester() }
     val person = state.person
-    LaunchedEffect(person, state.error) {
+    // Once, when the page first loads (more credits may arrive later).
+    LaunchedEffect(person != null, state.error) {
         runCatching {
             if (person != null && (person.acting.isNotEmpty() || person.crew.isNotEmpty())) firstCard.requestFocus()
             else back.requestFocus()
@@ -177,6 +178,10 @@ private fun Header(state: PersonState, back: FocusRequester, onBack: () -> Unit)
                         it, maxLines = 6, overflow = TextOverflow.Ellipsis,
                         style = PbType.body.copy(color = Color(0xFFD6DAE3), lineHeight = 24.sp),
                     )
+                }
+                if (p != null && p.checkingCredits > 0) {
+                    Spacer(Modifier.height(12.dp))
+                    BasicText("Checking more titles…", style = PbType.meta.copy(color = PbColors.textFaint))
                 }
                 if (p == null && state.error == null) {
                     Spacer(Modifier.height(16.dp))

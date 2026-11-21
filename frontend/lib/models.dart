@@ -662,6 +662,7 @@ class PersonDetails {
     this.profileUrl,
     this.acting = const [],
     this.crew = const [],
+    this.checkingCredits = 0,
   });
 
   final int tmdbId;
@@ -674,6 +675,8 @@ class PersonDetails {
   final String? profileUrl;
   final List<PersonCredit> acting;
   final List<PersonCredit> crew;
+  /// Credits the server is still checking (left out for now): ask again shortly.
+  final int checkingCredits;
 
   factory PersonDetails.fromJson(Map<String, dynamic> json) {
     List<PersonCredit> credits(String key) => [
@@ -696,6 +699,7 @@ class PersonDetails {
       profileUrl: text('profileUrl'),
       acting: credits('acting'),
       crew: credits('crew'),
+      checkingCredits: (json['checkingCredits'] as num?)?.toInt() ?? 0,
     );
   }
 }

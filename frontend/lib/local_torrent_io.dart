@@ -21,6 +21,14 @@ class LocalTorrentEngine {
   /// Active Range probe from [seekTo]; closed in [stop] so leave can't abort.
   HttpClient? _rangeClient;
   int _pullGen = 0;
+  /// Bumped by every [start]: a closing player's cleanup passes the number it
+  /// had, so it can't stop or wipe a stream started since.
+  int _generation = 0;
+  int get generation => _generation;
+  /// The last player's native teardown; [start] waits for it (bounded) so the
+  /// old torrent isn't removed under a player that is still reading it.
+  Future<void>? _teardown;
+  void noteTeardown(Future<void> teardown) => _teardown = teardown;
 
   bool get supported =>
       !_nativeUnavailable &&
@@ -172,6 +180,14 @@ class LocalTorrentEngine {
     int? fileIndex,
     void Function(LocalStreamStats stats)? onStats,
   }) async {
+    _generation++;
+    final teardown = _teardown;
+    _teardown = null;
+    if (teardown != null) {
+      try {
+        await teardown.timeout(const Duration(seconds: 10));
+      } catch (_) {}
+    }
     await ensureInit();
     try {
       await TrackerManager.fetchBestTrackers().timeout(const Duration(seconds: 4));
@@ -419,8 +435,10 @@ class LocalTorrentEngine {
     );
   }
 
-  Future<void> stop({bool deleteFiles = true}) async {
+  /// [onlyGeneration]: do nothing if another stream has started since then.
+  Future<void> stop({bool deleteFiles = true, int? onlyGeneration}) async {
     if (!_ready) return;
+    if (onlyGeneration != null && onlyGeneration != _generation) return;
     final engine = LibtorrentFlutter.instance;
     final sid = _streamId;
     final tid = _torrentId;
@@ -465,8 +483,9 @@ class LocalTorrentEngine {
   }
 
   /// Stop every local torrent and delete downloaded stream pieces from disk.
-  Future<void> purgeDownloads() async {
+  Future<void> purgeDownloads({int? onlyGeneration}) async {
     if (!supported) return;
+    if (onlyGeneration != null && onlyGeneration != _generation) return;
     try {
       await stop(deleteFiles: true);
     } catch (_) {}

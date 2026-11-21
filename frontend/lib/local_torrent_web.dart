@@ -8,6 +8,8 @@ class LocalTorrentEngine {
 
   bool get supported => false;
   bool get isActive => false;
+  int get generation => 0;
+  void noteTeardown(Future<void> teardown) {}
 
   void configureTrackers(List<String> trackers) {}
   Future<void> prepareTrackers(List<String> serverTrackers) async {}
@@ -24,8 +26,8 @@ class LocalTorrentEngine {
   }
 
   LocalStreamStats? currentStats() => null;
-  Future<void> stop({bool deleteFiles = true}) async {}
-  Future<void> purgeDownloads() async {}
+  Future<void> stop({bool deleteFiles = true, int? onlyGeneration}) async {}
+  Future<void> purgeDownloads({int? onlyGeneration}) async {}
   void keepDownloading({int preloadBytes = 32 * 1024 * 1024}) {}
   void seekTo({required int positionMs, int? durationMs}) {}
 }

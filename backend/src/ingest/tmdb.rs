@@ -3241,6 +3241,9 @@ pub struct PersonPage {
     /// Newest first; one entry per title with every role they had in it.
     pub acting: Vec<PersonCredit>,
     pub crew: Vec<PersonCredit>,
+    /// Credits left out while their content check runs in the background:
+    /// ask again shortly for them.
+    pub checking: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -3389,26 +3392,24 @@ pub async fn person_page(ctx: &IngestContext, person_id: i32) -> Result<PersonPa
     }
 
     // Catalog titles passed the content checks when they were stored. The
-    // rest get the same checks (TMDB's adult flag misses erotic films):
-    // anything explicit, or that can't be checked right now, is left out.
-    let unchecked: Vec<(i32, bool)> = acting
+    // rest get the same checks (TMDB's adult flag misses erotic films), which
+    // run in the background so the page opens at once: a credit shows only
+    // once it has passed, and `checking` says how many are still pending.
+    let unchecked: std::collections::HashSet<(i32, bool)> = acting
         .iter()
         .chain(&crew)
         .filter(|c| c.title_id.is_none())
         .map(|c| (c.tmdb_id, c.kind == "movie"))
-        .collect::<std::collections::HashSet<_>>()
-        .into_iter()
         .collect();
-    let verdicts: std::collections::HashMap<(i32, bool), bool> = stream::iter(unchecked)
-        .map(|key: (i32, bool)| {
-            let ctx = ctx.clone();
-            async move { (key, credit_is_clean(&ctx, key.0, key.1).await) }
-        })
-        .buffer_unordered(TMDB_CONCURRENCY)
-        .collect::<Vec<_>>()
-        .await
-        .into_iter()
-        .collect();
+    let verdicts: std::collections::HashMap<(i32, bool), bool> = {
+        let cache = credit_verdicts().lock().await;
+        unchecked.iter().filter_map(|k| cache.get(k).map(|v| (*k, *v))).collect()
+    };
+    let pending: Vec<(i32, bool)> = unchecked.into_iter().filter(|k| !verdicts.contains_key(k)).collect();
+    let checking = pending.len();
+    if !pending.is_empty() {
+        check_credits_in_background(ctx, pending).await;
+    }
     let keep = |c: &PersonCredit| {
         c.title_id.is_some() || verdicts.get(&(c.tmdb_id, c.kind == "movie")) == Some(&true)
     };
@@ -3426,7 +3427,36 @@ pub async fn person_page(ctx: &IngestContext, person_id: i32) -> Result<PersonPa
         profile_path: person.profile_path,
         acting,
         crew,
+        checking,
     })
+}
+
+/// Starts content checks for credits no one is checking yet; [person_page]
+/// picks up their verdicts on the next request.
+async fn check_credits_in_background(ctx: &IngestContext, credits: Vec<(i32, bool)>) {
+    static IN_FLIGHT: OnceLock<Mutex<std::collections::HashSet<(i32, bool)>>> = OnceLock::new();
+    let in_flight = IN_FLIGHT.get_or_init(|| Mutex::new(std::collections::HashSet::new()));
+    let fresh: Vec<(i32, bool)> = {
+        let mut running = in_flight.lock().await;
+        credits.into_iter().filter(|k| running.insert(*k)).collect()
+    };
+    if fresh.is_empty() {
+        return;
+    }
+    let ctx = ctx.clone();
+    tokio::spawn(async move {
+        stream::iter(fresh)
+            .map(|key: (i32, bool)| {
+                let ctx = ctx.clone();
+                async move {
+                    credit_is_clean(&ctx, key.0, key.1).await;
+                    in_flight.lock().await.remove(&key);
+                }
+            })
+            .buffer_unordered(TMDB_CONCURRENCY)
+            .collect::<Vec<_>>()
+            .await;
+    });
 }
 
 /// Content-check verdicts for filmography credits outside the catalog, so a

@@ -326,7 +326,7 @@ query SimilarTitlesPage($titleId: UUID!, $page: Int) {
 const String GET_PERSON = r'''
 query Person($tmdbId: Int!) {
   person(tmdbId: $tmdbId) {
-    tmdbId name biography birthday deathday placeOfBirth knownFor profileUrl
+    tmdbId name biography birthday deathday placeOfBirth knownFor profileUrl checkingCredits
     acting { tmdbId kind title role year posterUrl voteAverage titleId }
     crew { tmdbId kind title role year posterUrl voteAverage titleId }
   }

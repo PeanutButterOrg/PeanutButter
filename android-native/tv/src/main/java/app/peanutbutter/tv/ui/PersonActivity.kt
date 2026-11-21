@@ -22,7 +22,16 @@ class PersonActivity : FragmentActivity() {
         setContent { PersonScreen(ui, onBack = { finish() }, onOpen = ::open) }
         lifecycleScope.launch {
             try {
-                ui.person = application.asTv().api.person(tmdbId)
+                val api = application.asTv().api
+                var person = api.person(tmdbId)
+                ui.person = person
+                // The server is still checking some titles: they appear as they pass.
+                var tries = 0
+                while (person.checkingCredits > 0 && tries++ < 20) {
+                    kotlinx.coroutines.delay(3_000)
+                    person = runCatching { api.person(tmdbId) }.getOrNull() ?: continue
+                    ui.person = person
+                }
             } catch (e: Exception) {
                 ui.error = getString(R.string.person_load_failed)
             }

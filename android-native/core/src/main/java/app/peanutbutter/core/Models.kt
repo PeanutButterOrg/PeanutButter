@@ -141,6 +141,8 @@ data class PersonDetails(
     val profileUrl: String? = null,
     val acting: List<PersonCredit> = emptyList(),
     val crew: List<PersonCredit> = emptyList(),
+    /** Credits the server is still checking (left out for now): ask again shortly. */
+    val checkingCredits: Int = 0,
 )
 
 /** A title in a person's filmography; [titleId] is set when the catalog has it. */
