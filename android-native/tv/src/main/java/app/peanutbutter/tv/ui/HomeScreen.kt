@@ -85,6 +85,7 @@ import app.peanutbutter.tv.ui.compose.PbImage
 import app.peanutbutter.tv.ui.compose.PbLogo
 import app.peanutbutter.tv.ui.compose.PbRadius
 import app.peanutbutter.tv.ui.compose.PbSize
+import app.peanutbutter.tv.ui.compose.PbSpinner
 import app.peanutbutter.tv.ui.compose.PbSpace
 import app.peanutbutter.tv.ui.compose.PbType
 import app.peanutbutter.tv.ui.compose.PosterCard
@@ -185,7 +186,10 @@ fun HomeScreen(state: HomeState, actions: HomeActions) {
         val scrolled = list.firstVisibleItemIndex > 0 || list.firstVisibleItemScrollOffset > 120
         TopBar(state, actions, tabs, scrolled, down = if (layout?.hero.isNullOrEmpty()) FocusRequester.Default else play)
         if (state.loading) {
-            Box(Modifier.fillMaxSize().padding(top = PbSize.topBarHeightTv).background(PbColors.ground))
+            Box(
+                Modifier.fillMaxSize().padding(top = PbSize.topBarHeightTv).background(PbColors.ground),
+                contentAlignment = Alignment.Center,
+            ) { PbSpinner() }
         }
     }
 

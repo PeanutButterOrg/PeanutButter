@@ -1,5 +1,6 @@
 package app.peanutbutter.tv.ui.compose
 
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
@@ -506,6 +507,23 @@ fun PbLogo() {
                 withStyle(SpanStyle(color = PbColors.brand)) { append("Butter") }
             },
             style = PbType.h2.copy(fontSize = 22.sp, letterSpacing = (-0.2).sp),
+        )
+    }
+}
+
+/** The app's amber loading ring. */
+@Composable
+fun PbSpinner(modifier: Modifier = Modifier) {
+    val t = androidx.compose.animation.core.rememberInfiniteTransition(label = "spin")
+    val angle by t.animateFloat(
+        0f, 360f,
+        androidx.compose.animation.core.infiniteRepeatable(tween(900, easing = androidx.compose.animation.core.LinearEasing)),
+        label = "a",
+    )
+    Canvas(modifier.size(40.dp)) {
+        drawArc(
+            PbColors.primary, angle, 270f, false,
+            style = Stroke(3.dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round),
         )
     }
 }

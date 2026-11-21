@@ -2,7 +2,6 @@ package app.peanutbutter.tv.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -56,6 +55,7 @@ import app.peanutbutter.core.TitleItem
 import app.peanutbutter.tv.ui.compose.PbColors
 import app.peanutbutter.tv.ui.compose.PbRadius
 import app.peanutbutter.tv.ui.compose.PbSize
+import app.peanutbutter.tv.ui.compose.PbSpinner
 import app.peanutbutter.tv.ui.compose.PbSpace
 import app.peanutbutter.tv.ui.compose.PbType
 import app.peanutbutter.tv.ui.compose.PosterCard
@@ -173,7 +173,7 @@ fun LibraryScreen(state: LibraryState, onBack: () -> Unit, onOpen: (TitleItem) -
             }
             when {
                 state.loading -> item(key = "loading", span = { GridItemSpan(maxLineSpan) }) {
-                    Box(Modifier.fillMaxWidth().padding(48.dp), contentAlignment = Alignment.Center) { Spinner() }
+                    Box(Modifier.fillMaxWidth().padding(48.dp), contentAlignment = Alignment.Center) { PbSpinner() }
                 }
                 all.isEmpty() -> item(key = "empty", span = { GridItemSpan(maxLineSpan) }) {
                     BasicText(
@@ -207,21 +207,5 @@ private fun Tab(label: String, selected: Boolean, modifier: Modifier = Modifier,
         BasicText(label, style = PbType.button.copy(fontSize = 17.sp, color = if (selected || focused) PbColors.text else PbColors.textMuted))
         Spacer(Modifier.height(5.dp))
         Box(Modifier.width(line).height(2.dp).background(PbColors.primary, RoundedCornerShape(2.dp)))
-    }
-}
-
-@Composable
-private fun Spinner() {
-    val t = androidx.compose.animation.core.rememberInfiniteTransition(label = "spin")
-    val angle by t.animateFloat(
-        0f, 360f,
-        androidx.compose.animation.core.infiniteRepeatable(tween(900, easing = androidx.compose.animation.core.LinearEasing)),
-        label = "a",
-    )
-    androidx.compose.foundation.Canvas(Modifier.size(40.dp)) {
-        drawArc(
-            PbColors.primary, angle, 270f, false,
-            style = androidx.compose.ui.graphics.drawscope.Stroke(3.dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round),
-        )
     }
 }

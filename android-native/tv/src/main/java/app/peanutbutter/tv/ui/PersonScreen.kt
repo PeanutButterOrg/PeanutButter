@@ -189,9 +189,10 @@ private fun Header(state: PersonState, back: FocusRequester, onBack: () -> Unit)
 
 /** "Acting · Born 18 Dec 1963 in Shawnee, Oklahoma · Died …" */
 private fun personMeta(p: PersonDetails): String {
+    // SimpleDateFormat, not java.time: that needs Android 8 and TVs run 7.
     fun date(d: String): String = runCatching {
-        val parsed = java.time.LocalDate.parse(d)
-        parsed.format(java.time.format.DateTimeFormatter.ofPattern("d MMM yyyy", java.util.Locale.US))
+        val parsed = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).parse(d)!!
+        java.text.SimpleDateFormat("d MMM yyyy", java.util.Locale.US).format(parsed)
     }.getOrDefault(d)
     return listOfNotNull(
         p.knownFor,

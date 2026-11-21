@@ -110,7 +110,6 @@ android {
 
 dependencies {
     implementation(project(":core"))
-    implementation("androidx.leanback:leanback:1.0.0")
     // TV UI in Compose, matching the Flutter apps screen for screen.
     implementation(platform("androidx.compose:compose-bom:2025.01.01"))
     implementation("androidx.compose.ui:ui")

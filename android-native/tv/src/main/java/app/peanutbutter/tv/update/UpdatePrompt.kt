@@ -109,7 +109,9 @@ private fun showUpdateDialog(activity: FragmentActivity, update: AppUpdate) {
                 dismiss()
             },
             onPositive = { install() },
-            focusPositive = true,
+            // Later first: the card can pop up mid-browse, and a stray OK
+            // shouldn't start a download.
+            focusPositive = false,
         )
     }
 }

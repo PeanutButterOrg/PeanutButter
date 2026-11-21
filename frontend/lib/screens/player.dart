@@ -285,6 +285,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   /// Subtitle look (kept on this device) and delay (this video only).
   int _subSize = 1;
   String _subBg = 'box';
+  EdgeInsets? _subtitlePadding;
   double _subDelay = 0;
   static const _subSizes = [24.0, 32.0, 42.0, 54.0];
   int _lastSegmentFetchDuration = -1;
@@ -4706,6 +4707,19 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   Widget _videoSurface() {
     final controller = _controller;
     if (controller == null) return const SizedBox.shrink();
+    final subtitles = _subtitleView(_showChrome && _showSeekControls ? 150 : 28);
+    // media_kit reads the subtitle padding once, when the view is created:
+    // lift them over the controls (and back down) ourselves, or they sit
+    // under the seek bar while it shows.
+    if (subtitles.padding != _subtitlePadding) {
+      _subtitlePadding = subtitles.padding;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _videoKey.currentState?.setSubtitleViewPadding(
+          subtitles.padding,
+          duration: const Duration(milliseconds: 200),
+        );
+      });
+    }
     final video = Video(
       key: _videoKey,
       controller: controller,
@@ -4713,7 +4727,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
       aspectRatio: _picture.ratio,
       controls: _videoControls,
       wakelock: true,
-      subtitleViewConfiguration: _subtitleView(_showChrome && _showSeekControls ? 150 : 28),
+      subtitleViewConfiguration: subtitles,
       onEnterFullscreen: () async {
         if (mounted) setState(() => _inFullscreen = true);
         await _setNativeFullscreen(true);
