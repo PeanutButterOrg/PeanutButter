@@ -216,9 +216,9 @@ class TvPlayback(
 
     /** Lift captions when transport chrome is up so they aren't under the seek bar. */
     fun setSubtitlesChromeVisible(chromeVisible: Boolean) {
-        subtitles?.setBottomPaddingFraction(
-            if (chromeVisible) SUBTITLE_PAD_CHROME else SUBTITLE_PAD_IDLE,
-        )
+        val pad = if (chromeVisible) SUBTITLE_PAD_CHROME else SUBTITLE_PAD_IDLE
+        subtitles?.setBottomPaddingFraction(pad)
+        srtOverlay.bottomFraction = pad
     }
 
     override fun attachSurface(view: SurfaceView?) {
@@ -534,6 +534,6 @@ class TvPlayback(
         /** Fraction of view height reserved below captions (idle / chrome up). */
         private val SUB_SCALES = floatArrayOf(0.8f, 1f, 1.3f, 1.65f)
         private const val SUBTITLE_PAD_IDLE = 0.10f
-        private const val SUBTITLE_PAD_CHROME = 0.22f
+        private const val SUBTITLE_PAD_CHROME = 0.28f
     }
 }

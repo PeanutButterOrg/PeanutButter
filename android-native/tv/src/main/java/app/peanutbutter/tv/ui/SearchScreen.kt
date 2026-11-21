@@ -172,8 +172,12 @@ private fun SearchField(state: SearchState, actions: SearchActions, outer: Focus
     val pill = RoundedCornerShape(PbRadius.pill)
     var value by remember { mutableStateOf(TextFieldValue(state.query)) }
     // Voice and recent picks set the query from outside.
+    // Typed text comes back as state.query a frame later; only resync on
+    // other changes, or keys typed in between are dropped.
+    var sent by remember { mutableStateOf(state.query) }
     LaunchedEffect(state.query) {
-        if (state.query != value.text) value = TextFieldValue(state.query, TextRange(state.query.length))
+        if (state.query != sent && state.query != value.text) value = TextFieldValue(state.query, TextRange(state.query.length))
+        sent = state.query
     }
     LaunchedEffect(editing) {
         if (editing) {
@@ -204,6 +208,7 @@ private fun SearchField(state: SearchState, actions: SearchActions, outer: Focus
                     value = value,
                     onValueChange = {
                         value = it
+                        sent = it.text
                         actions.setQuery(it.text)
                     },
                     singleLine = true,

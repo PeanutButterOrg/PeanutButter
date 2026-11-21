@@ -1,5 +1,6 @@
 package app.peanutbutter.tv.player
 
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.unit.sp
 import android.widget.Toast
 import androidx.fragment.app.FragmentActivity
@@ -312,15 +313,18 @@ private fun KeyCard(
     onCancel: () -> Unit,
     onSave: () -> Unit,
 ) {
+    val save = androidx.compose.runtime.remember { androidx.compose.ui.focus.FocusRequester() }
     app.peanutbutter.tv.ui.DialogCard {
         androidx.compose.foundation.text.BasicText(title, style = app.peanutbutter.tv.ui.compose.PbType.h2)
         androidx.compose.foundation.layout.Spacer(androidx.compose.ui.Modifier.height(16.dp))
-        fields.forEach { (value, hint, onChange) ->
+        fields.forEachIndexed { i, (value, hint, onChange) ->
             app.peanutbutter.tv.ui.compose.PbTextField(
                 value, onChange, hint,
                 androidx.compose.ui.Modifier.fillMaxWidth().padding(bottom = 10.dp),
                 password = password,
                 keyboardType = if (password) androidx.compose.ui.text.input.KeyboardType.Password else androidx.compose.ui.text.input.KeyboardType.Uri,
+                // Done on the last field lands on Save.
+                onDone = { if (i == fields.lastIndex) runCatching { save.requestFocus() } },
             )
         }
         androidx.compose.foundation.layout.Spacer(androidx.compose.ui.Modifier.height(12.dp))
@@ -329,7 +333,10 @@ private fun KeyCard(
             modifier = androidx.compose.ui.Modifier.align(androidx.compose.ui.Alignment.End),
         ) {
             app.peanutbutter.tv.ui.compose.PbButton(activityString(android.R.string.cancel), null, primary = false, onClick = onCancel)
-            app.peanutbutter.tv.ui.compose.PbButton(activityString(R.string.subs_save), null, primary = true, onClick = onSave)
+            app.peanutbutter.tv.ui.compose.PbButton(
+                activityString(R.string.subs_save), null, primary = true, onClick = onSave,
+                modifier = androidx.compose.ui.Modifier.focusRequester(save),
+            )
         }
     }
 }

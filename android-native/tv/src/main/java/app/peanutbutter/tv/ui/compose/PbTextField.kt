@@ -56,8 +56,12 @@ fun PbTextField(
     val input = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
     var field by remember { mutableStateOf(TextFieldValue(value, TextRange(value.length))) }
+    // Our own edits come back as [value] a frame later; resyncing on those
+    // would roll the field back and drop keys typed in between.
+    var sent by remember { mutableStateOf(value) }
     LaunchedEffect(value) {
-        if (value != field.text) field = TextFieldValue(value, TextRange(value.length))
+        if (value != sent && value != field.text) field = TextFieldValue(value, TextRange(value.length))
+        sent = value
     }
     LaunchedEffect(editing) {
         if (editing) {
@@ -90,6 +94,7 @@ fun PbTextField(
                     value = field,
                     onValueChange = {
                         field = it
+                        sent = it.text
                         onValueChange(it.text)
                     },
                     singleLine = true,
