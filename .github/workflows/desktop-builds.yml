@@ -261,12 +261,24 @@ jobs:
       # a fixed key the old cache still counted as a hit, so the 25-minute rebuild
       # ran every time and was never saved. Key on the image; restore-keys still
       # reuses an older cache whenever vcpkg finds it compatible.
+      # The plugin DLL itself, built once and reused: it only changes with the
+      # plugin's native code. A hit skips vcpkg (~26 min on its cache misses,
+      # which every new runner image causes); the plugin then uses it as its
+      # prebuilt DLL. Bump v1 to force a rebuild (e.g. a libtorrent update).
+      - name: Restore libtorrent_flutter DLL
+        id: ltf-dll
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: frontend/plugins/libtorrent_flutter/prebuilt/windows/x64
+          key: ltf-windows-x64-dll-v1-${{ hashFiles('frontend/plugins/libtorrent_flutter/src/**', 'frontend/plugins/libtorrent_flutter/windows/**') }}
       - name: Read runner image version
         id: runner-image
+        if: steps.ltf-dll.outputs.cache-hit != 'true'
         shell: pwsh
         run: echo "version=$env:ImageVersion" >> $env:GITHUB_OUTPUT
       - name: Restore vcpkg cache
         id: vcpkg-cache
+        if: steps.ltf-dll.outputs.cache-hit != 'true'
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ${{ runner.temp }}/vcpkg-bincache
@@ -286,7 +298,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "vcpkg install libtorrent failed" }
           "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - name: Save vcpkg cache
-        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        if: steps.ltf-dll.outputs.cache-hit != 'true' && steps.vcpkg-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ${{ runner.temp }}/vcpkg-bincache
@@ -309,6 +321,23 @@ jobs:
           }
           Write-Host "Release dir: $src"
           "dir=$src" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      # Keep the freshly built plugin DLL for the next runs (see above).
+      - name: Keep libtorrent_flutter DLL
+        if: steps.ltf-dll.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $dll = Join-Path "${{ steps.winout.outputs.dir }}" "libtorrent_flutter.dll"
+          if (-not (Test-Path $dll)) { throw "libtorrent_flutter.dll not found in the build output" }
+          $dest = "plugins/libtorrent_flutter/prebuilt/windows/x64"
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          Copy-Item -Force $dll $dest
+      - name: Save libtorrent_flutter DLL
+        if: steps.ltf-dll.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: frontend/plugins/libtorrent_flutter/prebuilt/windows/x64
+          key: ltf-windows-x64-dll-v1-${{ hashFiles('frontend/plugins/libtorrent_flutter/src/**', 'frontend/plugins/libtorrent_flutter/windows/**') }}
 
       - name: Bundle VC++ runtime and verify DLLs
         shell: pwsh
