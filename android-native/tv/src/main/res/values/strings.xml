@@ -212,4 +212,10 @@
     <string name="tab_torrents">Torrents  %1$d</string>
     <string name="tab_direct">Direct links  %1$d</string>
     <string name="direct_link">Direct link</string>
+    <string name="menu_picture">Picture</string>
+    <string name="menu_audio">Audio</string>
+    <string name="subs_language_section">Subtitle language</string>
+    <string name="subs_add_section">Add subtitles</string>
+    <string name="subs_online_section">Find online</string>
+    <string name="next_season">Next Season</string>
 </resources>

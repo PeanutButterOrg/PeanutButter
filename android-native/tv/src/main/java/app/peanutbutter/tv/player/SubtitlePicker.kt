@@ -1,13 +1,12 @@
 package app.peanutbutter.tv.player
 
 import android.app.AlertDialog
-import app.peanutbutter.tv.ui.showRoundListDialog
 import android.text.InputType
 import android.view.inputmethod.EditorInfo
 import android.view.ViewGroup
 import android.widget.EditText
 import android.widget.LinearLayout
-import android.widget.TextView
+import androidx.compose.ui.unit.sp
 import android.widget.Toast
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.lifecycleScope
@@ -23,9 +22,10 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 
-/** Player caption menu: embedded tracks, OpenSubtitles, Wyzie (lazy download), or a link. */
+/** Player Subtitles menu: look, embedded tracks, OpenSubtitles, Wyzie (lazy download), or a link. */
 class SubtitlePicker(
     private val activity: FragmentActivity,
+    private val ui: PlayerUi,
     private val player: () -> PlaybackEngine?,
     private val api: ApiClient,
     private val titleId: () -> String?,
@@ -44,148 +44,80 @@ class SubtitlePicker(
             }
             val tracks = player()?.listTextTracks().orEmpty()
             val langs = app.peanutbutter.core.ContentLanguages.subtitleLanguages(languages())
-            val options = ArrayList<Pair<String, () -> Unit>>()
-            // As on desktop: the look (size, background, delay) comes first.
-            // Only when this player can apply at least one of them (VLC: delay only).
-            val hasStyle = player()?.canStyleSubtitles == true || player()?.canDelaySubtitles == true
-            if (hasStyle) {
-                options += activity.getString(R.string.subs_style) to { showStyle() }
-            }
-            options += activity.getString(R.string.subs_off) to { player()?.selectTextTrack(null) }
-            tracks.forEach { (id, label) ->
-                options += label to { player()?.selectTextTrack(id) }
-            }
             val current = player()?.selectedTextTrackId
-            val checked = (if (hasStyle) 1 else 0) + if (current == null) 0 else tracks.indexOfFirst { it.first == current } + 1
+            val rows = ArrayList<MenuRow>()
+            // As on desktop: the look (size, background, delay) comes first.
+            rows += styleRows()
+            rows += MenuRow.Section(activity.getString(R.string.subs_language_section))
+            rows += MenuRow.Option(activity.getString(R.string.subs_off), checked = current == null) {
+                player()?.selectTextTrack(null)
+            }
+            tracks.forEach { (id, label) ->
+                rows += MenuRow.Option(label, checked = id == current) { player()?.selectTextTrack(id) }
+            }
+            rows += MenuRow.Section(activity.getString(R.string.subs_add_section))
+            rows += MenuRow.Option(activity.getString(R.string.subs_from_link)) { promptLink() }
             val subsReady = info?.subtitlesConfigured == true ||
                 info?.opensubtitlesConfigured == true ||
                 info?.wyzieConfigured == true
             if (subsReady) {
+                rows += MenuRow.Section(activity.getString(R.string.subs_online_section))
                 if (info?.wyzieConfigured == true) {
                     // One search per language (it used to be the first only).
                     langs.forEach { code ->
-                        options += activity.getString(R.string.subs_search_wyzie, code.uppercase()) to {
+                        rows += MenuRow.Option(activity.getString(R.string.subs_search_wyzie, code.uppercase())) {
                             searchWyzie(code)
                         }
                     }
                 }
                 if (info?.opensubtitlesConfigured == true) {
                     langs.forEach { code ->
-                        val label = activity.getString(R.string.subs_download, code.uppercase())
-                        options += label to { fetchOpenSubtitles(code) }
+                        rows += MenuRow.Option(activity.getString(R.string.subs_download, code.uppercase())) {
+                            fetchOpenSubtitles(code)
+                        }
                     }
                 }
             } else if (info != null) {
-                options += activity.getString(R.string.subs_add_key) to { promptKey() }
+                rows += MenuRow.Option(activity.getString(R.string.subs_add_key)) { promptKey() }
             }
-            options += activity.getString(R.string.subs_from_link) to { promptLink() }
-            showList(activity.getString(R.string.subs_title), options, checked)
+            ui.openMenu(PlayerMenu(activity.getString(R.string.subs_title), rows))
         }
     }
 
-    /** Size, Background and Delay, each a row of chips in the app's panel. */
-    private fun showStyle() {
-        val view = android.view.LayoutInflater.from(activity).inflate(R.layout.dialog_list, null)
-        view.findViewById<TextView>(R.id.dialog_title).text = activity.getString(R.string.subs_style_title)
-        val list = view.findViewById<LinearLayout>(R.id.dialog_list)
-        val done = view.findViewById<TextView>(R.id.dialog_negative)
-        done.setText(R.string.done)
-        val density = activity.resources.displayMetrics.density
-        fun dp(v: Int) = (v * density).toInt()
-        fun label(text: Int) = TextView(activity).apply {
-            setText(text)
-            textSize = 12f
-            letterSpacing = 0.1f
-            setTypeface(typeface, android.graphics.Typeface.BOLD)
-            setTextColor(activity.getColor(R.color.pbt_text_faint))
-            setPadding(0, dp(10), 0, dp(6))
-        }
-        fun chip(text: String, textSp: Float = 15f) = TextView(activity).apply {
-            this.text = text
-            textSize = textSp
-            gravity = android.view.Gravity.CENTER
-            isFocusable = true
-            isFocusableInTouchMode = true
-            setBackgroundResource(R.drawable.choice_chip)
-            minWidth = dp(64)
-            setPadding(dp(14), 0, dp(14), 0)
-        }
-        fun row(chips: List<TextView>): LinearLayout = LinearLayout(activity).apply {
-            orientation = LinearLayout.HORIZONTAL
-            chips.forEachIndexed { i, c ->
-                addView(c, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(40)).apply {
-                    if (i > 0) marginStart = dp(8)
-                })
-            }
-        }
-        fun paint(chips: List<TextView>, picked: Int) = chips.forEachIndexed { i, c ->
-            c.isSelected = i == picked
-            c.setTextColor(activity.getColor(if (i == picked) R.color.pbt_on_primary else R.color.pbt_text))
-        }
-
-        val sizeChips = (0 until 4).map { chip("A", 13f + it * 3) }
-        val bgKeys = listOf("shadow", "outline", "box")
-        val bgChips = listOf(R.string.subs_bg_shadow, R.string.subs_bg_outline, R.string.subs_bg_box)
-            .map { chip(activity.getString(it)) }
-        paint(sizeChips, SubtitleLook.size(activity))
-        paint(bgChips, bgKeys.indexOf(SubtitleLook.background(activity)).coerceAtLeast(0))
-        sizeChips.forEachIndexed { i, c ->
-            c.setOnClickListener {
+    /** Size, Background and Delay, the desktop's box at the top of the menu. */
+    private fun styleRows(): List<MenuRow> {
+        val rows = ArrayList<MenuRow>()
+        if (player()?.canStyleSubtitles == true) {
+            rows += MenuRow.Segments(
+                label = activity.getString(R.string.subs_size),
+                choices = List(4) { "A" },
+                choiceSizes = List(4) { (13f + it * 3.5f).sp },
+                selected = SubtitleLook.size(activity),
+            ) { i ->
                 SubtitleLook.save(activity, size = i)
-                paint(sizeChips, i)
                 SubtitleLook.apply(activity, player())
             }
-        }
-        bgChips.forEachIndexed { i, c ->
-            c.setOnClickListener {
+            val bgKeys = listOf("shadow", "outline", "box")
+            rows += MenuRow.Segments(
+                label = activity.getString(R.string.subs_background),
+                choices = listOf(R.string.subs_bg_shadow, R.string.subs_bg_outline, R.string.subs_bg_box)
+                    .map { activity.getString(it) },
+                selected = bgKeys.indexOf(SubtitleLook.background(activity)).coerceAtLeast(0),
+            ) { i ->
                 SubtitleLook.save(activity, background = bgKeys[i])
-                paint(bgChips, i)
                 SubtitleLook.apply(activity, player())
             }
-        }
-        val canStyle = player()?.canStyleSubtitles == true
-        if (canStyle) {
-            list.addView(label(R.string.subs_size))
-            list.addView(row(sizeChips))
-            list.addView(label(R.string.subs_background))
-            list.addView(row(bgChips))
         }
         if (player()?.canDelaySubtitles == true) {
-            val value = TextView(activity).apply {
-                gravity = android.view.Gravity.CENTER
-                textSize = 15f
-                setTextColor(activity.getColor(R.color.pbt_text))
-                minWidth = dp(96)
-            }
-            fun show() {
-                value.text = String.format(java.util.Locale.US, "%.1f s", delayMs() / 1000.0)
-            }
-            fun step(by: Long) {
-                val next = delayMs() + by
+            fun text(ms: Long) = String.format(java.util.Locale.US, "%.1f s", ms / 1000.0)
+            rows += MenuRow.Stepper(activity.getString(R.string.subs_delay), text(delayMs())) { dir ->
+                val next = delayMs() + dir * 100L
                 setDelayMs(next)
                 player()?.setSubtitleDelay(next)
-                show()
+                text(next)
             }
-            val minus = chip("−").apply { setOnClickListener { step(-100) } }
-            val plus = chip("+").apply { setOnClickListener { step(100) } }
-            show()
-            list.addView(label(R.string.subs_delay))
-            list.addView(LinearLayout(activity).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = android.view.Gravity.CENTER_VERTICAL
-                addView(minus, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(40)))
-                addView(value, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(40)))
-                addView(plus, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(40)))
-            })
         }
-        val dialog = AlertDialog.Builder(activity).setView(view).create()
-        done.setOnClickListener { dialog.dismiss() }
-        dialog.setOnShowListener {
-            dialog.window?.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT))
-            if (canStyle) sizeChips[SubtitleLook.size(activity)].requestFocus() else done.requestFocus()
-        }
-        dialog.show()
-        dialog.window?.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT))
+        return rows
     }
 
     private fun searchWyzie(language: String) {
@@ -348,8 +280,8 @@ class SubtitlePicker(
         input.requestFocus()
     }
 
-    private fun showList(title: String, options: List<Pair<String, () -> Unit>>, checked: Int = -1) {
-        showRoundListDialog(activity, title, options.map { it.first }, checked) { which -> options[which].second() }
+    private fun showList(title: String, options: List<Pair<String, () -> Unit>>) {
+        ui.openMenu(PlayerMenu(title, options.map { (label, pick) -> MenuRow.Option(label, onPick = pick) }))
     }
 
     private fun writeSubtitle(name: String, content: String): File {
