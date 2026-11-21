@@ -82,6 +82,10 @@
             android:exported="false" />
 
         <activity
+            android:name=".ui.PersonActivity"
+            android:exported="false" />
+
+        <activity
             android:name=".player.PlayerActivity"
             android:configChanges="keyboard|keyboardHidden|navigation"
             android:exported="false"

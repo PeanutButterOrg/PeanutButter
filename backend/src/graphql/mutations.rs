@@ -3,7 +3,7 @@ use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::graphql::types::{
-    MutationResult, StreamSession, Subtitle, SubtitleHit, Title, TitleInput,
+    MutationResult, StreamSession, Subtitle, SubtitleHit, Title, TitleInput, TitleKind,
 };
 use crate::ingest::{self, IngestContext};
 use crate::AppState;
@@ -98,6 +98,23 @@ impl Mutation {
         .bind(&input.backdrop_url)
         .execute(&state.pool)
         .await?;
+        state.gql_cache.invalidate();
+        let full = fetch_title(&state.pool, id).await?;
+        Ok(Title::from_row(full, &state.config.public_url))
+    }
+
+    /// The catalog title for a TMDB id, stored first if the catalog doesn't
+    /// have it (a credit on a person's page).
+    async fn open_tmdb_title(
+        &self,
+        ctx: &Context<'_>,
+        tmdb_id: i32,
+        kind: TitleKind,
+    ) -> async_graphql::Result<Title> {
+        let state = ctx.data::<AppState>()?;
+        let ingest = IngestContext::from(state);
+        let kind = if matches!(kind, TitleKind::Movie) { "movie" } else { "series" };
+        let id = crate::ingest::tmdb::title_for_tmdb(&ingest, tmdb_id, kind).await?;
         state.gql_cache.invalidate();
         let full = fetch_title(&state.pool, id).await?;
         Ok(Title::from_row(full, &state.config.public_url))

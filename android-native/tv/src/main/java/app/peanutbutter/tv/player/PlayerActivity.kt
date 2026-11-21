@@ -1,6 +1,5 @@
 package app.peanutbutter.tv.player
 
-import android.app.AlertDialog
 import android.content.Intent
 import android.os.Bundle
 import android.os.Handler
@@ -9,16 +8,9 @@ import android.util.Log
 import android.view.KeyEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
-import android.view.View
-import android.widget.FrameLayout
-import android.widget.ImageButton
-import android.widget.ProgressBar
-import android.widget.SeekBar
-import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
-import androidx.core.view.isVisible
-import androidx.core.widget.doAfterTextChanged
+import androidx.compose.ui.platform.ComposeView
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.lifecycleScope
 import app.peanutbutter.core.AppLog
@@ -30,11 +22,8 @@ import app.peanutbutter.core.TitleItem
 import app.peanutbutter.core.StreamSession
 import app.peanutbutter.core.TorrentClient
 import app.peanutbutter.core.TorrentFilePicker
-import app.peanutbutter.tv.ui.showRoundListDialog
-import app.peanutbutter.tv.PbGlide
 import app.peanutbutter.tv.R
 import app.peanutbutter.tv.asTv
-import app.peanutbutter.tv.ui.showRoundDialog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -89,28 +78,17 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
     /** The episode number the release uses, when the catalog numbers it differently. */
     private var fileEpisode: Int? = null
 
-    private var titleView: TextView? = null
-    private var statusView: TextView? = null
-    private var busy: ProgressBar? = null
-    private var topProgress: ProgressBar? = null
-    private var chromeTop: View? = null
-    private var chromeBottom: View? = null
-    private var posterHud: View? = null
-    private var seek: SeekBar? = null
-    private var timePos: TextView? = null
-    private var timeDur: TextView? = null
-    private var btnPlay: ImageButton? = null
-    private var btnRew: ImageButton? = null
-    private var btnFf: ImageButton? = null
-    private var overlayActions: View? = null
-    private var btnSkip: TextView? = null
-    private var btnNext: TextView? = null
-    private var btnSubs: View? = null
-    private var btnAspect: View? = null
-    private var btnAudio: View? = null
-    /** Speed / peers / buffer chip above the transport (desktop player's chip). */
-    private var statsChip: TextView? = null
-    private var leaveDialog: AlertDialog? = null
+    /** Everything drawn over the video ([PlayerOverlay]). */
+    private val ui = PlayerUi()
+    /** The label the player was opened with ("Show S01E02"); saved with the resume point. */
+    private var fullTitle = ""
+    /** Status line: the pre-play banner, and the stats chip once playing. */
+    private var statusText: String
+        get() = ui.status
+        set(value) {
+            ui.status = value
+            ui.stats = if (isStream) value else null
+        }
 
     private var segments: List<MediaSegment> = emptyList()
     private var activeSegment: MediaSegment? = null
@@ -158,7 +136,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
 
     private val hideChrome = Runnable { setChrome(false) }
     /** Short rebuffers shouldn't flash a spinner. */
-    private val showRebufferSpinner = Runnable { if (streamOpened) busy?.isVisible = true }
+    private val showRebufferSpinner = Runnable { if (streamOpened) ui.spinner = true }
     private val endCountdown = object : Runnable {
         override fun run() {
             if (stopped) return
@@ -167,7 +145,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                 if (!isFinishing) finish()
                 return
             }
-            btnNext?.text = getString(R.string.play_next_countdown, endCountdownLeft)
+            ui.nextTitle = getString(R.string.play_next_countdown, endCountdownLeft)
             main.postDelayed(this, 1_000L)
         }
     }
@@ -187,38 +165,18 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         // Keep watching if the catalog API pairing is revoked mid-stream.
         app.peanutbutter.core.AuthEvents.onPlaybackStarted()
         setContentView(R.layout.activity_player)
-        titleView = findViewById(R.id.title)
-        statusView = findViewById(R.id.status)
-        busy = findViewById(R.id.busy)
-        topProgress = findViewById(R.id.top_progress)
-        chromeTop = findViewById(R.id.chrome_top)
-        chromeBottom = findViewById(R.id.chrome_bottom)
-        posterHud = findViewById(R.id.poster_hud)
-        seek = findViewById(R.id.seek)
-        timePos = findViewById(R.id.time_pos)
-        timeDur = findViewById(R.id.time_dur)
-        btnPlay = findViewById(R.id.btn_play)
-        btnRew = findViewById(R.id.btn_rew)
-        btnFf = findViewById(R.id.btn_ff)
-        overlayActions = findViewById(R.id.overlay_actions)
-        btnSkip = findViewById(R.id.btn_skip)
-        btnNext = findViewById(R.id.btn_next)
-        btnNext?.setText(R.string.play_next)
-        overlayActions?.bringToFront()
-        btnSubs = findViewById(R.id.btn_subs)
-        btnAspect = findViewById(R.id.btn_aspect)
-        btnAudio = findViewById(R.id.btn_audio)
-        statsChip = findViewById(R.id.stats_chip)
-        // Every status update also feeds the chip shown while playing.
-        statusView?.doAfterTextChanged { statsChip?.text = it }
+        ui.leaveTitle = getString(R.string.leave_player_title)
+        ui.leaveMessage = getString(R.string.leave_player_message)
+        ui.leaveStay = getString(R.string.keep_watching)
+        ui.leaveGo = getString(R.string.leave_player)
+        ui.onLeave = { finish() }
+        ui.nextTitle = getString(R.string.play_next)
+        findViewById<ComposeView>(R.id.player_ui).setContent { PlayerOverlay(ui) }
 
         // Cover first — avoid black frame while torrent/player wake up.
-        posterHud?.isVisible = true
-        val art = intent.getStringExtra(EXTRA_BACKDROP)?.takeIf { it.isNotBlank() }
+        ui.preparing = true
+        ui.art = intent.getStringExtra(EXTRA_BACKDROP)?.takeIf { it.isNotBlank() }
             ?: intent.getStringExtra(EXTRA_POSTER)
-        if (!art.isNullOrBlank()) {
-            PbGlide.playerBackdrop(findViewById(R.id.poster_art), art)
-        }
         applyBufferingChrome()
 
         val surface = findViewById<SurfaceView>(R.id.surface)
@@ -260,13 +218,11 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             AppLog.i(TAG, "prefer software decode (hevc/10bit hint)")
         }
         application.asTv().activeStreamSession = sessionId
-        titleView?.text = title
-        statusView?.text = getString(R.string.finding_peers)
+        setTitleText(title)
+        statusText = getString(R.string.finding_peers)
         // Pre-play HUD: center spinner + top buffer bar while finding peers / buffering.
-        busy?.isVisible = true
-        topProgress?.isVisible = true
-        topProgress?.progress = 0
-        topProgress?.secondaryProgress = 0
+        ui.spinner = true
+        ui.bufferPct = null
 
         pendingUrl = if (localTorrent || directUrl != null) {
             // Direct links go to their own host: never append this device's key.
@@ -280,25 +236,6 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         // Only attach when we already have a URL (library files / resumed local).
         if (surfaceReady && !pendingUrl.isNullOrBlank()) attachAndPlay()
 
-        btnRew?.setOnClickListener { seekBy(-10_000); showChrome() }
-        btnFf?.setOnClickListener { seekBy(10_000); showChrome() }
-        btnPlay?.setOnClickListener { togglePlay() }
-        btnSkip?.setOnClickListener { pulseAction(btnSkip) { skipActiveSegment() } }
-        btnNext?.setOnClickListener { pulseAction(btnNext) { playNextEpisode() } }
-        btnSubs?.setOnClickListener { pulseAction(btnSubs) { openSubtitles() } }
-        btnAspect?.setOnClickListener { pulseAction(btnAspect) { openAspect() } }
-        btnAudio?.setOnClickListener { pulseAction(btnAudio) { openAudio() } }
-        listOfNotNull(btnSkip, btnNext).forEach { chip ->
-            chip.setOnFocusChangeListener { v, hasFocus ->
-                v.animate().cancel()
-                v.animate()
-                    .scaleX(if (hasFocus) 1.08f else 1f)
-                    .scaleY(if (hasFocus) 1.08f else 1f)
-                    .setDuration(120)
-                    .start()
-            }
-        }
-
         // API 34+ routes Back through OnBackPressedDispatcher (not only onKeyDown).
         // Without this callback the activity finishes and skips the exit dialog.
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
@@ -307,80 +244,6 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             }
         })
 
-        listOfNotNull(btnRew, btnPlay, btnFf, btnAspect, btnAudio, btnSubs, seek, btnSkip, btnNext).forEach {
-            it.isFocusable = true
-            it.isFocusableInTouchMode = true
-        }
-
-        seek?.max = SEEK_MAX
-        // D-pad steps by time, not a share of the file (2% was 2.4 min on a long
-        // film); holding the key speeds up.
-        seek?.setOnKeyListener { _, code, event ->
-            val sign = when (code) {
-                KeyEvent.KEYCODE_DPAD_LEFT -> -1L
-                KeyEvent.KEYCODE_DPAD_RIGHT -> 1L
-                else -> return@setOnKeyListener false
-            }
-            if (event.action == KeyEvent.ACTION_DOWN) {
-                val step = when {
-                    event.repeatCount >= 20 -> 60_000L
-                    event.repeatCount >= 8 -> 30_000L
-                    else -> 10_000L
-                }
-                seekBy(sign * step)
-            }
-            true
-        }
-        seek?.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
-                if (!fromUser) return
-                val mp = player ?: return
-                val len = mp.length.coerceAtLeast(0)
-                if (len <= 0) return
-                val target = (progress.toDouble() / SEEK_MAX * len).toLong()
-                // Ignore a single spurious jump-to-zero while mid-playback (common on TV
-                // focus/key events). Real scrub-to-start needs several left ticks.
-                if (target < 2_000L && lastGoodPosMs > 15_000L && progress <= SEEK_MAX / 40) {
-                    val nearStartSteps = progress
-                    if (nearStartSteps == 0 && seekTargetMs < 0) return
-                }
-                seekTargetMs = target
-                userSeeking = true
-                timePos?.text = formatMs(target)
-                statusView?.text = "Seeking ${formatMs(target)}…"
-                // Debounce — UI only on each tick; commit once settling.
-                main.removeCallbacks(commitSeek)
-                seekToken++
-                val token = seekToken
-                main.postDelayed({
-                    if (token != seekToken) return@postDelayed
-                    commitPendingSeek()
-                }, 700L)
-            }
-
-            override fun onStartTrackingTouch(sb: SeekBar?) {
-                userSeeking = true
-                showChrome()
-                main.removeCallbacks(commitSeek)
-            }
-
-            override fun onStopTrackingTouch(sb: SeekBar?) {
-                // Keep userSeeking true until commit finishes — otherwise the progress
-                // ticker overwrites the thumb before we apply the scrub.
-                if (seekTargetMs >= 0) {
-                    seekToken++
-                    val token = seekToken
-                    main.removeCallbacks(commitSeek)
-                    main.postDelayed({
-                        if (token != seekToken) return@postDelayed
-                        commitPendingSeek()
-                    }, 80L)
-                } else {
-                    userSeeking = false
-                }
-                scheduleHideChrome()
-            }
-        })
 
         val sid = sessionId
         if (localTorrent) {
@@ -392,24 +255,22 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                 attachAndPlay()
                 startLocalStatusPolling()
             } else {
-                statusView?.text = getString(R.string.stream_start_failed)
-                busy?.isVisible = false
+                statusText = getString(R.string.stream_start_failed)
+                ui.spinner = false
             }
         } else if (!pendingUrl.isNullOrBlank()) {
             attachAndPlay()
         } else {
-            statusView?.text = getString(R.string.stream_start_failed)
-            busy?.isVisible = false
-            topProgress?.isVisible = false
+            statusText = getString(R.string.stream_start_failed)
+            ui.spinner = false
         }
         showChrome()
     }
 
     private suspend fun startLocalTorrentAndPlay(magnetUri: String) {
         AppLog.i(TAG, "startLocalTorrent season=$seasonNum episode=$episodeNum fileEpisode=$fileEpisode")
-        statusView?.text = getString(R.string.finding_peers)
-        busy?.isVisible = true
-        topProgress?.isVisible = true
+        statusText = getString(R.string.finding_peers)
+        ui.spinner = true
         // Build Exo while the swarm fills so attach isn't delayed after 100%.
         ensurePlayer(forceExo = true)
         try {
@@ -439,7 +300,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             mediaAttached = false
             streamOpened = false
             // Already on Main (lifecycleScope) — open Exo immediately, no extra post hop.
-            statusView?.text = getString(R.string.starting_stream)
+            statusText = getString(R.string.starting_stream)
             ensurePlayer(forceExo = true)
             attachAndPlay()
             startLocalStatusPolling()
@@ -447,10 +308,9 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             AppLog.e(TAG, "startLocalTorrent failed", t)
             torrentStartFailed = true // late stats must not repaint over the error
             if (!stopped) {
-                statusView?.text = t.message?.takeIf { it.isNotBlank() }
+                statusText = t.message?.takeIf { it.isNotBlank() }
                     ?: getString(R.string.stream_start_failed)
-                busy?.isVisible = false
-                topProgress?.isVisible = false
+                ui.spinner = false
             }
         }
     }
@@ -495,7 +355,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         val torrentFrac = (stats.bufferPct / 100.0).coerceIn(0.0, 1.0)
         val session = StreamSession(
             id = sessionId.orEmpty(),
-            title = titleView?.text?.toString().orEmpty(),
+            title = fullTitle,
             progress = fileFrac,
             bufferProgress = torrentFrac,
             downloadMbps = stats.downloadMbps,
@@ -541,12 +401,8 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         // Pre-play only: never re-open the top buffer bar after playback starts
         // (status polls + brief Exo BUFFERING were flashing it randomly).
         if (!streamOpened) {
-            topProgress?.isVisible = true
-            topProgress?.progress = bufPct.coerceIn(0, 100)
-            topProgress?.secondaryProgress = bufPct.coerceIn(0, 100)
+            ui.bufferPct = bufPct.coerceIn(0, 100)
             applyBufferingChrome()
-        } else {
-            topProgress?.isVisible = false
         }
 
         val hasSwarm = session.peers > 0 || session.seeders > 0 || session.downloadMbps > 0.01
@@ -578,16 +434,15 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         }
         applyStatusLine(line)
         // Spinner while waiting for first playable data — never on user pause.
-        if (!streamOpened) busy?.isVisible = !userSeeking && !userPaused
+        if (!streamOpened) ui.spinner = !userSeeking && !userPaused
         if (userPaused || streamOpened) {
-            topProgress?.isVisible = false
-            posterHud?.isVisible = false
+            ui.preparing = false
         }
     }
 
     private fun applyStatusLine(line: String) {
         if (userSeeking || seekTargetMs >= 0) return
-        statusView?.text = line
+        statusText = line
     }
 
     /** Buffering X% · download · peers — never upload, never duplicate 0.0 KB/s. */
@@ -685,7 +540,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
     private fun playbackListener() = object : PlaybackEngine.Listener {
             override fun onOpening() {
                 main.post {
-                    statusView?.text = "Opening…"
+                    statusText = "Opening…"
                     Log.i(TAG, "ExoPlayer opening")
                 }
             }
@@ -705,11 +560,9 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                             applyStatusLine(
                                 torrentStatusLine(buf, mbps, tick?.peers ?: 0),
                             )
-                            topProgress?.isVisible = true
-                            topProgress?.progress = buf
-                            topProgress?.secondaryProgress = buf
+                            ui.bufferPct = buf
                         }
-                        busy?.isVisible = true
+                        ui.spinner = true
                         applyBufferingChrome()
                         // File already on disk / torrent ready but demuxer idle —
                         // nudge play so we don't sit at Buffering 100% forever.
@@ -720,7 +573,6 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                             runCatching { player?.play() }
                         }
                     } else {
-                        topProgress?.isVisible = false
                         if (chromeVisible && !userSeeking && !userPaused && percent < 100) {
                             val mbps = lastSession?.downloadMbps ?: 0.0
                             applyStatusLine(underrunBufferLine(mbps))
@@ -753,19 +605,17 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                     prePlayRecoveries = 0
                     mediaAttachAtMs = 0L
                     cancelBufferStallWatch()
-                    topProgress?.progress = 100
-                    topProgress?.secondaryProgress = 100
-                    topProgress?.isVisible = false
-                    posterHud?.isVisible = false
+                    ui.bufferPct = 100
+                    ui.preparing = false
                     renderTransport()
                     if (firstOpen) {
                         // Clean start: hide transport; Skip/Next may appear on their own layer.
                         // Only here: this also fires after every pause, seek and rebuffer,
                         // where it closed the controls and took focus from the user.
-                        busy?.isVisible = false
+                        ui.spinner = false
                         chromeVisible = false
                         applyPlayingChrome(showTransport = false)
-                        findViewById<View>(R.id.player_root)?.requestFocus()
+                        ui.focused = null
                         main.removeCallbacks(tickProgress)
                         main.post(tickProgress)
                     } else {
@@ -779,14 +629,12 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                 main.post {
                     userPaused = true
                     exoBuffering = false
-                    if (!userSeeking) statusView?.text = "Paused"
+                    if (!userSeeking) statusText = "Paused"
                     renderTransport()
                     // User pause ≠ underrun buffering — show full transport chrome.
-                    topProgress?.isVisible = false
                     applyPlayingChrome(showTransport = true)
                     showChrome()
-                    val focus = currentFocus
-                    if (focus == null || focus.id == R.id.player_root) btnPlay?.requestFocus()
+                    if (ui.focused == null) ui.focused = Ctl.PLAY
                 }
             }
 
@@ -801,7 +649,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                     if (isDecoderError && hwDecode) {
                         hwDecode = false
                         mediaAttached = false
-                        statusView?.text = "Retrying with FFmpeg…"
+                        statusText = "Retrying with FFmpeg…"
                         attachAndPlay()
                         return@post
                     }
@@ -815,12 +663,12 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                         softErrorCount++
                         val recover = lastGoodPosMs.coerceAtLeast(0L)
                         val mbps = lastSession?.downloadMbps ?: 0.0
-                        statusView?.text = if (mbps > 0.05) {
+                        statusText = if (mbps > 0.05) {
                             String.format(java.util.Locale.US, "Buffering… · %.1f MB/s", mbps)
                         } else {
                             "Buffering…"
                         }
-                        busy?.isVisible = true
+                        ui.spinner = true
                         if (localTorrent) {
                             TorrentClient.retargetPlayhead(
                                 recover,
@@ -850,11 +698,11 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                         }, delayMs)
                         return@post
                     }
-                    statusView?.text = getString(R.string.playback_error)
-                    busy?.isVisible = false
+                    statusText = getString(R.string.playback_error)
+                    ui.spinner = false
                     showChrome()
                     renderTransport()
-                    btnPlay?.requestFocus()
+                    ui.focused = Ctl.PLAY
                 }
             }
 
@@ -869,7 +717,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             override fun onDuration(durationMs: Long) {
                 if (durationMs > 0) {
                     lastKnownDurationMs = durationMs
-                    main.post { timeDur?.text = formatMs(durationMs) }
+                    main.post { ui.durMs = durationMs }
                 }
             }
     }
@@ -891,8 +739,8 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             falseEofCount++
             val recover = lastGoodPosMs.coerceAtLeast(0)
             Log.w(TAG, "false EOF #$falseEofCount — resume at $recover (len=$len)")
-            statusView?.text = "Reconnecting…"
-            busy?.isVisible = true
+            statusText = "Reconnecting…"
+            ui.spinner = true
             if (localTorrent) {
                 TorrentClient.retargetPlayhead(recover, len.coerceAtLeast(0))
             }
@@ -909,21 +757,21 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             // Still mid-file after many reconnects: never close the movie on a
             // false end. Keep the player open so OK / Play retries from here.
             Log.w(TAG, "false EOF limit reached at $pos (len=$len) — staying open")
-            statusView?.text = getString(R.string.playback_error)
-            busy?.isVisible = false
+            statusText = getString(R.string.playback_error)
+            ui.spinner = false
             saveWatchProgress(force = true)
             showChrome()
             return
         }
-        statusView?.text = "Ended"
+        statusText = "Ended"
         saveWatchProgress(force = true, complete = true)
         if (stopped || isFinishing) return
         // Same as desktop / phone: offer the next episode for 30 s, then leave.
         if (nextEpisode != null) {
             endCountdownLeft = END_COUNTDOWN_S
-            btnNext?.text = getString(R.string.play_next_countdown, endCountdownLeft)
+            ui.nextTitle = getString(R.string.play_next_countdown, endCountdownLeft)
             showPlayNext(true)
-            btnNext?.requestFocus()
+            ui.focused = Ctl.NEXT
             main.removeCallbacks(endCountdown)
             main.postDelayed(endCountdown, 1_000L)
             return
@@ -935,7 +783,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         if (endCountdownLeft <= 0) return
         endCountdownLeft = 0
         main.removeCallbacks(endCountdown)
-        btnNext?.setText(R.string.play_next)
+        ui.nextTitle = getString(R.string.play_next)
     }
 
     /**
@@ -945,7 +793,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
     private fun renderTransport() {
         val mp = player ?: return
         val showPlay = !mp.wantsToPlay || mp.needsRestart
-        btnPlay?.setImageResource(if (showPlay) R.drawable.ic_play_arrow else R.drawable.ic_pause)
+        ui.showPlayIcon = showPlay
         if (!streamOpened) return
         userPaused = !mp.wantsToPlay
         if (localTorrent && userPaused != pausedSentToEngine) {
@@ -956,7 +804,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         if (mp.isBuffering && (mp.wantsToPlay || userSeeking)) {
             main.postDelayed(showRebufferSpinner, REBUFFER_SPINNER_DELAY_MS)
         } else {
-            busy?.isVisible = false
+            ui.spinner = false
         }
         scheduleHideChrome()
     }
@@ -1076,7 +924,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             mediaAttachAtMs = System.currentTimeMillis()
             mp.open(url, start, preferSoftware = !hwDecode, headers = if (url == directUrl) directHeaders else emptyMap())
             runCatching { mp.play() }
-            statusView?.text = getString(R.string.starting_stream)
+            statusText = getString(R.string.starting_stream)
             // Watchdog: if onPlaying never fires, reopen from the next stats tick.
             main.postDelayed({
                 if (stopped || streamOpened || userPaused) return@postDelayed
@@ -1087,8 +935,8 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             }, PRE_PLAY_REOPEN_MS + 1_000L)
         } catch (e: Exception) {
             Log.e(TAG, "attachAndPlay failed", e)
-            statusView?.text = e.message ?: getString(R.string.playback_error)
-            busy?.isVisible = false
+            statusText = e.message ?: getString(R.string.playback_error)
+            ui.spinner = false
             mediaAttached = false
             mediaAttachAtMs = 0L
         }
@@ -1099,7 +947,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         userSeeking = true
         seekToken++
         val token = seekToken
-        statusView?.text = "Seeking ${formatMs(seekTargetMs)}…"
+        statusText = "Seeking ${formatMs(seekTargetMs)}…"
         cancelEndCountdown()
         main.removeCallbacks(commitSeek)
         main.postDelayed({
@@ -1128,7 +976,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             mp.seekTo(target)
             lastGoodPosMs = target
             recoveryAnchorMs = target
-            statusView?.text = "Buffering at ${formatMs(target)}…"
+            statusText = "Buffering at ${formatMs(target)}…"
         } catch (e: Exception) {
             Log.e(TAG, "seek failed", e)
         }
@@ -1244,16 +1092,14 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         }
         activeSegment = opening
         val showSkip = opening != null
-        val wasSkip = btnSkip?.isVisible == true
+        val wasSkip = ui.skipLabel != null
         if (showSkip) {
-            btnSkip?.text = opening?.label?.ifBlank { null } ?: getString(R.string.skip_intro)
+            ui.skipLabel = opening?.label?.ifBlank { null } ?: getString(R.string.skip_intro)
             // Don't take focus from someone using the controls.
-            revealActionChip(btnSkip, focusIfNew = !wasSkip && !chromeVisible)
-        } else if (wasSkip && currentFocus === btnSkip) {
-            btnSkip?.isVisible = false
-            findViewById<View>(R.id.player_root)?.requestFocus()
+            if (!wasSkip && !chromeVisible) ui.focused = Ctl.SKIP
         } else {
-            btnSkip?.isVisible = false
+            ui.skipLabel = null
+            if (ui.focused == Ctl.SKIP) ui.focused = null
         }
         val nearEnd = dur > 60_000 && (pos >= dur - 45_000 || pos.toDouble() / dur >= 0.97)
         val inCredits = segments.any { it.kind.equals("CREDITS", true) && it.contains(pos, dur) }
@@ -1266,130 +1112,98 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         showPlayNext(
             !nextBusy && (endCountdownLeft > 0 || (!showSkip && (nearEnd || inCredits) && nextEpisode != null)),
         )
-        updateOverlayFocusChain()
-        placeSkipButtons(chromeVisible)
     }
 
     private fun showPlayNext(show: Boolean) {
         if (!show) {
-            if (playNextVisible && currentFocus === btnNext) {
-                findViewById<View>(R.id.player_root)?.requestFocus()
-            }
+            if (ui.focused == Ctl.NEXT) ui.focused = null
             playNextVisible = false
-            btnNext?.isVisible = false
-            updateOverlayFocusChain()
+            ui.nextShown = false
             return
         }
         val was = playNextVisible
         playNextVisible = true
+        ui.nextLabel = nextEpisode?.let {
+            String.format(java.util.Locale.US, "%s · S%02dE%02d", it.catalogTitle, it.season, it.episode)
+        }
+        ui.nextShown = true
         // Own layer — do not dump the whole transport chrome.
-        revealActionChip(btnNext, focusIfNew = !was && !chromeVisible)
-        updateOverlayFocusChain()
+        if (!was && !chromeVisible) ui.focused = Ctl.NEXT
     }
 
-    /** Fade + scale in an action chip; optionally take focus without showing transport. */
-    private fun revealActionChip(chip: TextView?, focusIfNew: Boolean) {
-        val view = chip ?: return
-        overlayActions?.bringToFront()
-        overlayActions?.alpha = 1f
-        if (!view.isVisible) {
-            view.alpha = 0f
-            view.scaleX = 0.92f
-            view.scaleY = 0.92f
-            view.isVisible = true
-            view.animate()
-                .alpha(1f)
-                .scaleX(1f)
-                .scaleY(1f)
-                .setDuration(180)
-                .start()
-        } else {
-            view.alpha = 1f
-            view.scaleX = 1f
-            view.scaleY = 1f
-        }
-        if (focusIfNew) {
-            view.post { view.requestFocus() }
-        }
+    /** Press feedback: the control shrinks a moment, then [then] runs. */
+    private fun pulseAction(ctl: Ctl, then: () -> Unit) {
+        ui.pressed = ctl
+        main.postDelayed({
+            ui.pressed = null
+            then()
+        }, 120L)
     }
 
-    /** Press feedback shared by Skip / Next / Aspect / Subs. */
-    private fun pulseAction(view: View?, then: () -> Unit) {
-        val v = view ?: run { then(); return }
-        v.isPressed = true
-        v.animate().cancel()
-        v.animate()
-            .scaleX(0.94f)
-            .scaleY(0.94f)
-            .setDuration(70)
-            .withEndAction {
-                v.animate()
-                    .scaleX(1f)
-                    .scaleY(1f)
-                    .setDuration(110)
-                    .withEndAction {
-                        v.isPressed = false
-                        then()
-                        // Restore focus only if the chip is still on screen (Skip hides itself).
-                        if (v.isShown && v.isFocusable) v.requestFocus()
-                    }
-                    .start()
+    /** OK on the lit control. */
+    private fun activate(ctl: Ctl) {
+        when (ctl) {
+            Ctl.BACK -> pulseAction(ctl) { handleBackPress() }
+            Ctl.AUDIO -> pulseAction(ctl) { openAudio() }
+            Ctl.SUBS -> pulseAction(ctl) { openSubtitles() }
+            Ctl.ASPECT -> pulseAction(ctl) { openAspect() }
+            Ctl.REW -> {
+                seekBy(-10_000)
+                showChrome()
             }
-            .start()
-    }
-
-    /** Keep Skip / Play Next reachable from the transport row after focus leaves. */
-    private fun updateOverlayFocusChain() {
-        val skipVisible = btnSkip?.isVisible == true
-        val nextVisible = btnNext?.isVisible == true
-        val actionId = when {
-            skipVisible -> R.id.btn_skip
-            nextVisible -> R.id.btn_next
-            else -> View.NO_ID
-        }
-        btnPlay?.nextFocusUpId = if (actionId != View.NO_ID) actionId else R.id.seek
-        btnRew?.nextFocusUpId = if (actionId != View.NO_ID) actionId else R.id.seek
-        btnFf?.nextFocusUpId = if (actionId != View.NO_ID) actionId else R.id.seek
-        // Skip / Next sit bottom-left: reached by Left from the transport.
-        btnFf?.nextFocusRightId = View.NO_ID
-        btnRew?.nextFocusLeftId = if (actionId != View.NO_ID) actionId else View.NO_ID
-        seek?.nextFocusUpId = when {
-            skipVisible -> R.id.btn_skip
-            nextVisible -> R.id.btn_next
-            else -> R.id.btn_subs
-        }
-        if (skipVisible) {
-            btnSkip?.nextFocusDownId = if (chromeVisible) R.id.seek else View.NO_ID
-            btnSkip?.nextFocusRightId = if (chromeVisible) R.id.btn_rew else View.NO_ID
-            btnSkip?.nextFocusUpId = if (chromeVisible) R.id.btn_subs else View.NO_ID
-            btnSkip?.nextFocusLeftId = View.NO_ID
-        }
-        if (nextVisible) {
-            btnNext?.nextFocusDownId = if (chromeVisible) R.id.seek else View.NO_ID
-            btnNext?.nextFocusRightId = if (chromeVisible) R.id.btn_rew else View.NO_ID
-            btnNext?.nextFocusUpId = if (skipVisible) R.id.btn_skip else {
-                if (chromeVisible) R.id.btn_subs else View.NO_ID
+            Ctl.FF -> {
+                seekBy(10_000)
+                showChrome()
             }
-            btnNext?.nextFocusLeftId = View.NO_ID
+            Ctl.PLAY, Ctl.SEEK -> togglePlay()
+            Ctl.SKIP -> pulseAction(ctl) { skipActiveSegment() }
+            Ctl.NEXT -> pulseAction(ctl) { playNextEpisode() }
         }
     }
 
-    private fun raiseSkipButtons() {
-        overlayActions?.bringToFront()
+    /** The chip shown bottom-left, if any (Skip and Play Next never show together). */
+    private fun visibleChip(): Ctl? = when {
+        ui.skipLabel != null -> Ctl.SKIP
+        ui.nextShown -> Ctl.NEXT
+        else -> null
     }
 
-    private fun placeSkipButtons(chromeUp: Boolean) {
-        val overlay = overlayActions ?: return
-        val lp = overlay.layoutParams as? FrameLayout.LayoutParams ?: return
-        val d = resources.displayMetrics.density
-        // Bottom-left like the desktop player; above the transport when it's up.
-        lp.gravity = android.view.Gravity.BOTTOM or android.view.Gravity.START
-        lp.bottomMargin = ((if (chromeUp) 176 else 48) * d).toInt()
-        lp.marginStart = (48 * d).toInt()
-        lp.marginEnd = 0
-        overlay.layoutParams = lp
-        overlay.bringToFront()
-        overlay.alpha = 1f
+    /**
+     * D-pad between the controls, laid out like the desktop player:
+     * Back · title · Audio · Subtitles · Picture on top, the seek bar, then
+     * −10 · Play · +10. Skip / Play Next sit bottom-left, left of −10.
+     */
+    private fun moveFocus(from: Ctl, keyCode: Int): Ctl? {
+        val chip = visibleChip()
+        val top = listOfNotNull(Ctl.BACK, Ctl.AUDIO.takeIf { ui.audioChoice }, Ctl.SUBS, Ctl.ASPECT)
+        val transport = listOf(Ctl.REW, Ctl.PLAY, Ctl.FF)
+        return when (keyCode) {
+            KeyEvent.KEYCODE_DPAD_LEFT -> when (from) {
+                in top -> top.getOrNull(top.indexOf(from) - 1)
+                Ctl.REW -> chip
+                in transport -> transport[transport.indexOf(from) - 1]
+                else -> null
+            }
+            KeyEvent.KEYCODE_DPAD_RIGHT -> when (from) {
+                in top -> top.getOrNull(top.indexOf(from) + 1)
+                in transport -> transport.getOrNull(transport.indexOf(from) + 1)
+                Ctl.SKIP, Ctl.NEXT -> Ctl.REW
+                else -> null
+            }
+            KeyEvent.KEYCODE_DPAD_UP -> when (from) {
+                in transport -> chip ?: Ctl.SEEK
+                Ctl.SEEK -> chip ?: Ctl.SUBS
+                Ctl.SKIP, Ctl.NEXT -> Ctl.SUBS
+                else -> null
+            }
+            KeyEvent.KEYCODE_DPAD_DOWN -> when (from) {
+                in top -> chip ?: Ctl.SEEK
+                Ctl.SKIP, Ctl.NEXT -> Ctl.SEEK
+                Ctl.SEEK -> Ctl.PLAY
+                else -> null
+            }
+            else -> null
+        }
     }
 
     private fun playNextEpisode() {
@@ -1401,15 +1215,11 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         // which would close the player mid-lookup). The loading card stays.
         cancelEndCountdown()
         showPlayNext(false)
-        statusView?.text = getString(R.string.looking_up_sources)
+        statusText = getString(R.string.looking_up_sources)
         // Finding a source takes a while: stop the old episode and say what's happening.
         val wasPlaying = player?.wantsToPlay == true
         runCatching { player?.pause() }
-        val loading = findViewById<View>(R.id.next_loading)
-        findViewById<TextView>(R.id.next_loading_label).text =
-            String.format(java.util.Locale.US, "%s · S%02dE%02d", next.catalogTitle, next.season, next.episode)
-        loading.isVisible = true
-        loading.bringToFront()
+        ui.nextLoading = String.format(java.util.Locale.US, "%s · S%02dE%02d", next.catalogTitle, next.season, next.episode)
         lifecycleScope.launch {
             try {
                 saveWatchProgress(force = true, complete = true)
@@ -1450,13 +1260,13 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                 nextBusy = false
                 // Handed off: stay covered until the new player takes over.
                 if (!handedOffToNext) {
-                    loading.isVisible = false
+                    ui.nextLoading = null
                     if (wasPlaying) {
                         // Still watching this episode, so keep saving its position.
                         markedComplete = false
                         runCatching { player?.play() }
                     }
-                    if (btnNext?.isVisible == true) btnNext?.requestFocus()
+                    if (ui.nextShown) ui.focused = Ctl.NEXT
                 }
             }
         }
@@ -1470,17 +1280,9 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         skippedSegment = seg
         activeSegment = null
         // Hide chip after the pulse; keep focus on root so transport doesn't steal it.
-        btnSkip?.isVisible = false
-        findViewById<View>(R.id.player_root)?.requestFocus()
-        updateOverlayFocusChain()
-        statusView?.text = getString(R.string.skip_intro)
-        chromeTop?.isVisible = true
-        chromeTop?.alpha = 1f
-        main.postDelayed({
-            if (!chromeVisible && streamOpened && !userPaused) {
-                chromeTop?.animate()?.alpha(0f)?.setDuration(220)?.start()
-            }
-        }, 1_200L)
+        ui.skipLabel = null
+        ui.focused = null
+        showHud(getString(R.string.skip_intro))
         queueSeek(target, settleMs = 100L)
     }
 
@@ -1513,12 +1315,12 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         if (len > 0 && target > len) target = len
         // Optimistic UI
         if (len > 0) {
-            seek?.progress = ((target.toDouble() / len) * SEEK_MAX).toInt().coerceIn(0, SEEK_MAX)
+            ui.durMs = len
         }
-        timePos?.text = formatMs(target)
+        ui.posMs = target
         queueSeek(target, settleMs = if (isStream) 700L else 50L)
         // Scrubbing shows transport; Skip-driven seeks do not (they call queueSeek directly).
-        if (currentFocus !== btnSkip && currentFocus !== btnNext) {
+        if (ui.focused != Ctl.SKIP && ui.focused != Ctl.NEXT) {
             showChrome()
         }
     }
@@ -1537,19 +1339,21 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             stallRecoverCount = 0
             softErrorCount = 0
         }
-        if (chromeVisible) btnSubs?.isSelected = mp.selectedTextTrackId != null
+        ui.subsOn = mp.selectedTextTrackId != null
+        ui.canSeek = len > 0
         if (len > 0) {
-            seek?.progress = ((pos.toDouble() / len) * SEEK_MAX).toInt().coerceIn(0, SEEK_MAX)
             // Lighter track = what's ready to play: the player's own buffer (at most
             // a minute) or, usually further, what the torrent has without gaps.
+            // The playhead can read a few ms past the length in the last second;
+            // coerceIn(pos, len) then threw and the player crashed at every ending.
             val buffered = maxOf(mp.bufferedPositionMs, (torrentDownloadedTo * len).toLong())
-                .coerceIn(pos, len)
-            seek?.secondaryProgress = ((buffered.toDouble() / len) * SEEK_MAX).toInt().coerceIn(0, SEEK_MAX)
-            timeDur?.text = formatMs(len)
+                .coerceIn(pos.coerceAtMost(len), len)
+            ui.bufMs = buffered
+            ui.durMs = len
         } else {
-            timeDur?.text = "--:--"
+            ui.durMs = 0
         }
-        timePos?.text = formatMs(pos)
+        ui.posMs = pos
         saveWatchProgress()
     }
 
@@ -1585,7 +1389,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         // them apart by the http(s) scheme.
         val mag = magnet ?: directUrl
         val sid = sessionId.orEmpty().ifBlank { "local" }
-        val titleText = titleView?.text?.toString()
+        val titleText = fullTitle
         val write = suspend {
             api.updateProgress(
                 titleId = id,
@@ -1624,33 +1428,16 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
     }
 
     private fun showChrome() {
-        chromeTop?.animate()?.cancel()
-        chromeBottom?.animate()?.cancel()
         if (!streamOpened) {
             // Pre-play only: title + buffer status (no transport).
             chromeVisible = true
             applyBufferingChrome()
             main.removeCallbacks(hideChrome)
-            placeSkipButtons(false)
-            syncSubtitlePad()
-            return
-        }
-        // Already showing — only refresh the auto-hide timer. Re-running the
-        // fade-in (alpha 0→1) on every D-pad press made the bar blink.
-        if (chromeVisible &&
-            chromeBottom?.isVisible == true &&
-            (chromeBottom?.alpha ?: 0f) > 0.85f
-        ) {
-            scheduleHideChrome()
-            placeSkipButtons(true)
-            updateOverlayFocusChain()
             syncSubtitlePad()
             return
         }
         chromeVisible = true
         applyPlayingChrome(showTransport = true)
-        placeSkipButtons(true)
-        updateOverlayFocusChain()
         scheduleHideChrome()
         syncSubtitlePad()
     }
@@ -1666,67 +1453,19 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
     private fun isBufferingUi(): Boolean = !streamOpened
 
     private fun applyBufferingChrome() {
-        chromeTop?.isVisible = true
-        chromeTop?.alpha = 1f
-        btnAspect?.isVisible = false
-        btnSubs?.isVisible = false
-        btnAudio?.isVisible = false
-        chromeBottom?.isVisible = false
-        topProgress?.isVisible = true
-        posterHud?.isVisible = true
+        ui.preparing = true
+        ui.chrome = false
+        // Back is the one control before playback (OK on it asks to leave).
+        if (ui.focused == null) ui.focused = Ctl.BACK
         main.removeCallbacks(hideChrome)
-        syncActionChipVisibility()
     }
 
     private fun applyPlayingChrome(showTransport: Boolean) {
-        posterHud?.isVisible = false
-        topProgress?.isVisible = false
-        chromeTop?.animate()?.cancel()
-        chromeBottom?.animate()?.cancel()
-        if (showTransport) {
-            chromeVisible = true
-            chromeTop?.isVisible = true
-            chromeBottom?.isVisible = true
-            btnAspect?.isVisible = true
-            btnSubs?.isVisible = true
-            btnAudio?.isVisible = hasAltAudio()
-            // Only fade in when coming from hidden — never reset alpha to 0 first.
-            val topA = chromeTop?.alpha ?: 0f
-            val botA = chromeBottom?.alpha ?: 0f
-            if (topA < 0.95f) {
-                chromeTop?.animate()?.alpha(1f)?.setDuration(180)?.start()
-            } else {
-                chromeTop?.alpha = 1f
-            }
-            if (botA < 0.95f) {
-                chromeBottom?.animate()?.alpha(1f)?.setDuration(180)?.start()
-            } else {
-                chromeBottom?.alpha = 1f
-            }
-        } else {
-            chromeVisible = false
-            chromeTop?.animate()?.alpha(0f)?.setDuration(220)?.start()
-            chromeBottom?.animate()?.alpha(0f)?.setDuration(220)?.withEndAction {
-                if (!chromeVisible) chromeBottom?.isVisible = false
-            }?.start()
-            btnAspect?.isVisible = false
-            btnSubs?.isVisible = false
-            btnAudio?.isVisible = false
-        }
-        syncActionChipVisibility()
+        ui.preparing = false
+        chromeVisible = showTransport
+        ui.audioChoice = hasAltAudio()
+        ui.chrome = showTransport
         syncSubtitlePad()
-    }
-
-    private fun syncActionChipVisibility() {
-        // Title only on top once playing; live status moves to the chip.
-        statusView?.isVisible = !streamOpened
-        statsChip?.isVisible = streamOpened && isStream && chromeVisible &&
-            !statsChip?.text.isNullOrBlank()
-        overlayActions?.bringToFront()
-        overlayActions?.alpha = 1f
-        if (btnSkip?.isVisible == true) btnSkip?.alpha = 1f
-        if (btnNext?.isVisible == true) btnNext?.alpha = 1f
-        placeSkipButtons(chromeVisible && !isBufferingUi())
     }
 
     private fun setChrome(visible: Boolean) {
@@ -1738,37 +1477,19 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         if (!visible && streamOpened && !userSeeking) {
             applyPlayingChrome(showTransport = false)
             main.removeCallbacks(hideChrome)
-            // Keep focus on Skip/Next if they're up; otherwise clear to root.
-            when {
-                btnSkip?.isVisible == true && (currentFocus === btnSkip || currentFocus === btnNext) ->
-                    btnSkip?.requestFocus()
-                btnNext?.isVisible == true && currentFocus === btnNext ->
-                    btnNext?.requestFocus()
-                // Back to the chip, so OK skips as it did before the controls opened.
-                btnSkip?.isVisible == true -> btnSkip?.requestFocus()
-                btnNext?.isVisible == true -> btnNext?.requestFocus()
-                else -> findViewById<View>(R.id.player_root)?.requestFocus()
-            }
-            updateOverlayFocusChain()
+            // Back to the chip, so OK skips as it did before the controls opened.
+            ui.focused = visibleChip()
         } else if (visible) {
             showChrome()
         }
     }
 
     private fun overlaysVisible(): Boolean {
-        if (leaveDialog?.isShowing == true) return false
         // Pre-play / buffering chrome is not dismissible via Back — Back exits.
         if (isBufferingUi()) return false
         if (chromeVisible) return true
-        if ((chromeTop?.alpha ?: 0f) > 0.2f && (btnAspect?.isVisible == true || btnSubs?.isVisible == true)) {
-            return true
-        }
-        if ((chromeBottom?.alpha ?: 0f) > 0.2f && chromeBottom?.isVisible == true) return true
         // Skip/Next alone count as an overlay so Back can dismiss focus cleanly.
-        if (btnSkip?.isVisible == true || btnNext?.isVisible == true) {
-            if (currentFocus === btnSkip || currentFocus === btnNext) return true
-        }
-        return false
+        return ui.focused == Ctl.SKIP || ui.focused == Ctl.NEXT
     }
 
     private fun hidePlayerUi() {
@@ -1777,27 +1498,27 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             return
         }
         // If focus is on Skip/Next, first Back clears focus but keeps the chip.
-        if (currentFocus === btnSkip || currentFocus === btnNext) {
-            findViewById<View>(R.id.player_root)?.requestFocus()
+        if (ui.focused == Ctl.SKIP || ui.focused == Ctl.NEXT) {
+            ui.focused = null
             if (!chromeVisible) return
         }
         setChrome(false)
         main.removeCallbacks(hideChrome)
-        findViewById<View>(R.id.player_root)?.requestFocus()
+        ui.focused = null
     }
 
     private fun scheduleHideChrome() {
         main.removeCallbacks(hideChrome)
         // Not while a menu is open or the player is paused: the controls stay up.
-        if (streamOpened && !userSeeking && !userPaused && chromeVisible && hasWindowFocus()) {
+        if (streamOpened && !userSeeking && !userPaused && chromeVisible && hasWindowFocus() && !ui.overlayOpen) {
             main.postDelayed(hideChrome, hideDelayMs)
         }
     }
 
     /** Shared by onKeyDown + OnBackPressedDispatcher — never finishes unless user confirms Leave. */
     private fun handleBackPress() {
-        if (leaveDialog?.isShowing == true) {
-            leaveDialog?.dismiss()
+        if (ui.back()) {
+            scheduleHideChrome()
             return
         }
         // While finding peers / buffering: Back always shows leave dialog.
@@ -1818,12 +1539,37 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        val code = event.keyCode
+        // Menus and cards take the remote while they're open (Back too).
+        if (ui.overlayOpen && code != KeyEvent.KEYCODE_VOLUME_UP && code != KeyEvent.KEYCODE_VOLUME_DOWN &&
+            code != KeyEvent.KEYCODE_VOLUME_MUTE
+        ) {
+            if (event.action == KeyEvent.ACTION_DOWN) {
+                if (code == KeyEvent.KEYCODE_BACK || code == KeyEvent.KEYCODE_ESCAPE) {
+                    if (event.repeatCount == 0) handleBackPress()
+                } else {
+                    ui.overlayKey(code)
+                }
+                if (!ui.overlayOpen) scheduleHideChrome()
+            }
+            return true
+        }
         // Before playback only the controls are dead; volume keys must still work.
-        if (!streamOpened && event.keyCode in PLAYER_KEYS) return true
+        // Back still reaches the leave card.
+        if (!streamOpened && code in PLAYER_KEYS) {
+            if (event.action == KeyEvent.ACTION_DOWN && ui.focused == Ctl.BACK &&
+                (code == KeyEvent.KEYCODE_DPAD_CENTER || code == KeyEvent.KEYCODE_ENTER)
+            ) {
+                confirmLeave()
+            }
+            return true
+        }
         if (event.action == KeyEvent.ACTION_DOWN && chromeVisible) {
             hideDelayMs = CHROME_HIDE_MS
             scheduleHideChrome()
         }
+        // Every key goes through onKeyDown: there are no focusable views.
+        if (event.action == KeyEvent.ACTION_DOWN) return onKeyDown(code, event) || super.dispatchKeyEvent(event)
         return super.dispatchKeyEvent(event)
     }
 
@@ -1834,7 +1580,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             if ((event?.repeatCount ?: 0) == 0) handleBackPress()
             return true
         }
-        if (!streamOpened) return super.onKeyDown(keyCode, event)
+        if (!streamOpened) return false
 
         // Media keys work wherever focus is. Only the first press of a held key toggles.
         val firstPress = (event?.repeatCount ?: 0) == 0
@@ -1860,229 +1606,183 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                 return true
             }
             KeyEvent.KEYCODE_MEDIA_NEXT -> {
-                if (firstPress && btnNext?.isVisible == true) playNextEpisode()
+                if (firstPress && ui.nextShown) playNextEpisode()
                 return true
             }
         }
 
-        val focus = currentFocus
-        val onActionChip = focus === btnSkip || focus === btnNext
-        val onTransport = focus === btnPlay || focus === btnRew || focus === btnFf ||
-            focus === btnAspect || focus === btnAudio || focus === btnSubs || focus === seek
-
-        // Skip / Next are their own layer — never force the full transport bar.
-        if (onActionChip) {
-            scheduleHideChrome()
-            // The chips sit bottom-left: Right goes to the transport.
-            if (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT || keyCode == KeyEvent.KEYCODE_DPAD_DOWN ||
-                keyCode == KeyEvent.KEYCODE_DPAD_LEFT
-            ) {
-                if (chromeVisible) {
-                    when (keyCode) {
-                        KeyEvent.KEYCODE_DPAD_RIGHT -> btnRew?.requestFocus()
-                        KeyEvent.KEYCODE_DPAD_DOWN -> seek?.requestFocus()
-                    }
-                    return true
-                }
-                // Controls hidden: open them. This used to do nothing, so during an
-                // intro or the credits the controls could not be reached at all.
-                showChrome()
-                btnPlay?.requestFocus()
-                return true
-            }
-            return super.onKeyDown(keyCode, event)
-        }
-
-        // OK / Enter always toggles playback and reveals chrome (even over soft buttons).
-        if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER ||
+        val isOk = keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER ||
             keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER || keyCode == KeyEvent.KEYCODE_SPACE
-        ) {
-            if (firstPress) togglePlay()
+        val isMove = keyCode == KeyEvent.KEYCODE_DPAD_LEFT || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT ||
+            keyCode == KeyEvent.KEYCODE_DPAD_UP || keyCode == KeyEvent.KEYCODE_DPAD_DOWN
+        val focus = ui.focused
+
+        // A control is lit: OK presses it, arrows move between controls.
+        if (focus != null && (chromeVisible || focus == Ctl.SKIP || focus == Ctl.NEXT)) {
+            if (isOk) {
+                if (firstPress) activate(focus)
+                if (focus != Ctl.SKIP && focus != Ctl.NEXT) showChrome() else scheduleHideChrome()
+                return true
+            }
+            if (!isMove) return false
+            // Skip / Next are their own layer: with the controls hidden any arrow opens them.
+            if (!chromeVisible) {
+                showChrome()
+                ui.focused = Ctl.SEEK
+                return true
+            }
+            // The seek bar steps by time; holding the key speeds up.
+            if (focus == Ctl.SEEK &&
+                (keyCode == KeyEvent.KEYCODE_DPAD_LEFT || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT)
+            ) {
+                val repeat = event?.repeatCount ?: 0
+                val step = when {
+                    repeat >= 20 -> 60_000L
+                    repeat >= 8 -> 30_000L
+                    else -> 10_000L
+                }
+                seekBy(if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT) -step else step)
+                return true
+            }
+            moveFocus(focus, keyCode)?.let { ui.focused = it }
             showChrome()
-            btnPlay?.requestFocus()
             return true
         }
 
-        if (onTransport && keyCode in listOf(
-                KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT,
-                KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN,
-            )
-        ) {
+        // OK / Enter toggles playback and reveals the controls.
+        if (isOk) {
+            if (firstPress) togglePlay()
             showChrome()
-            // Skip / Play Next sit bottom-left: Up from the transport, or Left
-            // from Rewind, reaches them.
-            val toChip = (keyCode == KeyEvent.KEYCODE_DPAD_UP &&
-                (focus === btnPlay || focus === btnRew || focus === btnFf || focus === seek)) ||
-                (keyCode == KeyEvent.KEYCODE_DPAD_LEFT && focus === btnRew)
-            if (toChip) {
-                when {
-                    btnSkip?.isVisible == true -> {
-                        btnSkip?.requestFocus()
-                        return true
-                    }
-                    btnNext?.isVisible == true && keyCode == KeyEvent.KEYCODE_DPAD_LEFT -> {
-                        btnNext?.requestFocus()
-                        return true
-                    }
-                    btnNext?.isVisible == true && focus !== seek -> {
-                        btnNext?.requestFocus()
-                        return true
-                    }
-                }
-            }
-            return super.onKeyDown(keyCode, event)
+            ui.focused = Ctl.PLAY
+            return true
         }
 
         when (keyCode) {
             KeyEvent.KEYCODE_DPAD_UP -> {
                 // Always surface chrome first (especially when paused with UI hidden).
                 showChrome()
-                when {
-                    btnSkip?.isVisible == true -> {
-                        btnSkip?.requestFocus()
-                        return true
-                    }
-                    btnNext?.isVisible == true -> {
-                        btnNext?.requestFocus()
-                        return true
-                    }
-                    else -> {
-                        btnPlay?.requestFocus()
-                        return true
-                    }
-                }
-            }
-            KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                // A quick seek with the controls hidden only shows them briefly.
-                hideDelayMs = CHROME_HIDE_AFTER_SEEK_MS
-                seekBy(10_000)
+                ui.focused = visibleChip() ?: Ctl.PLAY
                 return true
             }
-            KeyEvent.KEYCODE_DPAD_LEFT -> {
+            KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_DPAD_LEFT -> {
+                // A quick seek with the controls hidden only shows them briefly,
+                // with the seek bar lit: more presses keep seeking (3 presses
+                // = 30 s). Lighting Play made the next presses move focus instead.
                 hideDelayMs = CHROME_HIDE_AFTER_SEEK_MS
-                seekBy(-10_000)
+                ui.focused = Ctl.SEEK
+                seekBy(if (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) 10_000 else -10_000)
                 return true
             }
             KeyEvent.KEYCODE_DPAD_DOWN -> {
                 showChrome()
-                btnPlay?.requestFocus()
+                ui.focused = Ctl.PLAY
                 return true
             }
         }
-        return super.onKeyDown(keyCode, event)
+        return false
     }
 
     private fun confirmLeave() {
-        if (leaveDialog?.isShowing == true) {
-            leaveDialog?.dismiss()
+        if (ui.leaving) {
+            ui.leaving = false
             return
         }
-        leaveDialog = showRoundDialog(
-            activity = this,
-            title = R.string.leave_player_title,
-            message = R.string.leave_player_message,
-            negative = R.string.keep_watching,
-            positive = R.string.leave_player,
-            onPositive = { finish() },
-        )
+        main.removeCallbacks(hideChrome)
+        ui.askLeave()
     }
 
     /** The desktop's card: Continue from (focused) or Start over, then it plays. */
     private fun askResume() {
         askingResume = true
-        val view = layoutInflater.inflate(R.layout.dialog_resume, null)
-        val at = resumeMs
-        val total = lastKnownDurationMs
-        view.findViewById<TextView>(R.id.resume_title).text = titleView?.text ?: intent.getStringExtra(EXTRA_TITLE).orEmpty()
-        view.findViewById<TextView>(R.id.resume_at).text = formatMs(at)
-        view.findViewById<TextView>(R.id.resume_left).apply {
-            text = if (total > at) "-" + formatMs(total - at) else ""
-        }
-        view.findViewById<android.widget.ProgressBar>(R.id.resume_progress).apply {
-            isVisible = total > at
-            if (total > 0) progress = ((at * 1000) / total).toInt().coerceIn(10, 1000)
-        }
-        val go = view.findViewById<TextView>(R.id.resume_continue)
-        val restart = view.findViewById<TextView>(R.id.resume_restart)
-        go.text = getString(R.string.resume_continue, formatMs(at))
-        val dialog = android.app.AlertDialog.Builder(this).setView(view).setCancelable(true).create()
         var picked = false
-        fun answer(fromStart: Boolean) {
-            if (picked) return
-            picked = true
-            dialog.dismiss()
-            askingResume = false
-            if (fromStart) {
-                resumeMs = 0
-                openStartMs = 0
-                lastGoodPosMs = 0
-                if (localTorrent && lastKnownDurationMs > 0) {
-                    runCatching { TorrentClient.retargetPlayhead(0, lastKnownDurationMs) }
+        ui.onResume = { fromStart ->
+            if (!picked) {
+                picked = true
+                askingResume = false
+                if (fromStart) {
+                    resumeMs = 0
+                    openStartMs = 0
+                    lastGoodPosMs = 0
+                    if (localTorrent && lastKnownDurationMs > 0) {
+                        runCatching { TorrentClient.retargetPlayhead(0, lastKnownDurationMs) }
+                    }
+                    torrentStartedWithResume = false
                 }
-                torrentStartedWithResume = false
+                attachAndPlay()
             }
-            attachAndPlay()
         }
-        go.setOnClickListener { answer(fromStart = false) }
-        restart.setOnClickListener { answer(fromStart = true) }
         // Back on the card: leave, like Back before anything plays.
-        dialog.setOnCancelListener {
+        ui.onResumeCancel = {
             if (!picked) {
                 askingResume = false
                 finish()
             }
         }
-        dialog.setOnShowListener {
-            dialog.window?.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT))
-            go.requestFocus()
-        }
-        dialog.show()
-        dialog.window?.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT))
+        ui.askResume(
+            ResumeCard(
+                title = fullTitle.ifBlank { intent.getStringExtra(EXTRA_TITLE).orEmpty() },
+                atMs = resumeMs,
+                totalMs = lastKnownDurationMs,
+            ),
+        )
     }
 
     private fun openAspect() {
         showChrome()
+        data class Mode(val key: String, val label: Int, val detail: Int, val glyph: PictureGlyph)
         val options = listOf(
-            SessionStore.ASPECT_FIT to R.string.aspect_fit,
-            SessionStore.ASPECT_ORIGINAL to R.string.aspect_original,
-            SessionStore.ASPECT_FILL to R.string.aspect_fill,
-            SessionStore.ASPECT_STRETCH to R.string.aspect_stretch,
-            SessionStore.ASPECT_16_9 to R.string.aspect_16_9,
-            SessionStore.ASPECT_4_3 to R.string.aspect_4_3,
+            Mode(SessionStore.ASPECT_FIT, R.string.aspect_fit, R.string.aspect_fit_detail, PictureGlyph.FIT),
+            Mode(SessionStore.ASPECT_ORIGINAL, R.string.aspect_original, R.string.aspect_original_detail, PictureGlyph.ORIGINAL),
+            Mode(SessionStore.ASPECT_FILL, R.string.aspect_fill, R.string.aspect_fill_detail, PictureGlyph.FILL),
+            Mode(SessionStore.ASPECT_STRETCH, R.string.aspect_stretch, R.string.aspect_stretch_detail, PictureGlyph.STRETCH),
+            Mode(SessionStore.ASPECT_16_9, R.string.aspect_16_9, R.string.aspect_16_9_detail, PictureGlyph.WIDE),
+            Mode(SessionStore.ASPECT_4_3, R.string.aspect_4_3, R.string.aspect_4_3_detail, PictureGlyph.CLASSIC),
         )
         val current = application.asTv().session.aspectRatio
-        showRoundListDialog(
-            activity = this,
-            title = getString(R.string.aspect_title),
-            options = options.map { getString(it.second) },
-            checked = options.indexOfFirst { it.first == current },
-        ) { which ->
-            val mode = options[which].first
-            application.asTv().session.aspectRatio = mode
-            player?.setAspectMode(mode)
-        }
+        ui.openMenu(
+            PlayerMenu(
+                getString(R.string.menu_picture),
+                options.map { m ->
+                    MenuRow.Option(
+                        getString(m.label),
+                        checked = m.key == current,
+                        detail = getString(m.detail),
+                        picture = m.glyph,
+                    ) {
+                        application.asTv().session.aspectRatio = m.key
+                        player?.setAspectMode(m.key)
+                    }
+                },
+            ),
+        )
+        main.removeCallbacks(hideChrome)
     }
 
-    /** Only offer the Audio chip when there's a real choice. */
+    /** Only offer the Audio button when there's a real choice. */
     private fun hasAltAudio(): Boolean = (player?.listAudioTracks()?.size ?: 0) > 1
 
     private fun openAudio() {
         showChrome()
         val tracks = player?.listAudioTracks().orEmpty()
         if (tracks.isEmpty()) return
-        showRoundListDialog(
-            activity = this,
-            title = getString(R.string.audio_title),
-            options = tracks.map { it.second },
-            checked = tracks.indexOfFirst { it.third },
-        ) { which -> player?.selectAudioTrack(tracks[which].first) }
+        ui.openMenu(
+            PlayerMenu(
+                getString(R.string.menu_audio),
+                tracks.map { (id, label, on) ->
+                    MenuRow.Option(label, checked = on) { player?.selectAudioTrack(id) }
+                },
+            ),
+        )
+        main.removeCallbacks(hideChrome)
     }
 
     private fun openSubtitles() {
         showChrome()
+        main.removeCallbacks(hideChrome)
         val app = application.asTv()
         SubtitlePicker(
             activity = this,
+            ui = ui,
             player = { player },
             api = app.api,
             titleId = { titleId },
@@ -2092,6 +1792,28 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             delayMs = { subDelayMs },
             setDelayMs = { subDelayMs = it },
         ).show()
+    }
+
+    private val clearHud = Runnable { ui.hud = null }
+
+    /** A short notice under the top row. */
+    private fun showHud(text: String) {
+        ui.hud = text
+        main.removeCallbacks(clearHud)
+        main.postDelayed(clearHud, 1_200L)
+    }
+
+    /** "Show S01E02" → "Show" over "S01E02", like the desktop player. */
+    private fun setTitleText(label: String) {
+        fullTitle = label
+        val code = Regex("""\s+(S\d{2,}E\d{2,})$""").find(label)
+        if (code != null) {
+            ui.title = label.substring(0, code.range.first)
+            ui.episode = code.groupValues[1]
+        } else {
+            ui.title = label
+            ui.episode = null
+        }
     }
 
     override fun onPause() {
@@ -2108,8 +1830,6 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
     }
 
     override fun onDestroy() {
-        leaveDialog?.dismiss()
-        leaveDialog = null
         stopped = true
         app.peanutbutter.core.AuthEvents.onPlaybackEnded()
         saveWatchProgress(force = true)
@@ -2173,7 +1893,6 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
 
     companion object {
         private const val TAG = "PlayerActivity"
-        private const val SEEK_MAX = 1000
         /** Exo stuck in BUFFERING this long before the first frame → reopen. */
         private const val PRE_PLAY_REOPEN_MS = 45_000L
         private const val CHROME_HIDE_MS = 5_000L

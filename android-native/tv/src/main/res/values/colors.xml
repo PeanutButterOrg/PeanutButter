@@ -4,16 +4,6 @@
          design token (pb_tokens.xml, generated from design/tokens.json). New
          work uses @color/pbt_* directly. -->
     <color name="pb_seed">@color/pbt_brand</color>
-    <color name="pb_accent">@color/pbt_brand</color>
     <color name="pb_canvas">@color/pbt_ground</color>
     <color name="pb_panel">@color/pbt_surface</color>
-    <color name="pb_field">@color/pbt_surface_raised</color>
-    <color name="pb_muted">@color/pbt_text_muted</color>
-    <color name="pb_white">#FFFFFFFF</color>
-    <color name="pb_white54">#8AFFFFFF</color>
-    <color name="pb_rt">@color/pbt_rt</color>
-    <color name="pb_completed">@color/pbt_good</color>
-    <color name="pb_state_liked">#EBFFFFFF</color>
-    <color name="pb_hairline">@color/pbt_line</color>
-    <color name="pb_error">@color/pbt_bad</color>
 </resources>

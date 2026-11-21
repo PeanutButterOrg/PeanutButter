@@ -20,7 +20,7 @@ Run one small server at home, then browse and watch from your **TV, laptop or de
   <tr>
     <td width="33%" valign="top">
       <h3>📺 Android TV</h3>
-      A native app built for the remote. Or swap your whole TV Home screen for the <b>PeanutButter Launcher</b>.
+      A native app built for the remote.
     </td>
     <td width="33%" valign="top">
       <h3>💻 Desktop</h3>
@@ -100,18 +100,6 @@ Built for the remote: everything works with the arrow keys and OK.
   </tr>
 </table>
 
-### 🏠 Android TV Launcher
-
-Your TV's whole Home screen: a clock, Home / Movies / Series, quick TV controls and your other apps ([what it is](android-native/tv/src/launcher/README.md)).
-
-<table>
-  <tr>
-    <td width="33%" valign="top"><a href="docs/screenshots/launcher-home.webp"><img src="docs/screenshots/launcher-home.webp" alt="Launcher home"></a><br><sub><b>Home</b> · trending movies and series</sub></td>
-    <td width="33%" valign="top"><a href="docs/screenshots/launcher-movies.webp"><img src="docs/screenshots/launcher-movies.webp" alt="Launcher movies tab"></a><br><sub><b>Movies</b> · Top 10 movies today</sub></td>
-    <td width="33%" valign="top"><a href="docs/screenshots/launcher-apps.webp"><img src="docs/screenshots/launcher-apps.webp" alt="Launcher apps editor"></a><br><sub><b>Your apps</b> · choose and order them</sub></td>
-  </tr>
-</table>
-
 ### 💻 Desktop · Windows, macOS, Linux
 
 Mouse, keyboard or both: rows page with arrows, and the focus ring shows only when you use the keyboard.
@@ -182,7 +170,6 @@ All from the **[latest release](https://github.com/PeanutButterOrg/PeanutButter/
 | | Platform | File | Player |
 |:-:|---|---|---|
 | 📺 | **Android TV** | `PeanutButter-android-tv.apk` (or the `arm64-v8a` / `armeabi-v7a` build for your TV) | ExoPlayer or LibVLC |
-| 🏠 | **Android TV Home screen** | `PeanutButter-android-tv-launcher.apk` ([what it is](android-native/tv/src/launcher/README.md)) | ExoPlayer or LibVLC |
 | 🪟 | **Windows** | `PeanutButter-windows-x64-setup.exe` | libmpv |
 | 🍎 | **macOS** | `PeanutButter-macos-universal.zip` (Intel + Apple silicon) | libmpv |
 | 🐧 | **Linux** | `PeanutButter-linux-amd64.deb` or `PeanutButter-linux-x86_64.AppImage` | libmpv |
@@ -203,7 +190,7 @@ flowchart LR
     end
     TMDB["TMDB · OMDb<br/>metadata"] --> API
     SRC["Jackett · Stremio add-ons<br/>stream sources"] --> API
-    API -- "catalog, search, magnets,<br/>your own files" --> TV["📺 Android TV app<br/>& Launcher"]
+    API -- "catalog, search, magnets,<br/>your own files" --> TV["📺 Android TV app"]
     API -- same --> DESK["💻 Desktop app<br/>Windows · macOS · Linux"]
     TV -. "torrents<br/>(on the TV)" .-> SWARM((BitTorrent))
     DESK -. "torrents<br/>(on the computer)" .-> SWARM
@@ -214,7 +201,7 @@ The server is the brain: metadata, search, sources, pairing and updates. The app
 | Folder | What | Read more |
 |---|---|---|
 | [`backend/`](backend/) | The server: Rust, Axum, GraphQL, Postgres, Meilisearch | [backend/README.md](backend/README.md) |
-| [`android-native/`](android-native/) | Android TV app and Launcher, in Kotlin | [android-native/README.md](android-native/README.md) |
+| [`android-native/`](android-native/) | Android TV app, in Kotlin | [android-native/README.md](android-native/README.md) |
 | [`frontend/`](frontend/) | Desktop app (Flutter) for Windows, macOS, Linux and web | [frontend/README.md](frontend/README.md) |
 | [`docs/`](docs/) | Server install and Docker guides | [SERVER.md](docs/SERVER.md) · [DOCKER.md](docs/DOCKER.md) |
 | [`scripts/`](scripts/) | Build, packaging and install helpers | |
@@ -281,14 +268,14 @@ cd backend && cargo run
 # Desktop app
 cd frontend && flutter pub get && flutter run -d macos   # or linux / windows / chrome
 
-# Android TV app and Launcher
-cd android-native && ./gradlew :tv:assembleAppDebug :tv:assembleLauncherDebug
+# Android TV app
+cd android-native && ./gradlew :tv:assembleAppDebug
 ./scripts/update-apps.sh --tv         # build and install on a TV over adb
 ```
 
 Tests: `cd backend && cargo test` · `cd frontend && flutter analyze && flutter test` · `cd android-native && ./gradlew test`.
 
-Design tokens (colours, type, spacing) live in [`design/tokens.json`](design/tokens.json); `python3 scripts/gen-design-tokens.py` writes them out for the desktop app, the TV app and Launcher, and the docs.
+Design tokens (colours, type, spacing) live in [`design/tokens.json`](design/tokens.json); `python3 scripts/gen-design-tokens.py` writes them out for the desktop app, the TV app, and the docs.
 
 <details>
 <summary><b>How releases are cut</b></summary>

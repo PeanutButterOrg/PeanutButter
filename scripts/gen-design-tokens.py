@@ -6,11 +6,12 @@
 
 Writes:
   frontend/lib/design/tokens.g.dart                    Flutter (desktop, web)
-  android-native/tv/src/main/res/values/pb_tokens.xml  Android TV app and Launcher (+ values-v28/pb_type.xml)
+  android-native/tv/src/main/res/values/pb_tokens.xml  Android TV app (+ values-v28/pb_type.xml)
+  android-native/tv/.../ui/compose/PbTokens.kt         Android TV Compose screens
   design/tokens.css                                    previews and docs
 
 Both apps read only these generated values, so a colour or size changes in one
-place and the TV, the Launcher and desktop stay the same.
+place and the TV and desktop stay the same.
 """
 import json
 import pathlib
@@ -22,6 +23,8 @@ DART = ROOT / "frontend" / "lib" / "design" / "tokens.g.dart"
 XML = ROOT / "android-native" / "tv" / "src" / "main" / "res" / "values" / "pb_tokens.xml"
 XML_V28 = ROOT / "android-native" / "tv" / "src" / "main" / "res" / "values-v28" / "pb_type.xml"
 CSS = ROOT / "design" / "tokens.css"
+KOTLIN = (ROOT / "android-native" / "tv" / "src" / "main" / "java" / "app" / "peanutbutter"
+          / "tv" / "ui" / "compose" / "PbTokens.kt")
 
 HEADER = "Generated from design/tokens.json by scripts/gen-design-tokens.py. Do not edit."
 
@@ -151,6 +154,37 @@ def xml_v28(t: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+def kotlin(t: dict) -> str:
+    lines = [f"// {HEADER}", "package app.peanutbutter.tv.ui.compose", "",
+             "import androidx.compose.ui.graphics.Color", "import androidx.compose.ui.unit.dp",
+             "import androidx.compose.ui.unit.sp", "",
+             "/** PeanutButter's colours (see design/tokens.json for what each is for). */",
+             "object PbColors {"]
+    for name, c in t["color"].items():
+        lines.append(f"    /** {c['note']} */")
+        lines.append(f"    val {name} = Color(0x{argb(c['value'])})")
+    lines += ["}", "", "/** TV type sizes and weights, same scale as desktop. */", "object PbTypeSize {"]
+    for name, s in t["type"].items():
+        lines.append(f"    val {name} = {s['tv']}.sp")
+    lines += ["}", "", "object PbTypeWeight {"]
+    for name, s in t["type"].items():
+        lines.append(f"    const val {name} = {s['weight']}")
+    lines += ["}", "", "object PbSpace {"]
+    for name, v in t["space"].items():
+        lines.append(f"    val {name} = {v}.dp")
+    lines += ["}", "", "object PbRadius {"]
+    for name, v in t["radius"].items():
+        lines.append(f"    val {name} = {v}.dp")
+    lines += ["}", "", "object PbSize {"]
+    for name, v in t["size"].items():
+        lines.append(f"    const val {name} = {v}f" if name == "focusScaleTv" else f"    val {name} = {v}.dp")
+    lines += ["}", "", "object PbMotion {"]
+    for name, v in t["motion"].items():
+        lines.append(f"    const val {name} = {v}")
+    lines.append("}")
+    return "\n".join(lines) + "\n"
+
+
 def css(t: dict) -> str:
     lines = [f"/* {HEADER} */", ":root {"]
     for name, c in t["color"].items():
@@ -172,7 +206,8 @@ def css(t: dict) -> str:
 
 def main() -> int:
     tokens = json.loads(SRC.read_text())
-    outputs = {DART: dart(tokens), XML: xml(tokens), XML_V28: xml_v28(tokens), CSS: css(tokens)}
+    outputs = {DART: dart(tokens), XML: xml(tokens), XML_V28: xml_v28(tokens), CSS: css(tokens),
+               KOTLIN: kotlin(tokens)}
     if "--check" in sys.argv:
         stale = [p for p, text in outputs.items() if not p.exists() or p.read_text() != text]
         for p in stale:

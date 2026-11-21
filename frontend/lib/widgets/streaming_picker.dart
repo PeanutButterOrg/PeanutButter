@@ -14,7 +14,6 @@ import '../models.dart';
 import '../providers/settings.dart';
 import '../release_tags.dart';
 import '../stream_resume_policy.dart';
-import '../theme.dart';
 import '../tv.dart';
 import 'cached_art.dart';
 import 'tv_chrome.dart';
@@ -1524,7 +1523,8 @@ class _TorrentTileState extends State<_TorrentTile> {
           borderRadius: radius,
           // Ring only for keyboard / remote focus, not after a mouse click.
           onFocusChange: (v) => setState(
-            () => _focused = v && (isAndroidTv || FocusManager.instance.highlightMode == FocusHighlightMode.traditional),
+            // The white focus ring is for the TV remote only; desktop shows the Best outline.
+            () => _focused = v && isAndroidTv,
           ),
           onTap: _pick,
           child: AnimatedContainer(
@@ -1761,7 +1761,7 @@ class _FilePickerDialog extends StatelessWidget {
                     return TvFocus(
                       child: Material(
                         color: file.recommended
-                            ? AppTheme.seed.withValues(alpha: 0.12)
+                            ? PbColors.primary.withValues(alpha: 0.12)
                             : scheme.surfaceContainerHighest.withValues(alpha: 0.45),
                         borderRadius: radius,
                         child: InkWell(
@@ -1783,7 +1783,7 @@ class _FilePickerDialog extends StatelessWidget {
                               borderRadius: radius,
                               border: Border.all(
                                 color: file.recommended
-                                    ? AppTheme.seed.withValues(alpha: 0.65)
+                                    ? PbColors.primary.withValues(alpha: 0.65)
                                     : scheme.outline.withValues(alpha: 0.22),
                               ),
                             ),

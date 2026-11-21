@@ -13,10 +13,13 @@ import 'rt_badge.dart';
 import 'tv_chrome.dart';
 
 class PosterCard extends ConsumerStatefulWidget {
-  const PosterCard({super.key, required this.item, this.focusNode});
+  const PosterCard({super.key, required this.item, this.focusNode, this.onOpen});
 
   final TitleItem item;
   final FocusNode? focusNode;
+  /// Instead of opening the title page by [item]'s id (a filmography credit
+  /// that isn't in the catalog yet).
+  final VoidCallback? onOpen;
 
   @override
   ConsumerState<PosterCard> createState() => _PosterCardState();
@@ -54,6 +57,7 @@ class _PosterCardState extends ConsumerState<PosterCard> {
   }
 
   void _openDetails() {
+    if (widget.onOpen != null) return widget.onOpen!();
     context.push('/title/${widget.item.id}');
   }
 

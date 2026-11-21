@@ -625,6 +625,119 @@ final similarTitlesProvider = FutureProvider.autoDispose.family<List<TitleItem>,
   }
 });
 
+/// More like this, a page at a time until TMDB's list ends.
+class SimilarRow {
+  const SimilarRow({this.items = const [], this.hasMore = true, this.loading = false});
+
+  final List<TitleItem> items;
+  final bool hasMore;
+  final bool loading;
+}
+
+class SimilarRowNotifier extends StateNotifier<SimilarRow> {
+  SimilarRowNotifier(this._client, this._titleId) : super(const SimilarRow()) {
+    loadMore();
+  }
+
+  final GraphQLClient _client;
+  final String _titleId;
+  int _page = 0;
+
+  /// The next page; call as the row nears its end.
+  Future<void> loadMore() async {
+    if (state.loading || !state.hasMore) return;
+    state = SimilarRow(items: state.items, hasMore: true, loading: true);
+    final page = _page + 1;
+    List<TitleItem> items = const [];
+    var more = false;
+    try {
+      final result = await _client
+          .query(QueryOptions(
+            document: gql(SIMILAR_TITLES_PAGE),
+            variables: {'titleId': _titleId, 'page': page},
+            fetchPolicy: FetchPolicy.noCache,
+          ))
+          // The server may store new titles from TMDB first: give it time.
+          .timeout(const Duration(seconds: 45));
+      if (result.hasException) {
+        // Servers before 0.3.26 have no pages: their one list, then the end.
+        if (page == 1) items = await _oldList();
+      } else {
+        final root = result.data?['similarTitlesPage'] as Map<String, dynamic>?;
+        items = [
+          for (final e in (root?['items'] as List? ?? const []))
+            TitleItem.fromJson(e as Map<String, dynamic>),
+        ];
+        more = root?['hasNextPage'] as bool? ?? false;
+      }
+    } catch (_) {}
+    if (!mounted) return;
+    _page = page;
+    final seen = {for (final t in state.items) t.id};
+    final merged = [
+      ...state.items,
+      ...items.where((t) => t.id != _titleId && seen.add(t.id)),
+    ];
+    state = SimilarRow(items: merged, hasMore: more, loading: false);
+    // A page that was all filtered out: keep going while there is more.
+    if (items.isEmpty && more) unawaited(loadMore());
+  }
+
+  Future<List<TitleItem>> _oldList() async {
+    final result = await _client
+        .query(QueryOptions(
+          document: gql(SIMILAR_TITLES),
+          variables: {'titleId': _titleId, 'limit': 24},
+          fetchPolicy: FetchPolicy.noCache,
+        ))
+        .timeout(const Duration(seconds: 45));
+    if (result.hasException) return const [];
+    return [
+      for (final e in (result.data?['similarTitles'] as List? ?? const []))
+        TitleItem.fromJson(e as Map<String, dynamic>),
+    ];
+  }
+}
+
+final similarRowProvider =
+    StateNotifierProvider.autoDispose.family<SimilarRowNotifier, SimilarRow, String>((ref, id) {
+  return SimilarRowNotifier(ref.watch(graphQLClientProvider), id);
+});
+
+/// A cast or crew member's page. Fails on servers before 0.3.26.
+final personProvider = FutureProvider.autoDispose.family<PersonDetails, int>((ref, tmdbId) async {
+  final client = ref.watch(graphQLClientProvider);
+  final result = await client.query(QueryOptions(
+    document: gql(GET_PERSON),
+    variables: {'tmdbId': tmdbId},
+    fetchPolicy: FetchPolicy.noCache,
+  ));
+  if (result.hasException) throw result.exception!;
+  return PersonDetails.fromJson(result.data!['person'] as Map<String, dynamic>);
+});
+
+/// The catalog id for a filmography credit, stored on the server first if needed.
+Future<String> openTmdbTitle(GraphQLClient client, PersonCredit credit) async {
+  final result = await client
+      .mutate(MutationOptions(
+        document: gql(OPEN_TMDB_TITLE),
+        variables: {'tmdbId': credit.tmdbId, 'kind': credit.kind == 'MOVIE' ? 'MOVIE' : 'SERIES'},
+      ))
+      .timeout(const Duration(seconds: 45));
+  if (result.hasException) throw result.exception!;
+  return (result.data?['openTmdbTitle'] as Map<String, dynamic>?)?['id'] as String? ?? '';
+}
+
+/// When each server (its GraphQL client) last rejected `Person.tmdbPersonId`.
+/// Asked again after a while, so an upgraded server is noticed without a
+/// restart; a new server gets a new client, and starts unmarked.
+final Expando<DateTime> _oldTitleQuerySince = Expando('oldTitleQuery');
+
+bool _usesOldTitleQuery(GraphQLClient client) {
+  final since = _oldTitleQuerySince[client];
+  return since != null && DateTime.now().difference(since) < const Duration(minutes: 10);
+}
+
 final detailProvider = FutureProvider.autoDispose.family<TitleItem?, String>((ref, id) async {
   final link = ref.keepAlive();
   Timer? expiry;
@@ -632,13 +745,23 @@ final detailProvider = FutureProvider.autoDispose.family<TitleItem?, String>((re
   ref.onResume(() => expiry?.cancel());
   ref.onDispose(() => expiry?.cancel());
   final client = ref.watch(graphQLClientProvider);
-  final result = await client.query(
-    QueryOptions(
-      document: gql(GET_TITLE),
-      variables: {'id': id},
-      fetchPolicy: FetchPolicy.noCache,
-    ),
-  );
+  Future<QueryResult> load(String query) => client.query(
+        QueryOptions(
+          document: gql(query),
+          variables: {'id': id},
+          fetchPolicy: FetchPolicy.noCache,
+        ),
+      );
+  // Newer servers also give each person's TMDB id; older ones reject the field.
+  final old = _usesOldTitleQuery(client);
+  var result = await load(old ? GET_TITLE : GET_TITLE_WITH_PEOPLE_IDS);
+  if (result.hasException && !old && result.exception!.graphqlErrors.isNotEmpty) {
+    final retry = await load(GET_TITLE);
+    if (!retry.hasException) _oldTitleQuerySince[client] = DateTime.now();
+    result = retry;
+  } else if (!old && !result.hasException) {
+    _oldTitleQuerySince[client] = null;
+  }
   if (result.hasException) {
     throw result.exception!;
   }

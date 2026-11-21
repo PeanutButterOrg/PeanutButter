@@ -3,6 +3,7 @@ import java.util.Properties
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+    id("org.jetbrains.kotlin.plugin.compose")
 }
 
 // Optional real release key. Without android-native/keystore.properties the
@@ -41,26 +42,17 @@ android {
 
     buildFeatures {
         buildConfig = true
+        compose = true
     }
 
-    // Same code, two products:
-    //   app      -> "PeanutButter TV", a normal app in the TV's app row.
-    //   launcher -> "PeanutButter Launcher", can be chosen as the TV's Home
-    //               screen. Own app id, so both can sit on one TV.
-    // Build with :tv:assembleAppRelease / :tv:assembleLauncherRelease.
+    // One flavor, "app" (PeanutButter TV). Kept as a flavor so task names
+    // (:tv:assembleAppRelease) and APK paths stay as CI expects them.
     flavorDimensions += "mode"
     productFlavors {
         create("app") {
             dimension = "mode"
-            buildConfigField("boolean", "IS_LAUNCHER", "false")
             // Update platform key (backend/src/updates.rs, scripts/release_manifest.py).
             buildConfigField("String", "UPDATE_PLATFORM", "\"android-tv\"")
-        }
-        create("launcher") {
-            dimension = "mode"
-            applicationIdSuffix = ".launcher"
-            buildConfigField("boolean", "IS_LAUNCHER", "true")
-            buildConfigField("String", "UPDATE_PLATFORM", "\"android-tv-launcher\"")
         }
     }
 
@@ -118,7 +110,15 @@ android {
 
 dependencies {
     implementation(project(":core"))
-    implementation("androidx.leanback:leanback:1.0.0")
+    // TV UI in Compose, matching the Flutter apps screen for screen.
+    implementation(platform("androidx.compose:compose-bom:2025.01.01"))
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.foundation:foundation")
+    implementation("androidx.compose.material:material-icons-extended")
+    implementation("androidx.compose.ui:ui-tooling-preview")
+    debugImplementation("androidx.compose.ui:ui-tooling")
+    implementation("androidx.tv:tv-material:1.0.0")
+    implementation("androidx.activity:activity-compose:1.9.3")
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("androidx.fragment:fragment-ktx:1.8.5")

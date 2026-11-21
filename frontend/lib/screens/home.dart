@@ -895,13 +895,17 @@ class _HomeRowState extends State<_HomeRow> {
             children: [
               Padding(
                 padding: EdgeInsets.only(left: gutter, right: gutter - 12),
-                // "See all" centred on the row's name.
+                // The row's name, "See all" at the right end (as on TV).
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.center,
                   children: [
-                    Text(spec.title,
-                        style: (tv ? PbTypeTv.h2 : PbType.h2)
-                            .copyWith(color: PbColors.text)),
+                    Expanded(
+                      child: Text(spec.title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: (tv ? PbTypeTv.h2 : PbType.h2)
+                              .copyWith(color: PbColors.text)),
+                    ),
                     const SizedBox(width: 6),
                     _SeeAllButton(
                       focusNode: _seeAll,

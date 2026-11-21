@@ -1,13 +1,7 @@
 package app.peanutbutter.tv.player
 
-import android.app.AlertDialog
-import app.peanutbutter.tv.ui.showRoundListDialog
-import android.text.InputType
-import android.view.inputmethod.EditorInfo
-import android.view.ViewGroup
-import android.widget.EditText
-import android.widget.LinearLayout
-import android.widget.TextView
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.unit.sp
 import android.widget.Toast
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.lifecycleScope
@@ -15,17 +9,22 @@ import androidx.media3.common.MimeTypes
 import app.peanutbutter.core.ApiClient
 import app.peanutbutter.core.SubtitleHit
 import app.peanutbutter.tv.R
-import app.peanutbutter.tv.ui.closeKeyboardOnIme
-import app.peanutbutter.tv.ui.hideKeyboard
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.unit.dp
 
-/** Player caption menu: embedded tracks, OpenSubtitles, Wyzie (lazy download), or a link. */
+/** Player Subtitles menu: look, embedded tracks, OpenSubtitles, Wyzie (lazy download), or a link. */
 class SubtitlePicker(
     private val activity: FragmentActivity,
+    private val ui: PlayerUi,
     private val player: () -> PlaybackEngine?,
     private val api: ApiClient,
     private val titleId: () -> String?,
@@ -44,148 +43,80 @@ class SubtitlePicker(
             }
             val tracks = player()?.listTextTracks().orEmpty()
             val langs = app.peanutbutter.core.ContentLanguages.subtitleLanguages(languages())
-            val options = ArrayList<Pair<String, () -> Unit>>()
-            // As on desktop: the look (size, background, delay) comes first.
-            // Only when this player can apply at least one of them (VLC: delay only).
-            val hasStyle = player()?.canStyleSubtitles == true || player()?.canDelaySubtitles == true
-            if (hasStyle) {
-                options += activity.getString(R.string.subs_style) to { showStyle() }
-            }
-            options += activity.getString(R.string.subs_off) to { player()?.selectTextTrack(null) }
-            tracks.forEach { (id, label) ->
-                options += label to { player()?.selectTextTrack(id) }
-            }
             val current = player()?.selectedTextTrackId
-            val checked = (if (hasStyle) 1 else 0) + if (current == null) 0 else tracks.indexOfFirst { it.first == current } + 1
+            val rows = ArrayList<MenuRow>()
+            // As on desktop: the look (size, background, delay) comes first.
+            rows += styleRows()
+            rows += MenuRow.Section(activity.getString(R.string.subs_language_section))
+            rows += MenuRow.Option(activity.getString(R.string.subs_off), checked = current == null) {
+                player()?.selectTextTrack(null)
+            }
+            tracks.forEach { (id, label) ->
+                rows += MenuRow.Option(label, checked = id == current) { player()?.selectTextTrack(id) }
+            }
+            rows += MenuRow.Section(activity.getString(R.string.subs_add_section))
+            rows += MenuRow.Option(activity.getString(R.string.subs_from_link)) { promptLink() }
             val subsReady = info?.subtitlesConfigured == true ||
                 info?.opensubtitlesConfigured == true ||
                 info?.wyzieConfigured == true
             if (subsReady) {
+                rows += MenuRow.Section(activity.getString(R.string.subs_online_section))
                 if (info?.wyzieConfigured == true) {
                     // One search per language (it used to be the first only).
                     langs.forEach { code ->
-                        options += activity.getString(R.string.subs_search_wyzie, code.uppercase()) to {
+                        rows += MenuRow.Option(activity.getString(R.string.subs_search_wyzie, code.uppercase())) {
                             searchWyzie(code)
                         }
                     }
                 }
                 if (info?.opensubtitlesConfigured == true) {
                     langs.forEach { code ->
-                        val label = activity.getString(R.string.subs_download, code.uppercase())
-                        options += label to { fetchOpenSubtitles(code) }
+                        rows += MenuRow.Option(activity.getString(R.string.subs_download, code.uppercase())) {
+                            fetchOpenSubtitles(code)
+                        }
                     }
                 }
             } else if (info != null) {
-                options += activity.getString(R.string.subs_add_key) to { promptKey() }
+                rows += MenuRow.Option(activity.getString(R.string.subs_add_key)) { promptKey() }
             }
-            options += activity.getString(R.string.subs_from_link) to { promptLink() }
-            showList(activity.getString(R.string.subs_title), options, checked)
+            ui.openMenu(PlayerMenu(activity.getString(R.string.subs_title), rows))
         }
     }
 
-    /** Size, Background and Delay, each a row of chips in the app's panel. */
-    private fun showStyle() {
-        val view = android.view.LayoutInflater.from(activity).inflate(R.layout.dialog_list, null)
-        view.findViewById<TextView>(R.id.dialog_title).text = activity.getString(R.string.subs_style_title)
-        val list = view.findViewById<LinearLayout>(R.id.dialog_list)
-        val done = view.findViewById<TextView>(R.id.dialog_negative)
-        done.setText(R.string.done)
-        val density = activity.resources.displayMetrics.density
-        fun dp(v: Int) = (v * density).toInt()
-        fun label(text: Int) = TextView(activity).apply {
-            setText(text)
-            textSize = 12f
-            letterSpacing = 0.1f
-            setTypeface(typeface, android.graphics.Typeface.BOLD)
-            setTextColor(activity.getColor(R.color.pbt_text_faint))
-            setPadding(0, dp(10), 0, dp(6))
-        }
-        fun chip(text: String, textSp: Float = 15f) = TextView(activity).apply {
-            this.text = text
-            textSize = textSp
-            gravity = android.view.Gravity.CENTER
-            isFocusable = true
-            isFocusableInTouchMode = true
-            setBackgroundResource(R.drawable.choice_chip)
-            minWidth = dp(64)
-            setPadding(dp(14), 0, dp(14), 0)
-        }
-        fun row(chips: List<TextView>): LinearLayout = LinearLayout(activity).apply {
-            orientation = LinearLayout.HORIZONTAL
-            chips.forEachIndexed { i, c ->
-                addView(c, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(40)).apply {
-                    if (i > 0) marginStart = dp(8)
-                })
-            }
-        }
-        fun paint(chips: List<TextView>, picked: Int) = chips.forEachIndexed { i, c ->
-            c.isSelected = i == picked
-            c.setTextColor(activity.getColor(if (i == picked) R.color.pbt_on_primary else R.color.pbt_text))
-        }
-
-        val sizeChips = (0 until 4).map { chip("A", 13f + it * 3) }
-        val bgKeys = listOf("shadow", "outline", "box")
-        val bgChips = listOf(R.string.subs_bg_shadow, R.string.subs_bg_outline, R.string.subs_bg_box)
-            .map { chip(activity.getString(it)) }
-        paint(sizeChips, SubtitleLook.size(activity))
-        paint(bgChips, bgKeys.indexOf(SubtitleLook.background(activity)).coerceAtLeast(0))
-        sizeChips.forEachIndexed { i, c ->
-            c.setOnClickListener {
+    /** Size, Background and Delay, the desktop's box at the top of the menu. */
+    private fun styleRows(): List<MenuRow> {
+        val rows = ArrayList<MenuRow>()
+        if (player()?.canStyleSubtitles == true) {
+            rows += MenuRow.Segments(
+                label = activity.getString(R.string.subs_size),
+                choices = List(4) { "A" },
+                choiceSizes = List(4) { (13f + it * 3.5f).sp },
+                selected = SubtitleLook.size(activity),
+            ) { i ->
                 SubtitleLook.save(activity, size = i)
-                paint(sizeChips, i)
                 SubtitleLook.apply(activity, player())
             }
-        }
-        bgChips.forEachIndexed { i, c ->
-            c.setOnClickListener {
+            val bgKeys = listOf("shadow", "outline", "box")
+            rows += MenuRow.Segments(
+                label = activity.getString(R.string.subs_background),
+                choices = listOf(R.string.subs_bg_shadow, R.string.subs_bg_outline, R.string.subs_bg_box)
+                    .map { activity.getString(it) },
+                selected = bgKeys.indexOf(SubtitleLook.background(activity)).coerceAtLeast(0),
+            ) { i ->
                 SubtitleLook.save(activity, background = bgKeys[i])
-                paint(bgChips, i)
                 SubtitleLook.apply(activity, player())
             }
-        }
-        val canStyle = player()?.canStyleSubtitles == true
-        if (canStyle) {
-            list.addView(label(R.string.subs_size))
-            list.addView(row(sizeChips))
-            list.addView(label(R.string.subs_background))
-            list.addView(row(bgChips))
         }
         if (player()?.canDelaySubtitles == true) {
-            val value = TextView(activity).apply {
-                gravity = android.view.Gravity.CENTER
-                textSize = 15f
-                setTextColor(activity.getColor(R.color.pbt_text))
-                minWidth = dp(96)
-            }
-            fun show() {
-                value.text = String.format(java.util.Locale.US, "%.1f s", delayMs() / 1000.0)
-            }
-            fun step(by: Long) {
-                val next = delayMs() + by
+            fun text(ms: Long) = String.format(java.util.Locale.US, "%.1f s", ms / 1000.0)
+            rows += MenuRow.Stepper(activity.getString(R.string.subs_delay), text(delayMs())) { dir ->
+                val next = delayMs() + dir * 100L
                 setDelayMs(next)
                 player()?.setSubtitleDelay(next)
-                show()
+                text(next)
             }
-            val minus = chip("−").apply { setOnClickListener { step(-100) } }
-            val plus = chip("+").apply { setOnClickListener { step(100) } }
-            show()
-            list.addView(label(R.string.subs_delay))
-            list.addView(LinearLayout(activity).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = android.view.Gravity.CENTER_VERTICAL
-                addView(minus, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(40)))
-                addView(value, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(40)))
-                addView(plus, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(40)))
-            })
         }
-        val dialog = AlertDialog.Builder(activity).setView(view).create()
-        done.setOnClickListener { dialog.dismiss() }
-        dialog.setOnShowListener {
-            dialog.window?.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT))
-            if (canStyle) sizeChips[SubtitleLook.size(activity)].requestFocus() else done.requestFocus()
-        }
-        dialog.show()
-        dialog.window?.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT))
+        return rows
     }
 
     private fun searchWyzie(language: String) {
@@ -253,103 +184,80 @@ class SubtitlePicker(
         }
     }
 
+    /** OpenSubtitles and Wyzie keys, saved on the server for every device. */
     private fun promptKey() {
-        val col = LinearLayout(activity).apply {
-            orientation = LinearLayout.VERTICAL
-            val pad = (18 * resources.displayMetrics.density).toInt()
-            setPadding(pad, pad / 2, pad, pad / 2)
-        }
-        val opensub = EditText(activity).apply {
-            hint = activity.getString(R.string.subs_key_hint)
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-            imeOptions = EditorInfo.IME_ACTION_NEXT
-            isFocusable = true
-            closeKeyboardOnIme()
-        }
-        val wyzie = EditText(activity).apply {
-            hint = activity.getString(R.string.subs_wyzie_hint)
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-            imeOptions = EditorInfo.IME_ACTION_DONE
-            isFocusable = true
-            closeKeyboardOnIme()
-            val lp = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-            )
-            lp.topMargin = (10 * resources.displayMetrics.density).toInt()
-            layoutParams = lp
-        }
-        col.addView(opensub)
-        col.addView(wyzie)
-        AlertDialog.Builder(activity)
-            .setTitle(R.string.subs_key_title)
-            .setView(col)
-            .setNegativeButton(android.R.string.cancel, null)
-            .setPositiveButton(R.string.subs_save) { _, _ ->
-                opensub.hideKeyboard()
-                wyzie.hideKeyboard()
-                val osKey = opensub.text?.toString()?.trim().orEmpty()
-                val wyzieKey = wyzie.text?.toString()?.trim().orEmpty()
-                if (osKey.isEmpty() && wyzieKey.isEmpty()) return@setPositiveButton
-                activity.lifecycleScope.launch {
-                    try {
-                        api.updateSubtitleKeys(
-                            opensubtitlesEnabled = true,
-                            opensubtitlesApiKey = osKey.ifBlank { null },
-                            wyzieApiKey = wyzieKey.ifBlank { null },
-                        )
-                        toast(activity.getString(R.string.subs_enabled))
-                    } catch (e: Exception) {
-                        toast(e.message ?: activity.getString(R.string.error_generic))
-                    }
-                }
-            }
-            .show()
-        opensub.requestFocus()
-    }
-
-    private fun promptLink() {
-        val input = EditText(activity).apply {
-            hint = "https://…/captions.srt"
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
-            imeOptions = EditorInfo.IME_ACTION_DONE
-            isFocusable = true
-            closeKeyboardOnIme()
-        }
-        AlertDialog.Builder(activity)
-            .setTitle(R.string.subs_from_link)
-            .setView(input)
-            .setNegativeButton(android.R.string.cancel, null)
-            .setPositiveButton(R.string.subs_save) { _, _ ->
-                input.hideKeyboard()
-                val url = input.text?.toString()?.trim().orEmpty()
-                if (!url.startsWith("http://") && !url.startsWith("https://")) {
-                    toast(activity.getString(R.string.subs_bad_link))
-                    return@setPositiveButton
-                }
-                activity.lifecycleScope.launch {
-                    try {
-                        val bytes = api.downloadBytes(url)
-                        val text = bytes.toString(Charsets.UTF_8)
-                        if (!text.contains("-->")) {
-                            toast(activity.getString(R.string.subs_not_srt))
-                            return@launch
+        app.peanutbutter.tv.ui.showPbDialog(activity) { dismiss ->
+            var opensub by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf("") }
+            var wyzie by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf("") }
+            KeyCard(
+                title = activity.getString(R.string.subs_key_title),
+                fields = listOf(
+                    Triple(opensub, activity.getString(R.string.subs_key_hint)) { v: String -> opensub = v },
+                    Triple(wyzie, activity.getString(R.string.subs_wyzie_hint)) { v: String -> wyzie = v },
+                ),
+                password = true,
+                onCancel = dismiss,
+                onSave = {
+                    val osKey = opensub.trim()
+                    val wyzieKey = wyzie.trim()
+                    if (osKey.isEmpty() && wyzieKey.isEmpty()) return@KeyCard
+                    dismiss()
+                    activity.lifecycleScope.launch {
+                        try {
+                            api.updateSubtitleKeys(
+                                opensubtitlesEnabled = true,
+                                opensubtitlesApiKey = osKey.ifBlank { null },
+                                wyzieApiKey = wyzieKey.ifBlank { null },
+                            )
+                            toast(activity.getString(R.string.subs_enabled))
+                        } catch (e: Exception) {
+                            toast(e.message ?: activity.getString(R.string.error_generic))
                         }
-                        val name = url.substringAfterLast('/').substringBefore('?').ifBlank { "subtitle.srt" }
-                        val file = writeSubtitle(name, text)
-                        player()?.addExternalSubtitle(file, name, mimeFor(name, text))
-                        toast(activity.getString(R.string.subs_added))
-                    } catch (e: Exception) {
-                        toast(e.message ?: activity.getString(R.string.subs_none))
                     }
-                }
-            }
-            .show()
-        input.requestFocus()
+                },
+            )
+        }
     }
 
-    private fun showList(title: String, options: List<Pair<String, () -> Unit>>, checked: Int = -1) {
-        showRoundListDialog(activity, title, options.map { it.first }, checked) { which -> options[which].second() }
+    /** A subtitle file from a web address (SRT, VTT or ASS). */
+    private fun promptLink() {
+        app.peanutbutter.tv.ui.showPbDialog(activity) { dismiss ->
+            var link by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf("") }
+            KeyCard(
+                title = activity.getString(R.string.subs_from_link),
+                fields = listOf(Triple(link, "https://…/captions.srt") { v: String -> link = v }),
+                password = false,
+                onCancel = dismiss,
+                onSave = {
+                    val url = link.trim()
+                    if (!url.startsWith("http://") && !url.startsWith("https://")) {
+                        toast(activity.getString(R.string.subs_bad_link))
+                        return@KeyCard
+                    }
+                    dismiss()
+                    activity.lifecycleScope.launch {
+                        try {
+                            val bytes = api.downloadBytes(url)
+                            val text = bytes.toString(Charsets.UTF_8)
+                            if (!text.contains("-->")) {
+                                toast(activity.getString(R.string.subs_not_srt))
+                                return@launch
+                            }
+                            val name = url.substringAfterLast('/').substringBefore('?').ifBlank { "subtitle.srt" }
+                            val file = writeSubtitle(name, text)
+                            player()?.addExternalSubtitle(file, name, mimeFor(name, text))
+                            toast(activity.getString(R.string.subs_added))
+                        } catch (e: Exception) {
+                            toast(e.message ?: activity.getString(R.string.subs_none))
+                        }
+                    }
+                },
+            )
+        }
+    }
+
+    private fun showList(title: String, options: List<Pair<String, () -> Unit>>) {
+        ui.openMenu(PlayerMenu(title, options.map { (label, pick) -> MenuRow.Option(label, onPick = pick) }))
     }
 
     private fun writeSubtitle(name: String, content: String): File {
@@ -395,3 +303,43 @@ object SubtitleLook {
         player?.setSubtitleLook(size(context), background(context))
     }
 }
+
+/** The app's card with text fields, Cancel and Save (subtitle keys and links). */
+@androidx.compose.runtime.Composable
+private fun KeyCard(
+    title: String,
+    fields: List<Triple<String, String, (String) -> Unit>>,
+    password: Boolean,
+    onCancel: () -> Unit,
+    onSave: () -> Unit,
+) {
+    val save = androidx.compose.runtime.remember { androidx.compose.ui.focus.FocusRequester() }
+    app.peanutbutter.tv.ui.DialogCard {
+        androidx.compose.foundation.text.BasicText(title, style = app.peanutbutter.tv.ui.compose.PbType.h2)
+        androidx.compose.foundation.layout.Spacer(androidx.compose.ui.Modifier.height(16.dp))
+        fields.forEachIndexed { i, (value, hint, onChange) ->
+            app.peanutbutter.tv.ui.compose.PbTextField(
+                value, onChange, hint,
+                androidx.compose.ui.Modifier.fillMaxWidth().padding(bottom = 10.dp),
+                password = password,
+                keyboardType = if (password) androidx.compose.ui.text.input.KeyboardType.Password else androidx.compose.ui.text.input.KeyboardType.Uri,
+                // Done on the last field lands on Save.
+                onDone = { if (i == fields.lastIndex) runCatching { save.requestFocus() } },
+            )
+        }
+        androidx.compose.foundation.layout.Spacer(androidx.compose.ui.Modifier.height(12.dp))
+        androidx.compose.foundation.layout.Row(
+            horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(12.dp),
+            modifier = androidx.compose.ui.Modifier.align(androidx.compose.ui.Alignment.End),
+        ) {
+            app.peanutbutter.tv.ui.compose.PbButton(activityString(android.R.string.cancel), null, primary = false, onClick = onCancel)
+            app.peanutbutter.tv.ui.compose.PbButton(
+                activityString(R.string.subs_save), null, primary = true, onClick = onSave,
+                modifier = androidx.compose.ui.Modifier.focusRequester(save),
+            )
+        }
+    }
+}
+
+@androidx.compose.runtime.Composable
+private fun activityString(id: Int): String = androidx.compose.ui.res.stringResource(id)

@@ -181,7 +181,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   bool? _resumeAfterSeek;
   /// Slider thumb while dragging; the position stream must not move it.
   Duration? _scrubPos;
-  BoxFit _videoFit = BoxFit.contain;
+  /// Picture: Fit, Original, Fill, Stretch, 16:9 or 4:3 (the TV's choices).
+  _Picture _picture = _Picture.fit;
+  BoxFit get _videoFit => _picture.boxFit;
   bool _lastPointerWasTouch = false;
   int _seekToken = 0;
   Duration _lastGoodPos = Duration.zero;
@@ -283,6 +285,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   /// Subtitle look (kept on this device) and delay (this video only).
   int _subSize = 1;
   String _subBg = 'box';
+  EdgeInsets? _subtitlePadding;
   double _subDelay = 0;
   static const _subSizes = [24.0, 32.0, 42.0, 54.0];
   int _lastSegmentFetchDuration = -1;
@@ -693,6 +696,14 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     if (event is! KeyDownEvent && event is! KeyRepeatEvent) return KeyEventResult.ignored;
     // The resume card's buttons take the keys.
     if (_askingResume) return KeyEventResult.ignored;
+    // Desktop / web: Left and Right always seek (a focused button used to take
+    // some presses, so three presses moved 20 s, or back 10).
+    if (!isAndroidTv &&
+        (event.logicalKey == LogicalKeyboardKey.arrowLeft ||
+            event.logicalKey == LogicalKeyboardKey.arrowRight)) {
+      if (_canSeek) _seekRelative(event.logicalKey == LogicalKeyboardKey.arrowRight ? 10 : -10);
+      return KeyEventResult.handled;
+    }
     // Child chrome controls handle their own ActivateIntent / arrows.
     if (_chromeControlFocused) return KeyEventResult.ignored;
     return _handlePlayerKey(event.logicalKey) ? KeyEventResult.handled : KeyEventResult.ignored;
@@ -1502,10 +1513,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         closing: true,
         invalidateHome: true,
       ));
-      unawaited(() async {
-        await _disposePlaybackEngines();
-        await _releaseStreamResources(wipe: wipe);
-      }());
+      final generation = LocalTorrentEngine.instance.generation;
+      final teardown = _disposePlaybackEngines().catchError((_) {});
+      final cleanup = teardown.then(
+        (_) => _releaseStreamResources(wipe: wipe, generation: generation),
+      );
+      LocalTorrentEngine.instance.noteCleanup(cleanup);
     }
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     super.dispose();
@@ -1514,7 +1527,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   /// Stop torrent / stream; [wipe] = Settings → Clear cache on exit.
   ///
   /// Doesn't touch `ref` — it also runs after dispose().
-  Future<void> _releaseStreamResources({required bool wipe}) async {
+  /// [generation]: the torrent engine's stream when this player closed; a
+  /// stream started since (the next video) is left alone.
+  Future<void> _releaseStreamResources({required bool wipe, int? generation}) async {
     final sessionId = widget.sessionId;
     final localActive = widget.localTorrent ||
         (widget.isStream && (sessionId?.startsWith('local-') ?? false)) ||
@@ -1522,10 +1537,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     if (!localActive && !wipe) return;
     try {
       if (wipe) {
-        await LocalTorrentEngine.instance.purgeDownloads();
-        await PlayerCache.clear();
+        if (generation != null && generation != LocalTorrentEngine.instance.generation) return;
+        await PlayerCache.clear(onlyGeneration: generation);
       } else if (localActive) {
-        await LocalTorrentEngine.instance.stop(deleteFiles: false);
+        await LocalTorrentEngine.instance.stop(deleteFiles: false, onlyGeneration: generation);
       }
     } catch (_) {}
   }
@@ -1596,8 +1611,22 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
       await _saveProgress(closing: true, invalidateHome: true)
           .timeout(const Duration(seconds: 2), onTimeout: () {});
     } catch (_) {}
-    await _disposePlaybackEngines();
-    await _releaseStreamResources(wipe: wipe);
+    // Leave first. Stopping the player or the torrent can stall at the end of
+    // a file; awaiting it kept the buffering screen up with Back ignored.
+    // The torrent is only removed once the player has really let go of it
+    // (removing it under a still-reading player crashes the desktop), so the
+    // cleanup is chained after teardown, which the page doesn't wait out.
+    final generation = LocalTorrentEngine.instance.generation;
+    final teardown = _disposePlaybackEngines().catchError((_) {});
+    final cleanup = teardown.then(
+      (_) => _releaseStreamResources(wipe: wipe, generation: generation),
+    );
+    // The page may leave after three seconds, but a new torrent must wait for
+    // the actual cleanup, including cache deletion. A timeout doesn't cancel it.
+    LocalTorrentEngine.instance.noteCleanup(cleanup);
+    try {
+      await teardown.timeout(const Duration(seconds: 3));
+    } catch (_) {}
     if (!mounted) return;
     // PopScope keeps canPop=false while playing, so context.canPop() stays false
     // unless we flip this flag — otherwise Leave appears to do nothing.
@@ -3375,7 +3404,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
                 value: barValue,
                 minHeight: 4,
                 backgroundColor: Colors.white24,
-                color: AppTheme.seed,
+                color: PbColors.primary,
                 borderRadius: BorderRadius.circular(2),
               ),
             ),
@@ -3555,9 +3584,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
                       PopupMenuItem(value: f, child: Text(f.quality ?? f.container ?? 'file')),
                   ],
                 ),
-              if (_hasWindowControls) ...[
+              // Volume everywhere but TV (the remote has its own); fullscreen on desktop.
+              if (!isAndroidTv && !_isTrailer) ...[
                 const SizedBox(width: 8),
                 _volumeButton(),
+              ],
+              if (_hasWindowControls) ...[
                 const SizedBox(width: 8),
                 _fullscreenButton(),
               ],
@@ -3638,18 +3670,87 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     ];
   }
 
+  /// Volume: opens a panel with mute and a level slider (arrow keys and the
+  /// scroll wheel still nudge it too).
   Widget _volumeButton() {
     final vol = _player?.state.volume ?? 100;
     final muted = _muted || vol <= 0.5;
-    return _RoundButton(
-      focusNode: _volumeFocus,
-      tooltip: muted ? 'Unmute' : 'Mute',
-      icon: muted
-          ? Icons.volume_off_rounded
-          : vol < 40
-              ? Icons.volume_down_rounded
-              : Icons.volume_up_rounded,
-      onPressed: () => unawaited(_toggleMute()),
+    return Builder(
+      builder: (context) => _RoundButton(
+        focusNode: _volumeFocus,
+        tooltip: 'Volume',
+        icon: muted
+            ? Icons.volume_off_rounded
+            : vol < 40
+                ? Icons.volume_down_rounded
+                : Icons.volume_up_rounded,
+        onPressed: () async {
+          _bumpChrome();
+          await _panelMenu<String>(context, 'Volume', [
+            _MenuBox<String>(
+              boxHeight: 64,
+              child: StatefulBuilder(builder: (context, refresh) => _volumeBox(refresh)),
+            ),
+          ]);
+          if (mounted) setState(() {});
+        },
+      ),
+    );
+  }
+
+  Widget _volumeBox(StateSetter refresh) {
+    final player = _player;
+    final vol = player?.state.volume ?? 100;
+    final muted = _muted || vol <= 0.5;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(4, 0, 12, 8),
+      child: Row(
+        children: [
+          IconButton(
+            tooltip: muted ? 'Unmute' : 'Mute',
+            onPressed: () async {
+              await _toggleMute();
+              refresh(() {});
+            },
+            icon: Icon(
+              muted ? Icons.volume_off_rounded : Icons.volume_up_rounded,
+              color: PbColors.text,
+            ),
+          ),
+          Expanded(
+            child: SliderTheme(
+              data: SliderTheme.of(context).copyWith(
+                trackHeight: 3,
+                activeTrackColor: PbColors.primary,
+                inactiveTrackColor: Colors.white24,
+                thumbColor: Colors.white,
+              ),
+              child: Slider(
+                value: muted ? 0 : vol.clamp(0.0, 100.0).toDouble(),
+                max: 100,
+                onChanged: player == null
+                    ? null
+                    : (v) {
+                        unawaited(player.setVolume(v));
+                        setState(() {
+                          _muted = v <= 0.5;
+                          if (v > 0.5) _volumeBeforeMute = v;
+                        });
+                        refresh(() {});
+                      },
+              ),
+            ),
+          ),
+          SizedBox(
+            width: 44,
+            child: Text(
+              '${muted ? 0 : vol.round()}%',
+              textAlign: TextAlign.right,
+              style: PbType.meta.copyWith(color: PbColors.text, fontWeight: FontWeight.w600),
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -3713,26 +3814,46 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         ),
       );
 
-  static PopupMenuEntry<T> _menuOption<T>(T value, String label, {bool checked = false, bool enabled = true}) =>
+  static PopupMenuEntry<T> _menuOption<T>(
+    T value,
+    String label, {
+    bool checked = false,
+    bool enabled = true,
+    String? detail,
+    Widget? leading,
+  }) =>
       PopupMenuItem<T>(
         value: value,
         enabled: enabled,
-        height: 42,
+        height: detail == null ? 42 : 58,
         child: Row(
           children: [
             SizedBox(
               width: 28,
               child: checked ? const Icon(Icons.check_rounded, size: 18, color: PbColors.primary) : null,
             ),
+            if (leading != null) ...[leading, const SizedBox(width: 12)],
             Expanded(
-              child: Text(
-                label,
-                overflow: TextOverflow.ellipsis,
-                style: PbType.body.copyWith(
-                  fontSize: 14.5,
-                  color: !enabled ? PbColors.textFaint : (checked ? PbColors.primary : PbColors.text),
-                  fontWeight: checked ? FontWeight.w700 : FontWeight.w500,
-                ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    label,
+                    overflow: TextOverflow.ellipsis,
+                    style: PbType.body.copyWith(
+                      fontSize: 14.5,
+                      color: !enabled ? PbColors.textFaint : (checked ? PbColors.primary : PbColors.text),
+                      fontWeight: checked ? FontWeight.w700 : FontWeight.w500,
+                    ),
+                  ),
+                  if (detail != null)
+                    Text(
+                      detail,
+                      overflow: TextOverflow.ellipsis,
+                      style: PbType.meta.copyWith(fontSize: 12.5, color: PbColors.textMuted),
+                    ),
+                ],
               ),
             ),
           ],
@@ -3743,22 +3864,23 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     return Builder(
       builder: (context) => _RoundButton(
         focusNode: _aspectFocus,
-        tooltip: 'Aspect ratio',
+        tooltip: 'Picture',
         icon: Icons.aspect_ratio,
         onPressed: () async {
           _bumpChrome();
-          final fit = await _panelMenu<BoxFit>(context, 'Picture', [
-            for (final (value, label) in const [
-              (BoxFit.contain, 'Fit'),
-              (BoxFit.none, 'Original'),
-              (BoxFit.cover, 'Fill'),
-              (BoxFit.fill, 'Stretch'),
-            ])
-              _menuOption(value, label, checked: _videoFit == value),
+          final picked = await _panelMenu<_Picture>(context, 'Picture', [
+            for (final p in _Picture.values)
+              _menuOption(
+                p,
+                p.label,
+                checked: _picture == p,
+                detail: p.detail,
+                leading: _PictureGlyph(p, selected: _picture == p),
+              ),
           ]);
-          if (fit == null || !mounted) return;
+          if (picked == null || !mounted) return;
           _bumpChrome();
-          setState(() => _videoFit = fit);
+          setState(() => _picture = picked);
         },
       ),
     );
@@ -4551,7 +4673,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
                   trackHeight: 3,
                   thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
                   overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
-                  activeTrackColor: AppTheme.seed,
+                  activeTrackColor: PbColors.primary,
                   inactiveTrackColor: Colors.white24,
                   secondaryActiveTrackColor: Colors.white70,
                   thumbColor: Colors.white,
@@ -4595,13 +4717,27 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   Widget _videoSurface() {
     final controller = _controller;
     if (controller == null) return const SizedBox.shrink();
+    final subtitles = _subtitleView(_showChrome && _showSeekControls ? 150 : 28);
+    // media_kit reads the subtitle padding once, when the view is created:
+    // lift them over the controls (and back down) ourselves, or they sit
+    // under the seek bar while it shows.
+    if (subtitles.padding != _subtitlePadding) {
+      _subtitlePadding = subtitles.padding;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _videoKey.currentState?.setSubtitleViewPadding(
+          subtitles.padding,
+          duration: const Duration(milliseconds: 200),
+        );
+      });
+    }
     final video = Video(
       key: _videoKey,
       controller: controller,
       fit: _videoFit,
+      aspectRatio: _picture.ratio,
       controls: _videoControls,
       wakelock: true,
-      subtitleViewConfiguration: _subtitleView(_showChrome && _showSeekControls ? 150 : 28),
+      subtitleViewConfiguration: subtitles,
       onEnterFullscreen: () async {
         if (mounted) setState(() => _inFullscreen = true);
         await _setNativeFullscreen(true);
@@ -4623,12 +4759,13 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
 
 /// Any widget as a menu row (the subtitle style controls); never a choice.
 class _MenuBox<T> extends PopupMenuEntry<T> {
-  const _MenuBox({required this.child});
+  const _MenuBox({required this.child, this.boxHeight = 200});
 
   final Widget child;
+  final double boxHeight;
 
   @override
-  double get height => 200;
+  double get height => boxHeight;
 
   @override
   bool represents(T? value) => false;
@@ -4674,7 +4811,7 @@ class _RoundButtonState extends State<_RoundButton> {
     final ring = _focused
         ? Border.all(color: Colors.white, width: 2.5)
         : widget.selected
-            ? Border.all(color: AppTheme.seed, width: 2)
+            ? Border.all(color: PbColors.primary, width: 2)
             : null;
     return Opacity(
       opacity: enabled ? 1 : 0.45,
@@ -4793,4 +4930,89 @@ class _ActionChipFocusState extends State<_ActionChipFocus> {
 /// stopped the web app from compiling. Callers check `is NativePlayer` first.
 Future<void> _setMpv(NativePlayer player, String name, String value) async {
   await (player as dynamic).setProperty(name, value);
+}
+
+
+/// The Picture menu's choices, as on the TV.
+enum _Picture {
+  fit('Fit', 'Whole picture, black bars if needed', BoxFit.contain),
+  original('Original', 'Native size, no scaling', BoxFit.none),
+  fill('Fill', 'Fills the screen, trims the edges', BoxFit.cover),
+  stretch('Stretch', 'Fills the screen, stretches the shape', BoxFit.fill),
+  wide('16:9', 'Shows it as widescreen', BoxFit.contain, 16 / 9),
+  classic('4:3', 'Shows it as classic TV', BoxFit.contain, 4 / 3);
+
+  const _Picture(this.label, this.detail, this.boxFit, [this.ratio]);
+  final String label;
+  final String detail;
+  final BoxFit boxFit;
+  /// Forces the picture's shape; null keeps the video's own.
+  final double? ratio;
+}
+
+/// A small screen with the picture drawn the way [mode] places it
+/// (a 2.39:1 film on a 16:9 screen).
+class _PictureGlyph extends StatelessWidget {
+  const _PictureGlyph(this.mode, {required this.selected});
+
+  final _Picture mode;
+  final bool selected;
+
+  @override
+  Widget build(BuildContext context) =>
+      CustomPaint(size: const Size(44, 26), painter: _PictureGlyphPainter(mode, selected));
+}
+
+class _PictureGlyphPainter extends CustomPainter {
+  _PictureGlyphPainter(this.mode, this.selected);
+
+  final _Picture mode;
+  final bool selected;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final screen = Offset.zero & size;
+    final film = (selected ? PbColors.primary : PbColors.textMuted).withValues(alpha: 0.9);
+    final w = size.width, h = size.height;
+    final picture = switch (mode) {
+      _Picture.fit => Rect.fromCenter(center: screen.center, width: w, height: w / 2.39),
+      _Picture.original => Rect.fromCenter(center: screen.center, width: w * 0.62, height: w * 0.62 / 2.39),
+      _Picture.fill => Rect.fromCenter(center: screen.center, width: h * 2.39, height: h),
+      _Picture.stretch => screen,
+      _Picture.wide => screen,
+      _Picture.classic => Rect.fromCenter(center: screen.center, width: h * 4 / 3, height: h),
+    };
+    final round = RRect.fromRectAndRadius(screen, const Radius.circular(3));
+    canvas.drawRRect(round, Paint()..color = Colors.black);
+    if (mode == _Picture.fill) {
+      // The trimmed edges, faint outside the screen.
+      canvas.drawRect(picture, Paint()..color = film.withValues(alpha: 0.25));
+    }
+    canvas.save();
+    canvas.clipRRect(round);
+    canvas.drawRect(picture, Paint()..color = film);
+    canvas.restore();
+    if (mode == _Picture.stretch) {
+      final arrow = Paint()
+        ..color = Colors.black.withValues(alpha: 0.7)
+        ..strokeWidth = 1.6
+        ..strokeCap = StrokeCap.round;
+      final c = screen.center;
+      canvas.drawLine(Offset(c.dx, 4), Offset(c.dx, h - 4), arrow);
+      canvas.drawLine(Offset(c.dx - 3, 7), Offset(c.dx, 4), arrow);
+      canvas.drawLine(Offset(c.dx + 3, 7), Offset(c.dx, 4), arrow);
+      canvas.drawLine(Offset(c.dx - 3, h - 7), Offset(c.dx, h - 4), arrow);
+      canvas.drawLine(Offset(c.dx + 3, h - 7), Offset(c.dx, h - 4), arrow);
+    }
+    canvas.drawRRect(
+      round,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.2
+        ..color = selected ? PbColors.primary : PbColors.line,
+    );
+  }
+
+  @override
+  bool shouldRepaint(_PictureGlyphPainter old) => old.mode != mode || old.selected != selected;
 }
