@@ -2755,7 +2755,7 @@ dependencies = [
 
 [[package]]
 name = "peanutbutter"
-version = "0.3.25"
+version = "0.3.26"
 dependencies = [
  "argon2",
  "async-graphql",
