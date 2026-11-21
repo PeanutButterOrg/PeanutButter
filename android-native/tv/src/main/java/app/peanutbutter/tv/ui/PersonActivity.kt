@@ -25,12 +25,19 @@ class PersonActivity : FragmentActivity() {
                 val api = application.asTv().api
                 var person = api.person(tmdbId)
                 ui.person = person
-                // The server is still checking some titles: they appear as they pass.
-                var tries = 0
-                while (person.checkingCredits > 0 && tries++ < 20) {
-                    kotlinx.coroutines.delay(3_000)
-                    person = runCatching { api.person(tmdbId) }.getOrNull() ?: continue
-                    ui.person = person
+                // The server is still checking some titles: ask until it's done
+                // (this stops when the page closes). Every 3 s while titles
+                // keep arriving, easing off to 15 s while none do.
+                var wait = 3_000L
+                while (person.checkingCredits > 0) {
+                    kotlinx.coroutines.delay(wait)
+                    val next = runCatching { api.person(tmdbId) }.getOrNull()
+                    val progressed = next != null && next.checkingCredits < person.checkingCredits
+                    wait = if (progressed) 3_000L else (wait * 3 / 2).coerceAtMost(15_000L)
+                    if (next != null) {
+                        person = next
+                        ui.person = next
+                    }
                 }
             } catch (e: Exception) {
                 ui.error = getString(R.string.person_load_failed)

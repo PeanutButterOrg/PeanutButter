@@ -1536,8 +1536,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     try {
       if (wipe) {
         if (generation != null && generation != LocalTorrentEngine.instance.generation) return;
-        await LocalTorrentEngine.instance.purgeDownloads(onlyGeneration: generation);
-        await PlayerCache.clear();
+        await PlayerCache.clear(onlyGeneration: generation);
       } else if (localActive) {
         await LocalTorrentEngine.instance.stop(deleteFiles: false, onlyGeneration: generation);
       }

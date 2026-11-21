@@ -28,7 +28,8 @@ class PersonScreen extends ConsumerStatefulWidget {
 class _PersonScreenState extends ConsumerState<PersonScreen> {
   bool _opening = false;
   Timer? _recheck;
-  int _rechecks = 0;
+  int? _lastChecking;
+  Duration _wait = const Duration(seconds: 3);
 
   @override
   void dispose() {
@@ -36,12 +37,20 @@ class _PersonScreenState extends ConsumerState<PersonScreen> {
     super.dispose();
   }
 
-  /// The server is still checking some titles: ask again so they appear.
+  /// The server is still checking some titles: ask until it's done (this
+  /// stops when the page closes). Every 3 s while titles keep arriving,
+  /// easing off to 15 s while none do.
   void _scheduleRecheck(PersonDetails? p) {
-    if (p == null || p.checkingCredits == 0 || _recheck != null || _rechecks >= 20) return;
-    _recheck = Timer(const Duration(seconds: 3), () {
+    if (p == null || p.checkingCredits == 0 || _recheck != null) return;
+    final last = _lastChecking;
+    if (last != null) {
+      _wait = p.checkingCredits < last
+          ? const Duration(seconds: 3)
+          : Duration(milliseconds: (_wait.inMilliseconds * 3 ~/ 2).clamp(3000, 15000));
+    }
+    _lastChecking = p.checkingCredits;
+    _recheck = Timer(_wait, () {
       _recheck = null;
-      _rechecks++;
       if (mounted) ref.invalidate(personProvider(widget.tmdbId));
     });
   }

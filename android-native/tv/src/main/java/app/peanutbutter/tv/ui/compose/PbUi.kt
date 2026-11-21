@@ -103,15 +103,22 @@ fun PbImage(
     fun release(old: LoadedImage?) {
         if (old != null) runCatching { Glide.with(context).clear(old.request) }
     }
+    // Frees a picture once the frame that stopped drawing it is out. Not
+    // cancellable: a quick next change must not skip it (nothing else holds
+    // it any more); bounded, in case no further frame comes.
+    suspend fun releaseAfterDraw(old: LoadedImage) = withContext(kotlinx.coroutines.NonCancellable) {
+        kotlinx.coroutines.withTimeoutOrNull(500) {
+            withFrameNanos { }
+            withFrameNanos { }
+        }
+        release(old)
+    }
     LaunchedEffect(url, target) {
         // Another picture (or none): stop drawing the old one, then free it.
         if (shown?.url != url) {
             val old = shown
             shown = null
-            if (old != null) {
-                withFrameNanos { }
-                release(old)
-            }
+            if (old != null) releaseAfterDraw(old)
         }
         if (url.isNullOrBlank() || target == IntSize.Zero) return@LaunchedEffect
         // Keep the picture's own shape, just big enough to cover the box; the
@@ -134,11 +141,7 @@ fun PbImage(
             shown = LoadedImage(url, request, bitmap.asImageBitmap())
             adopted = true
             // The new size's picture is drawn from the next frame: free the old one after it.
-            if (old != null) {
-                withFrameNanos { }
-                withFrameNanos { }
-                release(old)
-            }
+            if (old != null) releaseAfterDraw(old)
         } finally {
             if (!adopted) {
                 withContext(kotlinx.coroutines.NonCancellable + Dispatchers.Main) {
