@@ -123,9 +123,38 @@ data class Person(
     val character: String? = null,
     val job: String? = null,
     val profileUrl: String? = null,
+    /** Opens their page; null on servers before 0.3.26. */
+    val tmdbPersonId: Int? = null,
 ) {
     val role: String get() = character ?: job.orEmpty()
 }
+
+/** A cast or crew member's page: who they are and their filmography. */
+data class PersonDetails(
+    val tmdbId: Int,
+    val name: String,
+    val biography: String? = null,
+    val birthday: String? = null,
+    val deathday: String? = null,
+    val placeOfBirth: String? = null,
+    val knownFor: String? = null,
+    val profileUrl: String? = null,
+    val acting: List<PersonCredit> = emptyList(),
+    val crew: List<PersonCredit> = emptyList(),
+)
+
+/** A title in a person's filmography; [titleId] is set when the catalog has it. */
+data class PersonCredit(
+    val tmdbId: Int,
+    /** MOVIE or SERIES. */
+    val kind: String,
+    val title: String,
+    val role: String? = null,
+    val year: Int? = null,
+    val posterUrl: String? = null,
+    val voteAverage: Double? = null,
+    val titleId: String? = null,
+)
 
 data class Season(
     val id: String,

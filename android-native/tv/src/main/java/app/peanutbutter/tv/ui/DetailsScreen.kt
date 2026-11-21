@@ -114,6 +114,9 @@ interface DetailsActions {
     fun playEpisode(season: Season, episode: Episode)
     fun openTrailer(trailer: Trailer)
     fun openTitle(item: TitleItem)
+    /** The More like this row is near its end: load the next page. */
+    fun loadMoreSimilar()
+    fun openPerson(person: Person)
 }
 
 private val gutter = PbSpace.gutterTv
@@ -184,7 +187,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.sections(
         item(key = "credits") { Credits(t.people) }
         index++
         val castAt = index++
-        item(key = "cast") { CastRow(t.people.take(24)) { if (it) reveal(castAt) } }
+        item(key = "cast") { CastRow(t.people.take(24), actions) { if (it) reveal(castAt) } }
     }
     val trailers = t.playableTrailers
     if (trailers.isNotEmpty()) {
@@ -395,6 +398,8 @@ private fun <T> Shelf(
     items: List<T>,
     gap: Dp,
     onFocus: (Boolean) -> Unit,
+    /** Called as the last few cards come into view (to load more). */
+    onNearEnd: (() -> Unit)? = null,
     content: @Composable (T) -> Unit,
 ) {
     Column(Modifier.padding(top = 12.dp).onFocusChanged { onFocus(it.hasFocus) }) {
@@ -407,6 +412,7 @@ private fun <T> Shelf(
                 modifier = Modifier.focusRestorer { first },
             ) {
                 itemsIndexed(items) { i, it ->
+                    if (onNearEnd != null && i >= items.size - 6) LaunchedEffect(items.size) { onNearEnd() }
                     Box(if (i == 0) Modifier.focusRequester(first) else Modifier) { content(it) }
                 }
             }
@@ -415,12 +421,12 @@ private fun <T> Shelf(
 }
 
 @Composable
-private fun CastRow(people: List<Person>, onFocus: (Boolean) -> Unit) {
-    Shelf("Cast & crew", people, 18.dp, onFocus) { person -> CastTile(person) }
+private fun CastRow(people: List<Person>, actions: DetailsActions, onFocus: (Boolean) -> Unit) {
+    Shelf("Cast & crew", people, 18.dp, onFocus) { person -> CastTile(person) { actions.openPerson(person) } }
 }
 
 @Composable
-private fun CastTile(person: Person) {
+private fun CastTile(person: Person, onClick: () -> Unit) {
     var focused by remember { mutableStateOf(false) }
     val w = 104.dp
     val h = 148.dp
@@ -429,7 +435,7 @@ private fun CastTile(person: Person) {
             Modifier
                 .size(w, h)
                 .pbFocusRing(focused, RoundedCornerShape(13.dp), 1.08f)
-                .pbClick({ focused = it }, {})
+                .pbClick({ focused = it }, onClick)
                 .clip(RoundedCornerShape(10.dp))
                 .background(Color(0xFF1C1C24)),
             contentAlignment = Alignment.Center,
@@ -477,7 +483,7 @@ private fun TrailerRow(trailers: List<Trailer>, actions: DetailsActions, onFocus
 @Composable
 private fun SimilarRow(items: List<TitleItem>, actions: DetailsActions, onFocus: (Boolean) -> Unit) {
     Box(Modifier.padding(top = 12.dp)) {
-        Shelf("More like this", items, 14.dp, onFocus) { item ->
+        Shelf("More like this", items, 14.dp, onFocus, onNearEnd = actions::loadMoreSimilar) { item ->
             PosterCard(item, PbSize.posterWidthTv, { actions.openTitle(item) })
         }
     }

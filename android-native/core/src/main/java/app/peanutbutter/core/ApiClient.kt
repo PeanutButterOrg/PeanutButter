@@ -203,9 +203,75 @@ class ApiClient(
         )
     }
 
+    /** This server predates `Person.tmdbPersonId`. */
+    @Volatile private var oldTitleQuery = false
+
     suspend fun title(id: String): TitleItem = withContext(Dispatchers.IO) {
-        val data = gql(Gql.TITLE, mapOf("id" to id))
+        // Newer servers also give each person's TMDB id; older ones reject the
+        // field, and then we stop asking for it.
+        val data = if (oldTitleQuery) {
+            gql(Gql.TITLE, mapOf("id" to id))
+        } else {
+            runCatching { gql(Gql.TITLE_WITH_PEOPLE_IDS, mapOf("id" to id)) }
+                .getOrElse { e ->
+                    if (e is UnauthorizedException) throw e
+                    gql(Gql.TITLE, mapOf("id" to id)).also { oldTitleQuery = true }
+                }
+        }
         parseTitle(data.getAsJsonObject("title"))
+    }
+
+    /**
+     * One page of "More like this" and whether another follows. Servers
+     * before 0.3.26 have no pages: page 1 is their whole list, then it ends.
+     */
+    suspend fun similarPage(id: String, page: Int): Pair<List<TitleItem>, Boolean> = withContext(Dispatchers.IO) {
+        runCatching {
+            val root = gql(Gql.SIMILAR_PAGE, mapOf("titleId" to id, "page" to page)).getAsJsonObject("similarTitlesPage")
+            parseTitles(root.getAsJsonArray("items")) to (root.get("hasNextPage")?.asBoolean ?: false)
+        }.getOrElse {
+            if (page == 1) similarTitles(id, 24) to false else emptyList<TitleItem>() to false
+        }
+    }
+
+    /** A cast or crew member's page. Throws on servers before 0.3.26. */
+    suspend fun person(tmdbId: Int): PersonDetails = withContext(Dispatchers.IO) {
+        val o = gql(Gql.PERSON, mapOf("tmdbId" to tmdbId)).getAsJsonObject("person")
+        fun str(obj: JsonObject, key: String) = obj.get(key)?.takeUnless { it.isJsonNull }?.asString?.takeIf { it.isNotBlank() }
+        fun credits(key: String) = o.getAsJsonArray(key)?.mapNotNull { el ->
+            runCatching {
+                val c = el.asJsonObject
+                PersonCredit(
+                    tmdbId = c.get("tmdbId").asInt,
+                    kind = c.getStringOr("kind", "MOVIE"),
+                    title = c.getStringOr("title", ""),
+                    role = str(c, "role"),
+                    year = c.get("year")?.takeUnless { it.isJsonNull }?.asInt,
+                    posterUrl = resolveMediaUrl(str(c, "posterUrl")),
+                    voteAverage = c.get("voteAverage")?.takeUnless { it.isJsonNull }?.asDouble,
+                    titleId = str(c, "titleId"),
+                ).takeIf { it.title.isNotBlank() }
+            }.getOrNull()
+        }.orEmpty()
+        PersonDetails(
+            tmdbId = o.get("tmdbId").asInt,
+            name = o.getStringOr("name", ""),
+            biography = str(o, "biography"),
+            birthday = str(o, "birthday"),
+            deathday = str(o, "deathday"),
+            placeOfBirth = str(o, "placeOfBirth"),
+            knownFor = str(o, "knownFor"),
+            profileUrl = resolveMediaUrl(str(o, "profileUrl")),
+            acting = credits("acting"),
+            crew = credits("crew"),
+        )
+    }
+
+    /** The catalog id for a filmography credit, stored on the server first if needed. */
+    suspend fun openTmdbTitle(tmdbId: Int, kind: String): String = withContext(Dispatchers.IO) {
+        val k = if (kind.equals("MOVIE", true)) "MOVIE" else "SERIES"
+        gql(Gql.OPEN_TMDB_TITLE, mapOf("tmdbId" to tmdbId, "kind" to k))
+            .getAsJsonObject("openTmdbTitle").getStringOr("id", "")
     }
 
     /** "More like this": TMDB's recommendations in the catalog. Empty on older servers. */
@@ -836,6 +902,7 @@ class ApiClient(
                         profileUrl = resolveMediaUrl(
                             p.get("profileUrl")?.takeUnless { it.isJsonNull }?.asString,
                         ),
+                        tmdbPersonId = p.get("tmdbPersonId")?.takeUnless { it.isJsonNull }?.asInt,
                     ).takeIf { it.name.isNotBlank() }
                 }.getOrNull()
             }.orEmpty(),

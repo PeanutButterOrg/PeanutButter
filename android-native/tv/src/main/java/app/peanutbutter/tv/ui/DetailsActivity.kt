@@ -12,6 +12,7 @@ import app.peanutbutter.core.AppLog
 import app.peanutbutter.core.Episode
 import app.peanutbutter.core.Season
 import app.peanutbutter.core.StreamQuality
+import app.peanutbutter.core.Person
 import app.peanutbutter.core.TitleItem
 import app.peanutbutter.core.Trailer
 import app.peanutbutter.core.TorrentFilePicker
@@ -97,10 +98,46 @@ class DetailsActivity : FragmentActivity(), DetailsActions {
         if (t.kind.equals("SERIES", true) || t.kind.equals("TV", true) || t.kind.equals("ANIME", true)) {
             lifecycleScope.launch { ui.following = runCatching { api.isFollowing(t.id) }.getOrNull() }
         }
+        similarPage = 0
+        similarHasMore = true
+        ui.similar = emptyList()
+        loadMoreSimilar()
+    }
+
+    // More like this, a page at a time until the list ends.
+    private var similarPage = 0
+    private var similarHasMore = true
+    private var similarLoading = false
+
+    override fun loadMoreSimilar() {
+        val t = item ?: return
+        if (similarLoading || !similarHasMore) return
+        similarLoading = true
+        val page = similarPage + 1
         lifecycleScope.launch {
-            val items = runCatching { api.similarTitles(t.id) }.getOrDefault(emptyList())
-            if (!isFinishing && item?.id == t.id) ui.similar = items
+            val (items, more) = application.asTv().api.similarPage(t.id, page)
+            similarLoading = false
+            if (isFinishing || item?.id != t.id) return@launch
+            similarPage = page
+            similarHasMore = more
+            val seen = ui.similar.mapTo(HashSet()) { it.id }
+            ui.similar = ui.similar + items.filter { it.id != t.id && seen.add(it.id) }
+            // A page that was all filtered out: keep going while there is more.
+            if (items.isEmpty() && more) loadMoreSimilar()
         }
+    }
+
+    override fun openPerson(person: Person) {
+        val id = person.tmdbPersonId
+        if (id == null) {
+            Toast.makeText(this, R.string.person_needs_server, Toast.LENGTH_LONG).show()
+            return
+        }
+        startActivity(
+            Intent(this, PersonActivity::class.java)
+                .putExtra(PersonActivity.EXTRA_TMDB_ID, id)
+                .putExtra(PersonActivity.EXTRA_NAME, person.name),
+        )
     }
 
     private fun setBusy(show: Boolean) {
