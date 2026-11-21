@@ -30,6 +30,8 @@ import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.Star
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.withFrameNanos
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -94,35 +96,72 @@ fun PbImage(
     // the intended size in dp, but TVs differ in density and boxes stretch.
     var size by remember { mutableStateOf(IntSize.Zero) }
     val target = if (size.width > 0 && size.height > 0) size else IntSize.Zero
-    var bitmap by remember(url) { mutableStateOf<ImageBitmap?>(null) }
-    LaunchedEffect(url, target) {
-        if (url.isNullOrBlank() || target == IntSize.Zero) return@LaunchedEffect
-        val loaded = withContext(Dispatchers.IO) {
-            runCatching {
-                // Keep the picture's own shape, just big enough to cover the
-                // box; the crop (and its alignment) happens once, when drawn.
-                Glide.with(context).asBitmap().load(url)
-                    .apply(
-                        RequestOptions()
-                            .format(DecodeFormat.PREFER_RGB_565)
-                            .disallowHardwareConfig()
-                            .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
-                            .downsample(DownsampleStrategy.CENTER_OUTSIDE)
-                            .override(target.width, target.height),
-                    )
-                    .submit()
-                    .get()
-                    .asImageBitmap()
-            }.getOrNull()
-        }
-        if (loaded != null) bitmap = loaded
+    // The Glide request is kept with its picture and cleared once the picture
+    // is no longer drawn: a request that isn't cleared holds its bitmap for
+    // good (these use the app's context, so leaving a screen frees nothing).
+    var shown by remember { mutableStateOf<LoadedImage?>(null) }
+    fun release(old: LoadedImage?) {
+        if (old != null) runCatching { Glide.with(context).clear(old.request) }
     }
+    LaunchedEffect(url, target) {
+        // Another picture (or none): stop drawing the old one, then free it.
+        if (shown?.url != url) {
+            val old = shown
+            shown = null
+            if (old != null) {
+                withFrameNanos { }
+                release(old)
+            }
+        }
+        if (url.isNullOrBlank() || target == IntSize.Zero) return@LaunchedEffect
+        // Keep the picture's own shape, just big enough to cover the box; the
+        // crop (and its alignment) happens once, when drawn.
+        val request = Glide.with(context).asBitmap().load(url)
+            .apply(
+                RequestOptions()
+                    .format(DecodeFormat.PREFER_RGB_565)
+                    .disallowHardwareConfig()
+                    .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
+                    .downsample(DownsampleStrategy.CENTER_OUTSIDE)
+                    .override(target.width, target.height),
+            )
+            .submit()
+        var adopted = false
+        try {
+            val bitmap = withContext(Dispatchers.IO) { runCatching { request.get() }.getOrNull() }
+                ?: return@LaunchedEffect
+            val old = shown
+            shown = LoadedImage(url, request, bitmap.asImageBitmap())
+            adopted = true
+            // The new size's picture is drawn from the next frame: free the old one after it.
+            if (old != null) {
+                withFrameNanos { }
+                withFrameNanos { }
+                release(old)
+            }
+        } finally {
+            if (!adopted) {
+                withContext(kotlinx.coroutines.NonCancellable + Dispatchers.Main) {
+                    runCatching { Glide.with(context).clear(request) }
+                }
+            }
+        }
+    }
+    // Leaving the screen: nothing draws it any more.
+    DisposableEffect(Unit) { onDispose { release(shown) } }
     Box(modifier.onSizeChanged { if (it.width > 0 && it.height > 0) size = it }) {
-        bitmap?.let {
-            Image(it, null, Modifier.fillMaxSize(), contentScale = contentScale, alignment = alignment)
+        shown?.let {
+            Image(it.image, null, Modifier.fillMaxSize(), contentScale = contentScale, alignment = alignment)
         }
     }
 }
+
+/** A drawn picture and the Glide request that owns its bitmap. */
+private class LoadedImage(
+    val url: String,
+    val request: com.bumptech.glide.request.FutureTarget<android.graphics.Bitmap>,
+    val image: ImageBitmap,
+)
 
 /** Lists whose scrolling the screen drives itself (it pins the focused section). */
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)

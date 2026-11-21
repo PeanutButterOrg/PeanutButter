@@ -1609,14 +1609,18 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     } catch (_) {}
     // Leave first. Stopping the player or the torrent can stall at the end of
     // a file; awaiting it kept the buffering screen up with Back ignored.
-    try {
-      await _disposePlaybackEngines().timeout(const Duration(seconds: 3));
-    } catch (_) {}
-    unawaited(
-      _releaseStreamResources(wipe: wipe)
+    // The torrent is only removed once the player has really let go of it
+    // (removing it under a still-reading player crashes the desktop), so the
+    // cleanup is chained after teardown, which the page doesn't wait out.
+    final teardown = _disposePlaybackEngines().catchError((_) {});
+    unawaited(teardown.then(
+      (_) => _releaseStreamResources(wipe: wipe)
           .timeout(const Duration(seconds: 30), onTimeout: () {})
           .catchError((_) {}),
-    );
+    ));
+    try {
+      await teardown.timeout(const Duration(seconds: 3));
+    } catch (_) {}
     if (!mounted) return;
     // PopScope keeps canPop=false while playing, so context.canPop() stays false
     // unless we flip this flag — otherwise Leave appears to do nothing.

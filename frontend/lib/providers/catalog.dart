@@ -728,8 +728,15 @@ Future<String> openTmdbTitle(GraphQLClient client, PersonCredit credit) async {
   return (result.data?['openTmdbTitle'] as Map<String, dynamic>?)?['id'] as String? ?? '';
 }
 
-/// This server predates `Person.tmdbPersonId`: stop asking for it.
-bool _oldTitleQuery = false;
+/// When each server (its GraphQL client) last rejected `Person.tmdbPersonId`.
+/// Asked again after a while, so an upgraded server is noticed without a
+/// restart; a new server gets a new client, and starts unmarked.
+final Expando<DateTime> _oldTitleQuerySince = Expando('oldTitleQuery');
+
+bool _usesOldTitleQuery(GraphQLClient client) {
+  final since = _oldTitleQuerySince[client];
+  return since != null && DateTime.now().difference(since) < const Duration(minutes: 10);
+}
 
 final detailProvider = FutureProvider.autoDispose.family<TitleItem?, String>((ref, id) async {
   final link = ref.keepAlive();
@@ -746,11 +753,14 @@ final detailProvider = FutureProvider.autoDispose.family<TitleItem?, String>((re
         ),
       );
   // Newer servers also give each person's TMDB id; older ones reject the field.
-  var result = await load(_oldTitleQuery ? GET_TITLE : GET_TITLE_WITH_PEOPLE_IDS);
-  if (result.hasException && !_oldTitleQuery && result.exception!.graphqlErrors.isNotEmpty) {
+  final old = _usesOldTitleQuery(client);
+  var result = await load(old ? GET_TITLE : GET_TITLE_WITH_PEOPLE_IDS);
+  if (result.hasException && !old && result.exception!.graphqlErrors.isNotEmpty) {
     final retry = await load(GET_TITLE);
-    if (!retry.hasException) _oldTitleQuery = true;
+    if (!retry.hasException) _oldTitleQuerySince[client] = DateTime.now();
     result = retry;
+  } else if (!old && !result.hasException) {
+    _oldTitleQuerySince[client] = null;
   }
   if (result.hasException) {
     throw result.exception!;

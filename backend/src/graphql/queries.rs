@@ -259,7 +259,7 @@ impl Query {
         let page = page.unwrap_or(1).clamp(1, 500);
         let ingest = crate::ingest::IngestContext::from(state);
         let (ids, has_next_page) =
-            match crate::ingest::tmdb::similar_titles_page(&ingest, title_id, page, 20).await {
+            match crate::ingest::tmdb::similar_titles_page(&ingest, title_id, page, 20, 20).await {
                 Ok(found) => found,
                 Err(e) => {
                     tracing::warn!(title_id = %title_id, page, error = %e, "more like this page failed");

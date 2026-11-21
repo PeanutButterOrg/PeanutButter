@@ -203,19 +203,30 @@ class ApiClient(
         )
     }
 
-    /** This server predates `Person.tmdbPersonId`. */
-    @Volatile private var oldTitleQuery = false
+    /**
+     * The server that last rejected `Person.tmdbPersonId`, and when. Asked
+     * again after a while (an upgraded server is noticed without a restart);
+     * another server starts unmarked.
+     */
+    @Volatile private var oldTitleQuery: Pair<String, Long>? = null
+
+    private fun usesOldTitleQuery(): Boolean {
+        val (server, at) = oldTitleQuery ?: return false
+        return server == graphqlUrl() && System.currentTimeMillis() - at < 10 * 60_000L
+    }
 
     suspend fun title(id: String): TitleItem = withContext(Dispatchers.IO) {
         // Newer servers also give each person's TMDB id; older ones reject the
         // field, and then we stop asking for it.
-        val data = if (oldTitleQuery) {
+        val data = if (usesOldTitleQuery()) {
             gql(Gql.TITLE, mapOf("id" to id))
         } else {
             runCatching { gql(Gql.TITLE_WITH_PEOPLE_IDS, mapOf("id" to id)) }
+                .onSuccess { oldTitleQuery = null }
                 .getOrElse { e ->
                     if (e is UnauthorizedException) throw e
-                    gql(Gql.TITLE, mapOf("id" to id)).also { oldTitleQuery = true }
+                    gql(Gql.TITLE, mapOf("id" to id))
+                        .also { oldTitleQuery = graphqlUrl() to System.currentTimeMillis() }
                 }
         }
         parseTitle(data.getAsJsonObject("title"))

@@ -1711,11 +1711,9 @@ pub async fn ensure_discover_pages_for_catalog(
     Ok(has_more)
 }
 
-/// Most new titles "More like this" stores from TMDB for its first page, so a
+/// Most new titles the single-list "More like this" stores from TMDB, so a
 /// title page opens quickly; later visits find them in the catalog.
 const SIMILAR_MAX_NEW: usize = 8;
-/// Later pages load while the row is scrolled, so they may store a full page.
-const SIMILAR_MAX_NEW_LATER: usize = 20;
 
 /// "More like this": the catalog ids of what TMDB recommends for a title
 /// (its "similar" list when there are no recommendations), in TMDB's order.
@@ -1723,16 +1721,19 @@ const SIMILAR_MAX_NEW_LATER: usize = 20;
 /// row always opens real title pages. Same filters as the rest of the catalog
 /// (adult, blocked genres, preferred languages) through the normal upsert.
 pub async fn similar_titles(ctx: &IngestContext, title_id: Uuid, limit: usize) -> Result<Vec<Uuid>> {
-    Ok(similar_titles_page(ctx, title_id, 1, limit).await?.0)
+    Ok(similar_titles_page(ctx, title_id, 1, limit, SIMILAR_MAX_NEW).await?.0)
 }
 
 /// One TMDB page (20) of "More like this", at most [limit] titles, and
-/// whether TMDB has another page after it.
+/// whether TMDB has another page after it. Up to [max_new] titles missing
+/// from the catalog are stored first; a paged row passes a whole page, since
+/// the next request moves on to the next page and would skip the rest.
 pub async fn similar_titles_page(
     ctx: &IngestContext,
     title_id: Uuid,
     page: i32,
     limit: usize,
+    max_new: usize,
 ) -> Result<(Vec<Uuid>, bool)> {
     let page = page.max(1);
     if ctx.config.tmdb_key().is_empty() {
@@ -1781,7 +1782,6 @@ pub async fn similar_titles_page(
     let mut known = lookup(ids.clone()).await?;
     if known.len() < limit {
         let upsert_kind = if media == "tv" { "series" } else { "movie" };
-        let max_new = if page == 1 { SIMILAR_MAX_NEW } else { SIMILAR_MAX_NEW_LATER };
         let missing: Vec<i32> = ids
             .iter()
             .copied()
@@ -3388,6 +3388,33 @@ pub async fn person_page(ctx: &IngestContext, person_id: i32) -> Result<PersonPa
         c.title_id = known.get(&(c.tmdb_id, c.kind)).copied();
     }
 
+    // Catalog titles passed the content checks when they were stored. The
+    // rest get the same checks (TMDB's adult flag misses erotic films):
+    // anything explicit, or that can't be checked right now, is left out.
+    let unchecked: Vec<(i32, bool)> = acting
+        .iter()
+        .chain(&crew)
+        .filter(|c| c.title_id.is_none())
+        .map(|c| (c.tmdb_id, c.kind == "movie"))
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+    let verdicts: std::collections::HashMap<(i32, bool), bool> = stream::iter(unchecked)
+        .map(|key: (i32, bool)| {
+            let ctx = ctx.clone();
+            async move { (key, credit_is_clean(&ctx, key.0, key.1).await) }
+        })
+        .buffer_unordered(TMDB_CONCURRENCY)
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect();
+    let keep = |c: &PersonCredit| {
+        c.title_id.is_some() || verdicts.get(&(c.tmdb_id, c.kind == "movie")) == Some(&true)
+    };
+    acting.retain(keep);
+    crew.retain(keep);
+
     Ok(PersonPage {
         tmdb_id: person.id,
         name: person.name,
@@ -3400,6 +3427,52 @@ pub async fn person_page(ctx: &IngestContext, person_id: i32) -> Result<PersonPa
         acting,
         crew,
     })
+}
+
+/// Content-check verdicts for filmography credits outside the catalog, so a
+/// person's page doesn't re-fetch them on every visit. Errors aren't kept.
+fn credit_verdicts() -> &'static Mutex<std::collections::HashMap<(i32, bool), bool>> {
+    static CACHE: OnceLock<Mutex<std::collections::HashMap<(i32, bool), bool>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+}
+
+/// Whether a title passes the same hard content checks as an import (adult
+/// flag, blocked genres, erotic keywords, explicit rating). False when it
+/// fails them or TMDB can't be asked right now.
+async fn credit_is_clean(ctx: &IngestContext, tmdb_id: i32, movie: bool) -> bool {
+    if let Some(v) = credit_verdicts().lock().await.get(&(tmdb_id, movie)) {
+        return *v;
+    }
+    let key = ctx.config.tmdb_key();
+    let verdict = if movie {
+        let url = format!("{TMDB}/movie/{tmdb_id}?api_key={key}&append_to_response=keywords,release_dates");
+        get_json::<MovieDetails>(ctx, &url).await.map(|d| {
+            let rating = certification_from_releases(d.release_dates.as_ref());
+            explicit_reason(d.adult, d.genres.as_deref().unwrap_or_default(), d.keywords.as_ref(), rating.as_deref())
+                .is_none()
+        })
+    } else {
+        let url = format!("{TMDB}/tv/{tmdb_id}?api_key={key}&append_to_response=keywords,content_ratings");
+        get_json::<TvDetails>(ctx, &url).await.map(|d| {
+            let rating = certification_from_tv(d.content_ratings.as_ref());
+            explicit_reason(d.adult, d.genres.as_deref().unwrap_or_default(), d.keywords.as_ref(), rating.as_deref())
+                .is_none()
+        })
+    };
+    match verdict {
+        Ok(v) => {
+            let mut cache = credit_verdicts().lock().await;
+            if cache.len() > 50_000 {
+                cache.clear();
+            }
+            cache.insert((tmdb_id, movie), v);
+            v
+        }
+        Err(e) => {
+            debug!(tmdb_id, movie, error = %e, "filmography content check failed");
+            false
+        }
+    }
 }
 
 /// The catalog title for a TMDB id, stored first when the catalog doesn't
