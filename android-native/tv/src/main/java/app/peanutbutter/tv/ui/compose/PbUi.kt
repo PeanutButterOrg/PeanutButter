@@ -48,6 +48,9 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import com.bumptech.glide.load.resource.bitmap.DownsampleStrategy
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
@@ -86,30 +89,34 @@ fun PbImage(
     alignment: Alignment = Alignment.Center,
 ) {
     val context = LocalContext.current.applicationContext
-    val density = LocalDensity.current
-    val w = with(density) { widthDp.roundToPx() }.coerceAtLeast(1)
-    val h = with(density) { heightDp.roundToPx() }.coerceAtLeast(1)
+    // Load for the box's measured size, not [widthDp]/[heightDp]: those are
+    // the intended size in dp, but TVs differ in density and boxes stretch.
+    var size by remember { mutableStateOf(IntSize.Zero) }
+    val target = if (size.width > 0 && size.height > 0) size else IntSize.Zero
     var bitmap by remember(url) { mutableStateOf<ImageBitmap?>(null) }
-    LaunchedEffect(url, w, h) {
-        if (url.isNullOrBlank()) return@LaunchedEffect
-        bitmap = withContext(Dispatchers.IO) {
+    LaunchedEffect(url, target) {
+        if (url.isNullOrBlank() || target == IntSize.Zero) return@LaunchedEffect
+        val loaded = withContext(Dispatchers.IO) {
             runCatching {
+                // Keep the picture's own shape, just big enough to cover the
+                // box; the crop (and its alignment) happens once, when drawn.
                 Glide.with(context).asBitmap().load(url)
                     .apply(
                         RequestOptions()
                             .format(DecodeFormat.PREFER_RGB_565)
                             .disallowHardwareConfig()
                             .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
-                            .override(w, h)
-                            .centerCrop(),
+                            .downsample(DownsampleStrategy.CENTER_OUTSIDE)
+                            .override(target.width, target.height),
                     )
                     .submit()
                     .get()
                     .asImageBitmap()
             }.getOrNull()
         }
+        if (loaded != null) bitmap = loaded
     }
-    Box(modifier) {
+    Box(modifier.onSizeChanged { if (it.width > 0 && it.height > 0) size = it }) {
         bitmap?.let {
             Image(it, null, Modifier.fillMaxSize(), contentScale = contentScale, alignment = alignment)
         }
