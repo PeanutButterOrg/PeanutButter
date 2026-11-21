@@ -693,6 +693,14 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     if (event is! KeyDownEvent && event is! KeyRepeatEvent) return KeyEventResult.ignored;
     // The resume card's buttons take the keys.
     if (_askingResume) return KeyEventResult.ignored;
+    // Desktop / web: Left and Right always seek (a focused button used to take
+    // some presses, so three presses moved 20 s, or back 10).
+    if (!isAndroidTv &&
+        (event.logicalKey == LogicalKeyboardKey.arrowLeft ||
+            event.logicalKey == LogicalKeyboardKey.arrowRight)) {
+      if (_canSeek) _seekRelative(event.logicalKey == LogicalKeyboardKey.arrowRight ? 10 : -10);
+      return KeyEventResult.handled;
+    }
     // Child chrome controls handle their own ActivateIntent / arrows.
     if (_chromeControlFocused) return KeyEventResult.ignored;
     return _handlePlayerKey(event.logicalKey) ? KeyEventResult.handled : KeyEventResult.ignored;
@@ -1596,8 +1604,16 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
       await _saveProgress(closing: true, invalidateHome: true)
           .timeout(const Duration(seconds: 2), onTimeout: () {});
     } catch (_) {}
-    await _disposePlaybackEngines();
-    await _releaseStreamResources(wipe: wipe);
+    // Leave first. Stopping the player or the torrent can stall at the end of
+    // a file; awaiting it kept the buffering screen up with Back ignored.
+    try {
+      await _disposePlaybackEngines().timeout(const Duration(seconds: 3));
+    } catch (_) {}
+    unawaited(
+      _releaseStreamResources(wipe: wipe)
+          .timeout(const Duration(seconds: 30), onTimeout: () {})
+          .catchError((_) {}),
+    );
     if (!mounted) return;
     // PopScope keeps canPop=false while playing, so context.canPop() stays false
     // unless we flip this flag — otherwise Leave appears to do nothing.
@@ -3375,7 +3391,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
                 value: barValue,
                 minHeight: 4,
                 backgroundColor: Colors.white24,
-                color: AppTheme.seed,
+                color: PbColors.primary,
                 borderRadius: BorderRadius.circular(2),
               ),
             ),
@@ -3555,9 +3571,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
                       PopupMenuItem(value: f, child: Text(f.quality ?? f.container ?? 'file')),
                   ],
                 ),
-              if (_hasWindowControls) ...[
+              // Volume everywhere but TV (the remote has its own); fullscreen on desktop.
+              if (!isAndroidTv && !_isTrailer) ...[
                 const SizedBox(width: 8),
                 _volumeButton(),
+              ],
+              if (_hasWindowControls) ...[
                 const SizedBox(width: 8),
                 _fullscreenButton(),
               ],
@@ -3638,18 +3657,87 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     ];
   }
 
+  /// Volume: opens a panel with mute and a level slider (arrow keys and the
+  /// scroll wheel still nudge it too).
   Widget _volumeButton() {
     final vol = _player?.state.volume ?? 100;
     final muted = _muted || vol <= 0.5;
-    return _RoundButton(
-      focusNode: _volumeFocus,
-      tooltip: muted ? 'Unmute' : 'Mute',
-      icon: muted
-          ? Icons.volume_off_rounded
-          : vol < 40
-              ? Icons.volume_down_rounded
-              : Icons.volume_up_rounded,
-      onPressed: () => unawaited(_toggleMute()),
+    return Builder(
+      builder: (context) => _RoundButton(
+        focusNode: _volumeFocus,
+        tooltip: 'Volume',
+        icon: muted
+            ? Icons.volume_off_rounded
+            : vol < 40
+                ? Icons.volume_down_rounded
+                : Icons.volume_up_rounded,
+        onPressed: () async {
+          _bumpChrome();
+          await _panelMenu<String>(context, 'Volume', [
+            _MenuBox<String>(
+              boxHeight: 64,
+              child: StatefulBuilder(builder: (context, refresh) => _volumeBox(refresh)),
+            ),
+          ]);
+          if (mounted) setState(() {});
+        },
+      ),
+    );
+  }
+
+  Widget _volumeBox(StateSetter refresh) {
+    final player = _player;
+    final vol = player?.state.volume ?? 100;
+    final muted = _muted || vol <= 0.5;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(4, 0, 12, 8),
+      child: Row(
+        children: [
+          IconButton(
+            tooltip: muted ? 'Unmute' : 'Mute',
+            onPressed: () async {
+              await _toggleMute();
+              refresh(() {});
+            },
+            icon: Icon(
+              muted ? Icons.volume_off_rounded : Icons.volume_up_rounded,
+              color: PbColors.text,
+            ),
+          ),
+          Expanded(
+            child: SliderTheme(
+              data: SliderTheme.of(context).copyWith(
+                trackHeight: 3,
+                activeTrackColor: PbColors.primary,
+                inactiveTrackColor: Colors.white24,
+                thumbColor: Colors.white,
+              ),
+              child: Slider(
+                value: muted ? 0 : vol.clamp(0.0, 100.0).toDouble(),
+                max: 100,
+                onChanged: player == null
+                    ? null
+                    : (v) {
+                        unawaited(player.setVolume(v));
+                        setState(() {
+                          _muted = v <= 0.5;
+                          if (v > 0.5) _volumeBeforeMute = v;
+                        });
+                        refresh(() {});
+                      },
+              ),
+            ),
+          ),
+          SizedBox(
+            width: 44,
+            child: Text(
+              '${muted ? 0 : vol.round()}%',
+              textAlign: TextAlign.right,
+              style: PbType.meta.copyWith(color: PbColors.text, fontWeight: FontWeight.w600),
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -4551,7 +4639,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
                   trackHeight: 3,
                   thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
                   overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
-                  activeTrackColor: AppTheme.seed,
+                  activeTrackColor: PbColors.primary,
                   inactiveTrackColor: Colors.white24,
                   secondaryActiveTrackColor: Colors.white70,
                   thumbColor: Colors.white,
@@ -4623,12 +4711,13 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
 
 /// Any widget as a menu row (the subtitle style controls); never a choice.
 class _MenuBox<T> extends PopupMenuEntry<T> {
-  const _MenuBox({required this.child});
+  const _MenuBox({required this.child, this.boxHeight = 200});
 
   final Widget child;
+  final double boxHeight;
 
   @override
-  double get height => 200;
+  double get height => boxHeight;
 
   @override
   bool represents(T? value) => false;
@@ -4674,7 +4763,7 @@ class _RoundButtonState extends State<_RoundButton> {
     final ring = _focused
         ? Border.all(color: Colors.white, width: 2.5)
         : widget.selected
-            ? Border.all(color: AppTheme.seed, width: 2)
+            ? Border.all(color: PbColors.primary, width: 2)
             : null;
     return Opacity(
       opacity: enabled ? 1 : 0.45,

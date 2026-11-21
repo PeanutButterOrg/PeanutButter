@@ -1344,8 +1344,10 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         if (len > 0) {
             // Lighter track = what's ready to play: the player's own buffer (at most
             // a minute) or, usually further, what the torrent has without gaps.
+            // The playhead can read a few ms past the length in the last second;
+            // coerceIn(pos, len) then threw and the player crashed at every ending.
             val buffered = maxOf(mp.bufferedPositionMs, (torrentDownloadedTo * len).toLong())
-                .coerceIn(pos, len)
+                .coerceIn(pos.coerceAtMost(len), len)
             ui.bufMs = buffered
             ui.durMs = len
         } else {
@@ -1626,7 +1628,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             // Skip / Next are their own layer: with the controls hidden any arrow opens them.
             if (!chromeVisible) {
                 showChrome()
-                ui.focused = Ctl.PLAY
+                ui.focused = Ctl.SEEK
                 return true
             }
             // The seek bar steps by time; holding the key speeds up.
@@ -1662,15 +1664,13 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                 ui.focused = visibleChip() ?: Ctl.PLAY
                 return true
             }
-            KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                // A quick seek with the controls hidden only shows them briefly.
+            KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_DPAD_LEFT -> {
+                // A quick seek with the controls hidden only shows them briefly,
+                // with the seek bar lit: more presses keep seeking (3 presses
+                // = 30 s). Lighting Play made the next presses move focus instead.
                 hideDelayMs = CHROME_HIDE_AFTER_SEEK_MS
-                seekBy(10_000)
-                return true
-            }
-            KeyEvent.KEYCODE_DPAD_LEFT -> {
-                hideDelayMs = CHROME_HIDE_AFTER_SEEK_MS
-                seekBy(-10_000)
+                ui.focused = Ctl.SEEK
+                seekBy(if (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) 10_000 else -10_000)
                 return true
             }
             KeyEvent.KEYCODE_DPAD_DOWN -> {

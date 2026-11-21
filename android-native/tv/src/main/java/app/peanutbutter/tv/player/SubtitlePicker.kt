@@ -1,11 +1,5 @@
 package app.peanutbutter.tv.player
 
-import android.app.AlertDialog
-import android.text.InputType
-import android.view.inputmethod.EditorInfo
-import android.view.ViewGroup
-import android.widget.EditText
-import android.widget.LinearLayout
 import androidx.compose.ui.unit.sp
 import android.widget.Toast
 import androidx.fragment.app.FragmentActivity
@@ -14,13 +8,17 @@ import androidx.media3.common.MimeTypes
 import app.peanutbutter.core.ApiClient
 import app.peanutbutter.core.SubtitleHit
 import app.peanutbutter.tv.R
-import app.peanutbutter.tv.ui.closeKeyboardOnIme
-import app.peanutbutter.tv.ui.hideKeyboard
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.unit.dp
 
 /** Player Subtitles menu: look, embedded tracks, OpenSubtitles, Wyzie (lazy download), or a link. */
 class SubtitlePicker(
@@ -185,99 +183,76 @@ class SubtitlePicker(
         }
     }
 
+    /** OpenSubtitles and Wyzie keys, saved on the server for every device. */
     private fun promptKey() {
-        val col = LinearLayout(activity).apply {
-            orientation = LinearLayout.VERTICAL
-            val pad = (18 * resources.displayMetrics.density).toInt()
-            setPadding(pad, pad / 2, pad, pad / 2)
-        }
-        val opensub = EditText(activity).apply {
-            hint = activity.getString(R.string.subs_key_hint)
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-            imeOptions = EditorInfo.IME_ACTION_NEXT
-            isFocusable = true
-            closeKeyboardOnIme()
-        }
-        val wyzie = EditText(activity).apply {
-            hint = activity.getString(R.string.subs_wyzie_hint)
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-            imeOptions = EditorInfo.IME_ACTION_DONE
-            isFocusable = true
-            closeKeyboardOnIme()
-            val lp = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-            )
-            lp.topMargin = (10 * resources.displayMetrics.density).toInt()
-            layoutParams = lp
-        }
-        col.addView(opensub)
-        col.addView(wyzie)
-        AlertDialog.Builder(activity)
-            .setTitle(R.string.subs_key_title)
-            .setView(col)
-            .setNegativeButton(android.R.string.cancel, null)
-            .setPositiveButton(R.string.subs_save) { _, _ ->
-                opensub.hideKeyboard()
-                wyzie.hideKeyboard()
-                val osKey = opensub.text?.toString()?.trim().orEmpty()
-                val wyzieKey = wyzie.text?.toString()?.trim().orEmpty()
-                if (osKey.isEmpty() && wyzieKey.isEmpty()) return@setPositiveButton
-                activity.lifecycleScope.launch {
-                    try {
-                        api.updateSubtitleKeys(
-                            opensubtitlesEnabled = true,
-                            opensubtitlesApiKey = osKey.ifBlank { null },
-                            wyzieApiKey = wyzieKey.ifBlank { null },
-                        )
-                        toast(activity.getString(R.string.subs_enabled))
-                    } catch (e: Exception) {
-                        toast(e.message ?: activity.getString(R.string.error_generic))
+        app.peanutbutter.tv.ui.showPbDialog(activity) { dismiss ->
+            var opensub by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf("") }
+            var wyzie by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf("") }
+            KeyCard(
+                title = activity.getString(R.string.subs_key_title),
+                fields = listOf(
+                    Triple(opensub, activity.getString(R.string.subs_key_hint)) { v: String -> opensub = v },
+                    Triple(wyzie, activity.getString(R.string.subs_wyzie_hint)) { v: String -> wyzie = v },
+                ),
+                password = true,
+                onCancel = dismiss,
+                onSave = {
+                    val osKey = opensub.trim()
+                    val wyzieKey = wyzie.trim()
+                    if (osKey.isEmpty() && wyzieKey.isEmpty()) return@KeyCard
+                    dismiss()
+                    activity.lifecycleScope.launch {
+                        try {
+                            api.updateSubtitleKeys(
+                                opensubtitlesEnabled = true,
+                                opensubtitlesApiKey = osKey.ifBlank { null },
+                                wyzieApiKey = wyzieKey.ifBlank { null },
+                            )
+                            toast(activity.getString(R.string.subs_enabled))
+                        } catch (e: Exception) {
+                            toast(e.message ?: activity.getString(R.string.error_generic))
+                        }
                     }
-                }
-            }
-            .show()
-        opensub.requestFocus()
+                },
+            )
+        }
     }
 
+    /** A subtitle file from a web address (SRT, VTT or ASS). */
     private fun promptLink() {
-        val input = EditText(activity).apply {
-            hint = "https://…/captions.srt"
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
-            imeOptions = EditorInfo.IME_ACTION_DONE
-            isFocusable = true
-            closeKeyboardOnIme()
-        }
-        AlertDialog.Builder(activity)
-            .setTitle(R.string.subs_from_link)
-            .setView(input)
-            .setNegativeButton(android.R.string.cancel, null)
-            .setPositiveButton(R.string.subs_save) { _, _ ->
-                input.hideKeyboard()
-                val url = input.text?.toString()?.trim().orEmpty()
-                if (!url.startsWith("http://") && !url.startsWith("https://")) {
-                    toast(activity.getString(R.string.subs_bad_link))
-                    return@setPositiveButton
-                }
-                activity.lifecycleScope.launch {
-                    try {
-                        val bytes = api.downloadBytes(url)
-                        val text = bytes.toString(Charsets.UTF_8)
-                        if (!text.contains("-->")) {
-                            toast(activity.getString(R.string.subs_not_srt))
-                            return@launch
-                        }
-                        val name = url.substringAfterLast('/').substringBefore('?').ifBlank { "subtitle.srt" }
-                        val file = writeSubtitle(name, text)
-                        player()?.addExternalSubtitle(file, name, mimeFor(name, text))
-                        toast(activity.getString(R.string.subs_added))
-                    } catch (e: Exception) {
-                        toast(e.message ?: activity.getString(R.string.subs_none))
+        app.peanutbutter.tv.ui.showPbDialog(activity) { dismiss ->
+            var link by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf("") }
+            KeyCard(
+                title = activity.getString(R.string.subs_from_link),
+                fields = listOf(Triple(link, "https://…/captions.srt") { v: String -> link = v }),
+                password = false,
+                onCancel = dismiss,
+                onSave = {
+                    val url = link.trim()
+                    if (!url.startsWith("http://") && !url.startsWith("https://")) {
+                        toast(activity.getString(R.string.subs_bad_link))
+                        return@KeyCard
                     }
-                }
-            }
-            .show()
-        input.requestFocus()
+                    dismiss()
+                    activity.lifecycleScope.launch {
+                        try {
+                            val bytes = api.downloadBytes(url)
+                            val text = bytes.toString(Charsets.UTF_8)
+                            if (!text.contains("-->")) {
+                                toast(activity.getString(R.string.subs_not_srt))
+                                return@launch
+                            }
+                            val name = url.substringAfterLast('/').substringBefore('?').ifBlank { "subtitle.srt" }
+                            val file = writeSubtitle(name, text)
+                            player()?.addExternalSubtitle(file, name, mimeFor(name, text))
+                            toast(activity.getString(R.string.subs_added))
+                        } catch (e: Exception) {
+                            toast(e.message ?: activity.getString(R.string.subs_none))
+                        }
+                    }
+                },
+            )
+        }
     }
 
     private fun showList(title: String, options: List<Pair<String, () -> Unit>>) {
@@ -327,3 +302,37 @@ object SubtitleLook {
         player?.setSubtitleLook(size(context), background(context))
     }
 }
+
+/** The app's card with text fields, Cancel and Save (subtitle keys and links). */
+@androidx.compose.runtime.Composable
+private fun KeyCard(
+    title: String,
+    fields: List<Triple<String, String, (String) -> Unit>>,
+    password: Boolean,
+    onCancel: () -> Unit,
+    onSave: () -> Unit,
+) {
+    app.peanutbutter.tv.ui.DialogCard {
+        androidx.compose.foundation.text.BasicText(title, style = app.peanutbutter.tv.ui.compose.PbType.h2)
+        androidx.compose.foundation.layout.Spacer(androidx.compose.ui.Modifier.height(16.dp))
+        fields.forEach { (value, hint, onChange) ->
+            app.peanutbutter.tv.ui.compose.PbTextField(
+                value, onChange, hint,
+                androidx.compose.ui.Modifier.fillMaxWidth().padding(bottom = 10.dp),
+                password = password,
+                keyboardType = if (password) androidx.compose.ui.text.input.KeyboardType.Password else androidx.compose.ui.text.input.KeyboardType.Uri,
+            )
+        }
+        androidx.compose.foundation.layout.Spacer(androidx.compose.ui.Modifier.height(12.dp))
+        androidx.compose.foundation.layout.Row(
+            horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(12.dp),
+            modifier = androidx.compose.ui.Modifier.align(androidx.compose.ui.Alignment.End),
+        ) {
+            app.peanutbutter.tv.ui.compose.PbButton(activityString(android.R.string.cancel), null, primary = false, onClick = onCancel)
+            app.peanutbutter.tv.ui.compose.PbButton(activityString(R.string.subs_save), null, primary = true, onClick = onSave)
+        }
+    }
+}
+
+@androidx.compose.runtime.Composable
+private fun activityString(id: Int): String = androidx.compose.ui.res.stringResource(id)
