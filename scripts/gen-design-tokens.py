@@ -175,6 +175,9 @@ def kotlin(t: dict) -> str:
     lines += ["}", "", "object PbRadius {"]
     for name, v in t["radius"].items():
         lines.append(f"    val {name} = {v}.dp")
+    lines += ["}", "", "object PbSize {"]
+    for name, v in t["size"].items():
+        lines.append(f"    const val {name} = {v}f" if name == "focusScaleTv" else f"    val {name} = {v}.dp")
     lines += ["}", "", "object PbMotion {"]
     for name, v in t["motion"].items():
         lines.append(f"    const val {name} = {v}")

@@ -89,6 +89,20 @@ object PbRadius {
     val pill = 999.dp
 }
 
+object PbSize {
+    val posterWidthDesktop = 150.dp
+    val posterWidthTv = 132.dp
+    val wideCardWidthDesktop = 300.dp
+    val wideCardWidthTv = 268.dp
+    val buttonHeightDesktop = 38.dp
+    val buttonHeightTv = 48.dp
+    val topBarHeightDesktop = 60.dp
+    val topBarHeightTv = 72.dp
+    val focusRing = 3.dp
+    val focusRingOffset = 3.dp
+    const val focusScaleTv = 1.06f
+}
+
 object PbMotion {
     const val fast = 120
     const val base = 180

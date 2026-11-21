@@ -2,24 +2,73 @@ package app.peanutbutter.tv.ui.compose
 
 import androidx.compose.ui.text.ExperimentalTextApi
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.Font
+import android.content.Context
+import android.os.Build
+import androidx.compose.ui.text.font.AndroidFont
+import androidx.compose.ui.text.font.FontLoadingStrategy
+import androidx.compose.ui.text.font.FontStyle
+import androidx.core.content.res.ResourcesCompat
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontVariation
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.TextUnit
 import app.peanutbutter.tv.R
 
-/** The desktop's two fonts, bundled as variable fonts (weights from 400 to 800). */
-@OptIn(ExperimentalTextApi::class)
+/**
+ * The desktop's two fonts, bundled as variable fonts. Each weight is its own
+ * typeface built with that 'wght' value (Compose's resource fonts drew some
+ * weights at the font's default, so the hero title came out light).
+ */
 object PbFonts {
-    private fun weights(res: Int) = FontFamily(
-        listOf(400, 500, 600, 700, 800).map { w ->
-            Font(res, FontWeight(w), variationSettings = FontVariation.Settings(FontVariation.weight(w)))
-        },
-    )
+    private fun weights(res: Int) = FontFamily(listOf(400, 500, 600, 700, 800).map { VariableFont(res, it) })
 
     val display: FontFamily = weights(R.font.space_grotesk)
     val body: FontFamily = weights(R.font.inter)
+}
+
+@OptIn(ExperimentalTextApi::class)
+private class VariableFont(val res: Int, w: Int) : AndroidFont(FontLoadingStrategy.Blocking, Loader, FontVariation.Settings()) {
+    override val weight = FontWeight(w)
+    override val style = FontStyle.Normal
+
+    private object Loader : AndroidFont.TypefaceLoader {
+        private val cache = HashMap<Pair<Int, Int>, android.graphics.Typeface?>()
+
+        override fun loadBlocking(context: Context, font: AndroidFont): android.graphics.Typeface? {
+            font as VariableFont
+            val w = font.weight.weight
+            return synchronized(cache) {
+                cache.getOrPut(font.res to w) { build(context, font.res, w) }
+            }
+        }
+
+        override suspend fun awaitLoad(context: Context, font: AndroidFont) = loadBlocking(context, font)
+
+        private fun build(context: Context, res: Int, w: Int): android.graphics.Typeface? = runCatching {
+            when {
+                Build.VERSION.SDK_INT >= 29 -> {
+                    val f = android.graphics.fonts.Font.Builder(context.resources, res)
+                        .setFontVariationSettings("'wght' $w")
+                        .setWeight(w)
+                        .build()
+                    android.graphics.Typeface.CustomFallbackBuilder(
+                        android.graphics.fonts.FontFamily.Builder(f).build(),
+                    ).build()
+                }
+                Build.VERSION.SDK_INT >= 26 -> {
+                    // Typeface.Builder needs a file: copy the font out once.
+                    val file = java.io.File(context.cacheDir, "pbfont-$res.ttf")
+                    if (!file.exists()) {
+                        context.resources.openRawResource(res).use { input ->
+                            file.outputStream().use { input.copyTo(it) }
+                        }
+                    }
+                    android.graphics.Typeface.Builder(file).setFontVariationSettings("'wght' $w").setWeight(w).build()
+                }
+                else -> ResourcesCompat.getFont(context, res)
+            }
+        }.getOrNull() ?: ResourcesCompat.getFont(context, res)
+    }
 }
 
 /** Text styles named like the desktop's PbType. */
