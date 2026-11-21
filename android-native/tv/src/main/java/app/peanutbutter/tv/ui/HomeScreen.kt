@@ -7,7 +7,6 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.gestures.BringIntoViewSpec
 import androidx.compose.foundation.gestures.LocalBringIntoViewSpec
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -72,6 +71,8 @@ import app.peanutbutter.core.HomeShelf
 import app.peanutbutter.core.ShelfStyle
 import app.peanutbutter.core.TitleItem
 import app.peanutbutter.tv.ui.compose.MetaRow
+import app.peanutbutter.tv.ui.compose.NoScroll
+import app.peanutbutter.tv.ui.compose.RowScroll
 import app.peanutbutter.tv.ui.compose.PbButton
 import app.peanutbutter.tv.ui.compose.PbColors
 import app.peanutbutter.tv.ui.compose.PbImage
@@ -181,16 +182,6 @@ private fun tabIndex(section: String) = when (section) {
     else -> 0
 }
 
-@OptIn(ExperimentalFoundationApi::class)
-private val NoScroll = object : BringIntoViewSpec {
-    override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float) = 0f
-}
-
-@OptIn(ExperimentalFoundationApi::class)
-private val RowScroll = object : BringIntoViewSpec {
-    override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float) =
-        offset - (containerSize - size) * 0.42f
-}
 
 // ---- Top bar --------------------------------------------------------------
 

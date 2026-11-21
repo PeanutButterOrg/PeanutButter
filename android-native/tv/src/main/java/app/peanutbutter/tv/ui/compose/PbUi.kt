@@ -116,6 +116,19 @@ fun PbImage(
     }
 }
 
+/** Lists whose scrolling the screen drives itself (it pins the focused section). */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+val NoScroll = object : androidx.compose.foundation.gestures.BringIntoViewSpec {
+    override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float) = 0f
+}
+
+/** Rows keep the focused card about 42% in, like the desktop app's TV build. */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+val RowScroll = object : androidx.compose.foundation.gestures.BringIntoViewSpec {
+    override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float) =
+        offset - (containerSize - size) * 0.42f
+}
+
 /** Focus state for a remote-driven control: clickable and lit while focused. */
 @Composable
 fun Modifier.pbClick(
