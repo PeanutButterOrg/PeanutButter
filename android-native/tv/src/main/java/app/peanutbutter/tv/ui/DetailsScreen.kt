@@ -52,6 +52,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.focusRestorer
 import androidx.compose.ui.focus.onFocusChanged
@@ -153,7 +154,17 @@ fun DetailsScreen(state: DetailsState, actions: DetailsActions) {
                 }
             }
         }
-        BackButton(Modifier.align(Alignment.TopStart).padding(start = 16.dp, top = 16.dp)) { actions.back() }
+        // Back floats over the page, so the D-pad finds nothing below it on
+        // its own: Down and Right go to Play.
+        BackButton(
+            Modifier
+                .align(Alignment.TopStart)
+                .padding(start = 16.dp, top = 16.dp)
+                .focusProperties {
+                    down = play
+                    right = play
+                },
+        ) { actions.back() }
         if (state.busy || item == null) BusyCard(if (item == null) null else "Finding sources…")
     }
 }
