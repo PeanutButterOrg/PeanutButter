@@ -6,12 +6,12 @@
 
 Writes:
   frontend/lib/design/tokens.g.dart                    Flutter (desktop, web)
-  android-native/tv/src/main/res/values/pb_tokens.xml  Android TV app and Launcher (+ values-v28/pb_type.xml)
+  android-native/tv/src/main/res/values/pb_tokens.xml  Android TV app (+ values-v28/pb_type.xml)
   android-native/tv/.../ui/compose/PbTokens.kt         Android TV Compose screens
   design/tokens.css                                    previews and docs
 
 Both apps read only these generated values, so a colour or size changes in one
-place and the TV, the Launcher and desktop stay the same.
+place and the TV and desktop stay the same.
 """
 import json
 import pathlib

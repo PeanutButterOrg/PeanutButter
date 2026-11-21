@@ -28,7 +28,7 @@ data class RankedTitle(val rank: Int, val item: TitleItem)
 data class WideTitle(val item: TitleItem)
 
 /**
- * The home sections, same on desktop, the TV app and the Launcher:
+ * The home sections, same on desktop and the TV app:
  * HOME mixes movies and series; MOVIE and SERIES show one kind.
  */
 object HomeSections {

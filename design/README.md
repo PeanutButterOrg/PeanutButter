@@ -1,6 +1,6 @@
 # PeanutButter design
 
-One look on every platform: the Android TV app, the TV Launcher, and the desktop app (Windows, macOS, Linux, web).
+One look on every platform: the Android TV app and the desktop app (Windows, macOS, Linux, web).
 
 ## Tokens
 
@@ -14,7 +14,7 @@ python3 scripts/gen-design-tokens.py --check  # fails if a generated file is out
 | Generated file | Used by |
 |---|---|
 | `frontend/lib/design/tokens.g.dart` | Desktop and web (Flutter): `PbColors`, `PbType`, `PbTypeTv`, `PbSpace`, `PbRadius`, `PbSize`, `PbMotion` |
-| `android-native/tv/src/main/res/values/pb_tokens.xml` | TV app and Launcher: `@color/pbt_*`, `@dimen/pbt_*`, `@integer/pbt_motion_*` |
+| `android-native/tv/src/main/res/values/pb_tokens.xml` | TV app: `@color/pbt_*`, `@dimen/pbt_*`, `@integer/pbt_motion_*` |
 | `design/tokens.css` | Previews and docs |
 
 Desktop sizes are logical pixels for a 1440 × 900 window. TV sizes are dp/sp for a 1080p TV (960 × 540 dp), larger so they read from the sofa.
@@ -50,7 +50,7 @@ The new look follows the structure of the example screens we were given (top bar
 - Top bar: Home · Movies · Series · My List · Explore, search, and the device/profile square.
 - Home: hero with Play / My List / More info, Top 10 row with outline numbers, new Continue watching cards.
 - Title and series pages, source picker, player menus, search, See all, settings in sections, toasts with Undo or Retry, empty states.
-- Built for TV, Launcher and desktop together.
+- Built for TV and desktop together.
 
 **Prepared for profiles:**
 - The square at the top right shows this device today and becomes the profile switcher later.

@@ -250,14 +250,6 @@ private fun Spinner() {
     }
 }
 
-/**
- * Where to go once paired: the Launcher's own Home screen in the launcher
- * flavor (not the TV app's home), the TV app's home otherwise.
- */
+/** Where to go once paired: the TV app's home. */
 internal fun homeIntent(context: android.content.Context): Intent =
-    if (app.peanutbutter.tv.BuildConfig.IS_LAUNCHER) {
-        Intent().setClassName(context, "app.peanutbutter.tv.launcher.LauncherActivity")
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
-    } else {
-        Intent(context, MainActivity::class.java)
-    }
+    Intent(context, MainActivity::class.java)
