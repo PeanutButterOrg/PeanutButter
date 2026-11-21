@@ -9,7 +9,7 @@ class LocalTorrentEngine {
   bool get supported => false;
   bool get isActive => false;
   int get generation => 0;
-  void noteTeardown(Future<void> teardown) {}
+  void noteCleanup(Future<void> cleanup) {}
 
   void configureTrackers(List<String> trackers) {}
   Future<void> prepareTrackers(List<String> serverTrackers) async {}

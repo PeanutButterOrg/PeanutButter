@@ -1515,8 +1515,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
       ));
       final generation = LocalTorrentEngine.instance.generation;
       final teardown = _disposePlaybackEngines().catchError((_) {});
-      LocalTorrentEngine.instance.noteTeardown(teardown);
-      unawaited(teardown.then((_) => _releaseStreamResources(wipe: wipe, generation: generation)));
+      final cleanup = teardown.then(
+        (_) => _releaseStreamResources(wipe: wipe, generation: generation),
+      );
+      LocalTorrentEngine.instance.noteCleanup(cleanup);
     }
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     super.dispose();
@@ -1616,12 +1618,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
     // cleanup is chained after teardown, which the page doesn't wait out.
     final generation = LocalTorrentEngine.instance.generation;
     final teardown = _disposePlaybackEngines().catchError((_) {});
-    LocalTorrentEngine.instance.noteTeardown(teardown);
-    unawaited(teardown.then(
-      (_) => _releaseStreamResources(wipe: wipe, generation: generation)
-          .timeout(const Duration(seconds: 30), onTimeout: () {})
-          .catchError((_) {}),
-    ));
+    final cleanup = teardown.then(
+      (_) => _releaseStreamResources(wipe: wipe, generation: generation),
+    );
+    // The page may leave after three seconds, but a new torrent must wait for
+    // the actual cleanup, including cache deletion. A timeout doesn't cancel it.
+    LocalTorrentEngine.instance.noteCleanup(cleanup);
     try {
       await teardown.timeout(const Duration(seconds: 3));
     } catch (_) {}

@@ -6,6 +6,7 @@ import 'package:libtorrent_flutter/libtorrent_flutter.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'local_torrent_types.dart';
+import 'stream_cleanup_barrier.dart';
 import 'torrent_file_picker.dart';
 
 /// Device-side streaming. Backend only supplies magnets / metadata.
@@ -25,10 +26,10 @@ class LocalTorrentEngine {
   /// had, so it can't stop or wipe a stream started since.
   int _generation = 0;
   int get generation => _generation;
-  /// The last player's native teardown; [start] waits for it (bounded) so the
-  /// old torrent isn't removed under a player that is still reading it.
-  Future<void>? _teardown;
-  void noteTeardown(Future<void> teardown) => _teardown = teardown;
+  /// Includes native teardown and all torrent/cache cleanup. Starting another
+  /// stream must wait until both have actually finished touching shared files.
+  final _cleanup = StreamCleanupBarrier();
+  void noteCleanup(Future<void> cleanup) => _cleanup.add(cleanup);
 
   bool get supported =>
       !_nativeUnavailable &&
@@ -180,14 +181,8 @@ class LocalTorrentEngine {
     int? fileIndex,
     void Function(LocalStreamStats stats)? onStats,
   }) async {
+    await _cleanup.wait();
     _generation++;
-    final teardown = _teardown;
-    _teardown = null;
-    if (teardown != null) {
-      try {
-        await teardown.timeout(const Duration(seconds: 10));
-      } catch (_) {}
-    }
     await ensureInit();
     try {
       await TrackerManager.fetchBestTrackers().timeout(const Duration(seconds: 4));
