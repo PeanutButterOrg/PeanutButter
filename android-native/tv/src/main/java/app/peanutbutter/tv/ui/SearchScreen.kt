@@ -50,6 +50,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
@@ -315,6 +316,7 @@ private fun Message(icon: ImageVector, title: String, message: String) {
 }
 
 /** "Results for “q”", the counts, the top result featured, then Titles. */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun Results(state: SearchState, actions: SearchActions, grid: androidx.compose.foundation.lazy.grid.LazyGridState) {
     val results = state.results
@@ -342,7 +344,15 @@ private fun Results(state: SearchState, actions: SearchActions, grid: androidx.c
             modifier = Modifier.fillMaxSize(),
         ) {
             item(key = "head", span = { GridItemSpan(maxLineSpan) }) {
-                Column {
+                // The Top result's buttons sit low in its card: when they take
+                // focus, show the whole block (heading and art), not just them.
+                val whole = remember { androidx.compose.foundation.relocation.BringIntoViewRequester() }
+                val scope = rememberCoroutineScope()
+                Column(
+                    Modifier
+                        .bringIntoViewRequester(whole)
+                        .onFocusChanged { if (it.hasFocus) scope.launch { whole.bringIntoView() } },
+                ) {
                     BasicText(
                         buildAnnotatedString {
                             append("Results for ")
