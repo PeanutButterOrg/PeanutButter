@@ -85,7 +85,7 @@ class PbTopBar extends StatelessWidget {
                 tooltip: 'My List',
                 onPressed: () => context.push('/favourites'),
                 icon: Icon(Icons.favorite_rounded,
-                    size: tv ? 28 : 24, color: PbColors.text),
+                    size: tv ? 28 : 24, color: PbColors.primary),
               ),
             ),
             TvFocus(
@@ -198,13 +198,6 @@ class _TabState extends State<_Tab> {
             duration: PbMotion.fast,
             padding:
                 EdgeInsets.symmetric(horizontal: tv ? 14 : 10, vertical: 8),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(PbRadius.pill),
-              border: Border.all(
-                color: _focus ? PbColors.focus : Colors.transparent,
-                width: PbSize.focusRing,
-              ),
-            ),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
@@ -216,12 +209,14 @@ class _TabState extends State<_Tab> {
                   ),
                 ),
                 const SizedBox(height: 5),
+                // No focus pill: amber under the picked tab, white under the
+                // one the keyboard / pointer is on.
                 AnimatedContainer(
                   duration: PbMotion.fast,
                   height: 2,
-                  width: widget.selected ? 22 : 0,
+                  width: lit ? 22 : 0,
                   decoration: BoxDecoration(
-                    color: PbColors.primary,
+                    color: widget.selected ? PbColors.primary : PbColors.text,
                     borderRadius: BorderRadius.circular(2),
                   ),
                 ),

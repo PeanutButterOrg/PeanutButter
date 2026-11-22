@@ -219,8 +219,8 @@ class HomeScreen extends ConsumerWidget {
             overlapHeader: true,
             root: true,
             headerFocus: TvHeaderFocus.forKind(section),
-            // Light over the hero; once rows scroll under it, a near-solid bar
-            // so posters don't show through the section names.
+            // Light over the hero; once rows scroll under it, a deeper shade
+            // that still fades out (a shadow, not a solid bar).
             header: ValueListenableBuilder<bool>(
               valueListenable: _homeScrolled,
               builder: (context, scrolled, child) => AnimatedContainer(
@@ -231,8 +231,8 @@ class HomeScreen extends ConsumerWidget {
                     end: Alignment.bottomCenter,
                     colors: scrolled
                         ? const [
-                            Color(0xFA0E0E12),
-                            Color(0xF00E0E12),
+                            Color(0xF20E0E12),
+                            Color(0xB30E0E12),
                             Color(0x000E0E12)
                           ]
                         : const [
@@ -241,7 +241,7 @@ class HomeScreen extends ConsumerWidget {
                             Color(0x000E0E12)
                           ],
                     stops: scrolled
-                        ? const [0.0, 0.8, 1.0]
+                        ? const [0.0, 0.55, 1.0]
                         : const [0.0, 0.7, 1.0],
                   ),
                 ),
