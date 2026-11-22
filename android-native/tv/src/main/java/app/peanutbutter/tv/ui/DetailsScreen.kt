@@ -88,6 +88,7 @@ import app.peanutbutter.tv.ui.compose.PbType
 import app.peanutbutter.tv.ui.compose.PosterCard
 import app.peanutbutter.tv.ui.compose.RowScroll
 import app.peanutbutter.tv.ui.compose.pbClick
+import app.peanutbutter.tv.ui.compose.pbDrawScale
 import app.peanutbutter.tv.ui.compose.pbFocusRing
 import kotlinx.coroutines.launch
 
@@ -631,7 +632,7 @@ private fun EpisodeTile(e: Episode, number: Int, onFocus: (Boolean) -> Unit, onP
         modifier = Modifier
             .padding(bottom = 6.dp)
             .fillMaxWidth()
-            .scale(scale)
+            .pbDrawScale(scale)
             .pbClick({ focused = it; onFocus(it) }, onPlay)
             .background(if (focused) PbColors.surfaceRaised else Color.Transparent, shape)
             .border(PbSize.focusRing, if (focused) PbColors.focus else Color.Transparent, shape)

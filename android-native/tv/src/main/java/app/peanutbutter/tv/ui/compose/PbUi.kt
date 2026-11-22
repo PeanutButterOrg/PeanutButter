@@ -39,6 +39,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.drawscope.withTransform
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
@@ -196,7 +199,7 @@ fun Modifier.pbClick(
 fun Modifier.pbFocusRing(focused: Boolean, shape: Shape, scaleTo: Float = PbSize.focusScaleTv): Modifier {
     val scale by animateFloatAsState(if (focused) scaleTo else 1f, tween(160), label = "focus")
     return this
-        .scale(scale)
+        .pbDrawScale(scale)
         .then(
             if (focused) {
                 Modifier
@@ -601,4 +604,32 @@ fun PbTab(label: String, selected: Boolean, modifier: Modifier = Modifier, onCli
         Spacer(Modifier.height(5.dp))
         Box(Modifier.width(line).height(2.dp).background(lineColor, RoundedCornerShape(2.dp)))
     }
+}
+
+/**
+ * Grows what's drawn without changing the measured size. A layout scale
+ * (Modifier.scale) also grows the bounds a list scrolls to, so while the
+ * focus animation ran each frame re-scrolled the row: the list shook.
+ */
+fun Modifier.pbDrawScale(scale: Float): Modifier =
+    if (scale == 1f) this else drawWithContent {
+        withTransform({ scale(scale, scale, center) }) { this@drawWithContent.drawContent() }
+    }
+
+/**
+ * A soft dark fade behind a header that content scrolls under: [extend]
+ * past the header's bottom it reaches transparent (no hard edge).
+ */
+fun Modifier.pbHeaderShade(strength: Float, extend: Dp = 56.dp): Modifier = drawBehind {
+    val total = size.height + extend.toPx()
+    val edge = size.height / total
+    drawRect(
+        Brush.verticalGradient(
+            0f to PbColors.ground.copy(alpha = 0.86f + 0.1f * strength),
+            edge to PbColors.ground.copy(alpha = 0.3f + 0.45f * strength),
+            1f to PbColors.ground.copy(alpha = 0f),
+            endY = total,
+        ),
+        size = androidx.compose.ui.geometry.Size(size.width, total),
+    )
 }

@@ -49,6 +49,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.onSizeChanged
+import app.peanutbutter.tv.ui.compose.pbHeaderShade
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -160,8 +162,11 @@ fun CatalogScreen(state: CatalogState, actions: CatalogActions) {
     }
 
     Box(Modifier.fillMaxSize().background(PbColors.ground)) {
-        Column(Modifier.fillMaxSize()) {
-            Header(state, actions, filterFocus) { inHeader = it }
+        // The header floats over the grid with a fade, so posters scroll
+        // softly under it instead of stopping at a hard line.
+        var headerHeight by remember { mutableStateOf(0.dp) }
+        val density = androidx.compose.ui.platform.LocalDensity.current
+        Box(Modifier.fillMaxSize()) {
             BoxWithConstraints(Modifier.fillMaxSize()) {
                 val width = maxWidth - gutter * 2
                 val columns = ((width + gap) / (PbSize.posterWidthTv + gap)).toInt().coerceAtLeast(3)
@@ -178,7 +183,7 @@ fun CatalogScreen(state: CatalogState, actions: CatalogActions) {
                     else -> LazyVerticalGrid(
                         columns = GridCells.Fixed(columns),
                         state = grid,
-                        contentPadding = PaddingValues(start = gutter, end = gutter, top = 10.dp, bottom = 32.dp),
+                        contentPadding = PaddingValues(start = gutter, end = gutter, top = headerHeight + 10.dp, bottom = 32.dp),
                         horizontalArrangement = Arrangement.spacedBy(gap),
                         verticalArrangement = Arrangement.spacedBy(gap + 4.dp),
                         modifier = Modifier.fillMaxSize(),
@@ -207,6 +212,15 @@ fun CatalogScreen(state: CatalogState, actions: CatalogActions) {
                         }
                     }
                 }
+            }
+            val shade = if (grid.firstVisibleItemIndex > 0 || grid.firstVisibleItemScrollOffset > 0) 1f else 0f
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .onSizeChanged { headerHeight = with(density) { it.height.toDp() } }
+                    .pbHeaderShade(shade),
+            ) {
+                Header(state, actions, filterFocus) { inHeader = it }
             }
         }
         state.menu?.let { DropMenu(it) { state.menu = null } }
