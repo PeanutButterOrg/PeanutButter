@@ -577,7 +577,7 @@ private fun Cue.atBottomCentre(): Boolean {
     return lineOk && positionOk
 }
 
-/** Cue texts as one block of lines, keeping bold, italic, underline and strikethrough. */
+/** Cue texts as one block of lines, keeping bold (extra bold: the base is already semi-bold), italic, underline and strikethrough. */
 internal fun styledLines(texts: List<CharSequence>): androidx.compose.ui.text.AnnotatedString =
     androidx.compose.ui.text.buildAnnotatedString {
         texts.map { it.trim() }.filter { it.isNotEmpty() }.forEachIndexed { i, t ->
@@ -588,10 +588,10 @@ internal fun styledLines(texts: List<CharSequence>): androidx.compose.ui.text.An
             spanned.getSpans(0, spanned.length, Any::class.java).forEach { span ->
                 val style = when (span) {
                     is android.text.style.StyleSpan -> when (span.style) {
-                        android.graphics.Typeface.BOLD -> androidx.compose.ui.text.SpanStyle(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
+                        android.graphics.Typeface.BOLD -> androidx.compose.ui.text.SpanStyle(fontWeight = androidx.compose.ui.text.font.FontWeight.ExtraBold)
                         android.graphics.Typeface.ITALIC -> androidx.compose.ui.text.SpanStyle(fontStyle = androidx.compose.ui.text.font.FontStyle.Italic)
                         android.graphics.Typeface.BOLD_ITALIC -> androidx.compose.ui.text.SpanStyle(
-                            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                            fontWeight = androidx.compose.ui.text.font.FontWeight.ExtraBold,
                             fontStyle = androidx.compose.ui.text.font.FontStyle.Italic,
                         )
                         else -> null
