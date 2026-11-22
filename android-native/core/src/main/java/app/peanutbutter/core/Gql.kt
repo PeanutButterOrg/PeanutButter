@@ -12,7 +12,7 @@ query GetHomeFeed(${'$'}kind: TitleKind!) {
 }
 fragment T on Title {
   id kind title originalTitle synopsis year runtimeMinutes
-  posterUrl backdropUrl logoUrl
+  posterUrl backdropUrl logoUrl contentRating
   ratings { tmdbVoteAverage imdbRating rtScore }
   genres
   userState { positionMs durationMs progressPercent watched favorite }
@@ -24,7 +24,7 @@ fragment T on Title {
 query SimilarTitles(${'$'}titleId: UUID!, ${'$'}limit: Int) {
   similarTitles(titleId: ${'$'}titleId, limit: ${'$'}limit) {
     id kind title originalTitle synopsis year runtimeMinutes
-    posterUrl backdropUrl logoUrl
+    posterUrl backdropUrl logoUrl contentRating
     ratings { tmdbVoteAverage imdbRating rtScore }
     genres
     userState { positionMs durationMs progressPercent watched favorite }
@@ -39,7 +39,7 @@ query SimilarTitlesPage(${'$'}titleId: UUID!, ${'$'}page: Int) {
     hasNextPage
     items {
       id kind title originalTitle synopsis year runtimeMinutes
-      posterUrl backdropUrl logoUrl
+      posterUrl backdropUrl logoUrl contentRating
       ratings { tmdbVoteAverage imdbRating rtScore }
       genres
       userState { positionMs durationMs progressPercent watched favorite }
@@ -78,7 +78,7 @@ mutation OpenTmdbTitle(${'$'}tmdbId: Int!, ${'$'}kind: TitleKind!) {
 query GetTitle(${'$'}id: UUID!) {
   title(id: ${'$'}id) {
     id kind title originalTitle synopsis year runtimeMinutes
-    posterUrl backdropUrl logoUrl
+    posterUrl backdropUrl logoUrl contentRating
     ratings { tmdbVoteAverage imdbRating rtScore }
     genres
     trailerYoutubeKey
@@ -292,7 +292,7 @@ query GetCatalog(
 }
 fragment T on Title {
   id kind title originalTitle synopsis year runtimeMinutes
-  posterUrl backdropUrl logoUrl
+  posterUrl backdropUrl logoUrl contentRating
   ratings { tmdbVoteAverage imdbRating rtScore }
   genres
   userState { positionMs durationMs progressPercent watched favorite }

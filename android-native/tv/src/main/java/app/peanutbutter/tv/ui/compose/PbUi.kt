@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
@@ -447,6 +448,12 @@ fun WideCard(
 }
 
 /** Hero meta: ★ 8.0 TMDB · 2026 · 2h 53m · genre pills. */
+/** Genre names short enough for a chip ("Science Fiction" → "Sci-Fi"). */
+fun shortGenre(name: String): String = when (name.trim().lowercase()) {
+    "science fiction" -> "Sci-Fi"
+    else -> name
+}
+
 @Composable
 fun MetaRow(item: TitleItem, maxGenres: Int = 3) {
     val text = PbType.meta.copy(color = Color.White.copy(alpha = 0.82f), fontSize = 15.sp, fontWeight = FontWeight.W600)
@@ -469,10 +476,11 @@ fun MetaRow(item: TitleItem, maxGenres: Int = 3) {
         val label = if (m < 60) "${m}m" else if (m % 60 == 0) "${m / 60}h" else "${m / 60}h ${m % 60}m"
         pieces += { BasicText(label, style = text) }
     }
-    item.genres.take(maxGenres).forEach { g ->
+    // Age rating (PG-13, TV-MA…) and genres share one chip look.
+    val chip: (String) -> Unit = { label ->
         pieces += {
             BasicText(
-                g,
+                label,
                 style = text.copy(fontSize = 13.sp, color = Color.White.copy(alpha = 0.88f)),
                 modifier = Modifier
                     .background(Color.White.copy(alpha = 0.10f), RoundedCornerShape(PbRadius.pill))
@@ -480,6 +488,8 @@ fun MetaRow(item: TitleItem, maxGenres: Int = 3) {
             )
         }
     }
+    item.contentRating?.let { chip(it.uppercase()) }
+    item.genres.take(maxGenres).forEach { chip(shortGenre(it)) }
     Row(verticalAlignment = Alignment.CenterVertically) {
         pieces.forEachIndexed { i, piece ->
             if (i > 0) {
@@ -626,40 +636,26 @@ fun Modifier.pbHeaderShade(strength: Float): Modifier = drawBehind {
 }
 
 /**
- * A hero title in a slot of fixed height, so nothing around it moves from
- * one title to the next: one line, shrinking (to 70%) until it fits; a name
- * still too long goes to two lines at half size in the same height.
+ * A hero title in a fixed two-line space at one size, so neither the name
+ * nor anything around it moves from one title to the next: the name starts
+ * right under the eyebrow; a third line ends in an ellipsis.
  */
 @Composable
 fun PbFitTitle(text: String, style: androidx.compose.ui.text.TextStyle, modifier: Modifier = Modifier) {
-    val base = style.fontSize.value
-    val line = 1.15f
+    val size = style.fontSize.value
+    val line = 1.0f
     val density = androidx.compose.ui.platform.LocalDensity.current
-    // A little over one line, so descenders (g, y) aren't clipped.
-    val slot = with(density) { (base * 1.22f).sp.toDp() }
-    androidx.compose.foundation.layout.BoxWithConstraints(
-        modifier.fillMaxWidth().height(slot),
-        contentAlignment = Alignment.BottomStart,
-    ) {
-        val measurer = androidx.compose.ui.text.rememberTextMeasurer()
-        val width = constraints.maxWidth
-        val (size, lines) = remember(text, width, style) {
-            var s = base
-            while (s >= base * 0.7f) {
-                val r = measurer.measure(
-                    text, style.copy(fontSize = s.sp, lineHeight = (s * line).sp), maxLines = 1,
-                    constraints = androidx.compose.ui.unit.Constraints(maxWidth = width),
-                )
-                if (!r.hasVisualOverflow) return@remember s to 1
-                s -= 2f
-            }
-            base * 0.5f to 2
-        }
+    // Two lines, plus room for the last line's descenders (g, y).
+    val slot = with(density) { (size * (line * 2 + 0.2f)).sp.toDp() }
+    // The text sits in the space rather than being squeezed to it (a tight
+    // height made it give up after one line).
+    Box(modifier.fillMaxWidth().height(slot), contentAlignment = Alignment.TopStart) {
         androidx.compose.foundation.text.BasicText(
             text,
-            maxLines = lines,
+            maxLines = 2,
             overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-            style = style.copy(fontSize = size.sp, lineHeight = (size * line).sp),
+            style = style.copy(lineHeight = (size * line).sp),
+            modifier = Modifier.wrapContentHeight(Alignment.Top, unbounded = true),
         )
     }
 }

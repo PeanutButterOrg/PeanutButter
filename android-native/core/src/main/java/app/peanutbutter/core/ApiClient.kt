@@ -885,6 +885,7 @@ class ApiClient(
             tmdbVoteCount = ratings?.get("tmdbVoteCount")?.takeUnless { it.isJsonNull }?.asInt,
             rtScore = ratings?.get("rtScore")?.takeUnless { it.isJsonNull }?.asInt,
             genres = genres,
+            contentRating = o.get("contentRating")?.takeUnless { it.isJsonNull }?.asString?.trim()?.takeIf { it.isNotEmpty() },
             positionMs = state?.numberLong("positionMs") ?: 0,
             durationMs = state?.numberLong("durationMs") ?: 0,
             progressPercent = state?.numberDouble("progressPercent")?.let { pct ->

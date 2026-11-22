@@ -170,54 +170,32 @@ class HeroBannerCopy extends StatelessWidget {
   }
 }
 
-/// A hero title in a slot of fixed height, so nothing around it moves from
-/// one title to the next: one line, shrinking (to 70%) until it fits; a name
-/// still too long goes to two lines at half size in the same height.
+/// A hero title in a fixed two-line space at one size, so neither the name
+/// nor anything around it moves from one title to the next: the name starts
+/// right under the eyebrow; a third line ends in an ellipsis.
 class FitTitle extends StatelessWidget {
   const FitTitle(this.text, {super.key, required this.style});
 
   final String text;
   final TextStyle style;
 
-  static const _line = 1.15;
+  static const _line = 1.0;
 
   @override
   Widget build(BuildContext context) {
-    final base = style.fontSize ?? 44;
-    final scaler = MediaQuery.textScalerOf(context);
+    final size = style.fontSize ?? 44;
     return SizedBox(
-      // A little over one line, so descenders (g, y) aren't clipped.
-      height: scaler.scale(base) * 1.22,
-      child: LayoutBuilder(builder: (context, box) {
-        var size = base;
-        var lines = 1;
-        while (true) {
-          final painter = TextPainter(
-            text: TextSpan(text: text, style: style.copyWith(fontSize: size, height: _line)),
-            maxLines: 1,
-            textScaler: scaler,
-            textDirection: Directionality.of(context),
-          )..layout(maxWidth: box.maxWidth);
-          final fits = !painter.didExceedMaxLines;
-          painter.dispose();
-          if (fits) break;
-          if (size - 2 < base * 0.7) {
-            size = base * 0.5;
-            lines = 2;
-            break;
-          }
-          size -= 2;
-        }
-        return Align(
-          alignment: Alignment.bottomLeft,
-          child: Text(
-            text,
-            maxLines: lines,
-            overflow: TextOverflow.ellipsis,
-            style: style.copyWith(fontSize: size, height: _line),
-          ),
-        );
-      }),
+      // Two lines, plus room for the last line's descenders (g, y).
+      height: MediaQuery.textScalerOf(context).scale(size) * (_line * 2 + 0.2),
+      child: Align(
+        alignment: Alignment.topLeft,
+        child: Text(
+          text,
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: style.copyWith(height: _line),
+        ),
+      ),
     );
   }
 }

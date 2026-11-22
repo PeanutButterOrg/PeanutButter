@@ -18,6 +18,7 @@ const String titleFields = r'''
     anilistPopularity
   }
   genres
+  contentRating
 ''';
 
 /// [GET_CATALOG] with the provider filter. Sent only when one is picked:

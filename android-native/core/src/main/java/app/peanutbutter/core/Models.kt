@@ -24,6 +24,8 @@ data class TitleItem(
     val tmdbVoteCount: Int? = null,
     val rtScore: Int? = null,
     val genres: List<String> = emptyList(),
+    /** Age rating, e.g. PG-13 or TV-MA. */
+    val contentRating: String? = null,
     val positionMs: Long = 0,
     val durationMs: Long = 0,
     val progressPercent: Double = 0.0,
