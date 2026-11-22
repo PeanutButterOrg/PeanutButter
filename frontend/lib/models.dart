@@ -715,6 +715,9 @@ class PersonCredit {
     this.posterUrl,
     this.voteAverage,
     this.titleId,
+    this.backdropUrl,
+    this.voteCount = 0,
+    this.popularity = 0,
   });
 
   final int tmdbId;
@@ -726,6 +729,12 @@ class PersonCredit {
   final String? posterUrl;
   final double? voteAverage;
   final String? titleId;
+  /// Server 0.3.28+: wide art, and how well known it is (votes, popularity).
+  final String? backdropUrl;
+  final int voteCount;
+  final double popularity;
+
+  String get caption => [if (year != null) '$year', if (role != null && role!.isNotEmpty) role!].join(' · ');
 
   factory PersonCredit.fromJson(Map<String, dynamic> json) => PersonCredit(
         tmdbId: (json['tmdbId'] as num).toInt(),
@@ -736,6 +745,9 @@ class PersonCredit {
         posterUrl: json['posterUrl'] as String?,
         voteAverage: (json['voteAverage'] as num?)?.toDouble(),
         titleId: json['titleId'] as String?,
+        backdropUrl: json['backdropUrl'] as String?,
+        voteCount: (json['voteCount'] as num?)?.toInt() ?? 0,
+        popularity: (json['popularity'] as num?)?.toDouble() ?? 0,
       );
 }
 

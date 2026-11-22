@@ -51,7 +51,7 @@ fun showPbDialog(
     val dialog = ComponentDialog(context, android.R.style.Theme_Translucent_NoTitleBar)
     dialog.setCancelable(cancelable)
     val view = ComposeView(context).apply {
-        setContent { content { dialog.dismiss() } }
+        setContent { app.peanutbutter.tv.ui.compose.PbScaled { content { dialog.dismiss() } } }
     }
     dialog.setContentView(view)
     dialog.window?.apply {

@@ -171,7 +171,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         ui.leaveGo = getString(R.string.leave_player)
         ui.onLeave = { finish() }
         ui.nextTitle = getString(R.string.play_next)
-        findViewById<ComposeView>(R.id.player_ui).setContent { PlayerOverlay(ui) }
+        findViewById<ComposeView>(R.id.player_ui).setContent { app.peanutbutter.tv.ui.compose.PbScaled { PlayerOverlay(ui) } }
 
         // Cover first — avoid black frame while torrent/player wake up.
         ui.preparing = true
@@ -246,23 +246,34 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
 
 
         val sid = sessionId
-        if (localTorrent) {
-            val mag = magnet
-            if (!mag.isNullOrBlank() && pendingUrl.isNullOrBlank()) {
-                // Flutter parity: start on-device torrent inside the player.
-                waitJob = lifecycleScope.launch { startLocalTorrentAndPlay(mag) }
+        // Something already watched: ask Resume or Start over first, then
+        // fetch and buffer from the point picked (it used to buffer from the
+        // old point and ask only once the video was ready).
+        val begin: () -> Unit = {
+            if (localTorrent) {
+                val mag = magnet
+                if (!mag.isNullOrBlank() && pendingUrl.isNullOrBlank()) {
+                    // Flutter parity: start on-device torrent inside the player.
+                    waitJob = lifecycleScope.launch { startLocalTorrentAndPlay(mag) }
+                } else if (!pendingUrl.isNullOrBlank()) {
+                    attachAndPlay()
+                    startLocalStatusPolling()
+                } else {
+                    statusText = getString(R.string.stream_start_failed)
+                    ui.spinner = false
+                }
             } else if (!pendingUrl.isNullOrBlank()) {
                 attachAndPlay()
-                startLocalStatusPolling()
             } else {
                 statusText = getString(R.string.stream_start_failed)
                 ui.spinner = false
             }
-        } else if (!pendingUrl.isNullOrBlank()) {
-            attachAndPlay()
+        }
+        if (resumeMs > 2_000L) {
+            resumeAsked = true
+            askResume(after = begin)
         } else {
-            statusText = getString(R.string.stream_start_failed)
-            ui.spinner = false
+            begin()
         }
         showChrome()
     }
@@ -529,6 +540,13 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             TvPlayback(this, playbackListener())
         }
         player?.bindSubtitles(findViewById(R.id.subtitles))
+        (player as? TvPlayback)?.let { tv ->
+            tv.onTextCues = { text -> main.post { ui.subtitle = text } }
+            tv.onLook = { size, background ->
+                ui.subSize = size
+                ui.subBackground = background
+            }
+        }
         SubtitleLook.apply(this, player)
         if (subDelayMs != 0L) player?.setSubtitleDelay(subDelayMs)
         val frame = findViewById<androidx.media3.ui.AspectRatioFrameLayout>(R.id.video_frame)
@@ -1691,8 +1709,8 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         ui.askLeave()
     }
 
-    /** The desktop's card: Continue from (focused) or Start over, then it plays. */
-    private fun askResume() {
+    /** The desktop's card: Continue from (focused) or Start over, then [after] starts it. */
+    private fun askResume(after: () -> Unit = { attachAndPlay() }) {
         askingResume = true
         var picked = false
         ui.onResume = { fromStart ->
@@ -1708,7 +1726,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                     }
                     torrentStartedWithResume = false
                 }
-                attachAndPlay()
+                after()
             }
         }
         // Back on the card: leave, like Back before anything plays.

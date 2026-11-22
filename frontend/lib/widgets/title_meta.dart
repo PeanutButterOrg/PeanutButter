@@ -4,6 +4,12 @@ import '../models.dart';
 import 'rt_badge.dart';
 
 /// Compact hero meta: score · year · runtime · [PG] · genres.
+/// Genre names short enough for a chip ("Science Fiction" → "Sci-Fi").
+String shortGenre(String name) => switch (name.trim().toLowerCase()) {
+      'science fiction' => 'Sci-Fi',
+      _ => name,
+    };
+
 class TitleMetaRow extends StatelessWidget {
   const TitleMetaRow({
     super.key,
@@ -77,11 +83,12 @@ class TitleMetaRow extends StatelessWidget {
 
     final rating = prettyContentRating(item.contentRating);
     if (rating != null) {
-      add(_ContentRatingPill(label: rating));
+      // Same chip as the genres.
+      add(_GenrePill(label: rating));
     }
 
     for (final genre in item.genres.take(maxGenres)) {
-      add(_GenrePill(label: genre));
+      add(_GenrePill(label: shortGenre(genre)));
     }
 
     if (showTech) {
@@ -139,34 +146,6 @@ class _MetaText extends StatelessWidget {
         fontWeight: FontWeight.w600,
         letterSpacing: 0.2,
         height: 1.1,
-      ),
-    );
-  }
-}
-
-class _ContentRatingPill extends StatelessWidget {
-  const _ContentRatingPill({required this.label});
-
-  final String label;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-      decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.06),
-        borderRadius: BorderRadius.circular(4),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.55), width: 1.1),
-      ),
-      child: Text(
-        label,
-        style: const TextStyle(
-          color: Colors.white,
-          fontSize: 11,
-          fontWeight: FontWeight.w700,
-          letterSpacing: 0.6,
-          height: 1.1,
-        ),
       ),
     );
   }

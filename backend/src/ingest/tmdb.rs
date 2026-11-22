@@ -3256,7 +3256,11 @@ pub struct PersonCredit {
     pub role: Option<String>,
     pub date: Option<String>,
     pub poster_path: Option<String>,
+    pub backdrop_path: Option<String>,
     pub vote_average: Option<f64>,
+    /// How many TMDB votes: with popularity, what a person is known for.
+    pub vote_count: i32,
+    pub popularity: f64,
     /// The catalog title, when it is in the catalog already.
     pub title_id: Option<Uuid>,
 }
@@ -3294,7 +3298,12 @@ struct TmdbPersonCredit {
     release_date: Option<String>,
     first_air_date: Option<String>,
     poster_path: Option<String>,
+    backdrop_path: Option<String>,
     vote_average: Option<f64>,
+    #[serde(default)]
+    vote_count: Option<i32>,
+    #[serde(default)]
+    popularity: Option<f64>,
     #[serde(default)]
     adult: Option<bool>,
     #[serde(default)]
@@ -3316,6 +3325,7 @@ pub async fn person_page(ctx: &IngestContext, person_id: i32) -> Result<PersonPa
         tmdb_locale(ctx)
     );
     let person: TmdbPerson = get_json(ctx, &url).await?;
+    let today = chrono::Utc::now().date_naive().format("%Y-%m-%d").to_string();
     let merge = |credits: Vec<TmdbPersonCredit>, crew: bool| -> Vec<PersonCredit> {
         let mut out: Vec<PersonCredit> = Vec::new();
         let mut at: std::collections::HashMap<(i32, &'static str), usize> = Default::default();
@@ -3330,6 +3340,11 @@ pub async fn person_page(ctx: &IngestContext, person_id: i32) -> Result<PersonPa
             };
             let Some(title) = c.title.or(c.name).filter(|t| !t.trim().is_empty()) else { continue };
             let role = if crew { c.job } else { c.character }.filter(|r| !r.trim().is_empty());
+            // Only what's out: no date (announced) or a future one stays off the page.
+            let date = c.release_date.or(c.first_air_date).filter(|d| !d.is_empty());
+            if date.as_deref().is_none_or(|d| d > today.as_str()) {
+                continue;
+            }
             match at.get(&(c.id, kind)) {
                 Some(&i) => {
                     if let Some(r) = role {
@@ -3351,9 +3366,12 @@ pub async fn person_page(ctx: &IngestContext, person_id: i32) -> Result<PersonPa
                         kind,
                         title,
                         role,
-                        date: c.release_date.or(c.first_air_date).filter(|d| !d.is_empty()),
+                        date,
                         poster_path: c.poster_path,
+                        backdrop_path: c.backdrop_path,
                         vote_average: c.vote_average.filter(|v| *v > 0.0),
+                        vote_count: c.vote_count.unwrap_or(0),
+                        popularity: c.popularity.unwrap_or(0.0),
                         title_id: None,
                     });
                 }

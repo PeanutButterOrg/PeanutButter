@@ -52,6 +52,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.tv.material3.Icon
 import app.peanutbutter.core.TitleItem
+import app.peanutbutter.tv.ui.compose.PbTab
 import app.peanutbutter.tv.ui.compose.PbColors
 import app.peanutbutter.tv.ui.compose.PbRadius
 import app.peanutbutter.tv.ui.compose.PbSize
@@ -147,12 +148,12 @@ fun LibraryScreen(state: LibraryState, onBack: () -> Unit, onOpen: (TitleItem) -
                     if (!state.loading) BasicText(counts, style = PbType.meta)
                     Spacer(Modifier.height(18.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Tab("All", kind == null, Modifier.focusRequester(firstTab)) { kind = null }
-                        Tab("Movies", kind == "MOVIE") { kind = "MOVIE" }
-                        Tab("Series", kind == "SERIES") { kind = "SERIES" }
+                        PbTab("All", kind == null, Modifier.focusRequester(firstTab)) { kind = null }
+                        PbTab("Movies", kind == "MOVIE") { kind = "MOVIE" }
+                        PbTab("Series", kind == "SERIES") { kind = "SERIES" }
                         Spacer(Modifier.weight(1f))
-                        Tab("Recently added", !az) { az = false }
-                        Tab("A–Z", az) { az = true }
+                        PbTab("Recently added", !az) { az = false }
+                        PbTab("A–Z", az) { az = true }
                     }
                     if (started.isNotEmpty()) {
                         Spacer(Modifier.height(24.dp))
@@ -190,22 +191,3 @@ fun LibraryScreen(state: LibraryState, onBack: () -> Unit, onOpen: (TitleItem) -
     }
 }
 
-/** A text tab with the amber underline under the picked one (the desktop's AppFilterChip). */
-@Composable
-private fun Tab(label: String, selected: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
-    var focused by remember { mutableStateOf(false) }
-    val pill = RoundedCornerShape(PbRadius.pill)
-    val line by animateDpAsState(if (selected) 22.dp else 0.dp, tween(120), label = "tab")
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = modifier
-            .padding(end = 6.dp)
-            .pbClick({ focused = it }, onClick)
-            .border(PbSize.focusRing, if (focused) PbColors.focus else Color.Transparent, pill)
-            .padding(horizontal = 14.dp, vertical = 8.dp),
-    ) {
-        BasicText(label, style = PbType.button.copy(fontSize = 17.sp, color = if (selected || focused) PbColors.text else PbColors.textMuted))
-        Spacer(Modifier.height(5.dp))
-        Box(Modifier.width(line).height(2.dp).background(PbColors.primary, RoundedCornerShape(2.dp)))
-    }
-}

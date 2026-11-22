@@ -89,17 +89,16 @@ fun FeatureCard(
                 .widthIn(max = 560.dp),
         ) {
             BasicText(eyebrow.uppercase(), style = PbType.label.copy(color = PbColors.primary, letterSpacing = 1.1.sp))
-            Spacer(Modifier.height(4.dp))
             BasicText(
                 item.displayTitle, maxLines = 2, overflow = TextOverflow.Ellipsis,
                 style = PbType.h1.copy(fontSize = if (synopsis) 32.sp else 26.sp, lineHeight = if (synopsis) 34.sp else 28.sp),
             )
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(2.dp))
             MetaRow(item, maxGenres = if (synopsis) 2 else 1)
             if (synopsis && !item.synopsis.isNullOrBlank()) {
                 Spacer(Modifier.height(8.dp))
                 BasicText(
-                    item.synopsis!!, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                    item.synopsis!!, maxLines = 3, overflow = TextOverflow.Ellipsis,
                     style = PbType.body.copy(color = Color(0xFFD6DAE3), lineHeight = 23.sp),
                 )
             }

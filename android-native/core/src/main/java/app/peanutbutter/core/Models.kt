@@ -24,6 +24,8 @@ data class TitleItem(
     val tmdbVoteCount: Int? = null,
     val rtScore: Int? = null,
     val genres: List<String> = emptyList(),
+    /** Age rating, e.g. PG-13 or TV-MA. */
+    val contentRating: String? = null,
     val positionMs: Long = 0,
     val durationMs: Long = 0,
     val progressPercent: Double = 0.0,
@@ -156,6 +158,10 @@ data class PersonCredit(
     val posterUrl: String? = null,
     val voteAverage: Double? = null,
     val titleId: String? = null,
+    /** Server 0.3.28+: wide art, and how well known it is (votes, popularity). */
+    val backdropUrl: String? = null,
+    val voteCount: Int = 0,
+    val popularity: Double = 0.0,
 )
 
 data class Season(

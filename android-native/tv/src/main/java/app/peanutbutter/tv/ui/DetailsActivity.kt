@@ -1,5 +1,6 @@
 package app.peanutbutter.tv.ui
 
+import app.peanutbutter.tv.ui.compose.setPbContent
 import android.content.Intent
 import android.os.Bundle
 import android.util.Log
@@ -73,7 +74,7 @@ class DetailsActivity : FragmentActivity(), DetailsActions {
         super.onCreate(savedInstanceState)
         // Start the torrent engine while the user reads the page, not after Play.
         app.peanutbutter.core.TorrentClient.prewarm(this)
-        setContent { DetailsScreen(ui, this) }
+        setPbContent { DetailsScreen(ui, this) }
         val id = intent.getStringExtra(EXTRA_ID).orEmpty()
         lifecycleScope.launch {
             try {

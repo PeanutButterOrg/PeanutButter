@@ -18,6 +18,7 @@ const String titleFields = r'''
     anilistPopularity
   }
   genres
+  contentRating
 ''';
 
 /// [GET_CATALOG] with the provider filter. Sent only when one is picked:
@@ -332,6 +333,13 @@ query Person($tmdbId: Int!) {
   }
 }
 ''';
+
+/// [GET_PERSON] with backdrops, votes and popularity per credit (server 0.3.28+).
+final String GET_PERSON_FULL = GET_PERSON
+    .replaceFirst('acting { tmdbId kind title role year posterUrl voteAverage titleId }',
+        'acting { tmdbId kind title role year posterUrl backdropUrl voteAverage voteCount popularity titleId }')
+    .replaceFirst('crew { tmdbId kind title role year posterUrl voteAverage titleId }',
+        'crew { tmdbId kind title role year posterUrl backdropUrl voteAverage voteCount popularity titleId }');
 
 /// The catalog title for a TMDB id, stored first if needed (server 0.3.26+).
 const String OPEN_TMDB_TITLE = r'''

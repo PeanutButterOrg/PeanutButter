@@ -1,5 +1,6 @@
 package app.peanutbutter.tv.ui
 
+import app.peanutbutter.tv.ui.compose.setPbContent
 import android.content.Intent
 import android.os.Bundle
 import android.widget.Toast
@@ -24,7 +25,7 @@ class LibraryActivity : FragmentActivity() {
         ui.title = getString(if (watched) R.string.watched else R.string.my_list)
         ui.emptyMessage = getString(if (watched) R.string.empty_watched else R.string.empty_favourites)
         ui.keepWatching = !watched
-        setContent {
+        setPbContent {
             LibraryScreen(ui, onBack = { finish() }) { item ->
                 startActivity(
                     Intent(this, DetailsActivity::class.java)

@@ -12,7 +12,7 @@ query GetHomeFeed(${'$'}kind: TitleKind!) {
 }
 fragment T on Title {
   id kind title originalTitle synopsis year runtimeMinutes
-  posterUrl backdropUrl logoUrl
+  posterUrl backdropUrl logoUrl contentRating
   ratings { tmdbVoteAverage imdbRating rtScore }
   genres
   userState { positionMs durationMs progressPercent watched favorite }
@@ -24,7 +24,7 @@ fragment T on Title {
 query SimilarTitles(${'$'}titleId: UUID!, ${'$'}limit: Int) {
   similarTitles(titleId: ${'$'}titleId, limit: ${'$'}limit) {
     id kind title originalTitle synopsis year runtimeMinutes
-    posterUrl backdropUrl logoUrl
+    posterUrl backdropUrl logoUrl contentRating
     ratings { tmdbVoteAverage imdbRating rtScore }
     genres
     userState { positionMs durationMs progressPercent watched favorite }
@@ -39,7 +39,7 @@ query SimilarTitlesPage(${'$'}titleId: UUID!, ${'$'}page: Int) {
     hasNextPage
     items {
       id kind title originalTitle synopsis year runtimeMinutes
-      posterUrl backdropUrl logoUrl
+      posterUrl backdropUrl logoUrl contentRating
       ratings { tmdbVoteAverage imdbRating rtScore }
       genres
       userState { positionMs durationMs progressPercent watched favorite }
@@ -59,6 +59,11 @@ query Person(${'$'}tmdbId: Int!) {
 }
 """
 
+    /** [PERSON] with backdrops, votes and popularity per credit (server 0.3.28+). */
+    val PERSON_FULL: String get() = PERSON
+        .replace("acting { tmdbId kind title role year posterUrl voteAverage titleId }", "acting { tmdbId kind title role year posterUrl backdropUrl voteAverage voteCount popularity titleId }")
+        .replace("crew { tmdbId kind title role year posterUrl voteAverage titleId }", "crew { tmdbId kind title role year posterUrl backdropUrl voteAverage voteCount popularity titleId }")
+
     /** The catalog title for a TMDB id, stored first if needed (server 0.3.26+). */
     const val OPEN_TMDB_TITLE = """
 mutation OpenTmdbTitle(${'$'}tmdbId: Int!, ${'$'}kind: TitleKind!) {
@@ -73,7 +78,7 @@ mutation OpenTmdbTitle(${'$'}tmdbId: Int!, ${'$'}kind: TitleKind!) {
 query GetTitle(${'$'}id: UUID!) {
   title(id: ${'$'}id) {
     id kind title originalTitle synopsis year runtimeMinutes
-    posterUrl backdropUrl logoUrl
+    posterUrl backdropUrl logoUrl contentRating
     ratings { tmdbVoteAverage imdbRating rtScore }
     genres
     trailerYoutubeKey
@@ -287,7 +292,7 @@ query GetCatalog(
 }
 fragment T on Title {
   id kind title originalTitle synopsis year runtimeMinutes
-  posterUrl backdropUrl logoUrl
+  posterUrl backdropUrl logoUrl contentRating
   ratings { tmdbVoteAverage imdbRating rtScore }
   genres
   userState { positionMs durationMs progressPercent watched favorite }

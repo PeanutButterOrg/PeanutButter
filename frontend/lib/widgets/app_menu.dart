@@ -350,7 +350,7 @@ class AppMultiMenuButton extends StatelessWidget {
 
 /// A two-or-three-way switch (Movies / Series, All / Movies / Series): plain
 /// text, the picked one bright with an amber underline, like the top bar.
-class AppFilterChip extends StatelessWidget {
+class AppFilterChip extends StatefulWidget {
   const AppFilterChip({
     super.key,
     required this.label,
@@ -363,33 +363,59 @@ class AppFilterChip extends StatelessWidget {
   final ValueChanged<bool> onSelected;
 
   @override
+  State<AppFilterChip> createState() => _AppFilterChipState();
+}
+
+/// A text tab: amber underline when picked, white under the one the
+/// keyboard, remote or pointer is on (no focus pill), like the top bar.
+class _AppFilterChipState extends State<AppFilterChip> {
+  bool _hover = false;
+  bool _focus = false;
+
+  @override
   Widget build(BuildContext context) {
+    final lit = widget.selected || _hover || _focus;
     return TvFocus(
-      child: InkWell(
-        borderRadius: BorderRadius.circular(4),
-        hoverColor: Colors.transparent,
-        onTap: () => onSelected(!selected),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                label,
-                style: PbType.button.copyWith(
-                  fontSize: 15,
-                  fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-                  color: selected ? PbColors.text : PbColors.textMuted,
+      child: FocusableActionDetector(
+        mouseCursor: SystemMouseCursors.click,
+        onShowHoverHighlight: (v) => setState(() => _hover = v),
+        onShowFocusHighlight: (v) => setState(() => _focus = v),
+        actions: {
+          ActivateIntent: CallbackAction<ActivateIntent>(onInvoke: (_) {
+            widget.onSelected(!widget.selected);
+            return null;
+          }),
+        },
+        child: GestureDetector(
+          onTap: () => widget.onSelected(!widget.selected),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  widget.label,
+                  style: PbType.button.copyWith(
+                    fontSize: 15,
+                    fontWeight: widget.selected ? FontWeight.w700 : FontWeight.w500,
+                    color: lit ? PbColors.text : PbColors.textMuted,
+                  ),
                 ),
-              ),
-              const SizedBox(height: 5),
-              AnimatedContainer(
-                duration: PbMotion.fast,
-                height: 2,
-                width: selected ? 22 : 0,
-                decoration: BoxDecoration(color: PbColors.primary, borderRadius: BorderRadius.circular(2)),
-              ),
-            ],
+                const SizedBox(height: 5),
+                // Focus (or the pointer) wins over selection, so a selected
+                // tab still shows focus arriving: a longer, thicker white line;
+                // selected alone is the shorter amber one.
+                AnimatedContainer(
+                  duration: PbMotion.fast,
+                  height: (_focus || _hover) ? 3 : 2,
+                  width: (_focus || _hover) ? 30 : (widget.selected ? 22 : 0),
+                  decoration: BoxDecoration(
+                    color: (_focus || _hover || !widget.selected) ? PbColors.text : PbColors.primary,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),

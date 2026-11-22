@@ -76,11 +76,14 @@ import app.peanutbutter.core.HomeSections
 import app.peanutbutter.core.HomeShelf
 import app.peanutbutter.core.ShelfStyle
 import app.peanutbutter.core.TitleItem
+import app.peanutbutter.tv.ui.compose.PbTab
+import app.peanutbutter.tv.ui.compose.pbHeaderShade
 import app.peanutbutter.tv.ui.compose.MetaRow
 import app.peanutbutter.tv.ui.compose.NoScroll
 import app.peanutbutter.tv.ui.compose.RowScroll
 import app.peanutbutter.tv.ui.compose.PbButton
 import app.peanutbutter.tv.ui.compose.PbColors
+import app.peanutbutter.tv.ui.compose.PbFitTitle
 import app.peanutbutter.tv.ui.compose.PbImage
 import app.peanutbutter.tv.ui.compose.PbLogo
 import app.peanutbutter.tv.ui.compose.PbRadius
@@ -145,16 +148,35 @@ fun HomeScreen(state: HomeState, actions: HomeActions) {
 
     Box(Modifier.fillMaxSize().background(PbColors.ground)) {
         val layout = state.layout
-        val seeAll = remember(state.section) { SeeAllChain() }
+        val nav = remember(state.section) { RowNav() }
         val shelfOffset = if (layout?.hero.isNullOrEmpty()) 0 else 1
-        seeAll.moveTo = { i ->
-            seeAll.pending = i
+        nav.moveTo = { spot ->
+            nav.pending = spot
             scope.launch {
-                list.animateScrollToItem(i + shelfOffset, -topBarPx)
+                fun focus() = runCatching {
+                    when {
+                        spot.row < 0 -> play.requestFocus()
+                        spot.seeAll -> nav.seeAll(spot.row).requestFocus()
+                        else -> nav.cards(spot.row).requestFocus()
+                    }
+                }.isSuccess
+                val index = if (spot.row < 0) 0 else spot.row + shelfOffset
+                val scroll = launch {
+                    if (spot.row < 0) list.animateScrollToItem(0)
+                    else list.animateScrollToItem(index, -topBarPx)
+                }
+                // Focus moves at once when the row is on screen (one frame lets
+                // a pending See all become focusable); the scroll runs alongside.
+                // An off-screen row is only laid out once the scroll brings it in.
                 withFrameNanos { }
-                runCatching { seeAll.at(i).requestFocus() }
+                val laidOut = list.layoutInfo.visibleItemsInfo.any { it.index == index }
+                if (!laidOut || !focus()) {
+                    scroll.join()
+                    withFrameNanos { }
+                    focus()
+                }
                 withFrameNanos { }
-                seeAll.pending = null
+                nav.pending = null
             }
         }
         // Vertical scrolling is ours (a focused row's name sits under the top
@@ -166,6 +188,7 @@ fun HomeScreen(state: HomeState, actions: HomeActions) {
                         Hero(
                             state, layout, actions, play, tabs[tabIndex(state.section)],
                             onFocus = { if (it) scope.launch { list.animateScrollToItem(0) } },
+                            onDown = { if (layout.shelves.any { it.items.isNotEmpty() }) nav.moveTo(Spot(0, seeAll = true)) },
                         )
                     }
                 }
@@ -173,9 +196,10 @@ fun HomeScreen(state: HomeState, actions: HomeActions) {
                 itemsIndexed(shelves, key = { _, s -> "${state.section}-${s.title}" }) { i, shelf ->
                     val index = i + if (layout?.hero.isNullOrEmpty()) 0 else 1
                     Shelf(
-                        shelf, actions, seeAll,
-                        seeAllAt = i,
-                        lastSeeAll = shelves.lastIndex,
+                        shelf, actions, nav,
+                        row = i,
+                        lastRow = shelves.lastIndex,
+                        hasHero = shelfOffset == 1,
                     ) { focused ->
                         if (focused) scope.launch { list.animateScrollToItem(index, -topBarPx) }
                     }
@@ -228,26 +252,20 @@ private fun TopBar(
         modifier = Modifier
             .fillMaxWidth()
             .height(PbSize.topBarHeightTv)
-            .background(
-                Brush.verticalGradient(
-                    listOf(
-                        PbColors.ground.copy(alpha = 0.85f + 0.15f * scrim),
-                        PbColors.ground.copy(alpha = scrim),
-                    ),
-                ),
-            )
+            // A shade that fades out below the bar, not a solid strip.
+            .pbHeaderShade(scrim)
             .onFocusChanged { state.inTopBar = it.hasFocus }
             .focusRestorer { tabs[tabIndex(state.section)] }
             .padding(horizontal = gutter),
     ) {
         PbLogo()
         Spacer(Modifier.width(36.dp))
-        Tab("Home", state.section == HomeSections.HOME, toContent.focusRequester(tabs[0])) { actions.select(HomeSections.HOME) }
-        Tab("Movies", state.section == "MOVIE", toContent.focusRequester(tabs[1])) { actions.select("MOVIE") }
-        Tab("Series", state.section == "SERIES", toContent.focusRequester(tabs[2])) { actions.select("SERIES") }
-        Tab("Explore", false, toContent) { actions.openExplore() }
+        PbTab("Home", state.section == HomeSections.HOME, toContent.focusRequester(tabs[0])) { actions.select(HomeSections.HOME) }
+        PbTab("Movies", state.section == "MOVIE", toContent.focusRequester(tabs[1])) { actions.select("MOVIE") }
+        PbTab("Series", state.section == "SERIES", toContent.focusRequester(tabs[2])) { actions.select("SERIES") }
+        PbTab("Explore", false, toContent) { actions.openExplore() }
         Spacer(Modifier.weight(1f))
-        HeaderIcon(Icons.Rounded.Favorite, toContent) { actions.openFavourites() }
+        HeaderIcon(Icons.Rounded.Favorite, toContent, tint = PbColors.primary) { actions.openFavourites() }
         HeaderIcon(Icons.Rounded.VideoLibrary, toContent) { actions.openWatched() }
         HeaderIcon(Icons.Rounded.Search, toContent) { actions.openSearch() }
         Spacer(Modifier.width(12.dp))
@@ -255,31 +273,9 @@ private fun TopBar(
     }
 }
 
-/** A section label; the selected one is white with an amber underline. */
-@Composable
-private fun Tab(label: String, selected: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
-    var focused by remember { mutableStateOf(false) }
-    val pill = RoundedCornerShape(PbRadius.pill)
-    val line by animateDpAsState(if (selected) 22.dp else 0.dp, tween(120), label = "tab")
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = modifier
-            .padding(end = 8.dp)
-            .pbClick({ focused = it }, onClick)
-            .border(PbSize.focusRing, if (focused) PbColors.focus else Color.Transparent, pill)
-            .padding(horizontal = 14.dp, vertical = 8.dp),
-    ) {
-        BasicText(
-            label,
-            style = PbType.button.copy(fontSize = 17.sp, color = if (selected || focused) PbColors.text else PbColors.textMuted),
-        )
-        Spacer(Modifier.height(5.dp))
-        Box(Modifier.width(line).height(2.dp).background(PbColors.primary, RoundedCornerShape(2.dp)))
-    }
-}
 
 @Composable
-private fun HeaderIcon(icon: ImageVector, modifier: Modifier, onClick: () -> Unit) {
+private fun HeaderIcon(icon: ImageVector, modifier: Modifier, tint: Color = PbColors.text, onClick: () -> Unit) {
     var focused by remember { mutableStateOf(false) }
     val scale by animateFloatAsState(if (focused) 1.1f else 1f, tween(120), label = "icon")
     Box(
@@ -291,7 +287,7 @@ private fun HeaderIcon(icon: ImageVector, modifier: Modifier, onClick: () -> Uni
             .background(if (focused) PbColors.focus.copy(alpha = 0.22f) else Color.Transparent, CircleShape)
             .border(if (focused) 2.dp else 0.dp, if (focused) PbColors.focus else Color.Transparent, CircleShape),
     ) {
-        Icon(icon, null, tint = PbColors.text, modifier = Modifier.size(28.dp))
+        Icon(icon, null, tint = tint, modifier = Modifier.size(28.dp))
     }
 }
 
@@ -325,6 +321,8 @@ private fun Hero(
     play: FocusRequester,
     tab: FocusRequester,
     onFocus: (Boolean) -> Unit,
+    /** Down from the buttons: the first row's See all. */
+    onDown: () -> Unit,
 ) {
     var index by remember(layout) { mutableIntStateOf(0) }
     var touched by remember { mutableIntStateOf(0) }
@@ -379,7 +377,15 @@ private fun Hero(
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                     modifier = Modifier
                         .focusProperties { up = tab }
-                        .focusRestorer { play },
+                        .focusRestorer { play }
+                        .onPreviewKeyEvent { e ->
+                            if (e.type == KeyEventType.KeyDown && e.key == Key.DirectionDown) {
+                                onDown()
+                                true
+                            } else {
+                                false
+                            }
+                        },
                 ) {
                     val focus: (Boolean) -> Unit = { if (it) touched++; onFocus(it) }
                     PbButton("Play", Icons.Rounded.PlayArrow, primary = true, onClick = { actions.openDetails(item, play = true) },
@@ -412,22 +418,17 @@ private fun HeroCopy(item: TitleItem, eyebrow: String) {
             eyebrow.uppercase(),
             style = PbType.label.copy(color = PbColors.primary, letterSpacing = 1.1.sp),
         )
-        Spacer(Modifier.height(8.dp))
-        BasicText(
-            item.displayTitle,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-            style = PbType.hero.copy(lineHeight = 46.sp, letterSpacing = (-1).sp),
-        )
-        Spacer(Modifier.height(12.dp))
+        PbFitTitle(item.displayTitle, PbType.hero.copy(letterSpacing = (-1).sp))
+        Spacer(Modifier.height(2.dp))
         Box(Modifier.height(28.dp), contentAlignment = Alignment.CenterStart) { MetaRow(item) }
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(10.dp))
+        // Eyebrow, title and facts sit tight so the synopsis gets a third line.
         BasicText(
             item.synopsis.orEmpty(),
-            maxLines = 2,
+            maxLines = 3,
             overflow = TextOverflow.Ellipsis,
             style = PbType.body.copy(color = Color(0xFFD6DAE3), lineHeight = 23.sp),
-            modifier = Modifier.height(48.dp),
+            modifier = Modifier.height(71.dp),
         )
         Spacer(Modifier.height(12.dp))
     }
@@ -435,18 +436,22 @@ private fun HeroCopy(item: TitleItem, eyebrow: String) {
 
 // ---- Shelves --------------------------------------------------------------
 
+/** Where the remote can land on Home: a row's See all or its cards; row -1 is the hero. */
+private data class Spot(val row: Int, val seeAll: Boolean)
+
 /**
- * The rows' "See all" buttons as one column: Up and Down from one go to the
- * one above or below, and while one is focused the others can take focus.
+ * Up and Down on Home, as on the desktop's TV build: hero → row 1's See all
+ * → row 1's cards → row 2's See all → … and back up the same way.
  */
-private class SeeAllChain {
-    val requesters = mutableMapOf<Int, FocusRequester>()
-    var active by mutableStateOf(false)
-    /** The See all focus is moving to (the one it leaves may scroll away first). */
-    var pending by mutableStateOf<Int?>(null)
-    fun at(i: Int) = requesters.getOrPut(i) { FocusRequester() }
-    /** Scrolls shelf [i] into view (it may not be laid out yet), then focuses its See all. */
-    var moveTo: (Int) -> Unit = {}
+private class RowNav {
+    private val seeAlls = mutableMapOf<Int, FocusRequester>()
+    private val rows = mutableMapOf<Int, FocusRequester>()
+    fun seeAll(row: Int) = seeAlls.getOrPut(row) { FocusRequester() }
+    fun cards(row: Int) = rows.getOrPut(row) { FocusRequester() }
+    /** Where focus is moving (that row's See all may take focus while it arrives). */
+    var pending by mutableStateOf<Spot?>(null)
+    /** Scrolls the row in (it may not be laid out yet), then focuses the spot. */
+    var moveTo: (Spot) -> Unit = {}
 }
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalComposeUiApi::class)
@@ -454,15 +459,34 @@ private class SeeAllChain {
 private fun Shelf(
     shelf: HomeShelf,
     actions: HomeActions,
-    seeAll: SeeAllChain,
-    seeAllAt: Int,
-    lastSeeAll: Int,
+    nav: RowNav,
+    row: Int,
+    lastRow: Int,
+    hasHero: Boolean,
     onFocus: (Boolean) -> Unit,
 ) {
-    // Up from a card lands on its row's "See all" (Down still goes card to
-    // card); Up/Down then walk the See all column, and Left goes back in.
     var rowFocused by remember { mutableStateOf(false) }
-    val cards = remember { FocusRequester() }
+    fun handle(e: androidx.compose.ui.input.key.KeyEvent, fromSeeAll: Boolean): Boolean {
+        if (e.type != KeyEventType.KeyDown) return false
+        val target = when (e.key) {
+            // See all: Up to the row above's cards (or the hero); cards: Up to their See all.
+            Key.DirectionUp -> when {
+                !fromSeeAll -> Spot(row, seeAll = true)
+                row > 0 -> Spot(row - 1, seeAll = false)
+                hasHero -> Spot(-1, seeAll = false)
+                else -> return false
+            }
+            // See all: Down into its cards; cards: Down to the next row's See all.
+            Key.DirectionDown -> when {
+                fromSeeAll -> Spot(row, seeAll = false)
+                row < lastRow -> Spot(row + 1, seeAll = true)
+                else -> return true
+            }
+            else -> return false
+        }
+        nav.moveTo(target)
+        return true
+    }
     Column(
         Modifier
             .padding(top = 10.dp)
@@ -478,23 +502,11 @@ private fun Shelf(
             BasicText(shelf.title, style = PbType.h2, modifier = Modifier.weight(1f))
             Spacer(Modifier.width(6.dp))
             SeeAll(
-                reachable = rowFocused || seeAll.active || seeAll.pending == seeAllAt,
+                reachable = rowFocused || nav.pending == Spot(row, seeAll = true),
                 modifier = Modifier
-                    .focusRequester(seeAll.at(seeAllAt))
-                    .focusProperties { left = cards }
-                    .onPreviewKeyEvent { e ->
-                        if (e.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
-                        val target = when (e.key) {
-                            Key.DirectionUp -> seeAllAt - 1
-                            Key.DirectionDown -> seeAllAt + 1
-                            else -> return@onPreviewKeyEvent false
-                        }
-                        // Past the first: the usual move (up to the hero); past the last: stay.
-                        if (target < 0) return@onPreviewKeyEvent false
-                        if (target <= lastSeeAll) seeAll.moveTo(target)
-                        true
-                    },
-                onFocus = { seeAll.active = it },
+                    .focusRequester(nav.seeAll(row))
+                    .focusProperties { left = nav.cards(row) }
+                    .onPreviewKeyEvent { handle(it, fromSeeAll = true) },
             ) { actions.openShelf(shelf) }
         }
         val items = shelf.items.take(18)
@@ -503,11 +515,14 @@ private fun Shelf(
             LazyRow(
                 contentPadding = PaddingValues(horizontal = gutter, vertical = 14.dp),
                 horizontalArrangement = Arrangement.spacedBy(if (shelf.style == ShelfStyle.TOP10) gap * 0.6f else gap),
-                modifier = Modifier.focusRequester(cards).focusRestorer { first },
+                modifier = Modifier
+                    .focusRequester(nav.cards(row))
+                    .focusRestorer { first }
+                    .onPreviewKeyEvent { handle(it, fromSeeAll = false) },
             ) {
                 itemsIndexed(items, key = { _, it -> it.id }) { i, item ->
                     val mod = if (i == 0) Modifier.focusRequester(first) else Modifier
-                    Box(mod.focusProperties { up = seeAll.at(seeAllAt) }) {
+                    Box(mod) {
                         when (shelf.style) {
                             ShelfStyle.TOP10 -> Top10Tile(i + 1, item, posterWidth, { actions.openDetails(item) })
                             ShelfStyle.WIDE -> WideCard(item, PbSize.wideCardWidthTv, { actions.openDetails(item) })

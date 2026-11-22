@@ -80,6 +80,7 @@ import app.peanutbutter.tv.ui.compose.MetaRow
 import app.peanutbutter.tv.ui.compose.NoScroll
 import app.peanutbutter.tv.ui.compose.PbButton
 import app.peanutbutter.tv.ui.compose.PbColors
+import app.peanutbutter.tv.ui.compose.PbFitTitle
 import app.peanutbutter.tv.ui.compose.PbImage
 import app.peanutbutter.tv.ui.compose.PbRadius
 import app.peanutbutter.tv.ui.compose.PbSize
@@ -88,6 +89,7 @@ import app.peanutbutter.tv.ui.compose.PbType
 import app.peanutbutter.tv.ui.compose.PosterCard
 import app.peanutbutter.tv.ui.compose.RowScroll
 import app.peanutbutter.tv.ui.compose.pbClick
+import app.peanutbutter.tv.ui.compose.pbDrawScale
 import app.peanutbutter.tv.ui.compose.pbFocusRing
 import kotlinx.coroutines.launch
 
@@ -317,16 +319,13 @@ private fun Hero(t: TitleItem, state: DetailsState, actions: DetailsActions, pla
                     listOfNotNull(kind, t.year?.toString()).joinToString(" · ").uppercase(),
                     style = PbType.label.copy(color = PbColors.primary, letterSpacing = 1.1.sp),
                 )
-                Spacer(Modifier.height(8.dp))
-                BasicText(
-                    t.displayTitle, maxLines = 2, overflow = TextOverflow.Ellipsis,
-                    style = PbType.hero.copy(lineHeight = 46.sp, letterSpacing = (-1).sp),
-                )
-                Spacer(Modifier.height(12.dp))
+                PbFitTitle(t.displayTitle, PbType.hero.copy(letterSpacing = (-1).sp))
+                // Eyebrow, title and facts sit tight so the synopsis gets a third line.
+                Spacer(Modifier.height(2.dp))
                 Box(Modifier.height(28.dp), contentAlignment = Alignment.CenterStart) { MetaRow(t) }
-                Spacer(Modifier.height(12.dp))
+                Spacer(Modifier.height(10.dp))
                 BasicText(
-                    t.synopsis.orEmpty(), maxLines = 2, overflow = TextOverflow.Ellipsis,
+                    t.synopsis.orEmpty(), maxLines = 3, overflow = TextOverflow.Ellipsis,
                     style = PbType.body.copy(color = Color(0xFFD6DAE3), lineHeight = 23.sp),
                 )
                 Spacer(Modifier.height(16.dp))
@@ -631,7 +630,7 @@ private fun EpisodeTile(e: Episode, number: Int, onFocus: (Boolean) -> Unit, onP
         modifier = Modifier
             .padding(bottom = 6.dp)
             .fillMaxWidth()
-            .scale(scale)
+            .pbDrawScale(scale)
             .pbClick({ focused = it; onFocus(it) }, onPlay)
             .background(if (focused) PbColors.surfaceRaised else Color.Transparent, shape)
             .border(PbSize.focusRing, if (focused) PbColors.focus else Color.Transparent, shape)

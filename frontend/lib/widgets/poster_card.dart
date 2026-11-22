@@ -262,7 +262,7 @@ class _PosterCardState extends ConsumerState<PosterCard> {
     final size = compact ? 14.0 : 17.0;
     final icons = <Widget>[
       if (state.favorite)
-        Icon(Icons.favorite_rounded, size: size, color: Colors.white.withValues(alpha: 0.92)),
+        Icon(Icons.favorite_rounded, size: size, color: PbColors.primary),
       if (state.watched)
         Icon(Icons.check_circle_rounded, size: size, color: accent),
     ];

@@ -1,5 +1,6 @@
 package app.peanutbutter.tv.ui
 
+import app.peanutbutter.tv.ui.compose.setPbContent
 import android.content.Intent
 import android.os.Bundle
 import android.widget.Toast
@@ -44,7 +45,7 @@ class MainActivity : FragmentActivity(), HomeActions {
         }
         selectedKind = savedInstanceState?.getString(STATE_KIND, HomeSections.HOME) ?: HomeSections.HOME
         home.section = selectedKind
-        setContent { HomeScreen(home, this) }
+        setPbContent { HomeScreen(home, this) }
         loadHome(showOverlay = true)
         // Once per launch, after the home feed has had a head start.
         window.decorView.postDelayed({ if (!isFinishing) checkForTvUpdate(this) }, 8_000)

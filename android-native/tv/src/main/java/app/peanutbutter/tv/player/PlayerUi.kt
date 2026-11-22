@@ -17,6 +17,9 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
+import app.peanutbutter.tv.ui.compose.PbFonts
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -139,6 +142,11 @@ class ResumeCard(val title: String, val atMs: Long, val totalMs: Long)
  * as before: the activity routes every key.
  */
 class PlayerUi {
+    /** The text subtitle on screen now (blank: none), and its look. */
+    var subtitle by mutableStateOf(androidx.compose.ui.text.AnnotatedString(""))
+    var subSize by mutableIntStateOf(1)
+    var subBackground by mutableStateOf("box")
+
     var title by mutableStateOf("")
     var episode by mutableStateOf<String?>(null)
     var art by mutableStateOf<String?>(null)
@@ -312,6 +320,7 @@ private fun clock(ms: Long): String {
 @Composable
 fun PlayerOverlay(ui: PlayerUi) {
     Box(Modifier.fillMaxSize()) {
+        SubtitleText(ui)
         if (ui.preparing) BufferOverlay(ui)
 
         // Top row: Back, title, then Audio / Subtitles / Picture.
@@ -998,6 +1007,64 @@ private fun LeaveCard(ui: PlayerUi) {
             PillButton(ui.leaveStay, Icons.Rounded.PlayArrow, primary = true, lit = ui.leaveIndex == 0, modifier = Modifier.weight(1f))
             Spacer(Modifier.width(12.dp))
             PillButton(ui.leaveGo, null, primary = false, lit = ui.leaveIndex == 1, modifier = Modifier.weight(1f))
+        }
+    }
+}
+
+/** Sizes as on the SubtitleView: 5.33% of the screen's height, times the size picked. */
+private val SUB_SCALES = floatArrayOf(0.8f, 1f, 1.3f, 1.65f)
+
+/**
+ * Text subtitles, drawn like the desktop's: a box behind each line, a solid
+ * outline, or a soft shadow. Lifted over the controls while they show.
+ */
+@Composable
+private fun BoxScope.SubtitleText(ui: PlayerUi) {
+    val text = ui.subtitle
+    if (text.text.isBlank()) return
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val density = LocalDensity.current
+        val px = with(density) { maxHeight.toPx() } * 0.0533f * SUB_SCALES[ui.subSize.coerceIn(0, SUB_SCALES.lastIndex)]
+        val size = with(density) { px.toSp() }
+        val lift by androidx.compose.animation.core.animateFloatAsState(
+            if (ui.chrome) 0.27f else 0.09f, tween(220), label = "subLift",
+        )
+        val base = TextStyle(
+            fontFamily = PbFonts.body,
+            fontWeight = FontWeight.W600,
+            fontSize = size,
+            lineHeight = size * 1.25f,
+            color = Color.White,
+            textAlign = TextAlign.Center,
+        )
+        Box(
+            contentAlignment = Alignment.BottomCenter,
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(start = maxWidth * 0.08f, end = maxWidth * 0.08f, bottom = maxHeight * lift),
+        ) {
+            when (ui.subBackground) {
+                "outline" -> Box {
+                    BasicText(
+                        text,
+                        style = base.copy(
+                            color = Color.Black,
+                            drawStyle = androidx.compose.ui.graphics.drawscope.Stroke(
+                                width = px * 0.14f,
+                                join = androidx.compose.ui.graphics.StrokeJoin.Round,
+                            ),
+                        ),
+                    )
+                    BasicText(text, style = base)
+                }
+                "shadow" -> BasicText(
+                    text,
+                    style = base.copy(
+                        shadow = Shadow(Color.Black.copy(alpha = 0.95f), Offset(0f, px * 0.06f), blurRadius = px * 0.3f),
+                    ),
+                )
+                else -> BasicText(text, style = base.copy(background = Color(0xAA000000)))
+            }
         }
     }
 }

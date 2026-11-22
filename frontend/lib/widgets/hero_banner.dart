@@ -86,9 +86,7 @@ class HeroBannerFrame extends StatelessWidget {
               top: inset > 0 ? inset : null,
               bottom: 36,
               width: 560,
-              child: inset > 0
-                  ? Align(alignment: Alignment.bottomLeft, child: child)
-                  : child,
+              child: inset > 0 ? Align(alignment: Alignment.bottomLeft, child: child) : child,
             ),
           ],
         ),
@@ -128,14 +126,10 @@ class HeroBannerCopy extends StatelessWidget {
             letterSpacing: 1.1,
           ),
         ),
-        const SizedBox(height: 8),
-        Text(
+        FitTitle(
           title,
-          maxLines: 2,
-          overflow: TextOverflow.ellipsis,
           style: (isAndroidTv ? PbTypeTv.hero : PbType.hero).copyWith(
             color: PbColors.text,
-            height: 1.05,
             letterSpacing: -1.0,
           ),
         ),
@@ -143,7 +137,8 @@ class HeroBannerCopy extends StatelessWidget {
           const SizedBox(height: 12),
           belowTitle!,
         ],
-        const SizedBox(height: 12),
+        // Eyebrow, title and facts sit tight so the synopsis gets a third line.
+        const SizedBox(height: 2),
         SizedBox(
           height: 28,
           child: Align(
@@ -151,12 +146,12 @@ class HeroBannerCopy extends StatelessWidget {
             child: ClipRect(child: meta),
           ),
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: 10),
         SizedBox(
-          height: 42,
+          height: isAndroidTv ? 70 : 66,
           child: Text(
             synopsis,
-            maxLines: 2,
+            maxLines: 3,
             overflow: TextOverflow.ellipsis,
             style: (isAndroidTv ? PbTypeTv.body : PbType.body).copyWith(
               color: const Color(0xFFD6DAE3),
@@ -171,6 +166,36 @@ class HeroBannerCopy extends StatelessWidget {
         ],
         const SizedBox(height: 16),
       ],
+    );
+  }
+}
+
+/// A hero title in a fixed two-line space at one size, so neither the name
+/// nor anything around it moves from one title to the next: the name starts
+/// right under the eyebrow; a third line ends in an ellipsis.
+class FitTitle extends StatelessWidget {
+  const FitTitle(this.text, {super.key, required this.style});
+
+  final String text;
+  final TextStyle style;
+
+  static const _line = 1.0;
+
+  @override
+  Widget build(BuildContext context) {
+    final size = style.fontSize ?? 44;
+    return SizedBox(
+      // Two lines, plus room for the last line's descenders (g, y).
+      height: MediaQuery.textScalerOf(context).scale(size) * (_line * 2 + 0.2),
+      child: Align(
+        alignment: Alignment.topLeft,
+        child: Text(
+          text,
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: style.copyWith(height: _line),
+        ),
+      ),
     );
   }
 }

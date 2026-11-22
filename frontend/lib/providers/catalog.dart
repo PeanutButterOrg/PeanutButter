@@ -707,11 +707,14 @@ final similarRowProvider =
 /// A cast or crew member's page. Fails on servers before 0.3.26.
 final personProvider = FutureProvider.autoDispose.family<PersonDetails, int>((ref, tmdbId) async {
   final client = ref.watch(graphQLClientProvider);
-  final result = await client.query(QueryOptions(
-    document: gql(GET_PERSON),
-    variables: {'tmdbId': tmdbId},
-    fetchPolicy: FetchPolicy.noCache,
-  ));
+  Future<QueryResult> load(String query) => client.query(QueryOptions(
+        document: gql(query),
+        variables: {'tmdbId': tmdbId},
+        fetchPolicy: FetchPolicy.noCache,
+      ));
+  // Newer servers add art and fame per credit; older ones reject those fields.
+  var result = await load(GET_PERSON_FULL);
+  if (result.hasException && result.exception!.graphqlErrors.isNotEmpty) result = await load(GET_PERSON);
   if (result.hasException) throw result.exception!;
   return PersonDetails.fromJson(result.data!['person'] as Map<String, dynamic>);
 });

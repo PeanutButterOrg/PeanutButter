@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
@@ -39,6 +40,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.drawscope.withTransform
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
@@ -196,7 +200,7 @@ fun Modifier.pbClick(
 fun Modifier.pbFocusRing(focused: Boolean, shape: Shape, scaleTo: Float = PbSize.focusScaleTv): Modifier {
     val scale by animateFloatAsState(if (focused) scaleTo else 1f, tween(160), label = "focus")
     return this
-        .scale(scale)
+        .pbDrawScale(scale)
         .then(
             if (focused) {
                 Modifier
@@ -274,7 +278,7 @@ private fun PosterBadges(item: TitleItem) {
         if (item.favorite || item.watched) {
             Spacer(Modifier.width(4.dp))
             GlassChip {
-                if (item.favorite) Icon(Icons.Rounded.Favorite, null, tint = Color.White.copy(alpha = 0.92f), modifier = Modifier.size(14.dp))
+                if (item.favorite) Icon(Icons.Rounded.Favorite, null, tint = PbColors.primary, modifier = Modifier.size(14.dp))
                 if (item.favorite && item.watched) Spacer(Modifier.width(3.dp))
                 if (item.watched) Icon(Icons.Rounded.CheckCircle, null, tint = PbColors.primary, modifier = Modifier.size(14.dp))
             }
@@ -444,6 +448,12 @@ fun WideCard(
 }
 
 /** Hero meta: ★ 8.0 TMDB · 2026 · 2h 53m · genre pills. */
+/** Genre names short enough for a chip ("Science Fiction" → "Sci-Fi"). */
+fun shortGenre(name: String): String = when (name.trim().lowercase()) {
+    "science fiction" -> "Sci-Fi"
+    else -> name
+}
+
 @Composable
 fun MetaRow(item: TitleItem, maxGenres: Int = 3) {
     val text = PbType.meta.copy(color = Color.White.copy(alpha = 0.82f), fontSize = 15.sp, fontWeight = FontWeight.W600)
@@ -466,10 +476,11 @@ fun MetaRow(item: TitleItem, maxGenres: Int = 3) {
         val label = if (m < 60) "${m}m" else if (m % 60 == 0) "${m / 60}h" else "${m / 60}h ${m % 60}m"
         pieces += { BasicText(label, style = text) }
     }
-    item.genres.take(maxGenres).forEach { g ->
+    // Age rating (PG-13, TV-MA…) and genres share one chip look.
+    val chip: (String) -> Unit = { label ->
         pieces += {
             BasicText(
-                g,
+                label,
                 style = text.copy(fontSize = 13.sp, color = Color.White.copy(alpha = 0.88f)),
                 modifier = Modifier
                     .background(Color.White.copy(alpha = 0.10f), RoundedCornerShape(PbRadius.pill))
@@ -477,6 +488,8 @@ fun MetaRow(item: TitleItem, maxGenres: Int = 3) {
             )
         }
     }
+    item.contentRating?.let { chip(it.uppercase()) }
+    item.genres.take(maxGenres).forEach { chip(shortGenre(it)) }
     Row(verticalAlignment = Alignment.CenterVertically) {
         pieces.forEachIndexed { i, piece ->
             if (i > 0) {
@@ -566,6 +579,94 @@ fun PbSpinner(modifier: Modifier = Modifier) {
         drawArc(
             PbColors.primary, angle, 270f, false,
             style = Stroke(3.dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round),
+        )
+    }
+}
+
+/**
+ * A text tab (top bar, My List / Watched, Search). No focus pill: the
+ * underline says it all. Amber under the picked one; white under the one the
+ * remote is on, so moving along shows where OK would go.
+ */
+@Composable
+fun PbTab(label: String, selected: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    var focused by remember { mutableStateOf(false) }
+    // Focus wins over selection (a selected tab must still show focus
+    // arriving): focused is a longer, thicker white line; selected alone is
+    // the shorter amber one.
+    val line by androidx.compose.animation.core.animateDpAsState(
+        when {
+            focused -> 30.dp
+            selected -> 22.dp
+            else -> 0.dp
+        },
+        tween(120), label = "tab",
+    )
+    val thickness by androidx.compose.animation.core.animateDpAsState(
+        if (focused) 3.dp else 2.dp, tween(120), label = "tabThick",
+    )
+    val lineColor by androidx.compose.animation.animateColorAsState(
+        if (focused || !selected) PbColors.text else PbColors.primary, tween(120), label = "tabColor",
+    )
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = modifier
+            .padding(end = 6.dp)
+            .pbClick({ focused = it }, onClick)
+            .padding(horizontal = 14.dp, vertical = 8.dp),
+    ) {
+        BasicText(
+            label,
+            style = PbType.button.copy(
+                fontSize = 17.sp,
+                color = if (selected || focused) PbColors.text else PbColors.textMuted,
+            ),
+        )
+        Spacer(Modifier.height(5.dp))
+        Box(Modifier.width(line).height(thickness).background(lineColor, RoundedCornerShape(2.dp)))
+    }
+}
+
+/**
+ * Grows what's drawn without changing the measured size. A layout scale
+ * (Modifier.scale) also grows the bounds a list scrolls to, so while the
+ * focus animation ran each frame re-scrolled the row: the list shook.
+ */
+fun Modifier.pbDrawScale(scale: Float): Modifier =
+    if (scale == 1f) this else drawWithContent {
+        withTransform({ scale(scale, scale, center) }) { this@drawWithContent.drawContent() }
+    }
+
+/**
+ * A see-through black bar behind a header that content scrolls under:
+ * flat, inside the header's own bounds (no shadow below it). [strength]
+ * 0 is clear (at the top of the page), 1 is fully shaded.
+ */
+fun Modifier.pbHeaderShade(strength: Float): Modifier = drawBehind {
+    if (strength > 0f) drawRect(Color.Black.copy(alpha = 0.72f * strength))
+}
+
+/**
+ * A hero title in a fixed two-line space at one size, so neither the name
+ * nor anything around it moves from one title to the next: the name starts
+ * right under the eyebrow; a third line ends in an ellipsis.
+ */
+@Composable
+fun PbFitTitle(text: String, style: androidx.compose.ui.text.TextStyle, modifier: Modifier = Modifier) {
+    val size = style.fontSize.value
+    val line = 1.0f
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    // Two lines, plus room for the last line's descenders (g, y).
+    val slot = with(density) { (size * (line * 2 + 0.2f)).sp.toDp() }
+    // The text sits in the space rather than being squeezed to it (a tight
+    // height made it give up after one line).
+    Box(modifier.fillMaxWidth().height(slot), contentAlignment = Alignment.TopStart) {
+        androidx.compose.foundation.text.BasicText(
+            text,
+            maxLines = 2,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+            style = style.copy(lineHeight = (size * line).sp),
+            modifier = Modifier.wrapContentHeight(Alignment.Top, unbounded = true),
         )
     }
 }

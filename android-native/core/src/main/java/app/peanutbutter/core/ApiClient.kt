@@ -247,7 +247,13 @@ class ApiClient(
 
     /** A cast or crew member's page. Throws on servers before 0.3.26. */
     suspend fun person(tmdbId: Int): PersonDetails = withContext(Dispatchers.IO) {
-        val o = gql(Gql.PERSON, mapOf("tmdbId" to tmdbId)).getAsJsonObject("person")
+        // Newer servers add art and fame per credit; older ones reject those fields.
+        val data = runCatching { gql(Gql.PERSON_FULL, mapOf("tmdbId" to tmdbId)) }
+            .getOrElse { e ->
+                if (e is UnauthorizedException) throw e
+                gql(Gql.PERSON, mapOf("tmdbId" to tmdbId))
+            }
+        val o = data.getAsJsonObject("person")
         fun str(obj: JsonObject, key: String) = obj.get(key)?.takeUnless { it.isJsonNull }?.asString?.takeIf { it.isNotBlank() }
         fun credits(key: String) = o.getAsJsonArray(key)?.mapNotNull { el ->
             runCatching {
@@ -261,6 +267,9 @@ class ApiClient(
                     posterUrl = resolveMediaUrl(str(c, "posterUrl")),
                     voteAverage = c.get("voteAverage")?.takeUnless { it.isJsonNull }?.asDouble,
                     titleId = str(c, "titleId"),
+                    backdropUrl = resolveMediaUrl(str(c, "backdropUrl")),
+                    voteCount = c.get("voteCount")?.takeUnless { it.isJsonNull }?.asInt ?: 0,
+                    popularity = c.get("popularity")?.takeUnless { it.isJsonNull }?.asDouble ?: 0.0,
                 ).takeIf { it.title.isNotBlank() }
             }.getOrNull()
         }.orEmpty()
@@ -876,6 +885,7 @@ class ApiClient(
             tmdbVoteCount = ratings?.get("tmdbVoteCount")?.takeUnless { it.isJsonNull }?.asInt,
             rtScore = ratings?.get("rtScore")?.takeUnless { it.isJsonNull }?.asInt,
             genres = genres,
+            contentRating = o.get("contentRating")?.takeUnless { it.isJsonNull }?.asString?.trim()?.takeIf { it.isNotEmpty() },
             positionMs = state?.numberLong("positionMs") ?: 0,
             durationMs = state?.numberLong("durationMs") ?: 0,
             progressPercent = state?.numberDouble("progressPercent")?.let { pct ->
