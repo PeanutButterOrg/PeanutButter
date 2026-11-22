@@ -1,5 +1,6 @@
 package app.peanutbutter.tv.ui
 
+import app.peanutbutter.tv.ui.compose.setPbContent
 import android.content.Intent
 import android.os.Bundle
 import android.widget.Toast
@@ -19,7 +20,7 @@ class PersonActivity : FragmentActivity() {
         super.onCreate(savedInstanceState)
         val tmdbId = intent.getIntExtra(EXTRA_TMDB_ID, 0)
         ui.name = intent.getStringExtra(EXTRA_NAME).orEmpty()
-        setContent { PersonScreen(ui, onBack = { finish() }, onOpen = ::open) }
+        setPbContent { PersonScreen(ui, onBack = { finish() }, onOpen = ::open) }
         lifecycleScope.launch {
             try {
                 val api = application.asTv().api

@@ -1,5 +1,6 @@
 package app.peanutbutter.tv.ui
 
+import app.peanutbutter.tv.ui.compose.setPbContent
 import android.content.Intent
 import android.os.Bundle
 import android.text.format.Formatter
@@ -44,7 +45,7 @@ class SettingsActivity : FragmentActivity(), SettingsActions {
             ),
             languages = ContentLanguages.OPTIONS,
         )
-        setContent { SettingsScreen(ui, choices, this) }
+        setPbContent { SettingsScreen(ui, choices, this) }
         refreshDownloadsSize()
         loadServerInfo()
     }

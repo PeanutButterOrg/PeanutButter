@@ -69,6 +69,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.tv.material3.Icon
 import app.peanutbutter.core.TitleItem
+import app.peanutbutter.tv.ui.compose.PbTab
 import app.peanutbutter.tv.ui.compose.PbColors
 import app.peanutbutter.tv.ui.compose.PbRadius
 import app.peanutbutter.tv.ui.compose.PbSize
@@ -153,8 +154,8 @@ private fun SearchBar(state: SearchState, actions: SearchActions, field: FocusRe
         Spacer(Modifier.width(8.dp))
         RoundIcon(Icons.Rounded.Mic, tint = if (state.listening) PbColors.bad else PbColors.text) { actions.mic() }
         Spacer(Modifier.width(14.dp))
-        KindTab("Movies", state.kind == "MOVIE") { actions.setKind("MOVIE") }
-        KindTab("Series", state.kind == "SERIES") { actions.setKind("SERIES") }
+        PbTab("Movies", state.kind == "MOVIE") { actions.setKind("MOVIE") }
+        PbTab("Series", state.kind == "SERIES") { actions.setKind("SERIES") }
     }
 }
 
@@ -261,25 +262,6 @@ private fun RoundIcon(icon: ImageVector, tint: Color = PbColors.text, onClick: (
     ) { Icon(icon, null, tint = tint, modifier = Modifier.size(28.dp)) }
 }
 
-/** Movies / Series: a text tab, the picked one with the amber underline. */
-@Composable
-private fun KindTab(label: String, selected: Boolean, onClick: () -> Unit) {
-    var focused by remember { mutableStateOf(false) }
-    val pill = RoundedCornerShape(PbRadius.pill)
-    val line by animateDpAsState(if (selected) 22.dp else 0.dp, tween(120), label = "tab")
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier
-            .padding(end = 6.dp)
-            .pbClick({ focused = it }, onClick)
-            .border(PbSize.focusRing, if (focused) PbColors.focus else Color.Transparent, pill)
-            .padding(horizontal = 14.dp, vertical = 8.dp),
-    ) {
-        BasicText(label, style = PbType.button.copy(fontSize = 17.sp, color = if (selected || focused) PbColors.text else PbColors.textMuted))
-        Spacer(Modifier.height(5.dp))
-        Box(Modifier.width(line).height(2.dp).background(PbColors.primary, RoundedCornerShape(2.dp)))
-    }
-}
 
 /** Before typing: your recent searches, or how to start. */
 @OptIn(ExperimentalLayoutApi::class)

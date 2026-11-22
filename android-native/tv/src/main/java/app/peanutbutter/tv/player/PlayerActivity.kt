@@ -171,7 +171,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         ui.leaveGo = getString(R.string.leave_player)
         ui.onLeave = { finish() }
         ui.nextTitle = getString(R.string.play_next)
-        findViewById<ComposeView>(R.id.player_ui).setContent { PlayerOverlay(ui) }
+        findViewById<ComposeView>(R.id.player_ui).setContent { app.peanutbutter.tv.ui.compose.PbScaled { PlayerOverlay(ui) } }
 
         // Cover first — avoid black frame while torrent/player wake up.
         ui.preparing = true

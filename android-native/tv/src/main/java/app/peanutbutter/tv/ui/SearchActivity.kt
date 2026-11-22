@@ -1,5 +1,6 @@
 package app.peanutbutter.tv.ui
 
+import app.peanutbutter.tv.ui.compose.setPbContent
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -37,7 +38,7 @@ class SearchActivity : FragmentActivity(), SearchActions {
         super.onCreate(savedInstanceState)
         ui.kind = savedInstanceState?.getString(STATE_KIND, "MOVIE") ?: "MOVIE"
         ui.recent.addAll(loadRecent())
-        setContent { SearchScreen(ui, this) }
+        setPbContent { SearchScreen(ui, this) }
     }
 
     override fun onDestroy() {

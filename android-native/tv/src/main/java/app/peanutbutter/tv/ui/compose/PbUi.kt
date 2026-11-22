@@ -274,7 +274,7 @@ private fun PosterBadges(item: TitleItem) {
         if (item.favorite || item.watched) {
             Spacer(Modifier.width(4.dp))
             GlassChip {
-                if (item.favorite) Icon(Icons.Rounded.Favorite, null, tint = Color.White.copy(alpha = 0.92f), modifier = Modifier.size(14.dp))
+                if (item.favorite) Icon(Icons.Rounded.Favorite, null, tint = PbColors.primary, modifier = Modifier.size(14.dp))
                 if (item.favorite && item.watched) Spacer(Modifier.width(3.dp))
                 if (item.watched) Icon(Icons.Rounded.CheckCircle, null, tint = PbColors.primary, modifier = Modifier.size(14.dp))
             }
@@ -567,5 +567,38 @@ fun PbSpinner(modifier: Modifier = Modifier) {
             PbColors.primary, angle, 270f, false,
             style = Stroke(3.dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round),
         )
+    }
+}
+
+/**
+ * A text tab (top bar, My List / Watched, Search). No focus pill: the
+ * underline says it all. Amber under the picked one; white under the one the
+ * remote is on, so moving along shows where OK would go.
+ */
+@Composable
+fun PbTab(label: String, selected: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    var focused by remember { mutableStateOf(false) }
+    val line by androidx.compose.animation.core.animateDpAsState(
+        if (selected || focused) 22.dp else 0.dp, tween(120), label = "tab",
+    )
+    val lineColor by androidx.compose.animation.animateColorAsState(
+        if (selected) PbColors.primary else PbColors.text, tween(120), label = "tabColor",
+    )
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = modifier
+            .padding(end = 6.dp)
+            .pbClick({ focused = it }, onClick)
+            .padding(horizontal = 14.dp, vertical = 8.dp),
+    ) {
+        BasicText(
+            label,
+            style = PbType.button.copy(
+                fontSize = 17.sp,
+                color = if (selected || focused) PbColors.text else PbColors.textMuted,
+            ),
+        )
+        Spacer(Modifier.height(5.dp))
+        Box(Modifier.width(line).height(2.dp).background(lineColor, RoundedCornerShape(2.dp)))
     }
 }

@@ -1,5 +1,6 @@
 package app.peanutbutter.tv.ui
 
+import app.peanutbutter.tv.ui.compose.setPbContent
 import android.content.Intent
 import android.os.Bundle
 import android.util.Log
@@ -49,7 +50,7 @@ class CatalogActivity : FragmentActivity(), CatalogActions {
         ui.filters += CatalogFilter("service", getString(R.string.filter_all_services)).apply { visible = false }
         refreshHeading()
         if (sort == "TRENDING") showServiceFilterIfAny()
-        setContent { CatalogScreen(ui, this) }
+        setPbContent { CatalogScreen(ui, this) }
         loadMore()
     }
 

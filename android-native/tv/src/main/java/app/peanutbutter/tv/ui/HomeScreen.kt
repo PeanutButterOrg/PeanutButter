@@ -76,6 +76,7 @@ import app.peanutbutter.core.HomeSections
 import app.peanutbutter.core.HomeShelf
 import app.peanutbutter.core.ShelfStyle
 import app.peanutbutter.core.TitleItem
+import app.peanutbutter.tv.ui.compose.PbTab
 import app.peanutbutter.tv.ui.compose.MetaRow
 import app.peanutbutter.tv.ui.compose.NoScroll
 import app.peanutbutter.tv.ui.compose.RowScroll
@@ -242,12 +243,12 @@ private fun TopBar(
     ) {
         PbLogo()
         Spacer(Modifier.width(36.dp))
-        Tab("Home", state.section == HomeSections.HOME, toContent.focusRequester(tabs[0])) { actions.select(HomeSections.HOME) }
-        Tab("Movies", state.section == "MOVIE", toContent.focusRequester(tabs[1])) { actions.select("MOVIE") }
-        Tab("Series", state.section == "SERIES", toContent.focusRequester(tabs[2])) { actions.select("SERIES") }
-        Tab("Explore", false, toContent) { actions.openExplore() }
+        PbTab("Home", state.section == HomeSections.HOME, toContent.focusRequester(tabs[0])) { actions.select(HomeSections.HOME) }
+        PbTab("Movies", state.section == "MOVIE", toContent.focusRequester(tabs[1])) { actions.select("MOVIE") }
+        PbTab("Series", state.section == "SERIES", toContent.focusRequester(tabs[2])) { actions.select("SERIES") }
+        PbTab("Explore", false, toContent) { actions.openExplore() }
         Spacer(Modifier.weight(1f))
-        HeaderIcon(Icons.Rounded.Favorite, toContent) { actions.openFavourites() }
+        HeaderIcon(Icons.Rounded.Favorite, toContent, tint = PbColors.primary) { actions.openFavourites() }
         HeaderIcon(Icons.Rounded.VideoLibrary, toContent) { actions.openWatched() }
         HeaderIcon(Icons.Rounded.Search, toContent) { actions.openSearch() }
         Spacer(Modifier.width(12.dp))
@@ -255,31 +256,9 @@ private fun TopBar(
     }
 }
 
-/** A section label; the selected one is white with an amber underline. */
-@Composable
-private fun Tab(label: String, selected: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
-    var focused by remember { mutableStateOf(false) }
-    val pill = RoundedCornerShape(PbRadius.pill)
-    val line by animateDpAsState(if (selected) 22.dp else 0.dp, tween(120), label = "tab")
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = modifier
-            .padding(end = 8.dp)
-            .pbClick({ focused = it }, onClick)
-            .border(PbSize.focusRing, if (focused) PbColors.focus else Color.Transparent, pill)
-            .padding(horizontal = 14.dp, vertical = 8.dp),
-    ) {
-        BasicText(
-            label,
-            style = PbType.button.copy(fontSize = 17.sp, color = if (selected || focused) PbColors.text else PbColors.textMuted),
-        )
-        Spacer(Modifier.height(5.dp))
-        Box(Modifier.width(line).height(2.dp).background(PbColors.primary, RoundedCornerShape(2.dp)))
-    }
-}
 
 @Composable
-private fun HeaderIcon(icon: ImageVector, modifier: Modifier, onClick: () -> Unit) {
+private fun HeaderIcon(icon: ImageVector, modifier: Modifier, tint: Color = PbColors.text, onClick: () -> Unit) {
     var focused by remember { mutableStateOf(false) }
     val scale by animateFloatAsState(if (focused) 1.1f else 1f, tween(120), label = "icon")
     Box(
@@ -291,7 +270,7 @@ private fun HeaderIcon(icon: ImageVector, modifier: Modifier, onClick: () -> Uni
             .background(if (focused) PbColors.focus.copy(alpha = 0.22f) else Color.Transparent, CircleShape)
             .border(if (focused) 2.dp else 0.dp, if (focused) PbColors.focus else Color.Transparent, CircleShape),
     ) {
-        Icon(icon, null, tint = PbColors.text, modifier = Modifier.size(28.dp))
+        Icon(icon, null, tint = tint, modifier = Modifier.size(28.dp))
     }
 }
 

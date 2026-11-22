@@ -1,5 +1,6 @@
 package app.peanutbutter.tv.ui.compose
 
+import androidx.activity.compose.setContent
 import androidx.compose.ui.text.ExperimentalTextApi
 import androidx.compose.ui.text.TextStyle
 import android.content.Context
@@ -85,3 +86,41 @@ object PbType {
 
 fun TextStyle.size(size: TextUnit) = copy(fontSize = size)
 fun TextStyle.weight(w: Int) = copy(fontWeight = FontWeight(w))
+
+/**
+ * How large the TV UI is drawn: dp and sp are scaled by this, so a 1080p TV
+ * at 2x lays out as 1200×675 instead of 960×540. At 1.0 everything was too
+ * big for the screen and long text got cut off.
+ */
+const val PB_UI_SCALE = 0.8f
+
+/**
+ * The app's UI at [PB_UI_SCALE]. Every screen, dialog and overlay draws
+ * through this, and the screen size it reports matches the scaled density.
+ */
+@androidx.compose.runtime.Composable
+fun PbScaled(content: @androidx.compose.runtime.Composable () -> Unit) {
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val config = androidx.compose.ui.platform.LocalConfiguration.current
+    val scaled = androidx.compose.runtime.remember(density, config) {
+        androidx.compose.ui.unit.Density(density.density * PB_UI_SCALE, density.fontScale)
+    }
+    val scaledConfig = androidx.compose.runtime.remember(config) {
+        android.content.res.Configuration(config).apply {
+            screenWidthDp = (config.screenWidthDp / PB_UI_SCALE).toInt()
+            screenHeightDp = (config.screenHeightDp / PB_UI_SCALE).toInt()
+            smallestScreenWidthDp = (config.smallestScreenWidthDp / PB_UI_SCALE).toInt()
+            densityDpi = (config.densityDpi * PB_UI_SCALE).toInt()
+        }
+    }
+    androidx.compose.runtime.CompositionLocalProvider(
+        androidx.compose.ui.platform.LocalDensity provides scaled,
+        androidx.compose.ui.platform.LocalConfiguration provides scaledConfig,
+        content = content,
+    )
+}
+
+/** [androidx.activity.compose.setContent] at the app's UI scale. */
+fun androidx.activity.ComponentActivity.setPbContent(content: @androidx.compose.runtime.Composable () -> Unit) {
+    setContent { PbScaled(content) }
+}

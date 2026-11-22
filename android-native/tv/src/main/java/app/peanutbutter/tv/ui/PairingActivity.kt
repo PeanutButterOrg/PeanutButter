@@ -1,5 +1,6 @@
 package app.peanutbutter.tv.ui
 
+import app.peanutbutter.tv.ui.compose.setPbContent
 import android.content.Intent
 import android.os.Bundle
 import androidx.activity.compose.setContent
@@ -87,7 +88,7 @@ class PairingActivity : FragmentActivity() {
         } else {
             autoFind(saved)
         }
-        setContent {
+        setPbContent {
             PairingScreen(
                 ui,
                 onChange = {
