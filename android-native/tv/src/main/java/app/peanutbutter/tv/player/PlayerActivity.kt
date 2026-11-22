@@ -246,23 +246,34 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
 
 
         val sid = sessionId
-        if (localTorrent) {
-            val mag = magnet
-            if (!mag.isNullOrBlank() && pendingUrl.isNullOrBlank()) {
-                // Flutter parity: start on-device torrent inside the player.
-                waitJob = lifecycleScope.launch { startLocalTorrentAndPlay(mag) }
+        // Something already watched: ask Resume or Start over first, then
+        // fetch and buffer from the point picked (it used to buffer from the
+        // old point and ask only once the video was ready).
+        val begin: () -> Unit = {
+            if (localTorrent) {
+                val mag = magnet
+                if (!mag.isNullOrBlank() && pendingUrl.isNullOrBlank()) {
+                    // Flutter parity: start on-device torrent inside the player.
+                    waitJob = lifecycleScope.launch { startLocalTorrentAndPlay(mag) }
+                } else if (!pendingUrl.isNullOrBlank()) {
+                    attachAndPlay()
+                    startLocalStatusPolling()
+                } else {
+                    statusText = getString(R.string.stream_start_failed)
+                    ui.spinner = false
+                }
             } else if (!pendingUrl.isNullOrBlank()) {
                 attachAndPlay()
-                startLocalStatusPolling()
             } else {
                 statusText = getString(R.string.stream_start_failed)
                 ui.spinner = false
             }
-        } else if (!pendingUrl.isNullOrBlank()) {
-            attachAndPlay()
+        }
+        if (resumeMs > 2_000L) {
+            resumeAsked = true
+            askResume(after = begin)
         } else {
-            statusText = getString(R.string.stream_start_failed)
-            ui.spinner = false
+            begin()
         }
         showChrome()
     }
@@ -1691,8 +1702,8 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
         ui.askLeave()
     }
 
-    /** The desktop's card: Continue from (focused) or Start over, then it plays. */
-    private fun askResume() {
+    /** The desktop's card: Continue from (focused) or Start over, then [after] starts it. */
+    private fun askResume(after: () -> Unit = { attachAndPlay() }) {
         askingResume = true
         var picked = false
         ui.onResume = { fromStart ->
@@ -1708,7 +1719,7 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
                     }
                     torrentStartedWithResume = false
                 }
-                attachAndPlay()
+                after()
             }
         }
         // Back on the card: leave, like Back before anything plays.

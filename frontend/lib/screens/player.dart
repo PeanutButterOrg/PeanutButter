@@ -278,9 +278,29 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   MediaSegment? _skippedSegment;
   int _durationMs = 0;
 
-  /// Opened part-way in: asked "Continue from … / Start over" once, paused.
+  /// Opened part-way in: asked "Continue from … / Start over" once, before
+  /// anything is fetched, so it buffers from the point picked.
   bool _resumeAsked = false;
   bool _askingResume = false;
+  Completer<bool>? _resumeChoice;
+  /// Where playback opens: [PlayerScreen.startMs], or 0 after Start over.
+  late int _startAtMs = widget.startMs;
+
+  /// Asks "Continue from … / Start over" once (if this was watched part-way)
+  /// and waits for the answer; true for Start over.
+  Future<bool> _askResumeFirst() async {
+    if (_resumeChoice != null) return _resumeChoice!.future;
+    final choice = _resumeChoice = Completer<bool>();
+    if (widget.startMs <= 0 || _fileId == 'trailer' || _isTrailer) {
+      choice.complete(false);
+    } else {
+      _resumeAsked = true;
+      if (mounted) setState(() => _askingResume = true);
+    }
+    final fromStart = await choice.future;
+    if (fromStart) _startAtMs = 0;
+    return fromStart;
+  }
 
   /// Subtitle look (kept on this device) and delay (this video only).
   int _subSize = 1;
@@ -2519,6 +2539,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   Future<void> _prepareStream() async {
     if (!widget.isStream || _streamOpening) return;
     _streamOpening = true;
+    // Resume or Start over first: the torrent then fetches from that point.
+    await _askResumeFirst();
+    if (!mounted || _closing) return;
     _wyzieHits = const [];
     if (mounted) setState(() => _buffering = true);
 
@@ -2547,7 +2570,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
             downloadMbps: 0,
             seeders: 0,
             peers: 0,
-            resumePosition: widget.startMs,
+            resumePosition: _startAtMs,
             status: 'starting',
             streamUrl: '',
           );
@@ -2577,7 +2600,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
                   downloadMbps: local.downloadMbps,
                   seeders: local.seeders,
                   peers: local.peers,
-                  resumePosition: widget.startMs,
+                  resumePosition: _startAtMs,
                   status: local.ready || local.torrentComplete ? 'ready' : 'buffering',
                   streamUrl: _url,
                   swarmActive: local.swarmActive,
@@ -2625,7 +2648,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
           downloadMbps: 0,
           seeders: 0,
           peers: 0,
-          resumePosition: widget.startMs,
+          resumePosition: _startAtMs,
           status: 'starting',
           streamUrl: widget.playbackUrl,
         );
@@ -2639,7 +2662,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
       progress: 0,
       seeders: 0,
       peers: 0,
-      resumePosition: widget.startMs,
+      resumePosition: _startAtMs,
       status: 'starting',
       streamUrl: widget.playbackUrl,
     );
@@ -2694,8 +2717,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
       // Brief settle so demuxer attaches before play() on progressive HTTP.
       await Future<void>.delayed(const Duration(milliseconds: 120));
       if (!mounted || _closing || _playerReleased) return;
-      // Waiting on "Continue from … / Start over": that answer starts it.
-      if (!_askingResume) await player.play();
+      await player.play();
       if (!mounted) return;
       setState(() {
         _streamOpened = true;
@@ -2730,7 +2752,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         downloadMbps: local.downloadMbps,
         seeders: local.seeders,
         peers: local.peers,
-        resumePosition: widget.startMs,
+        resumePosition: _startAtMs,
         status: local.ready || local.torrentComplete ? 'ready' : 'buffering',
         streamUrl: _url,
         swarmActive: local.swarmActive,
@@ -2896,20 +2918,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
         );
       }
     }
-    // Part-way in: hold on the first frame and ask, as in the design.
-    final ask = widget.startMs > 0 && !_resumeAsked && !isYoutube && _fileId != 'trailer';
-    await _player?.open(Media(url, httpHeaders: headers), play: !ask);
-    if (widget.startMs > 0) {
-      try {
-        await _player!.stream.duration.firstWhere((d) => d.inMilliseconds > 0).timeout(const Duration(seconds: 20));
-      } catch (_) {}
-      if (ask) {
-        _resumeAsked = true;
-        if (mounted) setState(() => _askingResume = true);
-        return;
-      }
-      await _seekPlayback(Duration(milliseconds: widget.startMs), immediate: true, resume: true);
-    }
+    // Part-way in: the answer comes before opening, then it opens right there.
+    if (!isYoutube) await _askResumeFirst();
+    if (!mounted || _closing) return;
+    final start = _startAtMs > 0 ? Duration(milliseconds: _startAtMs) : null;
+    await _player?.open(Media(url, httpHeaders: headers, start: start));
   }
 
   Future<void> _loadOpenSubtitles({required String language, bool applyFirst = true}) async {
@@ -4317,11 +4330,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   Future<void> _answerResume({required bool fromStart}) async {
     setState(() => _askingResume = false);
     _bumpChrome();
-    if (fromStart) {
-      await _player?.play();
-    } else {
-      await _seekPlayback(Duration(milliseconds: widget.startMs), immediate: true, resume: true);
-    }
+    final choice = _resumeChoice;
+    if (choice != null && !choice.isCompleted) choice.complete(fromStart);
   }
 
   /// "Continue watching" over the paused first frame.
