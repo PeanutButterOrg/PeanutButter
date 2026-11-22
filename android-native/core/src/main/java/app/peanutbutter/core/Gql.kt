@@ -59,6 +59,11 @@ query Person(${'$'}tmdbId: Int!) {
 }
 """
 
+    /** [PERSON] with backdrops, votes and popularity per credit (server 0.3.28+). */
+    val PERSON_FULL: String get() = PERSON
+        .replace("acting { tmdbId kind title role year posterUrl voteAverage titleId }", "acting { tmdbId kind title role year posterUrl backdropUrl voteAverage voteCount popularity titleId }")
+        .replace("crew { tmdbId kind title role year posterUrl voteAverage titleId }", "crew { tmdbId kind title role year posterUrl backdropUrl voteAverage voteCount popularity titleId }")
+
     /** The catalog title for a TMDB id, stored first if needed (server 0.3.26+). */
     const val OPEN_TMDB_TITLE = """
 mutation OpenTmdbTitle(${'$'}tmdbId: Int!, ${'$'}kind: TitleKind!) {

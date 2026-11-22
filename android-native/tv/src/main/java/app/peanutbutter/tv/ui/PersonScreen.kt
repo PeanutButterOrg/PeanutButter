@@ -1,9 +1,10 @@
 package app.peanutbutter.tv.ui
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.LocalBringIntoViewSpec
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -14,10 +15,11 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.GridItemSpan
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
@@ -25,34 +27,50 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.focusRestorer
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.tv.material3.Icon
 import app.peanutbutter.core.PersonCredit
 import app.peanutbutter.core.PersonDetails
 import app.peanutbutter.core.TitleItem
+import app.peanutbutter.tv.ui.compose.NoScroll
 import app.peanutbutter.tv.ui.compose.PbColors
 import app.peanutbutter.tv.ui.compose.PbImage
+import app.peanutbutter.tv.ui.compose.PbRadius
 import app.peanutbutter.tv.ui.compose.PbSize
 import app.peanutbutter.tv.ui.compose.PbSpace
 import app.peanutbutter.tv.ui.compose.PbType
 import app.peanutbutter.tv.ui.compose.PosterCard
+import app.peanutbutter.tv.ui.compose.RowScroll
+import app.peanutbutter.tv.ui.compose.ScoreChip
 import app.peanutbutter.tv.ui.compose.pbClick
 import app.peanutbutter.tv.ui.compose.pbFocusRing
+import kotlinx.coroutines.launch
 
 /** A cast or crew member's page; [PersonActivity] loads it. */
 class PersonState {
@@ -64,64 +82,98 @@ class PersonState {
 }
 
 private val gutter = PbSpace.gutterTv
-private val gap = 14.dp
 
-/** Photo, name, birth and bio, then everything they acted in and worked on. */
+/** One row of the page: a heading and its cards. */
+private class CreditRow(val key: String, val title: String, val credits: List<PersonCredit>, val wide: Boolean = false)
+
+/**
+ * Their best-known titles first (most TMDB votes, then popularity), then
+ * what they acted in by kind, newest first, then their work behind the camera.
+ */
+private fun rowsFor(p: PersonDetails): List<CreditRow> {
+    val all = (p.acting + p.crew).distinctBy { it.kind to it.tmdbId }
+    val known = all
+        .filter { it.voteCount > 0 || it.popularity > 0.0 }
+        .sortedWith(compareByDescending<PersonCredit> { it.voteCount }.thenByDescending { it.popularity })
+        .take(12)
+    val movies = p.acting.filter { it.kind.equals("MOVIE", true) }
+    val series = p.acting.filter { !it.kind.equals("MOVIE", true) }
+    return listOfNotNull(
+        CreditRow("known", "Known for", known, wide = true).takeIf { known.size >= 3 },
+        CreditRow("movies", "Movies", movies).takeIf { movies.isNotEmpty() },
+        CreditRow("series", "Series", series).takeIf { series.isNotEmpty() },
+        CreditRow("crew", "Behind the camera", p.crew).takeIf { p.crew.isNotEmpty() },
+    )
+}
+
+/**
+ * The person page, in the app's own look: their best-known title's art
+ * behind a portrait, name, birth and bio, then rows like Home's.
+ */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun PersonScreen(state: PersonState, onBack: () -> Unit, onOpen: (PersonCredit) -> Unit) {
-    val firstCard = remember { FocusRequester() }
-    val back = remember { FocusRequester() }
     val person = state.person
+    val rows = remember(person) { person?.let(::rowsFor).orEmpty() }
+    val list = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    val density = LocalDensity.current
+    val screenH = LocalConfiguration.current.screenHeightDp.dp
+    val back = remember { FocusRequester() }
+    val firstRow = remember { FocusRequester() }
     // Once, when the page first loads (more credits may arrive later).
     LaunchedEffect(person != null, state.error) {
-        runCatching {
-            if (person != null && (person.acting.isNotEmpty() || person.crew.isNotEmpty())) firstCard.requestFocus()
-            else back.requestFocus()
-        }
+        runCatching { if (rows.isNotEmpty()) firstRow.requestFocus() else back.requestFocus() }
     }
-    BoxWithConstraints(Modifier.fillMaxSize().background(PbColors.ground)) {
-        val width = maxWidth - gutter * 2
-        val columns = ((width + gap) / (PbSize.posterWidthTv + gap)).toInt().coerceAtLeast(3)
-        val cell = (width - gap * (columns - 1)) / columns
-        var first = true
-        LazyVerticalGrid(
-            columns = GridCells.Fixed(columns),
-            contentPadding = PaddingValues(start = gutter, end = gutter, top = 16.dp, bottom = 40.dp),
-            horizontalArrangement = Arrangement.spacedBy(gap),
-            verticalArrangement = Arrangement.spacedBy(gap + 6.dp),
-            modifier = Modifier.fillMaxSize(),
+    fun reveal(index: Int) = scope.launch {
+        if (index <= 1) list.animateScrollToItem(0)
+        else list.animateScrollToItem(index, -with(density) { (screenH * 0.12f).roundToPx() })
+    }
+    val heroArt = rows.firstOrNull { it.wide }?.credits?.firstOrNull { it.backdropUrl != null }
+        ?: person?.let { p -> (p.acting + p.crew).firstOrNull { it.backdropUrl != null } }
+
+    Box(Modifier.fillMaxSize().background(PbColors.ground)) {
+        CompositionLocalProvider(LocalBringIntoViewSpec provides NoScroll) {
+            LazyColumn(state = list, modifier = Modifier.fillMaxSize()) {
+                item(key = "hero") { Hero(state, heroArt) }
+                rows.forEachIndexed { i, row ->
+                    item(key = row.key) {
+                        CreditShelf(row, if (i == 0) firstRow else null, onOpen) { if (it) reveal(i + 1) }
+                    }
+                }
+                state.error?.let { msg ->
+                    item(key = "error") {
+                        BasicText(
+                            msg,
+                            style = PbType.body.copy(color = PbColors.textMuted, textAlign = TextAlign.Center),
+                            modifier = Modifier.fillMaxWidth().padding(48.dp),
+                        )
+                    }
+                }
+                item(key = "end") { Spacer(Modifier.height(56.dp)) }
+            }
+        }
+        // Only over the hero: further down it would sit on the row headings
+        // (the remote's Back still leaves).
+        val atTop = list.firstVisibleItemIndex == 0 && list.firstVisibleItemScrollOffset < 40
+        androidx.compose.animation.AnimatedVisibility(
+            visible = atTop,
+            enter = androidx.compose.animation.fadeIn(),
+            exit = androidx.compose.animation.fadeOut(),
+            modifier = Modifier.align(Alignment.TopStart),
         ) {
-            item(key = "header", span = { GridItemSpan(maxLineSpan) }) {
-                Header(state, back, onBack)
-            }
-            when {
-                state.error != null -> item(key = "error", span = { GridItemSpan(maxLineSpan) }) {
-                    BasicText(
-                        state.error.orEmpty(),
-                        style = PbType.body.copy(color = PbColors.textMuted, textAlign = TextAlign.Center),
-                        modifier = Modifier.fillMaxWidth().padding(48.dp),
-                    )
-                }
-                person == null -> Unit
-                else -> listOf("Acting" to person.acting, "Crew" to person.crew).forEach { (label, credits) ->
-                    if (credits.isEmpty()) return@forEach
-                    item(key = "head-$label", span = { GridItemSpan(maxLineSpan) }) {
-                        Row(verticalAlignment = Alignment.Bottom, modifier = Modifier.padding(top = 18.dp)) {
-                            BasicText(label, style = PbType.h2)
-                            Spacer(Modifier.width(10.dp))
-                            BasicText("${credits.size}", style = PbType.meta.copy(color = PbColors.textFaint))
+            BackButton(
+                Modifier
+                    .padding(start = 16.dp, top = 16.dp)
+                    .focusRequester(back)
+                    .focusProperties {
+                        if (rows.isNotEmpty()) {
+                            down = firstRow
+                            right = firstRow
                         }
-                    }
-                    val focusFirst = first
-                    first = false
-                    itemsIndexed(credits, key = { _, c -> "$label-${c.kind}-${c.tmdbId}" }) { i, c ->
-                        CreditCard(
-                            c, cell,
-                            if (focusFirst && i == 0) Modifier.focusRequester(firstCard) else Modifier,
-                        ) { onOpen(c) }
-                    }
-                }
-            }
+                    },
+                onBack,
+            )
         }
         if (state.opening) {
             Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.55f)), contentAlignment = Alignment.Center) {
@@ -132,104 +184,221 @@ fun PersonScreen(state: PersonState, onBack: () -> Unit, onOpen: (PersonCredit) 
 }
 
 @Composable
-private fun Header(state: PersonState, back: FocusRequester, onBack: () -> Unit) {
+private fun BackButton(modifier: Modifier, onClick: () -> Unit) {
+    var focused by remember { mutableStateOf(false) }
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = modifier
+            .pbFocusRing(focused, CircleShape, 1.1f)
+            .pbClick({ focused = it }, onClick)
+            .size(48.dp)
+            .background(Color(0xCC121218), CircleShape),
+    ) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, null, tint = PbColors.text, modifier = Modifier.size(26.dp)) }
+}
+
+/** Their best-known title's art, faded, behind portrait, name, facts and bio. */
+@Composable
+private fun Hero(state: PersonState, art: PersonCredit?) {
     val p = state.person
-    Column {
-        var backFocused by remember { mutableStateOf(false) }
+    val height = (LocalConfiguration.current.screenHeightDp * 0.6f).dp
+    Box(Modifier.fillMaxWidth().height(height)) {
+        art?.backdropUrl?.let { url ->
+            PbImage(url, Modifier.fillMaxSize(), 1200.dp, height, alignment = Alignment.TopCenter)
+        }
         Box(
-            contentAlignment = Alignment.Center,
-            modifier = Modifier
-                .focusRequester(back)
-                .pbFocusRing(backFocused, CircleShape, 1.1f)
-                .pbClick({ backFocused = it }, onBack)
-                .size(48.dp)
-                .background(if (backFocused) PbColors.focusSoft else Color.Transparent, CircleShape),
-        ) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, null, tint = PbColors.text, modifier = Modifier.size(28.dp)) }
-        Spacer(Modifier.height(12.dp))
-        Row {
+            Modifier.fillMaxSize().background(
+                Brush.horizontalGradient(
+                    0f to Color(0xFA0E0E12), 0.35f to Color(0xE60E0E12),
+                    0.6f to Color(0x990E0E12), 0.85f to Color(0x330E0E12),
+                ),
+            ),
+        )
+        Box(
+            Modifier.fillMaxSize().background(
+                Brush.verticalGradient(0.45f to Color.Transparent, 1f to PbColors.ground),
+            ),
+        )
+        Row(
+            verticalAlignment = Alignment.Bottom,
+            modifier = Modifier.align(Alignment.BottomStart).padding(start = gutter, end = gutter, bottom = 18.dp),
+        ) {
+            val shape = RoundedCornerShape(PbRadius.card + 4.dp)
             Box(
                 Modifier
-                    .size(176.dp, 264.dp)
-                    .clip(RoundedCornerShape(14.dp))
+                    .size(150.dp, 225.dp)
+                    .shadow(24.dp, shape)
+                    .clip(shape)
                     .background(PbColors.surface),
                 contentAlignment = Alignment.Center,
             ) {
                 if (p?.profileUrl.isNullOrBlank()) {
                     Icon(Icons.Rounded.Person, null, tint = Color.White.copy(alpha = 0.24f), modifier = Modifier.size(56.dp))
                 } else {
-                    PbImage(p?.profileUrl, Modifier.fillMaxSize(), 176.dp, 264.dp, alignment = Alignment.TopCenter)
+                    PbImage(p?.profileUrl, Modifier.fillMaxSize(), 150.dp, 225.dp, alignment = Alignment.TopCenter)
                 }
             }
             Spacer(Modifier.width(28.dp))
-            Column(Modifier.weight(1f)) {
+            Column(Modifier.widthIn(max = 720.dp)) {
+                p?.knownFor?.let {
+                    BasicText(it.uppercase(), style = PbType.label.copy(color = PbColors.primary, letterSpacing = 1.1.sp))
+                    Spacer(Modifier.height(6.dp))
+                }
                 BasicText(
                     p?.name ?: state.name,
                     maxLines = 2, overflow = TextOverflow.Ellipsis,
-                    style = PbType.hero.copy(fontSize = 46.sp, lineHeight = 50.sp),
+                    style = PbType.hero.copy(fontSize = 44.sp, lineHeight = 48.sp, letterSpacing = (-0.5).sp),
                 )
-                val meta = p?.let { personMeta(it) }.orEmpty()
-                if (meta.isNotEmpty()) {
-                    Spacer(Modifier.height(10.dp))
-                    BasicText(meta, style = PbType.meta.copy(fontSize = 16.sp, color = PbColors.textMuted))
+                p?.let { person ->
+                    val facts = facts(person)
+                    if (facts.isNotEmpty()) {
+                        Spacer(Modifier.height(10.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            facts.forEachIndexed { i, f ->
+                                if (i > 0) {
+                                    Box(Modifier.padding(horizontal = 9.dp).size(4.dp).background(Color.White.copy(alpha = 0.45f), CircleShape))
+                                }
+                                BasicText(f, maxLines = 1, style = PbType.meta.copy(fontSize = 15.sp, color = Color.White.copy(alpha = 0.82f)))
+                            }
+                        }
+                    }
                 }
                 p?.biography?.let {
-                    Spacer(Modifier.height(16.dp))
+                    Spacer(Modifier.height(12.dp))
                     BasicText(
-                        it, maxLines = 6, overflow = TextOverflow.Ellipsis,
-                        style = PbType.body.copy(color = Color(0xFFD6DAE3), lineHeight = 24.sp),
+                        it, maxLines = 3, overflow = TextOverflow.Ellipsis,
+                        style = PbType.body.copy(color = Color(0xFFD6DAE3), lineHeight = 23.sp),
                     )
                 }
-                if (p != null && p.checkingCredits > 0) {
-                    Spacer(Modifier.height(12.dp))
-                    BasicText("Checking more titles…", style = PbType.meta.copy(color = PbColors.textFaint))
-                }
-                if (p == null && state.error == null) {
-                    Spacer(Modifier.height(16.dp))
-                    BasicText("Loading…", style = PbType.body.copy(color = PbColors.textFaint))
+                when {
+                    p == null && state.error == null -> {
+                        Spacer(Modifier.height(12.dp))
+                        BasicText("Loading…", style = PbType.body.copy(color = PbColors.textFaint))
+                    }
+                    p != null && p.checkingCredits > 0 -> {
+                        Spacer(Modifier.height(10.dp))
+                        BasicText("Checking more titles…", style = PbType.meta.copy(color = PbColors.textFaint))
+                    }
                 }
             }
         }
     }
 }
 
-/** "Acting · Born 18 Dec 1963 in Shawnee, Oklahoma · Died …" */
-private fun personMeta(p: PersonDetails): String {
+/** "Born 21 Jul 2005 (age 21)", "Melbourne, Australia", "41 titles". */
+private fun facts(p: PersonDetails): List<String> {
     // SimpleDateFormat, not java.time: that needs Android 8 and TVs run 7.
-    fun date(d: String): String = runCatching {
-        val parsed = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).parse(d)!!
-        java.text.SimpleDateFormat("d MMM yyyy", java.util.Locale.US).format(parsed)
-    }.getOrDefault(d)
+    fun parse(d: String) = runCatching { java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).parse(d) }.getOrNull()
+    fun show(d: java.util.Date) = java.text.SimpleDateFormat("d MMM yyyy", java.util.Locale.US).format(d)
+    fun yearsBetween(a: java.util.Date, b: java.util.Date): Int {
+        val ca = java.util.Calendar.getInstance().apply { time = a }
+        val cb = java.util.Calendar.getInstance().apply { time = b }
+        var years = cb.get(java.util.Calendar.YEAR) - ca.get(java.util.Calendar.YEAR)
+        if (cb.get(java.util.Calendar.DAY_OF_YEAR) < ca.get(java.util.Calendar.DAY_OF_YEAR)) years--
+        return years
+    }
+    val born = p.birthday?.let(::parse)
+    val died = p.deathday?.let(::parse)
+    val titles = (p.acting + p.crew).distinctBy { it.kind to it.tmdbId }.size
     return listOfNotNull(
-        p.knownFor,
-        p.birthday?.let { b -> "Born ${date(b)}" + (p.placeOfBirth?.let { " in $it" } ?: "") },
-        p.deathday?.let { "Died ${date(it)}" },
-    ).joinToString("  ·  ")
+        born?.let { b ->
+            if (died != null) "${show(b)} – ${show(died)} (aged ${yearsBetween(b, died)})"
+            else "Born ${show(b)} (age ${yearsBetween(b, java.util.Date())})"
+        },
+        p.placeOfBirth,
+        "$titles title${if (titles == 1) "" else "s"}".takeIf { titles > 0 },
+    )
 }
 
+@OptIn(ExperimentalFoundationApi::class, ExperimentalComposeUiApi::class)
 @Composable
-private fun CreditCard(credit: PersonCredit, width: androidx.compose.ui.unit.Dp, modifier: Modifier, onClick: () -> Unit) {
-    // A poster card needs a title; credits outside the catalog get a stand-in id.
-    val item = TitleItem(
-        id = credit.titleId ?: "tmdb-${credit.kind}-${credit.tmdbId}",
-        kind = credit.kind,
-        title = credit.title,
-        year = credit.year,
-        posterUrl = credit.posterUrl,
-        tmdbVoteAverage = credit.voteAverage,
-    )
+private fun CreditShelf(
+    row: CreditRow,
+    focus: FocusRequester?,
+    onOpen: (PersonCredit) -> Unit,
+    onFocus: (Boolean) -> Unit,
+) {
+    Column(Modifier.padding(top = 14.dp).onFocusChanged { onFocus(it.hasFocus) }) {
+        Row(verticalAlignment = Alignment.Bottom, modifier = Modifier.padding(horizontal = gutter)) {
+            BasicText(row.title, style = PbType.h2)
+            Spacer(Modifier.width(10.dp))
+            BasicText("${row.credits.size}", style = PbType.meta.copy(color = PbColors.textFaint))
+        }
+        val first = remember { FocusRequester() }
+        CompositionLocalProvider(LocalBringIntoViewSpec provides RowScroll) {
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = gutter, vertical = 14.dp),
+                horizontalArrangement = Arrangement.spacedBy(if (row.wide) 16.dp else 14.dp),
+                modifier = (if (focus != null) Modifier.focusRequester(focus) else Modifier).focusRestorer { first },
+            ) {
+                itemsIndexed(row.credits, key = { _, c -> "${c.kind}-${c.tmdbId}" }) { i, c ->
+                    Box(if (i == 0) Modifier.focusRequester(first) else Modifier) {
+                        if (row.wide) KnownForCard(c) { onOpen(c) } else CreditCard(c, PbSize.posterWidthTv) { onOpen(c) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** A credit as a TitleItem, for the poster card (outside the catalog: a stand-in id). */
+private fun PersonCredit.asTitle() = TitleItem(
+    id = titleId ?: "tmdb-$kind-$tmdbId",
+    kind = kind,
+    title = title,
+    year = year,
+    posterUrl = posterUrl,
+    backdropUrl = backdropUrl,
+    tmdbVoteAverage = voteAverage,
+)
+
+private fun PersonCredit.caption() = listOfNotNull(year?.toString(), role).joinToString(" · ")
+
+@Composable
+private fun CreditCard(credit: PersonCredit, width: Dp, onClick: () -> Unit) {
     Column(Modifier.width(width)) {
-        PosterCard(item, width, onClick, modifier)
+        PosterCard(credit.asTitle(), width, onClick)
         Spacer(Modifier.height(8.dp))
         BasicText(
             credit.title, maxLines = 1, overflow = TextOverflow.Ellipsis,
             style = PbType.body.copy(fontSize = 14.sp, fontWeight = FontWeight.W600),
         )
-        val sub = listOfNotNull(credit.year?.toString(), credit.role).joinToString(" · ")
-        if (sub.isNotEmpty()) {
+        val caption = credit.caption()
+        if (caption.isNotEmpty()) {
             BasicText(
-                sub, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                caption, maxLines = 1, overflow = TextOverflow.Ellipsis,
                 style = PbType.body.copy(fontSize = 13.sp, color = Color.White.copy(alpha = 0.54f)),
             )
+        }
+    }
+}
+
+/** Known for: the title's wide art with its name, year and their role on it. */
+@Composable
+private fun KnownForCard(credit: PersonCredit, onClick: () -> Unit) {
+    var focused by remember { mutableStateOf(false) }
+    val width = PbSize.wideCardWidthTv
+    val height = width * 9f / 16f
+    val shape = RoundedCornerShape(PbRadius.card)
+    Box(
+        Modifier
+            .size(width, height)
+            .pbFocusRing(focused, RoundedCornerShape(PbRadius.card + 3.dp))
+            .pbClick({ focused = it }, onClick)
+            .clip(shape)
+            .background(PbColors.surface),
+    ) {
+        PbImage(credit.backdropUrl ?: credit.posterUrl, Modifier.fillMaxSize(), width, height)
+        Box(Modifier.fillMaxSize().background(Brush.verticalGradient(0.35f to Color.Transparent, 1f to Color(0xE6000000))))
+        Box(Modifier.align(Alignment.TopStart).padding(8.dp)) { ScoreChip(credit.asTitle()) }
+        Column(Modifier.align(Alignment.BottomStart).padding(start = 12.dp, end = 12.dp, bottom = 12.dp)) {
+            BasicText(credit.title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = PbType.title)
+            val caption = credit.caption()
+            if (caption.isNotEmpty()) {
+                BasicText(
+                    caption, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    style = PbType.meta.copy(color = PbColors.textMuted),
+                )
+            }
         }
     }
 }

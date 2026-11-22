@@ -892,7 +892,11 @@ pub struct PersonCredit {
     pub role: Option<String>,
     pub year: Option<i32>,
     pub poster_url: Option<String>,
+    pub backdrop_url: Option<String>,
     pub vote_average: Option<f64>,
+    /// TMDB votes and popularity: rank what the person is known for.
+    pub vote_count: i32,
+    pub popularity: f64,
     /// Set when it is in the catalog; otherwise open it with `openTmdbTitle`.
     pub title_id: Option<Uuid>,
 }
@@ -906,7 +910,10 @@ impl PersonDetails {
             role: c.role,
             year: c.date.as_deref().and_then(|d| d.get(..4)).and_then(|y| y.parse().ok()),
             poster_url: config.poster_url(&c.poster_path),
+            backdrop_url: crate::config::backdrop_url(&config.public_url, &c.backdrop_path),
             vote_average: c.vote_average,
+            vote_count: c.vote_count,
+            popularity: c.popularity,
             title_id: c.title_id,
         };
         Self {

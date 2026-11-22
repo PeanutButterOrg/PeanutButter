@@ -156,6 +156,10 @@ data class PersonCredit(
     val posterUrl: String? = null,
     val voteAverage: Double? = null,
     val titleId: String? = null,
+    /** Server 0.3.28+: wide art, and how well known it is (votes, popularity). */
+    val backdropUrl: String? = null,
+    val voteCount: Int = 0,
+    val popularity: Double = 0.0,
 )
 
 data class Season(

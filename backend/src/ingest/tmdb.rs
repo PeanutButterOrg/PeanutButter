@@ -3256,7 +3256,11 @@ pub struct PersonCredit {
     pub role: Option<String>,
     pub date: Option<String>,
     pub poster_path: Option<String>,
+    pub backdrop_path: Option<String>,
     pub vote_average: Option<f64>,
+    /// How many TMDB votes: with popularity, what a person is known for.
+    pub vote_count: i32,
+    pub popularity: f64,
     /// The catalog title, when it is in the catalog already.
     pub title_id: Option<Uuid>,
 }
@@ -3294,7 +3298,12 @@ struct TmdbPersonCredit {
     release_date: Option<String>,
     first_air_date: Option<String>,
     poster_path: Option<String>,
+    backdrop_path: Option<String>,
     vote_average: Option<f64>,
+    #[serde(default)]
+    vote_count: Option<i32>,
+    #[serde(default)]
+    popularity: Option<f64>,
     #[serde(default)]
     adult: Option<bool>,
     #[serde(default)]
@@ -3353,7 +3362,10 @@ pub async fn person_page(ctx: &IngestContext, person_id: i32) -> Result<PersonPa
                         role,
                         date: c.release_date.or(c.first_air_date).filter(|d| !d.is_empty()),
                         poster_path: c.poster_path,
+                        backdrop_path: c.backdrop_path,
                         vote_average: c.vote_average.filter(|v| *v > 0.0),
+                        vote_count: c.vote_count.unwrap_or(0),
+                        popularity: c.popularity.unwrap_or(0.0),
                         title_id: None,
                     });
                 }
