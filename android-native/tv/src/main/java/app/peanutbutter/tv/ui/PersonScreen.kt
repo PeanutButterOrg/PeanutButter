@@ -87,6 +87,13 @@ private val gutter = PbSpace.gutterTv
 /** One row of the page: a heading and its cards. */
 private class CreditRow(val key: String, val title: String, val credits: List<PersonCredit>, val wide: Boolean = false)
 
+/** Only what's out (older servers also send announced titles): a year, and not a future one. */
+private fun PersonDetails.released(): PersonDetails {
+    val thisYear = java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)
+    fun out(c: PersonCredit) = (c.year ?: Int.MAX_VALUE) <= thisYear
+    return copy(acting = acting.filter(::out), crew = crew.filter(::out))
+}
+
 /**
  * Their best-known titles first (most TMDB votes, then popularity), then
  * what they acted in by kind, newest first, then their work behind the camera.
@@ -117,7 +124,7 @@ private fun rowsFor(p: PersonDetails): List<CreditRow> {
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun PersonScreen(state: PersonState, onBack: () -> Unit, onOpen: (PersonCredit) -> Unit) {
-    val person = state.person
+    val person = remember(state.person) { state.person?.released() }
     val rows = remember(person) { person?.let(::rowsFor).orEmpty() }
     val list = rememberLazyListState()
     val scope = rememberCoroutineScope()
@@ -210,7 +217,7 @@ private fun BackButton(modifier: Modifier, onClick: () -> Unit) {
 /** Their best-known title's art, faded, behind portrait, name, facts and bio. */
 @Composable
 private fun Hero(state: PersonState, art: PersonCredit?) {
-    val p = state.person
+    val p = remember(state.person) { state.person?.released() }
     // As tall as its content, not a share of the screen: the first row's
     // titles must fit below it, and without art a tall hero is a black gap.
     Box(Modifier.fillMaxWidth()) {

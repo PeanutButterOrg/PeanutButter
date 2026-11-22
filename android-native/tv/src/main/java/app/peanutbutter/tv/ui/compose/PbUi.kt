@@ -624,3 +624,42 @@ fun Modifier.pbDrawScale(scale: Float): Modifier =
 fun Modifier.pbHeaderShade(strength: Float): Modifier = drawBehind {
     if (strength > 0f) drawRect(Color.Black.copy(alpha = 0.72f * strength))
 }
+
+/**
+ * A hero title in a slot of fixed height, so nothing around it moves from
+ * one title to the next: one line, shrinking (to 70%) until it fits; a name
+ * still too long goes to two lines at half size in the same height.
+ */
+@Composable
+fun PbFitTitle(text: String, style: androidx.compose.ui.text.TextStyle, modifier: Modifier = Modifier) {
+    val base = style.fontSize.value
+    val line = 1.15f
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    // A little over one line, so descenders (g, y) aren't clipped.
+    val slot = with(density) { (base * 1.22f).sp.toDp() }
+    androidx.compose.foundation.layout.BoxWithConstraints(
+        modifier.fillMaxWidth().height(slot),
+        contentAlignment = Alignment.BottomStart,
+    ) {
+        val measurer = androidx.compose.ui.text.rememberTextMeasurer()
+        val width = constraints.maxWidth
+        val (size, lines) = remember(text, width, style) {
+            var s = base
+            while (s >= base * 0.7f) {
+                val r = measurer.measure(
+                    text, style.copy(fontSize = s.sp, lineHeight = (s * line).sp), maxLines = 1,
+                    constraints = androidx.compose.ui.unit.Constraints(maxWidth = width),
+                )
+                if (!r.hasVisualOverflow) return@remember s to 1
+                s -= 2f
+            }
+            base * 0.5f to 2
+        }
+        androidx.compose.foundation.text.BasicText(
+            text,
+            maxLines = lines,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+            style = style.copy(fontSize = size.sp, lineHeight = (size * line).sp),
+        )
+    }
+}

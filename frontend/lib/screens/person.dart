@@ -37,9 +37,15 @@ class _CreditRow {
 
 /// Their best-known titles first (most TMDB votes, then popularity), then
 /// what they acted in by kind, newest first, then their work behind the camera.
+/// Only what's out (older servers also send announced titles): a year, and
+/// not a future one.
+bool _isOut(PersonCredit c) => c.year != null && c.year! <= DateTime.now().year;
+
 List<_CreditRow> _rowsFor(PersonDetails p) {
+  final acting = p.acting.where(_isOut).toList();
+  final crewAll = p.crew.where(_isOut).toList();
   final seen = <String>{};
-  final all = [...p.acting, ...p.crew].where((c) => seen.add('${c.kind}-${c.tmdbId}')).toList();
+  final all = [...acting, ...crewAll].where((c) => seen.add('${c.kind}-${c.tmdbId}')).toList();
   final known = all.where((c) => c.voteCount > 0 || c.popularity > 0).toList()
     ..sort((a, b) {
       final v = b.voteCount.compareTo(a.voteCount);
@@ -48,9 +54,9 @@ List<_CreditRow> _rowsFor(PersonDetails p) {
   // Newest first; titles without a year go last.
   List<PersonCredit> newest(Iterable<PersonCredit> credits) =>
       credits.toList()..sort((a, b) => (b.year ?? -1).compareTo(a.year ?? -1));
-  final movies = newest(p.acting.where((c) => c.kind == 'MOVIE'));
-  final series = newest(p.acting.where((c) => c.kind != 'MOVIE'));
-  final crew = newest(p.crew);
+  final movies = newest(acting.where((c) => c.kind == 'MOVIE'));
+  final series = newest(acting.where((c) => c.kind != 'MOVIE'));
+  final crew = newest(crewAll);
   return [
     if (known.length >= 3) _CreditRow('Known for', known.take(12).toList(), wide: true),
     if (movies.isNotEmpty) _CreditRow('Movies', movies),
@@ -224,7 +230,7 @@ class _Hero extends StatelessWidget {
     final born = p.birthday == null ? null : DateTime.tryParse(p.birthday!);
     final died = p.deathday == null ? null : DateTime.tryParse(p.deathday!);
     final seen = <String>{};
-    final titles = [...p.acting, ...p.crew].where((c) => seen.add('${c.kind}-${c.tmdbId}')).length;
+    final titles = [...p.acting, ...p.crew].where(_isOut).where((c) => seen.add('${c.kind}-${c.tmdbId}')).length;
     return [
       if (born != null)
         died != null

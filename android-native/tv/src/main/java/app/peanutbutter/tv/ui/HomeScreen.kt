@@ -83,6 +83,7 @@ import app.peanutbutter.tv.ui.compose.NoScroll
 import app.peanutbutter.tv.ui.compose.RowScroll
 import app.peanutbutter.tv.ui.compose.PbButton
 import app.peanutbutter.tv.ui.compose.PbColors
+import app.peanutbutter.tv.ui.compose.PbFitTitle
 import app.peanutbutter.tv.ui.compose.PbImage
 import app.peanutbutter.tv.ui.compose.PbLogo
 import app.peanutbutter.tv.ui.compose.PbRadius
@@ -417,22 +418,17 @@ private fun HeroCopy(item: TitleItem, eyebrow: String) {
             eyebrow.uppercase(),
             style = PbType.label.copy(color = PbColors.primary, letterSpacing = 1.1.sp),
         )
-        Spacer(Modifier.height(8.dp))
-        BasicText(
-            item.displayTitle,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-            style = PbType.hero.copy(lineHeight = 46.sp, letterSpacing = (-1).sp),
-        )
-        Spacer(Modifier.height(12.dp))
+        PbFitTitle(item.displayTitle, PbType.hero.copy(letterSpacing = (-1).sp))
+        Spacer(Modifier.height(2.dp))
         Box(Modifier.height(28.dp), contentAlignment = Alignment.CenterStart) { MetaRow(item) }
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(10.dp))
+        // Eyebrow, title and facts sit tight so the synopsis gets a third line.
         BasicText(
             item.synopsis.orEmpty(),
-            maxLines = 2,
+            maxLines = 3,
             overflow = TextOverflow.Ellipsis,
             style = PbType.body.copy(color = Color(0xFFD6DAE3), lineHeight = 23.sp),
-            modifier = Modifier.height(48.dp),
+            modifier = Modifier.height(71.dp),
         )
         Spacer(Modifier.height(12.dp))
     }
