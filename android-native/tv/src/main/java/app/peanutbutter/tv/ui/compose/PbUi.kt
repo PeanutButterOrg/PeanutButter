@@ -617,19 +617,10 @@ fun Modifier.pbDrawScale(scale: Float): Modifier =
     }
 
 /**
- * A soft dark fade behind a header that content scrolls under: [extend]
- * past the header's bottom it reaches transparent (no hard edge).
+ * A see-through black bar behind a header that content scrolls under:
+ * flat, inside the header's own bounds (no shadow below it). [strength]
+ * 0 is clear (at the top of the page), 1 is fully shaded.
  */
-fun Modifier.pbHeaderShade(strength: Float, extend: Dp = 56.dp): Modifier = drawBehind {
-    val total = size.height + extend.toPx()
-    val edge = size.height / total
-    drawRect(
-        Brush.verticalGradient(
-            0f to PbColors.ground.copy(alpha = 0.86f + 0.1f * strength),
-            edge to PbColors.ground.copy(alpha = 0.3f + 0.45f * strength),
-            1f to PbColors.ground.copy(alpha = 0f),
-            endY = total,
-        ),
-        size = androidx.compose.ui.geometry.Size(size.width, total),
-    )
+fun Modifier.pbHeaderShade(strength: Float): Modifier = drawBehind {
+    if (strength > 0f) drawRect(Color.Black.copy(alpha = 0.72f * strength))
 }

@@ -152,16 +152,27 @@ fun HomeScreen(state: HomeState, actions: HomeActions) {
         nav.moveTo = { spot ->
             nav.pending = spot
             scope.launch {
-                // The row may be off screen (not laid out yet): bring it in first.
-                if (spot.row < 0) list.animateScrollToItem(0)
-                else list.animateScrollToItem(spot.row + shelfOffset, -topBarPx)
-                withFrameNanos { }
-                runCatching {
+                fun focus() = runCatching {
                     when {
                         spot.row < 0 -> play.requestFocus()
                         spot.seeAll -> nav.seeAll(spot.row).requestFocus()
                         else -> nav.cards(spot.row).requestFocus()
                     }
+                }.isSuccess
+                val index = if (spot.row < 0) 0 else spot.row + shelfOffset
+                val scroll = launch {
+                    if (spot.row < 0) list.animateScrollToItem(0)
+                    else list.animateScrollToItem(index, -topBarPx)
+                }
+                // Focus moves at once when the row is on screen (one frame lets
+                // a pending See all become focusable); the scroll runs alongside.
+                // An off-screen row is only laid out once the scroll brings it in.
+                withFrameNanos { }
+                val laidOut = list.layoutInfo.visibleItemsInfo.any { it.index == index }
+                if (!laidOut || !focus()) {
+                    scroll.join()
+                    withFrameNanos { }
+                    focus()
                 }
                 withFrameNanos { }
                 nav.pending = null

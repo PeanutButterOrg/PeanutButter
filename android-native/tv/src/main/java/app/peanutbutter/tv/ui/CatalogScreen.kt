@@ -37,6 +37,7 @@ import androidx.compose.material.icons.rounded.ArrowDropDown
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -53,8 +54,11 @@ import androidx.compose.ui.layout.onSizeChanged
 import app.peanutbutter.tv.ui.compose.pbHeaderShade
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.focusRestorer
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -120,6 +124,7 @@ private val gutter = PbSpace.gutterTv
 private val gap = 14.dp
 
 /** The desktop's catalog: name left, filters top right, the #1 featured, then the grid. */
+@OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 fun CatalogScreen(state: CatalogState, actions: CatalogActions) {
     val grid = rememberLazyGridState()
@@ -138,6 +143,8 @@ fun CatalogScreen(state: CatalogState, actions: CatalogActions) {
     }
 
     LaunchedEffect(state.reset) { if (state.reset > 0) grid.scrollToItem(0) }
+    // Back up in the header: show the top of the page again (it sits under it).
+    LaunchedEffect(inHeader) { if (inHeader) grid.animateScrollToItem(0) }
     // Start on the first filter box once the page is in (not on Back).
     var focusedOnce by remember { mutableStateOf(false) }
     LaunchedEffect(state.loading, firstFilter) {
@@ -165,6 +172,10 @@ fun CatalogScreen(state: CatalogState, actions: CatalogActions) {
         // The header floats over the grid with a fade, so posters scroll
         // softly under it instead of stopping at a hard line.
         var headerHeight by remember { mutableStateOf(0.dp) }
+        // The grid starts under the header (posters scroll beneath it), so
+        // the D-pad's own search never finds it below: Down goes there by hand.
+        val gridFocus = remember { FocusRequester() }
+        val gridShown = !(state.loading && state.items.isEmpty()) && !state.empty
         val density = androidx.compose.ui.platform.LocalDensity.current
         Box(Modifier.fillMaxSize()) {
             BoxWithConstraints(Modifier.fillMaxSize()) {
@@ -180,17 +191,28 @@ fun CatalogScreen(state: CatalogState, actions: CatalogActions) {
                         style = PbType.body.copy(color = PbColors.textMuted, textAlign = TextAlign.Center),
                         modifier = Modifier.align(Alignment.Center).padding(horizontal = 96.dp),
                     )
-                    else -> LazyVerticalGrid(
+                    else -> CompositionLocalProvider(
+                        androidx.compose.foundation.gestures.LocalBringIntoViewSpec provides
+                            remember(headerHeight, density) { belowHeader(with(density) { (headerHeight + 10.dp).toPx() }) },
+                    ) { LazyVerticalGrid(
                         columns = GridCells.Fixed(columns),
                         state = grid,
                         contentPadding = PaddingValues(start = gutter, end = gutter, top = headerHeight + 10.dp, bottom = 32.dp),
                         horizontalArrangement = Arrangement.spacedBy(gap),
                         verticalArrangement = Arrangement.spacedBy(gap + 4.dp),
-                        modifier = Modifier.fillMaxSize(),
+                        modifier = Modifier.fillMaxSize().focusRequester(gridFocus).focusRestorer(),
                     ) {
                         if (showFeature) {
                             item(key = "feature", span = { GridItemSpan(maxLineSpan) }) {
-                                FeatureRow(state, items.take(4), width, actions)
+                                // Its buttons sit low in the card: show the whole card, from the top.
+                                val whole = remember { androidx.compose.foundation.relocation.BringIntoViewRequester() }
+                                Box(
+                                    Modifier
+                                        .bringIntoViewRequester(whole)
+                                        .onFocusChanged { if (it.hasFocus) scope.launch { whole.bringIntoView() } },
+                                ) {
+                                    FeatureRow(state, items.take(4), width, actions)
+                                }
                             }
                         }
                         val grid = if (showFeature) items.drop(4) else items
@@ -210,7 +232,7 @@ fun CatalogScreen(state: CatalogState, actions: CatalogActions) {
                                 )
                             }
                         }
-                    }
+                    } }
                 }
             }
             val shade = if (grid.firstVisibleItemIndex > 0 || grid.firstVisibleItemScrollOffset > 0) 1f else 0f
@@ -218,6 +240,7 @@ fun CatalogScreen(state: CatalogState, actions: CatalogActions) {
                 Modifier
                     .fillMaxWidth()
                     .onSizeChanged { headerHeight = with(density) { it.height.toDp() } }
+                    .focusProperties { if (gridShown) down = gridFocus }
                     .pbHeaderShade(shade),
             ) {
                 Header(state, actions, filterFocus) { inHeader = it }
@@ -389,5 +412,22 @@ private fun Spinner(modifier: Modifier = Modifier) {
             PbColors.primary, angle, 270f, false,
             style = androidx.compose.ui.graphics.drawscope.Stroke(3.dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round),
         )
+    }
+}
+
+/**
+ * Brings a focused card into view below the floating header (the grid runs
+ * under it), and no further than needed; a card taller than the room shows
+ * from its top.
+ */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+private fun belowHeader(topPx: Float) = object : androidx.compose.foundation.gestures.BringIntoViewSpec {
+    override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float): Float {
+        val bottom = containerSize - topPx * 0.25f
+        return when {
+            offset < topPx || size > bottom - topPx -> offset - topPx
+            offset + size > bottom -> offset + size - bottom
+            else -> 0f
+        }
     }
 }

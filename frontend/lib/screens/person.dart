@@ -60,6 +60,8 @@ class _PersonScreenState extends ConsumerState<PersonScreen> {
   Timer? _recheck;
   int? _lastChecking;
   Duration _wait = const Duration(seconds: 3);
+  int _stalled = 0;
+  bool _gaveUp = false;
 
   @override
   void dispose() {
@@ -71,12 +73,22 @@ class _PersonScreenState extends ConsumerState<PersonScreen> {
   /// stops when the page closes). Every 3 s while titles keep arriving,
   /// easing off to 15 s while none do.
   void _scheduleRecheck(PersonDetails? p) {
-    if (p == null || p.checkingCredits == 0 || _recheck != null) return;
+    if (p == null || p.checkingCredits == 0 || _recheck != null || _gaveUp) return;
     final last = _lastChecking;
     if (last != null) {
-      _wait = p.checkingCredits < last
+      final progressed = p.checkingCredits < last;
+      _wait = progressed
           ? const Duration(seconds: 3)
           : Duration(milliseconds: (_wait.inMilliseconds * 3 ~/ 2).clamp(3000, 15000));
+      _stalled = progressed ? 0 : _stalled + 1;
+      // Older servers never settle titles they couldn't check: stop asking
+      // (and drop "Checking more titles…") after a while with no progress.
+      if (_stalled >= 4) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) setState(() => _gaveUp = true);
+        });
+        return;
+      }
     }
     _lastChecking = p.checkingCredits;
     _recheck = Timer(_wait, () {
@@ -130,7 +142,13 @@ class _PersonScreenState extends ConsumerState<PersonScreen> {
           CustomScrollView(
             slivers: [
               SliverToBoxAdapter(
-                child: _Hero(person: p, name: widget.name, art: art, loading: p == null && person.isLoading),
+                child: _Hero(
+                  person: p,
+                  name: widget.name,
+                  art: art,
+                  loading: p == null && person.isLoading,
+                  checking: p != null && p.checkingCredits > 0 && !_gaveUp,
+                ),
               ),
               if (person.hasError && p == null)
                 SliverToBoxAdapter(
@@ -173,12 +191,19 @@ class _PersonScreenState extends ConsumerState<PersonScreen> {
 
 /// Their best-known title's art, faded, behind portrait, name, facts and bio.
 class _Hero extends StatelessWidget {
-  const _Hero({required this.person, required this.name, required this.art, required this.loading});
+  const _Hero({
+    required this.person,
+    required this.name,
+    required this.art,
+    required this.loading,
+    required this.checking,
+  });
 
   final PersonDetails? person;
   final String name;
   final PersonCredit? art;
   final bool loading;
+  final bool checking;
 
   static const _months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -297,7 +322,7 @@ class _Hero extends StatelessWidget {
                         if (loading) ...[
                           const SizedBox(height: 12),
                           Text('Loading…', style: PbType.body.copyWith(color: PbColors.textFaint)),
-                        ] else if (p != null && p.checkingCredits > 0) ...[
+                        ] else if (checking) ...[
                           const SizedBox(height: 10),
                           Text('Checking more titles…', style: PbType.meta.copyWith(color: PbColors.textFaint)),
                         ],

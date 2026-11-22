@@ -29,16 +29,20 @@ class PersonActivity : FragmentActivity() {
                 // The server is still checking some titles: ask until it's done
                 // (this stops when the page closes). Every 3 s while titles
                 // keep arriving, easing off to 15 s while none do.
+                // Older servers never settle titles they couldn't check, so it
+                // gives up (and drops "Checking more titles…") after a while
+                // with no progress.
                 var wait = 3_000L
+                var stalled = 0
                 while (person.checkingCredits > 0) {
                     kotlinx.coroutines.delay(wait)
                     val next = runCatching { api.person(tmdbId) }.getOrNull()
                     val progressed = next != null && next.checkingCredits < person.checkingCredits
                     wait = if (progressed) 3_000L else (wait * 3 / 2).coerceAtMost(15_000L)
-                    if (next != null) {
-                        person = next
-                        ui.person = next
-                    }
+                    stalled = if (progressed) 0 else stalled + 1
+                    if (next != null) person = next
+                    if (stalled >= 4) person = person.copy(checkingCredits = 0)
+                    ui.person = person
                 }
             } catch (e: Exception) {
                 ui.error = getString(R.string.person_load_failed)

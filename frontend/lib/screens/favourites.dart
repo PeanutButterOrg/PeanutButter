@@ -52,18 +52,8 @@ class FavouritesScreen extends ConsumerWidget {
         overlapHeader: true,
         headerFocus: null,
         header: DecoratedBox(
-          decoration: const BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topCenter,
-              end: Alignment.bottomCenter,
-              colors: [
-                Color(0xB30E0E12),
-                Color(0x660E0E12),
-                Color(0x000E0E12),
-              ],
-              stops: [0.0, 0.7, 1.0],
-            ),
-          ),
+          // A flat see-through black bar, no shadow below it.
+          decoration: const BoxDecoration(color: Color(0xB8000000)),
           child: SafeArea(
             bottom: false,
             child: Padding(
