@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 import 'dart:io' show Platform;
 import 'dart:ui' show PointerDeviceKind;
 
@@ -4443,27 +4444,28 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with WidgetsBinding
   }
 
   SubtitleViewConfiguration _subtitleView(double bottom) {
-    const outline = [
-      Shadow(color: Colors.black, offset: Offset(-1.5, -1.5)),
-      Shadow(color: Colors.black, offset: Offset(1.5, -1.5)),
-      Shadow(color: Colors.black, offset: Offset(-1.5, 1.5)),
-      Shadow(color: Colors.black, offset: Offset(1.5, 1.5)),
-      Shadow(color: Colors.black, offset: Offset(0, 2)),
-      Shadow(color: Colors.black, offset: Offset(0, -2)),
-      Shadow(color: Colors.black, offset: Offset(2, 0)),
-      Shadow(color: Colors.black, offset: Offset(-2, 0)),
+    final size = _subSizes[_subSize];
+    // Outline: a ring of hard shadows around each glyph reads as a solid
+    // stroke (the eight 1.5 px ones before barely showed). Sized to the text.
+    final r = size * 0.07;
+    final outline = [
+      for (var i = 0; i < 16; i++)
+        Shadow(color: Colors.black, offset: Offset(r * math.cos(i * math.pi / 8), r * math.sin(i * math.pi / 8))),
     ];
     return SubtitleViewConfiguration(
       padding: EdgeInsets.fromLTRB(16, 0, 16, bottom),
       style: TextStyle(
         height: 1.4,
-        fontSize: _subSizes[_subSize],
+        fontSize: size,
         color: Colors.white,
         fontWeight: FontWeight.w600,
         backgroundColor: _subBg == 'box' ? const Color(0xAA000000) : null,
         shadows: switch (_subBg) {
           'outline' => outline,
-          'shadow' => const [Shadow(color: Color(0xE6000000), blurRadius: 8, offset: Offset(0, 2))],
+          'shadow' => [
+              Shadow(color: const Color(0xF2000000), blurRadius: size * 0.3, offset: Offset(0, size * 0.06)),
+              Shadow(color: const Color(0x99000000), blurRadius: size * 0.12),
+            ],
           _ => null,
         },
       ),
