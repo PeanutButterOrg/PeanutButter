@@ -591,11 +591,22 @@ fun PbSpinner(modifier: Modifier = Modifier) {
 @Composable
 fun PbTab(label: String, selected: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
     var focused by remember { mutableStateOf(false) }
+    // Focus wins over selection (a selected tab must still show focus
+    // arriving): focused is a longer, thicker white line; selected alone is
+    // the shorter amber one.
     val line by androidx.compose.animation.core.animateDpAsState(
-        if (selected || focused) 22.dp else 0.dp, tween(120), label = "tab",
+        when {
+            focused -> 30.dp
+            selected -> 22.dp
+            else -> 0.dp
+        },
+        tween(120), label = "tab",
+    )
+    val thickness by androidx.compose.animation.core.animateDpAsState(
+        if (focused) 3.dp else 2.dp, tween(120), label = "tabThick",
     )
     val lineColor by androidx.compose.animation.animateColorAsState(
-        if (selected) PbColors.primary else PbColors.text, tween(120), label = "tabColor",
+        if (focused || !selected) PbColors.text else PbColors.primary, tween(120), label = "tabColor",
     )
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -612,7 +623,7 @@ fun PbTab(label: String, selected: Boolean, modifier: Modifier = Modifier, onCli
             ),
         )
         Spacer(Modifier.height(5.dp))
-        Box(Modifier.width(line).height(2.dp).background(lineColor, RoundedCornerShape(2.dp)))
+        Box(Modifier.width(line).height(thickness).background(lineColor, RoundedCornerShape(2.dp)))
     }
 }
 

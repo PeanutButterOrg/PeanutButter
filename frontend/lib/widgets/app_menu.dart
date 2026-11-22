@@ -402,12 +402,15 @@ class _AppFilterChipState extends State<AppFilterChip> {
                   ),
                 ),
                 const SizedBox(height: 5),
+                // Focus (or the pointer) wins over selection, so a selected
+                // tab still shows focus arriving: a longer, thicker white line;
+                // selected alone is the shorter amber one.
                 AnimatedContainer(
                   duration: PbMotion.fast,
-                  height: 2,
-                  width: lit ? 22 : 0,
+                  height: (_focus || _hover) ? 3 : 2,
+                  width: (_focus || _hover) ? 30 : (widget.selected ? 22 : 0),
                   decoration: BoxDecoration(
-                    color: widget.selected ? PbColors.primary : PbColors.text,
+                    color: (_focus || _hover || !widget.selected) ? PbColors.text : PbColors.primary,
                     borderRadius: BorderRadius.circular(2),
                   ),
                 ),

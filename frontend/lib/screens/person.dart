@@ -71,7 +71,10 @@ class _PersonScreenState extends ConsumerState<PersonScreen> {
   int? _lastChecking;
   Duration _wait = const Duration(seconds: 3);
   int _stalled = 0;
+
+  /// Checks have stalled (or polling ended): don't say "Checking more titles…".
   bool _gaveUp = false;
+  DateTime? _started;
 
   @override
   void dispose() {
@@ -83,27 +86,37 @@ class _PersonScreenState extends ConsumerState<PersonScreen> {
   /// stops when the page closes). Every 3 s while titles keep arriving,
   /// easing off to 15 s while none do.
   void _scheduleRecheck(PersonDetails? p) {
-    if (p == null || p.checkingCredits == 0 || _recheck != null || _gaveUp) return;
+    if (p == null || p.checkingCredits == 0 || _recheck != null) return;
+    _started ??= DateTime.now();
+    if (DateTime.now().difference(_started!) > const Duration(minutes: 10)) {
+      _setQuiet(true);
+      return;
+    }
     final last = _lastChecking;
     if (last != null) {
       final progressed = p.checkingCredits < last;
+      _stalled = progressed ? 0 : _stalled + 1;
+      // When the count stops dropping (older servers never settle titles
+      // they couldn't check; a slow check can take a while), the label goes
+      // quiet but it keeps asking every 30 s, so late titles still arrive.
       _wait = progressed
           ? const Duration(seconds: 3)
-          : Duration(milliseconds: (_wait.inMilliseconds * 3 ~/ 2).clamp(3000, 15000));
-      _stalled = progressed ? 0 : _stalled + 1;
-      // Older servers never settle titles they couldn't check: stop asking
-      // (and drop "Checking more titles…") after a while with no progress.
-      if (_stalled >= 4) {
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) setState(() => _gaveUp = true);
-        });
-        return;
-      }
+          : _stalled >= 4
+              ? const Duration(seconds: 30)
+              : Duration(milliseconds: (_wait.inMilliseconds * 3 ~/ 2).clamp(3000, 15000));
+      _setQuiet(_stalled >= 4);
     }
     _lastChecking = p.checkingCredits;
     _recheck = Timer(_wait, () {
       _recheck = null;
       if (mounted) ref.invalidate(personProvider(widget.tmdbId));
+    });
+  }
+
+  void _setQuiet(bool quiet) {
+    if (quiet == _gaveUp) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) setState(() => _gaveUp = quiet);
     });
   }
 

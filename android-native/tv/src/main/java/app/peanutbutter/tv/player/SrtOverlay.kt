@@ -21,7 +21,7 @@ class SrtOverlay {
     private var positionProvider: (() -> Long)? = null
     private var lastText: String? = null
     /** Draws the text instead of the SubtitleView when set (see TvPlayback.onTextCues). */
-    var sink: ((String) -> Unit)? = null
+    var sink: ((androidx.compose.ui.text.AnnotatedString) -> Unit)? = null
     var active: Boolean = false
         private set
 
@@ -81,7 +81,7 @@ class SrtOverlay {
         lastText = null
         main.removeCallbacks(tick)
         view?.setCues(emptyList())
-        sink?.invoke("")
+        sink?.invoke(androidx.compose.ui.text.AnnotatedString(""))
     }
 
     fun clear() {
@@ -112,7 +112,7 @@ class SrtOverlay {
         if (text == lastText) return
         lastText = text
         sink?.let {
-            it(text)
+            it(androidx.compose.ui.text.AnnotatedString(text))
             return
         }
         val v = view ?: return

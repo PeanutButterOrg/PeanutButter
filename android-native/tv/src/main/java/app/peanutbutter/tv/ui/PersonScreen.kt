@@ -80,6 +80,8 @@ class PersonState {
     var error by mutableStateOf<String?>(null)
     /** Fetching a credit the catalog didn't have yet. */
     var opening by mutableStateOf(false)
+    /** Checks have stalled (or polling ended): don't say "Checking more titles…". */
+    var quiet by mutableStateOf(false)
 }
 
 private val gutter = PbSpace.gutterTv
@@ -292,7 +294,7 @@ private fun Hero(state: PersonState, art: PersonCredit?) {
                         Spacer(Modifier.height(12.dp))
                         BasicText("Loading…", style = PbType.body.copy(color = PbColors.textFaint))
                     }
-                    p != null && p.checkingCredits > 0 -> {
+                    p != null && p.checkingCredits > 0 && !state.quiet -> {
                         Spacer(Modifier.height(10.dp))
                         BasicText("Checking more titles…", style = PbType.meta.copy(color = PbColors.textFaint))
                     }

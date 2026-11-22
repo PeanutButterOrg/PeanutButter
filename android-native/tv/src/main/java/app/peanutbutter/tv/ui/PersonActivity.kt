@@ -29,21 +29,32 @@ class PersonActivity : FragmentActivity() {
                 // The server is still checking some titles: ask until it's done
                 // (this stops when the page closes). Every 3 s while titles
                 // keep arriving, easing off to 15 s while none do.
-                // Older servers never settle titles they couldn't check, so it
-                // gives up (and drops "Checking more titles…") after a while
-                // with no progress.
+                // When the count stops dropping (older servers never settle
+                // titles they couldn't check; a slow check can take a while),
+                // the label goes quiet but it keeps asking, every 30 s, so late
+                // titles still arrive; it stops after 10 minutes.
                 var wait = 3_000L
                 var stalled = 0
-                while (person.checkingCredits > 0) {
+                val started = android.os.SystemClock.elapsedRealtime()
+                while (person.checkingCredits > 0 &&
+                    android.os.SystemClock.elapsedRealtime() - started < 10 * 60_000L
+                ) {
                     kotlinx.coroutines.delay(wait)
                     val next = runCatching { api.person(tmdbId) }.getOrNull()
                     val progressed = next != null && next.checkingCredits < person.checkingCredits
-                    wait = if (progressed) 3_000L else (wait * 3 / 2).coerceAtMost(15_000L)
                     stalled = if (progressed) 0 else stalled + 1
-                    if (next != null) person = next
-                    if (stalled >= 4) person = person.copy(checkingCredits = 0)
-                    ui.person = person
+                    wait = when {
+                        progressed -> 3_000L
+                        stalled >= 4 -> 30_000L
+                        else -> (wait * 3 / 2).coerceAtMost(15_000L)
+                    }
+                    if (next != null) {
+                        person = next
+                        ui.person = next
+                    }
+                    ui.quiet = stalled >= 4
                 }
+                ui.quiet = true
             } catch (e: Exception) {
                 ui.error = getString(R.string.person_load_failed)
             }

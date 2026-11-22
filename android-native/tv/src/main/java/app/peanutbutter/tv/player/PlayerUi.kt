@@ -143,7 +143,7 @@ class ResumeCard(val title: String, val atMs: Long, val totalMs: Long)
  */
 class PlayerUi {
     /** The text subtitle on screen now (blank: none), and its look. */
-    var subtitle by mutableStateOf("")
+    var subtitle by mutableStateOf(androidx.compose.ui.text.AnnotatedString(""))
     var subSize by mutableIntStateOf(1)
     var subBackground by mutableStateOf("box")
 
@@ -1021,7 +1021,7 @@ private val SUB_SCALES = floatArrayOf(0.8f, 1f, 1.3f, 1.65f)
 @Composable
 private fun BoxScope.SubtitleText(ui: PlayerUi) {
     val text = ui.subtitle
-    if (text.isBlank()) return
+    if (text.text.isBlank()) return
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val density = LocalDensity.current
         val px = with(density) { maxHeight.toPx() } * 0.0533f * SUB_SCALES[ui.subSize.coerceIn(0, SUB_SCALES.lastIndex)]

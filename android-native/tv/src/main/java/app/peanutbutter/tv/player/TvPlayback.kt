@@ -12,6 +12,7 @@ import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
+import androidx.media3.common.text.Cue
 import androidx.media3.common.text.CueGroup
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
@@ -184,7 +185,7 @@ class TvPlayback(
      * a real outline and shadow); picture subtitles stay on the SubtitleView.
      * SubtitleView's outline and shadow are fixed at 2dp and barely showed.
      */
-    var onTextCues: ((String) -> Unit)? = null
+    var onTextCues: ((androidx.compose.ui.text.AnnotatedString) -> Unit)? = null
         set(value) {
             field = value
             srtOverlay.sink = value
@@ -325,7 +326,7 @@ class TvPlayback(
                 .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
                 .build()
             subtitles?.setCues(emptyList())
-            onTextCues?.invoke("")
+            onTextCues?.invoke(androidx.compose.ui.text.AnnotatedString(""))
             return
         }
         if (id == "ext:sideload") {
@@ -526,9 +527,13 @@ class TvPlayback(
                             subtitles?.setCues(cueGroup.cues)
                             return
                         }
-                        val (pictures, texts) = cueGroup.cues.partition { it.bitmap != null }
-                        subtitles?.setCues(pictures)
-                        sink(texts.mapNotNull { it.text?.toString()?.trim() }.filter { it.isNotEmpty() }.joinToString("\n"))
+                        // Pictures, and text placed somewhere on purpose (a sign above
+                        // the dialogue), stay on the SubtitleView, which honours
+                        // placement; the usual bottom lines get the chosen look,
+                        // keeping their italics and bold.
+                        val (native, plain) = cueGroup.cues.partition { it.bitmap != null || !it.atBottomCentre() }
+                        subtitles?.setCues(native)
+                        sink(styledLines(plain.mapNotNull { it.text }))
                     }
 
                     override fun onEvents(player: Player, events: Player.Events) {
@@ -559,3 +564,47 @@ class TvPlayback(
         private const val SUBTITLE_PAD_CHROME = 0.28f
     }
 }
+
+/**
+ * Whether a cue sits where subtitles normally go. WebVTT and SSA spell out
+ * bottom-centre on ordinary cues, so only a real elsewhere counts as placed.
+ */
+private fun Cue.atBottomCentre(): Boolean {
+    val lineOk = line == Cue.DIMEN_UNSET ||
+        (lineType == Cue.LINE_TYPE_FRACTION && line >= 0.8f) ||
+        (lineType == Cue.LINE_TYPE_NUMBER && line < 0f)
+    val positionOk = position == Cue.DIMEN_UNSET || kotlin.math.abs(position - 0.5f) < 0.05f
+    return lineOk && positionOk
+}
+
+/** Cue texts as one block of lines, keeping bold, italic, underline and strikethrough. */
+internal fun styledLines(texts: List<CharSequence>): androidx.compose.ui.text.AnnotatedString =
+    androidx.compose.ui.text.buildAnnotatedString {
+        texts.map { it.trim() }.filter { it.isNotEmpty() }.forEachIndexed { i, t ->
+            if (i > 0) append("\n")
+            val start = length
+            append(t.toString())
+            val spanned = t as? android.text.Spanned ?: return@forEachIndexed
+            spanned.getSpans(0, spanned.length, Any::class.java).forEach { span ->
+                val style = when (span) {
+                    is android.text.style.StyleSpan -> when (span.style) {
+                        android.graphics.Typeface.BOLD -> androidx.compose.ui.text.SpanStyle(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
+                        android.graphics.Typeface.ITALIC -> androidx.compose.ui.text.SpanStyle(fontStyle = androidx.compose.ui.text.font.FontStyle.Italic)
+                        android.graphics.Typeface.BOLD_ITALIC -> androidx.compose.ui.text.SpanStyle(
+                            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                            fontStyle = androidx.compose.ui.text.font.FontStyle.Italic,
+                        )
+                        else -> null
+                    }
+                    is android.text.style.UnderlineSpan ->
+                        androidx.compose.ui.text.SpanStyle(textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline)
+                    is android.text.style.StrikethroughSpan ->
+                        androidx.compose.ui.text.SpanStyle(textDecoration = androidx.compose.ui.text.style.TextDecoration.LineThrough)
+                    else -> null
+                } ?: return@forEach
+                val from = (spanned.getSpanStart(span)).coerceIn(0, t.length)
+                val to = (spanned.getSpanEnd(span)).coerceIn(from, t.length)
+                if (to > from) addStyle(style, start + from, start + to)
+            }
+        }
+    }
