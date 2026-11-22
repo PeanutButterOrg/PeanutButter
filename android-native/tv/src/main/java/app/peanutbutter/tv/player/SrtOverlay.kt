@@ -20,6 +20,8 @@ class SrtOverlay {
     private var view: SubtitleView? = null
     private var positionProvider: (() -> Long)? = null
     private var lastText: String? = null
+    /** Draws the text instead of the SubtitleView when set (see TvPlayback.onTextCues). */
+    var sink: ((String) -> Unit)? = null
     var active: Boolean = false
         private set
 
@@ -79,6 +81,7 @@ class SrtOverlay {
         lastText = null
         main.removeCallbacks(tick)
         view?.setCues(emptyList())
+        sink?.invoke("")
     }
 
     fun clear() {
@@ -108,6 +111,10 @@ class SrtOverlay {
             .trim()
         if (text == lastText) return
         lastText = text
+        sink?.let {
+            it(text)
+            return
+        }
         val v = view ?: return
         if (text.isEmpty()) {
             v.setCues(emptyList())

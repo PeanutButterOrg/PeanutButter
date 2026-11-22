@@ -540,6 +540,13 @@ class PlayerActivity : FragmentActivity(), SurfaceHolder.Callback {
             TvPlayback(this, playbackListener())
         }
         player?.bindSubtitles(findViewById(R.id.subtitles))
+        (player as? TvPlayback)?.let { tv ->
+            tv.onTextCues = { text -> main.post { ui.subtitle = text } }
+            tv.onLook = { size, background ->
+                ui.subSize = size
+                ui.subBackground = background
+            }
+        }
         SubtitleLook.apply(this, player)
         if (subDelayMs != 0L) player?.setSubtitleDelay(subDelayMs)
         val frame = findViewById<androidx.media3.ui.AspectRatioFrameLayout>(R.id.video_frame)

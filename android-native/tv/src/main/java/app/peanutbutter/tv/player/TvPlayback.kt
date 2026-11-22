@@ -179,12 +179,26 @@ class TvPlayback(
     private var subSize = 1
     private var subBackground = "box"
 
+    /**
+     * Text subtitles go here when set (the player's overlay draws them, with
+     * a real outline and shadow); picture subtitles stay on the SubtitleView.
+     * SubtitleView's outline and shadow are fixed at 2dp and barely showed.
+     */
+    var onTextCues: ((String) -> Unit)? = null
+        set(value) {
+            field = value
+            srtOverlay.sink = value
+        }
+    /** The look picked in the Subtitles menu, for whoever draws text cues. */
+    var onLook: ((size: Int, background: String) -> Unit)? = null
+
     override val canStyleSubtitles: Boolean get() = true
 
     override fun setSubtitleLook(size: Int, background: String) {
         subSize = size.coerceIn(0, SUB_SCALES.size - 1)
         subBackground = background
         applySubtitleLook()
+        onLook?.invoke(subSize, subBackground)
     }
 
     private fun applySubtitleLook() {
@@ -311,6 +325,7 @@ class TvPlayback(
                 .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
                 .build()
             subtitles?.setCues(emptyList())
+            onTextCues?.invoke("")
             return
         }
         if (id == "ext:sideload") {
@@ -504,9 +519,16 @@ class TvPlayback(
                     }
 
                     override fun onCues(cueGroup: CueGroup) {
-                        // Sideloaded SRT owns the SubtitleView while active.
+                        // Sideloaded SRT owns the subtitles while active.
                         if (srtOverlay.active) return
-                        subtitles?.setCues(cueGroup.cues)
+                        val sink = onTextCues
+                        if (sink == null) {
+                            subtitles?.setCues(cueGroup.cues)
+                            return
+                        }
+                        val (pictures, texts) = cueGroup.cues.partition { it.bitmap != null }
+                        subtitles?.setCues(pictures)
+                        sink(texts.mapNotNull { it.text?.toString()?.trim() }.filter { it.isNotEmpty() }.joinToString("\n"))
                     }
 
                     override fun onEvents(player: Player, events: Player.Events) {
