@@ -228,7 +228,7 @@ private fun Hero(state: PersonState, art: PersonCredit?) {
             ),
         )
         Row(
-            verticalAlignment = Alignment.Bottom,
+            verticalAlignment = Alignment.Top,
             modifier = Modifier.padding(start = gutter, end = gutter, top = 84.dp, bottom = 8.dp),
         ) {
             val shape = RoundedCornerShape(PbRadius.card + 4.dp)
@@ -272,7 +272,7 @@ private fun Hero(state: PersonState, art: PersonCredit?) {
                     }
                 }
                 p?.biography?.let {
-                    Spacer(Modifier.height(12.dp))
+                    Spacer(Modifier.height(20.dp))
                     BasicText(
                         it, maxLines = 3, overflow = TextOverflow.Ellipsis,
                         style = PbType.body.copy(color = Color(0xFFD6DAE3), lineHeight = 23.sp),

@@ -267,7 +267,7 @@ class _Hero extends StatelessWidget {
           Padding(
             padding: const EdgeInsets.fromLTRB(PbSpace.gutterDesktop, 96, PbSpace.gutterDesktop, 20),
             child: Row(
-              crossAxisAlignment: CrossAxisAlignment.end,
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Container(
                   width: 170,
@@ -311,7 +311,7 @@ class _Hero extends StatelessWidget {
                           ),
                         ],
                         if (p?.biography != null) ...[
-                          const SizedBox(height: 12),
+                          const SizedBox(height: 22),
                           Text(
                             p!.biography!,
                             maxLines: 4,
