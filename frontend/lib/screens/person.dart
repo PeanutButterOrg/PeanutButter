@@ -45,13 +45,17 @@ List<_CreditRow> _rowsFor(PersonDetails p) {
       final v = b.voteCount.compareTo(a.voteCount);
       return v != 0 ? v : b.popularity.compareTo(a.popularity);
     });
-  final movies = p.acting.where((c) => c.kind == 'MOVIE').toList();
-  final series = p.acting.where((c) => c.kind != 'MOVIE').toList();
+  // Newest first; titles without a year go last.
+  List<PersonCredit> newest(Iterable<PersonCredit> credits) =>
+      credits.toList()..sort((a, b) => (b.year ?? -1).compareTo(a.year ?? -1));
+  final movies = newest(p.acting.where((c) => c.kind == 'MOVIE'));
+  final series = newest(p.acting.where((c) => c.kind != 'MOVIE'));
+  final crew = newest(p.crew);
   return [
     if (known.length >= 3) _CreditRow('Known for', known.take(12).toList(), wide: true),
     if (movies.isNotEmpty) _CreditRow('Movies', movies),
     if (series.isNotEmpty) _CreditRow('Series', series),
-    if (p.crew.isNotEmpty) _CreditRow('Behind the camera', p.crew),
+    if (crew.isNotEmpty) _CreditRow('Behind the camera', crew),
   ];
 }
 
@@ -295,7 +299,6 @@ class _Hero extends StatelessWidget {
                             _designation(p!.knownFor!).toUpperCase(),
                             style: PbType.label.copyWith(color: PbColors.primary, letterSpacing: 1.1),
                           ),
-                          const SizedBox(height: 6),
                         ],
                         Text(
                           p?.name ?? name,
@@ -304,7 +307,7 @@ class _Hero extends StatelessWidget {
                           style: PbType.hero.copyWith(fontSize: 50, height: 1.05, color: PbColors.text),
                         ),
                         if (p != null && _facts(p).isNotEmpty) ...[
-                          const SizedBox(height: 10),
+                          const SizedBox(height: 4),
                           Text(
                             _facts(p).join('   •   '),
                             style: PbType.meta.copyWith(fontSize: 15, color: Colors.white.withValues(alpha: 0.82)),

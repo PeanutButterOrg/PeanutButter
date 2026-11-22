@@ -97,13 +97,16 @@ private fun rowsFor(p: PersonDetails): List<CreditRow> {
         .filter { it.voteCount > 0 || it.popularity > 0.0 }
         .sortedWith(compareByDescending<PersonCredit> { it.voteCount }.thenByDescending { it.popularity })
         .take(12)
-    val movies = p.acting.filter { it.kind.equals("MOVIE", true) }
-    val series = p.acting.filter { !it.kind.equals("MOVIE", true) }
+    // Newest first; titles without a year go last (sortedBy keeps ties in order).
+    fun newest(credits: List<PersonCredit>) = credits.sortedByDescending { it.year ?: -1 }
+    val movies = newest(p.acting.filter { it.kind.equals("MOVIE", true) })
+    val series = newest(p.acting.filter { !it.kind.equals("MOVIE", true) })
+    val crew = newest(p.crew)
     return listOfNotNull(
         CreditRow("known", "Known for", known, wide = true).takeIf { known.size >= 3 },
         CreditRow("movies", "Movies", movies).takeIf { movies.isNotEmpty() },
         CreditRow("series", "Series", series).takeIf { series.isNotEmpty() },
-        CreditRow("crew", "Behind the camera", p.crew).takeIf { p.crew.isNotEmpty() },
+        CreditRow("crew", "Behind the camera", crew).takeIf { crew.isNotEmpty() },
     )
 }
 
@@ -250,7 +253,6 @@ private fun Hero(state: PersonState, art: PersonCredit?) {
             Column(Modifier.widthIn(max = 720.dp)) {
                 p?.knownFor?.let(::designation)?.let {
                     BasicText(it.uppercase(), style = PbType.label.copy(color = PbColors.primary, letterSpacing = 1.1.sp))
-                    Spacer(Modifier.height(6.dp))
                 }
                 BasicText(
                     p?.name ?: state.name,
@@ -260,7 +262,7 @@ private fun Hero(state: PersonState, art: PersonCredit?) {
                 p?.let { person ->
                     val facts = facts(person)
                     if (facts.isNotEmpty()) {
-                        Spacer(Modifier.height(10.dp))
+                        Spacer(Modifier.height(2.dp))
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             facts.forEachIndexed { i, f ->
                                 if (i > 0) {
