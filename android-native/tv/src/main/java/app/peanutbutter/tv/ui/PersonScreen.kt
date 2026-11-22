@@ -3,6 +3,7 @@ package app.peanutbutter.tv.ui
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.LocalBringIntoViewSpec
+import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -126,8 +127,15 @@ fun PersonScreen(state: PersonState, onBack: () -> Unit, onOpen: (PersonCredit) 
         runCatching { if (rows.isNotEmpty()) firstRow.requestFocus() else back.requestFocus() }
     }
     fun reveal(index: Int) = scope.launch {
-        if (index <= 1) list.animateScrollToItem(0)
-        else list.animateScrollToItem(index, -with(density) { (screenH * 0.12f).roundToPx() })
+        if (index <= 1) {
+            list.animateScrollToItem(0)
+            // A long name or bio can push the first row's titles off the bottom.
+            val info = list.layoutInfo
+            info.visibleItemsInfo.firstOrNull { it.index == 1 }?.let { row ->
+                val over = row.offset + row.size - info.viewportEndOffset
+                if (over > 0) list.animateScrollBy(over.toFloat())
+            }
+        } else list.animateScrollToItem(index, -with(density) { (screenH * 0.12f).roundToPx() })
     }
     val heroArt = rows.firstOrNull { it.wide }?.credits?.firstOrNull { it.backdropUrl != null }
         ?: person?.let { p -> (p.acting + p.crew).firstOrNull { it.backdropUrl != null } }
@@ -200,13 +208,14 @@ private fun BackButton(modifier: Modifier, onClick: () -> Unit) {
 @Composable
 private fun Hero(state: PersonState, art: PersonCredit?) {
     val p = state.person
-    val height = (LocalConfiguration.current.screenHeightDp * 0.6f).dp
-    Box(Modifier.fillMaxWidth().height(height)) {
+    // As tall as its content, not a share of the screen: the first row's
+    // titles must fit below it, and without art a tall hero is a black gap.
+    Box(Modifier.fillMaxWidth()) {
         art?.backdropUrl?.let { url ->
-            PbImage(url, Modifier.fillMaxSize(), 1200.dp, height, alignment = Alignment.TopCenter)
+            PbImage(url, Modifier.matchParentSize(), 1200.dp, 420.dp, alignment = Alignment.TopCenter)
         }
         Box(
-            Modifier.fillMaxSize().background(
+            Modifier.matchParentSize().background(
                 Brush.horizontalGradient(
                     0f to Color(0xFA0E0E12), 0.35f to Color(0xE60E0E12),
                     0.6f to Color(0x990E0E12), 0.85f to Color(0x330E0E12),
@@ -214,13 +223,13 @@ private fun Hero(state: PersonState, art: PersonCredit?) {
             ),
         )
         Box(
-            Modifier.fillMaxSize().background(
+            Modifier.matchParentSize().background(
                 Brush.verticalGradient(0.45f to Color.Transparent, 1f to PbColors.ground),
             ),
         )
         Row(
             verticalAlignment = Alignment.Bottom,
-            modifier = Modifier.align(Alignment.BottomStart).padding(start = gutter, end = gutter, bottom = 18.dp),
+            modifier = Modifier.padding(start = gutter, end = gutter, top = 84.dp, bottom = 8.dp),
         ) {
             val shape = RoundedCornerShape(PbRadius.card + 4.dp)
             Box(
@@ -239,7 +248,7 @@ private fun Hero(state: PersonState, art: PersonCredit?) {
             }
             Spacer(Modifier.width(28.dp))
             Column(Modifier.widthIn(max = 720.dp)) {
-                p?.knownFor?.let {
+                p?.knownFor?.let(::designation)?.let {
                     BasicText(it.uppercase(), style = PbType.label.copy(color = PbColors.primary, letterSpacing = 1.1.sp))
                     Spacer(Modifier.height(6.dp))
                 }
@@ -282,6 +291,23 @@ private fun Hero(state: PersonState, art: PersonCredit?) {
             }
         }
     }
+}
+
+/** TMDB's department ("Acting", "Directing") as what they are ("Actor", "Director"). */
+private fun designation(department: String): String = when (department.trim().lowercase()) {
+    "acting" -> "Actor"
+    "directing" -> "Director"
+    "writing" -> "Writer"
+    "production" -> "Producer"
+    "editing" -> "Editor"
+    "camera" -> "Cinematographer"
+    "sound" -> "Composer & sound"
+    "art" -> "Production designer"
+    "costume & make-up" -> "Costume & make-up"
+    "visual effects" -> "Visual effects"
+    "lighting" -> "Lighting"
+    "creator" -> "Creator"
+    else -> department
 }
 
 /** "Born 21 Jul 2005 (age 21)", "Melbourne, Australia", "41 titles". */

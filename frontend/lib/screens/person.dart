@@ -19,6 +19,7 @@ class PersonScreen extends ConsumerStatefulWidget {
   const PersonScreen({super.key, required this.tmdbId, this.name = ''});
 
   final int tmdbId;
+
   /// Shown while the page loads.
   final String name;
 
@@ -208,22 +209,27 @@ class _Hero extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final p = person;
-    final height = (MediaQuery.sizeOf(context).height * 0.62).clamp(420.0, 640.0);
-    return SizedBox(
-      height: height,
+    // As tall as its content (taller only to show art): without art a fixed
+    // height left a black gap above the name.
+    final hasArt = art?.backdropUrl != null;
+    final minHeight = hasArt ? (MediaQuery.sizeOf(context).height * 0.5).clamp(380.0, 560.0) : 0.0;
+    return ConstrainedBox(
+      constraints: BoxConstraints(minHeight: minHeight),
       child: Stack(
-        fit: StackFit.expand,
+        alignment: AlignmentDirectional.bottomStart,
         children: [
-          if (art?.backdropUrl != null) CachedArt(url: art!.backdropUrl, alignment: Alignment.topCenter),
-          const DecoratedBox(
+          if (hasArt) Positioned.fill(child: CachedArt(url: art!.backdropUrl, alignment: Alignment.topCenter)),
+          const Positioned.fill(
+              child: DecoratedBox(
             decoration: BoxDecoration(
               gradient: LinearGradient(
                 colors: [Color(0xFA0E0E12), Color(0xE60E0E12), Color(0x990E0E12), Color(0x330E0E12)],
                 stops: [0, 0.35, 0.6, 0.85],
               ),
             ),
-          ),
-          const DecoratedBox(
+          )),
+          const Positioned.fill(
+              child: DecoratedBox(
             decoration: BoxDecoration(
               gradient: LinearGradient(
                 begin: Alignment.topCenter,
@@ -232,11 +238,9 @@ class _Hero extends StatelessWidget {
                 stops: [0.45, 1],
               ),
             ),
-          ),
-          Positioned(
-            left: PbSpace.gutterDesktop,
-            right: PbSpace.gutterDesktop,
-            bottom: 20,
+          )),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(PbSpace.gutterDesktop, 96, PbSpace.gutterDesktop, 20),
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
@@ -263,7 +267,7 @@ class _Hero extends StatelessWidget {
                       children: [
                         if (p?.knownFor != null) ...[
                           Text(
-                            p!.knownFor!.toUpperCase(),
+                            _designation(p!.knownFor!).toUpperCase(),
                             style: PbType.label.copyWith(color: PbColors.primary, letterSpacing: 1.1),
                           ),
                           const SizedBox(height: 6),
@@ -352,7 +356,9 @@ class _Shelf extends StatelessWidget {
                 final c = row.credits[i];
                 return SizedBox(
                   width: width,
-                  child: row.wide ? _KnownForCard(credit: c, onOpen: () => onOpen(c)) : _CreditTile(credit: c, onOpen: () => onOpen(c)),
+                  child: row.wide
+                      ? _KnownForCard(credit: c, onOpen: () => onOpen(c))
+                      : _CreditTile(credit: c, onOpen: () => onOpen(c)),
                 );
               },
             ),
@@ -490,3 +496,20 @@ class _KnownForCardState extends State<_KnownForCard> {
     );
   }
 }
+
+/// TMDB's department ("Acting", "Directing") as what they are ("Actor", "Director").
+String _designation(String department) => switch (department.trim().toLowerCase()) {
+      'acting' => 'Actor',
+      'directing' => 'Director',
+      'writing' => 'Writer',
+      'production' => 'Producer',
+      'editing' => 'Editor',
+      'camera' => 'Cinematographer',
+      'sound' => 'Composer & sound',
+      'art' => 'Production designer',
+      'costume & make-up' => 'Costume & make-up',
+      'visual effects' => 'Visual effects',
+      'lighting' => 'Lighting',
+      'creator' => 'Creator',
+      _ => department,
+    };
