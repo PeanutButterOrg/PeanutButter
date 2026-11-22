@@ -31,4 +31,20 @@ class SrtOverlayTest {
     fun rubbishGivesNoCues() {
         assertTrue(SrtOverlay.parse("not a subtitle file").isEmpty())
     }
+
+    @Test
+    fun keepsFormattingTagsForDrawing() {
+        val cue = SrtOverlay.parse(srt)[1]
+        assertEquals("<i>World</i>", cue.markup)
+        assertTrue(cue.atBottom)
+    }
+
+    @Test
+    fun readsPlacementAndHidesItsTag() {
+        val cue = SrtOverlay.parse("1\n00:00:01,000 --> 00:00:02,000\n{\\an8}SIGN\n").single()
+        assertEquals("SIGN", cue.text)
+        assertEquals("SIGN", cue.markup)
+        assertEquals(8, cue.align)
+        assertTrue(!cue.atBottom)
+    }
 }
